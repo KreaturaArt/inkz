@@ -4,6 +4,7 @@ title: Comparison and logic native functions
 status: To Do
 assignee: []
 created_date: '2026-02-23 19:18'
+updated_date: '2026-02-23 19:41'
 labels:
   - layer-3
   - execution
@@ -14,14 +15,26 @@ priority: high
 ## Description
 
 <!-- SECTION:DESCRIPTION:BEGIN -->
-==, !=, >, <, >=, <= for int/float/string/bool (result int 0 or 1). ! unary not. &&, || short-circuit. MIN, MAX for int/float.
+Extend `callNativeFunction` in `src/runtime/evaluation.zig`:
+- `equal`, `not_equal`: compare int/float/bool/string (int↔float coerced); result `.int(0)` or `.int(1)`
+- `greater`, `less`, `greater_or_equal`, `less_or_equal`: int/float only (int↔float coerced); result `.int(0)` or `.int(1)`
+- `not`: unary; `.int(0)` or `.bool(false)` → `.int(1)`; else → `.int(0)`
+- `and_`: both non-zero/non-false → `.int(1)`, else `.int(0)`
+- `or_`: either non-zero/non-false → `.int(1)`, else `.int(0)`
+- `min`, `max`: int/float, result same type as inputs
 
-Tests: true.ink.json, three_greater_than_one.ink.json, true_plus_true.ink.json, not_false.ink.json
+Tests:
+- `booleans/true.ink.json` → `"1\n"` (regression: was passing after TASK-12)
+- `booleans/three_greater_than_one.ink.json` → `"1\n"` (3 > 1 = 1)
+- `booleans/true_plus_true.ink.json` → `"2\n"` (1 + 1 = 2)
+- `booleans/not_true.ink.json` → `"0\n"` (! true = 0)
 <!-- SECTION:DESCRIPTION:END -->
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Comparison operators return 0 or 1 correctly
-- [ ] #2 Logic operators work
-- [ ] #3 MIN/MAX work for int and float
+- [ ] #1 Comparison operators return int 0 or 1 for all supported types
+- [ ] #2 not_true.ink.json → "0\n"
+- [ ] #3 three_greater_than_one.ink.json → "1\n"
+- [ ] #4 true_plus_true.ink.json → "2\n"
+- [ ] #5 MIN and MAX work for int and float
 <!-- AC:END -->
