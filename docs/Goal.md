@@ -6,7 +6,7 @@ To start off we only want to focus on @docs/ create comprehensive documentation 
 
 In a first stage we want to create a plan for a Fully-featured and highly efficient Ink runtime that minimizes runtime memory allocation.
 We want to break down this task in as many tasks as necesarry.
-Even in the planning we want to keep a high emphasis on test driven development, implementation tasks should always have
+Even in the planning we want to keep a high emphasis on test driven development, an implementation task is only considered complete if one or more unit tests validate the success criteria.
 
 In the second stage we want to create a plan for a compiler that replaces Inklecate and follows zig best practices (labeled switch tokenizer).
 
