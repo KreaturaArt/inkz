@@ -2,113 +2,116 @@
 
 ## Quick Start
 
-*Note that although these instructions are written with Unity in mind, it's possible (and straightforward) to run your ink in a non-Unity C# environment.*
-
-* Download the [latest version of the ink-unity-integration Unity package](/inkle/ink-unity-integration/releases), and add to your project.
-* Select your `.ink` file in Unity, and you should see a *Play* button in the file's inspector.
-* Click it, and you should get an Editor window that lets you play (preview) your story.
-* To integrate into your game, see **Getting started with the runtime API**, below.
+* Compile your `.ink` source file to JSON using the `inkz` compiler:
+  ```sh
+  inkz compile story.ink -o story.ink.json
+  ```
+* Add `inkz` as a dependency in your `build.zig.zon` and import the `ink` module in your `build.zig`.
+* Load the compiled JSON and run the story (see **Getting started with the runtime API**, below).
 
 ## Further information
 
-Ink uses an intermediate `.json` format, which is compiled from the original `.ink` files. ink's Unity integration package automatically compiles ink files for you, but you can also compile them on the command line. See **Using inklecate on the command line** in the [README](http://www.github.com/inkle/ink) for more information.
+Ink uses an intermediate `.json` format, which is compiled from the original `.ink` files. You can compile them on the command line using the `inkz` compiler. See **Using inkz on the command line** in the [README](http://www.github.com/inkle/ink) for more information.
 
-The main runtime code is included in the `ink-engine.dll`.
+We recommend that you create a wrapper struct for the `ink.Story`. Here, we'll call the struct `Script` — in the "film script" sense, rather than the "code module" sense:
 
-We recommend that you create a wrapper MonoBehaviour component for the **ink** `Story`. Here, we'll call the component "Script" - in the "film script" sense, rather than the "Unity script" sense!
+```zig
+const ink = @import("ink");
 
-```csharp
-using Ink.Runtime;
+pub const Script = struct {
+    story: ink.Story,
 
-public class Script : MonoBehaviour {
+    pub fn init(allocator: Allocator, json_asset: []const u8) !Script {
+        return .{ .story = try ink.Story.initFromJson(allocator, json_asset) };
+    }
 
-	// Set this file to your compiled json asset
-	public TextAsset inkAsset;
-
-	// The ink story that we're wrapping
-	Story _inkStory;
+    pub fn deinit(self: *Script) void {
+        self.story.deinit();
+    }
+};
 ```
 
 ## Getting started with the runtime API
 
-As mentioned above, your `.ink` file(s) are compiled to a single `.json` file. This is treated by Unity as a TextAsset, that you can then load up in your game.
+As mentioned above, your `.ink` file(s) are compiled to a single `.json` file. You can embed this directly in your binary at compile time or load it from disk at runtime.
 
-The API for loading and running your story is very straightforward. Construct a new `Story` object, passing in the JSON string from the TextAsset. For example, in Unity:
+The API for loading and running your story is very straightforward. Construct a new `Story` by passing in the JSON string. For example:
 
-```csharp
-using Ink.Runtime;
-
-...
-
-void Awake()
-{
-    _inkStory = new Story(inkAsset.text);
-}
+```zig
+var script = try Script.init(allocator, @embedFile("story.ink.json"));
+defer script.deinit();
 ```
+
 From there, you make calls to the story in a loop. There are two repeating stages:
 
- 1. **Present content:** You repeatedly call `Continue()` on it, which returns individual lines of string content, until the `canContinue` property becomes false. For example:
+ 1. **Present content:** You repeatedly call `cont()` on it, which returns individual lines of string content, until `canContinue()` returns false. For example:
 
-```csharp
-while (_inkStory.canContinue) {
-    Debug.Log (_inkStory.Continue ());
+```zig
+while (script.story.canContinue()) {
+    const line = try script.story.cont();
+    std.debug.print("{s}", .{line});
 }
 ```
 
-    A simpler way to achieve the above is through one call to `_inkStory.ContinueMaximally()`. However, in many stories it's useful to pause the story at each line, for example when stepping through dialogue. Also, in such games, there may be state changes that should be reflected in the UI, such as resource counters.
+    A simpler way to achieve the above is through one call to `script.story.continueMaximally()`. However, in many stories it's useful to pause the story at each line, for example when stepping through dialogue. Also, in such games, there may be state changes that should be reflected in the UI, such as resource counters.
 
  2. **Make choice:** When there isn't any more content, you should check to see whether there any choices to present to the player. To do so, use something like:
 
-```csharp
-    if( _inkStory.currentChoices.Count > 0 )
-    {
-        for (int i = 0; i < _inkStory.currentChoices.Count; ++i) {
-            Choice choice = _inkStory.currentChoices [i];
-            Debug.Log("Choice " + (i + 1) + ". " + choice.text);
-        }
+```zig
+if (script.story.currentChoices().len > 0) {
+    for (script.story.currentChoices(), 0..) |choice, i| {
+        std.debug.print("{d}: {s}\n", .{i + 1, choice.text});
     }
+}
 
-    //...and when the player provides input:
+// ...and when the player provides input:
 
-        _inkStory.ChooseChoiceIndex (index);
+try script.story.chooseChoiceIndex(index);
 
-    //And now you're ready to return to step 1, and present content again.
+// And now you're ready to return to step 1, and present content again.
 ```
+
 ### Saving and loading
 
 To save the state of your story within your game, call:
 
-`string savedJson = _inkStory.state.ToJson();`
+```zig
+const saved_json = try story.state.toJson(allocator);
+defer allocator.free(saved_json);
+```
 
 ...and then to load it again:
 
-`_inkStory.state.LoadJson(savedJson);`
+```zig
+try story.state.loadJson(saved_json);
+```
 
 ### Error handling
 
-If you made a mistake in your ink that the compiler can't catch, then the story will throw an exception. To avoid this and get standard Unity errors instead, you can use an error handler that you should assign when you create your story:
+If you made a mistake in your ink that the compiler can't catch, then the story will return an error. To handle errors gracefully and get structured error output instead, you can assign an error handler when you create your story:
 
-```csharp
-_inkStory = new Story(inkAsset.text);
+```zig
+var story = try ink.Story.initFromJson(allocator, json_asset);
 
-_inkStory.onError += (msg, type) => {
-    if( type == Ink.ErrorType.Warning )
-        Debug.LogWarning(msg);
-    else
-        Debug.LogError(msg);
-};
+story.on_error = struct {
+    fn handler(msg: []const u8, err_type: ink.ErrorType) void {
+        switch (err_type) {
+            .warning => std.log.warn("{s}", .{msg}),
+            .err     => std.log.err("{s}", .{msg}),
+        }
+    }
+}.handler;
 ```
+
 ### Is that it?
 
 That's it! You can achieve a lot with just those simple steps, but for more advanced usage, including deep integration with your game, read on.
 
-For a sample Unity project in action with minimal UI, see [Aaron Broder's Blot repo](https://github.com/abroder/blot).
-
 ## Engine usage and philosophy
 
-In Unity, we recommend using your own component class to wrap `Ink.Runtime.Story`. The runtime **ink** engine has been designed to be reasonably general purpose and have a simple API. We also recommend wrapping rather than inheriting from `Story`, so that you can expose to your game only the functionality that you need.
+We recommend using your own wrapper struct to encapsulate `ink.Story`. The runtime **ink** engine has been designed to be reasonably general purpose and have a simple API. We also recommend wrapping rather than embedding the story directly in domain objects, so that you can expose to your game only the functionality that you need.
 
-Often when designing the flow for your game, the sequence of interactions between the player and the story may not precisely match the way the **ink** is evaluted. For example, with a classic choose-your-own-adventure type story, you may want to show multiple lines (paragraphs) of text and choices all at once. For a visual novel, you may want to display one line per screen.
+Often when designing the flow for your game, the sequence of interactions between the player and the story may not precisely match the way the **ink** is evaluated. For example, with a classic choose-your-own-adventure type story, you may want to show multiple lines (paragraphs) of text and choices all at once. For a visual novel, you may want to display one line per screen.
 
 Additionally, since the **ink** engine outputs lines of plain text, it can be effectively used for your own simple sub-formats. For example, for a dialog based game, you could write:
 
@@ -119,7 +122,7 @@ Additionally, since the **ink** engine outputs lines of plain text, it can be ef
 
 As far as the **ink** engine is concerned, the `:` characters are just text. But as the lines of text and choices are produced by the game, you can do some simple text parsing of your own to turn the string `Joe: What's up?` into a game-specific dialog object that references the speaker and the text (or even audio).
 
-This approach can be taken even further to text that flexibly indicates non-content directives. Again, these directives come out of the engine as text, but can parsed by your game for a specific purpose:
+This approach can be taken even further to text that flexibly indicates non-content directives. Again, these directives come out of the engine as text, but can be parsed by your game for a specific purpose:
 
     PROPLIST table, chair, apple, orange
 
@@ -138,7 +141,7 @@ One use case is for a graphic adventure that has different art for characters de
 
     Passepartout: Really, Monsieur. # surly
 
-On the game side, every time you get content with `_inkStory.Continue()`, you can get a list of tags with `_inkStory.currentTags`, which will return a `List<string>`, in the above case with just one element: `"surly"`.
+On the game side, every time you get content with `story.cont()`, you can get a slice of tags with `story.currentTags()`, which will return a `[][]const u8`, in the above case with just one element: `"surly"`.
 
 To add more than one tag, simply delimit them with more `#` characters:
 
@@ -152,7 +155,7 @@ Tags for a line can be written above it, or on the end of the line:
     # the second tag
     This is the line of content. # the third tag
 
-All of the above tags will be included in the `currentTags` list.
+All of the above tags will be included in the `currentTags()` slice.
 
 ### Knot tags
 
@@ -164,13 +167,13 @@ Any tags that you include at the very top of a knot:
     # require: Train ticket
     First line of content in the knot.
 
-...are accessible by calling `_inkStory.TagsForContentAtPath("your_knot")`, which is useful for getting metadata from a knot before you actually want the game to go there.
+...are accessible by calling `story.tagsForContentAtPath("your_knot")`, which is useful for getting metadata from a knot before you actually want the game to go there.
 
-Note that these tags will also appear in the `currentTags` list for the first line of content in the knot.
+Note that these tags will also appear in the `currentTags()` slice for the first line of content in the knot.
 
 ### Global tags
 
-Any tags provided at the very top of the main ink file are accessible via the `Story`'s `globalTags` property, which also returns a `List<string>`. Any top level story metadata can be included there.
+Any tags provided at the very top of the main ink file are accessible via the story's `globalTags()` method, which also returns a `[][]const u8`. Any top level story metadata can be included there.
 
 We suggest the following by convention, if you wish to share your ink stories publicly:
 
@@ -183,111 +186,129 @@ Note that [Inky](https://github.com/inkle/inky) will use the title tag in this f
 
 Tags can also be applied to choices. Depending where the tag is placed inside the ink line, the tag will appear on both the choice and the content generated by that choice; on just the choice; or just on the output:
 
-	* A choice! #a tag on both choice and content 
+	* A choice! #a tag on both choice and content
 	* [A choice #a choice tag not on content ]
-	* A choice[!] which continues. #a tag on output content only 
+	* A choice[!] which continues. #a tag on output content only
 
 You can use all three in the same ink line:
 
-	* A choice #shared_tag [ with detail #choice_tag ] and content # content_tag 
+	* A choice #shared_tag [ with detail #choice_tag ] and content # content_tag
 
-The choice tags are stored inside the `List<string> tags` on the choice object.
+The choice tags are stored inside the `tags` slice on the choice object.
 
 #### Advanced: Tags are dynamic
 
 Note that the content of a tag can contain any inline **ink**, such as shuffles, cycles, function calls and variable replacements.
 
-	{character}: Hello there! #{character}_greeting.jpg 
-	
-	I open the door. #suspense_music{RANDOM(1, 4)}.mp3 
+	{character}: Hello there! #{character}_greeting.jpg
+
+	I open the door. #suspense_music{RANDOM(1, 4)}.mp3
 
 ## Jumping to a particular "scene"
 
 Top level named sections in **ink** are called knots (see [the writing tutorial](WritingWithInk.md)). You can tell the runtime engine to jump to a particular named knot:
 
-```csharp
-_inkStory.ChoosePathString("myKnotName");
+```zig
+try story.choosePathString("myKnotName");
 ```
 
-And then call `Continue()` as usual.
+And then call `cont()` as usual.
 
 To jump directly to a stitch within a knot, use a `.` as a separator:
 
-```csharp
-_inkStory.ChoosePathString("myKnotName.theStitchWithin");
+```zig
+try story.choosePathString("myKnotName.theStitchWithin");
 ```
 
 (Note that this path string is a *runtime* path rather than the path as used within the **ink** format. It's just been designed so that for the basics of knots and stitches, the format works out the same. Unfortunately however, you can't reference gather or choice labels this way.)
 
 ## Setting/getting ink variables
 
-The state of the variables in the **ink** engine is, appropriately enough, stored within the `variablesState` object within the `story`. You can both get and set variables directly on this object:
+The state of the variables in the **ink** engine is, appropriately enough, stored within the `variables_state` field within the `story`. You can both get and set variables directly on this object:
 
-```csharp
-_inkStory.variablesState["player_health"] = 100
+```zig
+try story.variables_state.set("player_health", .{ .int = 100 });
 
-int health = (int) _inkStory.variablesState["player_health"]
+const health = story.variables_state.get("player_health").?.int;
 ```
 
 ## Read/Visit counts
 
 To find out the number of times that a knot or stitch has been visited by the ink engine, you can use this API:
 
-```csharp
-_inkStory.state.VisitCountAtPathString("...");
+```zig
+const count = story.state.visitCountAtPathString("...");
 ```
 
 The path string is in the form `"yourKnot"` for knots, and `"yourKnot.yourStitch"` for stitches.
 
 ## Variable observers
 
-You can register a delegate function to be called whenever a particular variable changes. This can be useful to reflect the state of certain **ink** variables directly in the UI. For example:
+You can register a callback function to be called whenever a particular variable changes. This can be useful to reflect the state of certain **ink** variables directly in the UI. For example:
 
-```csharp
-_inkStory.ObserveVariable ("health", (string varName, object newValue) => {
-    SetHealthInUI((int)newValue);
-});
+```zig
+try story.observeVariable("health", struct {
+    fn onChange(_: []const u8, new_value: ink.Value) void {
+        setHealthInUi(new_value.int);
+    }
+}.onChange);
 ```
 
-The reason that the variable name is passed in is so that you can have a single observer function that observes multiple different variables.
+The reason that the variable name is passed in is so that you can have a single observer function that observes multiple different variables:
+
+```zig
+try story.observeVariable("health", onStatChanged);
+try story.observeVariable("stamina", onStatChanged);
+
+fn onStatChanged(var_name: []const u8, new_value: ink.Value) void {
+    if (std.mem.eql(u8, var_name, "health"))
+        setHealthInUi(new_value.int)
+    else if (std.mem.eql(u8, var_name, "stamina"))
+        setStaminaInUi(new_value.int);
+}
+```
 
 
 ## Running functions
 
-You can run ink functions directly from C# using `EvaluationFunction`.
+You can run ink functions directly using `evaluateFunction`.
 
 You can pass the expected arguments for the ink function, if any.
 
-If the ink function has a return value, it will be returned by EvaluationFunction.
-You do not need to Continue() over any text lines that may exist in the function; it runs to the end. Any content is written to the textOutput parameter, with a line break between each line.
+If the ink function has a return value, it will be returned by `evaluateFunction`.
+You do not need to call `cont()` over any text lines that may exist in the function; it runs to the end. Any content is written to `text_output`, with a line break between each line.
 
-```csharp
-var returnValue = _inkStory.EvaluationFunction("myFunctionName", out textOutput, params);
+```zig
+var text_output = std.ArrayList(u8).init(allocator);
+defer text_output.deinit();
+
+const return_value = try story.evaluateFunction("myFunctionName", &text_output, params);
 ```
 
 ## External functions
 
-You can define game-side functions in C# that can be called directly from **ink**. To do so:
+You can define game-side functions in Zig that can be called directly from **ink**. To do so:
 
 1. Declare an external function using something like this at the top of one of your **ink** files, in global scope:
 
         EXTERNAL playSound(soundName)
 
-2. Bind your C# function. For example:
+2. Bind your Zig function. For example:
 
-```csharp
-        _inkStory.BindExternalFunction ("playSound", (string name) => {
-            _audioController.Play(name);
-        });
+```zig
+try story.bindExternalFunction("playSound", struct {
+    fn call(args: []const ink.Value) ?ink.Value {
+        audio_controller.play(args[0].asString());
+        return null;
+    }
+}.call, .{});
 ```
-
-   There are convenience overloads for BindExternalFunction, for up to four parameters, for both generic `System.Func` and `System.Action`. There is also a general purpose `BindExternalFunctionGeneral` that takes an object array for more than 4 parameters.
 
 3. You can then call that function within the **ink**:
 
         ~ playSound("whack")
 
-The types you can use as parameters and return values are int, float, bool (automatically converted from **ink**’s internal ints) and string.
+The types you can use as parameters and return values are `.int`, `.float`, `.bool` (automatically converted from **ink**'s internal ints) and `.string`.
 
 #### Alternatives to external functions
 
@@ -301,7 +322,7 @@ Remember that in addition to external functions, there are other good ways to co
 
   `>>> SHOT: view_over_bridge`
 
-#### Actions  v.s. Pure functions
+#### Actions v.s. Pure functions
 
 **Warning:** The following section is subtly complex! However, don't worry - you can probably ignore it and use default behaviour. If you find a situation where glue isn't working the way you expect and there's an external function in there somewhere, or if you're just plain curious, read on...
 
@@ -324,18 +345,31 @@ The square root of 9
 <> is {x}.
 ```
 
-You can define how you want your function to behave when you bind it, using the `lookaheadSafe` parameter:
+You can define how you want your function to behave when you bind it, using the `lookahead_safe` option:
 
-```csharp
-public void BindExternalFunction(string funcName, Func<object> func, bool lookaheadSafe=false)
+```zig
+pub fn bindExternalFunction(
+    story: *Story,
+    func_name: []const u8,
+    func: *const fn([]const ink.Value) ?ink.Value,
+    options: BindOptions,
+) !void
 ```
 
-* **Actions** should have `lookaheadSafe = false`
-* **Pure functions** should have `lookaheadSafe = true`
+where `BindOptions` is:
+
+```zig
+pub const BindOptions = struct {
+    lookahead_safe: bool = false,
+};
+```
+
+* **Actions** should have `lookahead_safe = false` (the default)
+* **Pure functions** should have `lookahead_safe = true`
 
 ### Fallbacks for external functions
 
-When testing your story, either in [Inky](/inkle/inky) or in the [ink-unity integration](/inkle/ink-unity-integration/) player window, you don't get an opportunity to bind a game function before running the story. To get around this, you can define a *fallback function* within ink, which is run if the `EXTERNAL` function can't be found. To do so, simply create an ink function with the same name and parameters. For example, for the above `multiply` example, create the ink function:
+When testing your story in [Inky](/inkle/inky) or the `inkz` player, you don't get an opportunity to bind a game function before running the story. To get around this, you can define a *fallback function* within ink, which is run if the `EXTERNAL` function can't be found. To do so, simply create an ink function with the same name and parameters. For example, for the above `multiply` example, create the ink function:
 
 ```
 === function multiply(x,y) ===
@@ -353,13 +387,12 @@ It is possible to have multiple parallel "flows" - allowing the following exampl
 
 The API is relatively simple:
 
-- `story.SwitchFlow("Your flow name")` - create a new Flow context, or switch to an existing one. The name can be anything you like, though you may choose to use the same name as an entry knot that you would go on to choose with `story.ChoosePathString("knotName")`.
-- `story.SwitchToDefaultFlow()` - before you start switching Flows there's an implicit default Flow. To return to it, call this method.
-- `story.RemoveFlow("Your flow name")` - destroy a previously created Flow. If the Flow is already active, it returns to the default flow.
-- `story.aliveFlowNames` - the names of currently alive flows. A flow is alive if it's previously been switched to and hasn't been destroyed. Does not include default flow.
-- `story.currentFlowIsDefaultFlow` - true if the default flow is currently active. By definition, will also return true if not using flow functionality.
-- `story.currentFlowName` — a string containing the name of the currently active flow. May contain internal identifier for default flow, so use `currentFlowIsDefault` to check first.
-)
+- `story.switchFlow("Your flow name")` - create a new Flow context, or switch to an existing one. The name can be anything you like, though you may choose to use the same name as an entry knot that you would go on to choose with `story.choosePathString("knotName")`.
+- `story.switchToDefaultFlow()` - before you start switching Flows there's an implicit default Flow. To return to it, call this method.
+- `story.removeFlow("Your flow name")` - destroy a previously created Flow. If the Flow is already active, it returns to the default flow.
+- `story.aliveFlowNames()` - the names of currently alive flows. A flow is alive if it's previously been switched to and hasn't been destroyed. Does not include default flow.
+- `story.currentFlowIsDefaultFlow()` - true if the default flow is currently active. By definition, will also return true if not using flow functionality.
+- `story.currentFlowName()` — a string containing the name of the currently active flow. May contain internal identifier for default flow, so use `currentFlowIsDefaultFlow()` to check first.
 
 ## Working with LISTs
 
@@ -369,22 +402,23 @@ Lists always need to know the origin of their items. For example, in ink you can
 
     ~ myList = (Orange, House)
 
-...even though `Orange` may have come from a list called `fruit` and `House` may have come from a list called `places`. In ink these *origin* lists are automatically resolved for you when writing. However when work in game code, you have to be more explicit, and tell the engine which origin lists your items belong to.
+...even though `Orange` may have come from a list called `fruit` and `House` may have come from a list called `places`. In ink these *origin* lists are automatically resolved for you when writing. However when working in game code, you have to be more explicit, and tell the engine which origin lists your items belong to.
 
 To create a list with items from a single origin, and assign it to a variable in the game:
 
-```csharp
-var newList = new Ink.Runtime.InkList("fruit", story);
-newList.AddItem("Orange");
-newList.AddItem("Apple");
-story.variablesState["myList"] = newList;
+```zig
+var new_list = try ink.InkList.initFromOrigin(allocator, "fruit", &story);
+defer new_list.deinit();
+try new_list.addItem("Orange");
+try new_list.addItem("Apple");
+try story.variables_state.set("myList", .{ .list = new_list });
 ```
 
 If you're modifying a list, and you know that it has/had elements from a particular origin already:
 
-```csharp
-var fruit = story.variablesState["fruit"] as Ink.Runtime.InkList;
-fruit.AddItem("Apple");
+```zig
+var fruit = story.variables_state.get("fruit").?.list;
+try fruit.addItem("Apple");
 ```
 
 Note that single list items in ink, such as:
@@ -393,62 +427,65 @@ Note that single list items in ink, such as:
 
 ...are actually just lists with single items in them rather than a different type. So to create them on the game side, just use the techniques above to create a list with just one item.
 
-You can also create lists from items if you explicitly know all the metadata for the items - i.e. the origin name as as well as the int value assigned to it. This is useful if you're building a list out of existing lists. Note that InkLists actually derive from `Dictionary`, where the key is an `InkListItem` (which in turn has `originName` and `itemName` strings), and the value is the int value:
+You can also create lists from items if you explicitly know all the metadata for the items - i.e. the origin name as well as the int value assigned to it. This is useful if you're building a list out of existing lists. Note that `InkList` uses a hash map where the key is an `InkListItem` (which has `origin_name` and `item_name` fields), and the value is the int value:
 
-```csharp
-var newList = new Ink.Runtime.InkList();
-var fruit = story.variablesState["fruit"] as Ink.Runtime.InkList;
-var places = story.variablesState["places"] as Ink.Runtime.InkList;
-foreach(var item in fruit) {
-    newList.Add(item.Key, item.Value);
-}
-foreach (var item in places) {
-    newList.Add(item.Key, item.Value);
-}
-story.variablesState["myList"] = newList;
+```zig
+var new_list = ink.InkList.init(allocator);
+defer new_list.deinit();
+const fruit = story.variables_state.get("fruit").?.list;
+const places = story.variables_state.get("places").?.list;
+var it = fruit.iterator();
+while (it.next()) |entry| try new_list.add(entry.key, entry.value);
+it = places.iterator();
+while (it.next()) |entry| try new_list.add(entry.key, entry.value);
+try story.variables_state.set("myList", .{ .list = new_list });
 ```
 
 To test if your list contains a particular item:
 
-```csharp
-fruit = story.variablesState["fruit"] as Ink.Runtime.InkList;
-if( fruit.ContainsItemNamed("Apple") ) {
-    // We're eating apple's tonight!
+```zig
+const fruit = story.variables_state.get("fruit").?.list;
+if (fruit.containsItemNamed("Apple")) {
+    // We're eating apples tonight!
 }
 ```
 
 Lists also expose many of the operations you can do in ink:
 
-```csharp
-list.minItem 	// equivalent to calling LIST_MIN(list) in ink
-list.maxItem 	// equivalent to calling LIST_MAX(list) in ink
-list.inverse 	// equivalent to calling LIST_INVERT(list) in ink
-list.all 	// equivalent to calling LIST_ALL(list) in ink
-list.Union(otherList)      // equivalent to (list + otherList) in ink
-list.Intersect(otherList)  // equivalent to (list ^ otherList) in ink
-list.Without(otherList)    // equivalent to (list - otherList) in ink
-list.Contains(otherList)   // equivalent to (list ? otherList) in ink
+```zig
+list.minItem                // equivalent to calling LIST_MIN(list) in ink
+list.maxItem                // equivalent to calling LIST_MAX(list) in ink
+list.inverse                // equivalent to LIST_INVERT(list) in ink
+list.all                    // equivalent to LIST_ALL(list) in ink
+list.union(other_list)      // equivalent to (list + other_list) in ink
+list.intersect(other_list)  // equivalent to (list ^ other_list) in ink
+list.without(other_list)    // equivalent to (list - other_list) in ink
+list.contains(other_list)   // equivalent to (list ? other_list) in ink
 ```
 
 ## Using the compiler
 
-Precompiling your stories is more efficient than loading .ink at runtime. That said, it's a useful approach for some situations, and can be done with the following code:
+Precompiling your stories is more efficient than loading `.ink` at runtime. That said, it's a useful approach for some situations, and can be done with the following code:
 
-```csharp
-// inkFileContents: linked TextAsset, or Resources.Load, or even StreamingAssets
-var compiler = new Ink.Compiler(inkFileContents);
-Ink.Runtime.Story story = compiler.Compile();
-Debug.Log(story.Continue());
+```zig
+// ink_source: e.g. @embedFile("story.ink") or loaded from disk
+const ink_source: []const u8 = ...;
+var compiler = try ink.Compiler.init(allocator, ink_source, .{});
+defer compiler.deinit();
+var story = try compiler.compile();
+defer story.deinit();
+std.debug.print("{s}\n", .{try story.cont()});
 ```
 
-Note that if your story is broken up into several ink files using `INCLUDE`, that you will need to use:
+Note that if your story is broken up into several ink files using `INCLUDE`, you will need to provide a file handler:
 
-```csharp
-var compiler = new Ink.Compiler(inkFileContents, new Compiler.Options
-{
-	countAllVisits = true,
-	fileHandler = new UnityInkFileHandler(Path.GetDirectoryName(inkAbsoluteFilePath))
+```zig
+var compiler = try ink.Compiler.init(allocator, ink_source, .{
+    .count_all_visits = true,
+    .file_handler = ink.FileHandler.fromDir(ink_dir),
 });
-Ink.Runtime.Story story = compiler.Compile();
-Debug.Log(story.Continue());
+defer compiler.deinit();
+var story = try compiler.compile();
+defer story.deinit();
+std.debug.print("{s}\n", .{try story.cont()});
 ```
