@@ -31,8 +31,10 @@ You MUST read the overview resource to understand the complete workflow. The inf
 
 <!-- BACKLOG.MD MCP GUIDELINES END -->
 
-# Zig Guidelines
+# Tasks
 
-## AST Parsers
+Each task should have a success criteria defined. An implementation task is only considered complete if one or more unit tests validate the success criteria.
 
-Node data should be stored as a MultiArrayList, the tree is represented by parent_idx, first_child_idx and child_len all idx should index into this one MultiArrayList.
+# Tests
+
+DO NOT parse all fixtures, just reference the filenames and only parse a single file while working on the specific unit test that refefences that file.
