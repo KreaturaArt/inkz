@@ -1,9 +1,10 @@
 ---
 id: TASK-3
 title: Build system with test runner
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:17'
+updated_date: '2026-02-23 19:50'
 labels:
   - layer-0
   - infrastructure
