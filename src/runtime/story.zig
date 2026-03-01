@@ -754,3 +754,42 @@ test "Story basic tunnel" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Hello world\n", out);
 }
+
+test "Story not_true" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/not_true.ink.json");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
+
+test "Story three_greater_than_one" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/three_greater_than_one.ink.json");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\n", out);
+}
+
+test "Story true_plus_true" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/true_plus_true.ink.json");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("2\n", out);
+}
