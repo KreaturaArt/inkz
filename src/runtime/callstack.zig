@@ -12,6 +12,9 @@ pub const Element = struct {
     current_pointer: Pointer,
     in_expression_evaluation: bool,
     temporary_variables: VariablesState,
+    /// Index into the output_stream at the time this frame was pushed.
+    /// Used to trim leading newlines from a function's text output on return.
+    output_stream_index_at_push: usize,
 
     pub fn init(push_pop_type: ?PushPopType, ptr: Pointer) Element {
         return .{
@@ -19,6 +22,7 @@ pub const Element = struct {
             .current_pointer = ptr,
             .in_expression_evaluation = false,
             .temporary_variables = VariablesState.init(),
+            .output_stream_index_at_push = 0,
         };
     }
 
