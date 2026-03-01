@@ -1,9 +1,10 @@
 ---
 id: TASK-25
 title: Function call (f()) and return (~ret)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:43'
+updated_date: '2026-03-01 17:31'
 labels:
   - layer-5
   - diverts
@@ -27,8 +28,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 factorial_recursive.ink.json → "120\n"
-- [ ] #2 Function call pushes new callstack frame
-- [ ] #3 ~ret pops frame and resumes at saved pointer
-- [ ] #4 void object pushed to eval stack on function entry when no return value
+- [x] #1 factorial_recursive.ink.json → "120\n"
+- [x] #2 Function call pushes new callstack frame
+- [x] #3 ~ret pops frame and resumes at saved pointer
+- [x] #4 void object pushed to eval stack on function entry when no return value
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/runtime/story.zig. f() divert saves current pointer to Thread.previous_pointer and pushes .function Element. ~ret (pop_function) pops the frame and restores previous_pointer. Key fix: trailing \"\\n\" objects are trimmed from output_stream after pop_function (Ink compiles conditional blocks in pure functions as structural newlines). Verified by test 30 (Story factorial recursive → "120\n").
+<!-- SECTION:NOTES:END -->

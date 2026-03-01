@@ -26,6 +26,7 @@ pub const Pointer = struct {
 
 test "Pointer.null_value" {
     try std.testing.expect(Pointer.null_value.isNull());
+    try std.testing.expectEqual(@as(?*const RuntimeObject, null), Pointer.null_value.resolve());
 }
 
 test "Pointer resolve" {

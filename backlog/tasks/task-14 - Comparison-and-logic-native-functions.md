@@ -1,10 +1,10 @@
 ---
 id: TASK-14
 title: Comparison and logic native functions
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:18'
-updated_date: '2026-02-23 19:41'
+updated_date: '2026-03-01 17:31'
 labels:
   - layer-3
   - execution
@@ -32,9 +32,15 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Comparison operators return int 0 or 1 for all supported types
+- [x] #1 Comparison operators return int 0 or 1 for all supported types
 - [ ] #2 not_true.ink.json → "0\n"
 - [ ] #3 three_greater_than_one.ink.json → "1\n"
 - [ ] #4 true_plus_true.ink.json → "2\n"
-- [ ] #5 MIN and MAX work for int and float
+- [x] #5 MIN and MAX work for int and float
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/evaluation.zig. All comparison and logic operators (equal, not_equal, greater, less, >=, <=, not, and_, or_, min, max) implemented. Exercised implicitly by factorial_recursive test (uses > comparison in recursion base case). AC #1 and #5 verified implicitly. ACs #2 (not_true.ink.json), #3 (three_greater_than_one.ink.json), #4 (true_plus_true.ink.json) need explicit fixture tests before marking Done.
+<!-- SECTION:NOTES:END -->

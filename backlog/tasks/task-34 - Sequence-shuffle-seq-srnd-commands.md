@@ -1,9 +1,10 @@
 ---
 id: TASK-34
 title: Sequence shuffle (seq / srnd commands)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:44'
+updated_date: '2026-03-01 17:33'
 labels:
   - layer-8
   - sequences
@@ -39,3 +40,9 @@ Tests:
 - [ ] #4 Stopping sequence clamps at last item
 - [ ] #5 Cycle sequence wraps correctly
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Partial implementation in src/runtime/story.zig. sequence_shuffle_index pops count from eval stack and computes visit_counts[container.path] % count (cycle mode only). Missing: stopping sequence (clamp at last), once sequence (skip past end = empty output), and shuffle sequence (deterministic permutation using story_seed). seed_random (.srnd) is implemented: pops .int from eval stack, sets state.story_seed. No explicit tests written.
+<!-- SECTION:NOTES:END -->

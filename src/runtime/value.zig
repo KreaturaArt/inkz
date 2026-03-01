@@ -173,12 +173,31 @@ pub const RuntimeObject = union(enum) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 test "ControlCommand.fromString" {
+    // All 24 command strings
     try std.testing.expectEqual(ControlCommand.eval_start, ControlCommand.fromString("ev").?);
+    try std.testing.expectEqual(ControlCommand.eval_end, ControlCommand.fromString("/ev").?);
+    try std.testing.expectEqual(ControlCommand.output, ControlCommand.fromString("out").?);
+    try std.testing.expectEqual(ControlCommand.pop_eval_stack, ControlCommand.fromString("pop").?);
+    try std.testing.expectEqual(ControlCommand.duplicate, ControlCommand.fromString("du").?);
+    try std.testing.expectEqual(ControlCommand.pop_function, ControlCommand.fromString("~ret").?);
     try std.testing.expectEqual(ControlCommand.pop_tunnel, ControlCommand.fromString("->->").?);
+    try std.testing.expectEqual(ControlCommand.begin_string, ControlCommand.fromString("str").?);
+    try std.testing.expectEqual(ControlCommand.end_string, ControlCommand.fromString("/str").?);
+    try std.testing.expectEqual(ControlCommand.no_op, ControlCommand.fromString("nop").?);
     try std.testing.expectEqual(ControlCommand.choice_count, ControlCommand.fromString("choiceCnt").?);
+    try std.testing.expectEqual(ControlCommand.turns_since, ControlCommand.fromString("turns").?);
+    try std.testing.expectEqual(ControlCommand.turn_index, ControlCommand.fromString("turn").?);
+    try std.testing.expectEqual(ControlCommand.visit_index, ControlCommand.fromString("visit").?);
+    try std.testing.expectEqual(ControlCommand.sequence_shuffle_index, ControlCommand.fromString("seq").?);
     try std.testing.expectEqual(ControlCommand.seed_random, ControlCommand.fromString("srnd").?);
     try std.testing.expectEqual(ControlCommand.start_tag, ControlCommand.fromString("#").?);
+    try std.testing.expectEqual(ControlCommand.end_tag, ControlCommand.fromString("/#").?);
+    try std.testing.expectEqual(ControlCommand.list_from_int, ControlCommand.fromString("listInt").?);
+    try std.testing.expectEqual(ControlCommand.list_range, ControlCommand.fromString("range").?);
+    try std.testing.expectEqual(ControlCommand.list_random, ControlCommand.fromString("lrnd").?);
+    try std.testing.expectEqual(ControlCommand.begin_thread, ControlCommand.fromString("thread").?);
     try std.testing.expectEqual(ControlCommand.done, ControlCommand.fromString("done").?);
+    try std.testing.expectEqual(ControlCommand.end_of_story, ControlCommand.fromString("end").?);
     try std.testing.expectEqual(@as(?ControlCommand, null), ControlCommand.fromString("unknown"));
 }
 
@@ -191,24 +210,63 @@ test "NativeFunction.fromString" {
 }
 
 test "RuntimeObject variants" {
-    const obj1: RuntimeObject = .void;
-    try std.testing.expectEqual(std.meta.Tag(RuntimeObject).void, std.meta.activeTag(obj1));
+    // All variants can be created and their tag read
+    const obj_void: RuntimeObject = .void;
+    try std.testing.expectEqual(std.meta.Tag(RuntimeObject).void, std.meta.activeTag(obj_void));
 
-    const obj2: RuntimeObject = .{ .int = 42 };
-    try std.testing.expectEqual(@as(i64, 42), obj2.int);
+    const obj_string: RuntimeObject = .{ .string = "hello" };
+    try std.testing.expectEqualStrings("hello", obj_string.string);
 
-    const obj3: RuntimeObject = .{ .divert = .{
+    const obj_int: RuntimeObject = .{ .int = 42 };
+    try std.testing.expectEqual(@as(i64, 42), obj_int.int);
+
+    const obj_float: RuntimeObject = .{ .float = 3.14 };
+    try std.testing.expectEqual(@as(f64, 3.14), obj_float.float);
+
+    const obj_bool: RuntimeObject = .{ .bool = true };
+    try std.testing.expect(obj_bool.bool);
+
+    const obj_glue: RuntimeObject = .glue;
+    try std.testing.expectEqual(std.meta.Tag(RuntimeObject).glue, std.meta.activeTag(obj_glue));
+
+    const obj_dt: RuntimeObject = .{ .divert_target = "knot.stitch" };
+    try std.testing.expectEqualStrings("knot.stitch", obj_dt.divert_target);
+
+    const obj_vp: RuntimeObject = .{ .variable_pointer = .{ .name = "x", .context_index = 1 } };
+    try std.testing.expectEqualStrings("x", obj_vp.variable_pointer.name);
+    try std.testing.expectEqual(@as(i32, 1), obj_vp.variable_pointer.context_index);
+
+    const obj_cc: RuntimeObject = .{ .control_command = .done };
+    try std.testing.expectEqual(ControlCommand.done, obj_cc.control_command);
+
+    const obj_nf: RuntimeObject = .{ .native_function = .add };
+    try std.testing.expectEqual(NativeFunction.add, obj_nf.native_function);
+
+    const obj_div: RuntimeObject = .{ .divert = .{
         .target = "knot",
         .is_variable = true,
         .is_conditional = false,
         .push_pop_type = .tunnel,
         .external_args = 2,
     } };
-    try std.testing.expect(obj3.divert.is_variable);
-    try std.testing.expectEqual(PushPopType.tunnel, obj3.divert.push_pop_type.?);
+    try std.testing.expect(obj_div.divert.is_variable);
+    try std.testing.expectEqual(PushPopType.tunnel, obj_div.divert.push_pop_type.?);
 
-    const obj4: RuntimeObject = .{ .choice_point = .{ .path = "choice.0", .flags = 0x03 } };
-    try std.testing.expectEqual(@as(u8, 0x03), obj4.choice_point.flags);
+    const obj_cp: RuntimeObject = .{ .choice_point = .{ .path = "choice.0", .flags = 0x03 } };
+    try std.testing.expectEqual(@as(u8, 0x03), obj_cp.choice_point.flags);
+
+    const obj_va: RuntimeObject = .{ .variable_assignment = .{ .name = "score", .is_new_decl = true, .is_global = true } };
+    try std.testing.expectEqualStrings("score", obj_va.variable_assignment.name);
+    try std.testing.expect(obj_va.variable_assignment.is_global);
+
+    const obj_vr: RuntimeObject = .{ .variable_reference = .{ .name = "score", .path_for_count = null } };
+    try std.testing.expectEqualStrings("score", obj_vr.variable_reference.name);
+    try std.testing.expectEqual(@as(?[]const u8, null), obj_vr.variable_reference.path_for_count);
+
+    var content = [_]RuntimeObject{.{ .int = 1 }};
+    var c = Container{ .content = &content };
+    const obj_container: RuntimeObject = .{ .container = &c };
+    try std.testing.expectEqual(@as(usize, 1), obj_container.container.content.len);
 }
 
 test "ContainerFlags" {

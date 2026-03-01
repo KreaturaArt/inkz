@@ -1,10 +1,10 @@
 ---
 id: TASK-7
 title: ink.json loader — primitives and objects
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:18'
-updated_date: '2026-02-23 19:41'
+updated_date: '2026-03-01 17:31'
 labels:
   - layer-1
   - loader
@@ -53,10 +53,16 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 hello_world.ink.json loads with correct container structure
-- [ ] #2 All primitive RuntimeObject types parsed from JSON strings
-- [ ] #3 All object RuntimeObject types (divert, choice_point, variable_*) parsed correctly
-- [ ] #4 named_content parsed from trailing object in arrays
-- [ ] #5 null terminator handled correctly
+- [x] #1 hello_world.ink.json loads with correct container structure
+- [x] #2 All primitive RuntimeObject types parsed from JSON strings
+- [x] #3 All object RuntimeObject types (divert, choice_point, variable_*) parsed correctly
+- [x] #4 named_content parsed from trailing object in arrays
+- [x] #5 null terminator handled correctly
 - [ ] #6 listDefs raw JSON accessible on LoadedStory
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/json_loader.zig. All JSON parsing done (primitives, objects, container array rules, named_content from trailing object). AC #1-5 verified by tests 14-16. AC #6 (explicit listDefs test loading lists/list_basic_operations.ink.json) not yet written — needed before marking Done.
+<!-- SECTION:NOTES:END -->

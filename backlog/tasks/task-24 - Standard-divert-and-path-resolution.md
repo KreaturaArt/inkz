@@ -1,9 +1,10 @@
 ---
 id: TASK-24
 title: Standard divert and path resolution
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:43'
+updated_date: '2026-03-01 17:32'
 labels:
   - layer-5
   - diverts
@@ -38,3 +39,9 @@ Tests:
 - [ ] #3 resolvePath with non-existent path returns null
 - [ ] #4 same_line_divert_is_inline.ink.json produces correct output
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/story.zig. resolvePath(path_str, from_ptr) returns Pointer (not *Container). Key semantics: the first ^ in a relative path steps from instruction level to its container (not container to parent); subsequent ^ traverse parent chain. Numeric final component targeting a non-container = execution position (Pointer{c, idx}). Exercised by basic_tunnel and factorial tests. No explicit unit tests or same_line_divert_is_inline.ink.json fixture test written yet.
+<!-- SECTION:NOTES:END -->

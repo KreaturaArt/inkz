@@ -1,9 +1,10 @@
 ---
 id: TASK-33
 title: Turn tracking (turn / turns / choiceCnt)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:44'
+updated_date: '2026-03-01 17:33'
 labels:
   - layer-8
   - tracking
@@ -34,3 +35,9 @@ Tests:
 - [ ] #3 turn_indices updated when entering flagged container
 - [ ] #4 turns_since returns -1 for never-visited path
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/story.zig. turn_index: pushes current_turn_index as .int. turns_since: pops a .divert_target path, looks up turn_indices map, returns (current_turn_index - last_visit) or -1 if never visited. choice_count: pushes current_choices.items.len as .int. turn_indices updated when entering a container with turn_index_should_be_counted flag. No explicit tests written (turns.ink.json, choice_count.ink.json).
+<!-- SECTION:NOTES:END -->

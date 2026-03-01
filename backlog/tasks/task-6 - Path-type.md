@@ -1,9 +1,10 @@
 ---
 id: TASK-6
 title: Path type
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:18'
+updated_date: '2026-03-01 17:31'
 labels:
   - layer-1
   - core-types
@@ -25,7 +26,13 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Path.fromString parses absolute and relative paths correctly
-- [ ] #2 Parent component parsed from ^
-- [ ] #3 Round-trip toString matches input
+- [x] #1 Path.fromString parses absolute and relative paths correctly
+- [x] #2 Parent component parsed from ^
+- [x] #3 Round-trip toString matches input
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/runtime/path.zig. toString uses a stack-allocated ArrayList to avoid std.ArrayList.writer() (removed in 0.16-dev). Verified by tests 6-10 (5 Path tests all pass).
+<!-- SECTION:NOTES:END -->
