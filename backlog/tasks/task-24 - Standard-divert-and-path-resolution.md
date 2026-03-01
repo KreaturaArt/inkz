@@ -1,10 +1,10 @@
 ---
 id: TASK-24
 title: Standard divert and path resolution
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:43'
-updated_date: '2026-03-01 17:32'
+updated_date: '2026-03-01 22:20'
 labels:
   - layer-5
   - diverts
@@ -34,10 +34,10 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 resolvePath with absolute path finds named container
-- [ ] #2 resolvePath with relative path and ^ traverses parent correctly
-- [ ] #3 resolvePath with non-existent path returns null
-- [ ] #4 same_line_divert_is_inline.ink.json produces correct output
+- [x] #1 resolvePath with absolute path finds named container
+- [x] #2 resolvePath with relative path and ^ traverses parent correctly
+- [x] #3 resolvePath with non-existent path returns null
+- [x] #4 same_line_divert_is_inline.ink.json produces correct output
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -45,3 +45,9 @@ Tests:
 <!-- SECTION:NOTES:BEGIN -->
 Implementation complete in src/runtime/story.zig. resolvePath(path_str, from_ptr) returns Pointer (not *Container). Key semantics: the first ^ in a relative path steps from instruction level to its container (not container to parent); subsequent ^ traverse parent chain. Numeric final component targeting a non-container = execution position (Pointer{c, idx}). Exercised by basic_tunnel and factorial tests. No explicit unit tests or same_line_divert_is_inline.ink.json fixture test written yet.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implementation was already complete. Added 4 tests covering all ACs: (1) absolute path "f" resolves to the "f" container, (2) relative path ".^.g-0" from inner container finds named child via parent traversal, (3) non-existent path returns null, (4) same_line_divert_is_inline.ink.json → "We hurried home to Savile Row as fast as we could.\n".
+<!-- SECTION:FINAL_SUMMARY:END -->

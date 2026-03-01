@@ -933,6 +933,57 @@ test "Story callstack_evaluation" {
     try std.testing.expectEqualStrings("8\n", out);
 }
 
+// ── TASK-24: Path resolution unit tests ──────────────────────────────────────
+
+test "resolvePath absolute named container" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/basic_tunnel.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const from_ptr = story.state.call_stack.currentElement().current_pointer;
+    const p = story.resolvePath("f", from_ptr).?;
+    try std.testing.expectEqualStrings("f", p.container.?.path);
+}
+
+test "resolvePath relative with ^ traverses parent" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // inner container is at root.content[0]
+    const inner = story.root.content[0].container;
+    const from_ptr = Pointer{ .container = inner, .index = 0 };
+    // ".^.g-0": ^ steps to inner container, then g-0 looks up named child
+    const p = story.resolvePath(".^.g-0", from_ptr).?;
+    try std.testing.expectEqualStrings("0.g-0", p.container.?.path);
+}
+
+test "resolvePath non-existent returns null" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const from_ptr = story.state.call_stack.currentElement().current_pointer;
+    try std.testing.expect(story.resolvePath("nonexistent", from_ptr) == null);
+}
+
+test "Story same_line_divert_is_inline" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/same_line_divert_is_inline.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("We hurried home to Savile Row as fast as we could.\n", out);
+}
+
 // ── TASK-23: Visit count (CNT?) tests ────────────────────────────────────────
 
 test "Story read_count_across_callstack" {
