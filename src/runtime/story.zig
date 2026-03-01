@@ -90,6 +90,19 @@ pub const Story = struct {
         while (self.canContinue()) {
             const result = try self.step();
             if (result == .stopped) break;
+            // Implicit function return: if execution fell off the end of a named function
+            // container the pointer becomes null while still inside a function frame.
+            // Pop the frame and resume at the call site.
+            if (self.state.call_stack.currentElement().current_pointer.isNull()) {
+                if (self.state.call_stack.canPop(.function)) {
+                    const fn_elem = self.state.call_stack.currentElement();
+                    const fn_output_start = fn_elem.output_stream_index_at_push;
+                    try self.state.call_stack.pop(.function);
+                    trimNewlinesFromOutputStream(&self.state.output_stream);
+                    trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
+                    self.advancePointer();
+                }
+            }
         }
 
         return self.collectOutput();
@@ -104,9 +117,20 @@ pub const Story = struct {
             const obj = self.state.output_stream.items[i];
             switch (obj) {
                 .glue => {
-                    // Trim only trailing newlines from accumulated text
+                    // Trim trailing newlines from accumulated text
                     while (buf.items.len > 0 and buf.items[buf.items.len - 1] == '\n') {
                         buf.items.len -= 1;
+                    }
+                    // Skip any "\n" strings and chained glue that follow
+                    while (i + 1 < self.state.output_stream.items.len) {
+                        const next = self.state.output_stream.items[i + 1];
+                        if (next == .glue) {
+                            i += 1;
+                        } else if (next == .string and std.mem.eql(u8, next.string, "\n")) {
+                            i += 1;
+                        } else {
+                            break;
+                        }
                     }
                 },
                 else => try appendObjectText(self.allocator, &buf, obj),
@@ -316,10 +340,12 @@ pub const Story = struct {
                 return .ok;
             },
             .pop_function => {
+                const fn_output_start = self.state.call_stack.currentElement().output_stream_index_at_push;
                 try self.state.call_stack.pop(.function);
                 // Trim trailing newlines the function body may have left in the output stream.
                 // These are structural newlines from conditional blocks in pure computation functions.
                 trimNewlinesFromOutputStream(&self.state.output_stream);
+                trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                 self.advancePointer(); // advance past the function call divert
                 return .ok;
             },
@@ -505,9 +531,12 @@ pub const Story = struct {
         if (d.push_pop_type) |ppt| {
             // Function or tunnel call: save return point then jump
             const prev = elem.current_pointer;
+            const stream_idx = self.state.output_stream.items.len;
             try self.state.call_stack.push(ppt, prev);
             self.recordVisitIfNeeded(target_container);
-            self.state.call_stack.currentElement().current_pointer = target_ptr;
+            const new_elem = self.state.call_stack.currentElement();
+            new_elem.current_pointer = target_ptr;
+            new_elem.output_stream_index_at_push = stream_idx;
         } else {
             // Plain divert: jump without return
             self.recordVisitIfNeeded(target_container);
@@ -609,6 +638,27 @@ pub const Story = struct {
             } else {
                 break;
             }
+        }
+    }
+
+    /// Remove leading "\n" RuntimeObjects from the function's portion of the output stream.
+    /// `start` is the index at which the function began writing (saved at call time).
+    fn trimLeadingNewlinesFromOutputStream(stream: *std.ArrayList(RuntimeObject), start: usize) void {
+        var i = start;
+        while (i < stream.items.len) {
+            const item = stream.items[i];
+            if (item == .string and std.mem.eql(u8, item.string, "\n")) {
+                i += 1;
+            } else {
+                break;
+            }
+        }
+        if (i > start) {
+            // Shift remaining items down
+            const count = i - start;
+            const remaining = stream.items.len - i;
+            std.mem.copyForwards(RuntimeObject, stream.items[start..start + remaining], stream.items[i..stream.items.len]);
+            stream.items.len -= count;
         }
     }
 
@@ -792,4 +842,31 @@ test "Story true_plus_true" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings("2\n", out);
+}
+
+test "Story simple_glue" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "glue/simple_glue.ink.json");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Some content with glue.\n", out);
+}
+
+test "Story implicit_inline_glue" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "glue/implicit_inline_glue.ink.json");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Function called inline should not introduce a spurious newline mid-line
+    try std.testing.expectEqualStrings("I have five eggs.\n", out);
 }
