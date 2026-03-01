@@ -209,7 +209,7 @@ pub const Story = struct {
         return try self.dispatchObject(obj);
     }
 
-    fn dispatchObject(self: *Story, obj: *const RuntimeObject) !StepResult {
+    pub fn dispatchObject(self: *Story, obj: *const RuntimeObject) !StepResult {
         const elem = self.state.call_stack.currentElement();
 
         switch (obj.*) {
@@ -226,10 +226,11 @@ pub const Story = struct {
                 return .ok;
             },
             .string => {
-                if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator,obj.*);
+                // During str/str collection, strings always go to output_stream
+                if (self.inStringEvalMode() or !elem.in_expression_evaluation) {
+                    try self.state.output_stream.append(self.allocator, obj.*);
                 } else {
-                    try self.state.output_stream.append(self.allocator,obj.*);
+                    try self.state.evaluation_stack.append(self.allocator, obj.*);
                 }
                 self.advancePointer();
                 return .ok;
@@ -359,8 +360,8 @@ pub const Story = struct {
                 return .ok;
             },
             .begin_string => {
-                elem.in_expression_evaluation = true;
-                try self.state.output_stream.append(self.allocator,.{ .control_command = .begin_string });
+                // Push sentinel; strings now route to output_stream (detected via inStringEvalMode())
+                try self.state.output_stream.append(self.allocator, .{ .control_command = .begin_string });
                 self.advancePointer();
                 return .ok;
             },
@@ -379,9 +380,9 @@ pub const Story = struct {
                     if (it == .string) try text.appendSlice(self.allocator, it.string);
                 }
                 self.state.output_stream.shrinkRetainingCapacity(start);
-                const s = try text.toOwnedSlice(self.allocator);
-                try self.state.evaluation_stack.append(self.allocator,.{ .string = s });
-                elem.in_expression_evaluation = false;
+                // Dupe into the arena so the string lives until story.deinit()
+                const s = try self.arena.allocator().dupe(u8, text.items);
+                try self.state.evaluation_stack.append(self.allocator, .{ .string = s });
                 self.advancePointer();
                 return .ok;
             },
@@ -498,7 +499,7 @@ pub const Story = struct {
                 }
             }
         }
-        try evaluation.callNativeFunction(self.allocator, func, &self.state.evaluation_stack);
+        try evaluation.callNativeFunction(self.arena.allocator(), func, &self.state.evaluation_stack);
     }
 
     fn handleDivert(self: *Story, d: value.Divert) !StepResult {
@@ -547,6 +548,15 @@ pub const Story = struct {
             elem.current_pointer = target_ptr;
         }
         return .ok;
+    }
+
+    /// Returns true if there is a begin_string sentinel on the output_stream,
+    /// indicating we are inside a str/str block collecting text.
+    fn inStringEvalMode(self: *const Story) bool {
+        for (self.state.output_stream.items) |item| {
+            if (item == .control_command and item.control_command == .begin_string) return true;
+        }
+        return false;
     }
 
     pub fn resolveVariable(self: *Story, name: []const u8) ?RuntimeObject {
@@ -982,6 +992,40 @@ test "Story same_line_divert_is_inline" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings("We hurried home to Savile Row as fast as we could.\n", out);
+}
+
+// ── TASK-28: String evaluation mode tests ────────────────────────────────────
+
+test "str/str collects strings onto eval stack" {
+    // Unit test: manually drive begin_string, strings, end_string through step dispatch
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Manually run the str/str sequence via dispatchObject
+    const hello: RuntimeObject = .{ .string = "Hello " };
+    const world: RuntimeObject = .{ .string = "World" };
+    _ = try story.dispatchObject(&RuntimeObject{ .control_command = .begin_string });
+    _ = try story.dispatchObject(&hello);
+    _ = try story.dispatchObject(&world);
+    _ = try story.dispatchObject(&RuntimeObject{ .control_command = .end_string });
+
+    const top = story.state.evaluation_stack.items[story.state.evaluation_stack.items.len - 1];
+    try std.testing.expect(top == .string);
+    try std.testing.expectEqualStrings("Hello World", top.string);
+}
+
+test "Story string_constants" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "strings/string_constants.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("hi\n", out);
 }
 
 // ── TASK-27: Variable divert target tests ────────────────────────────────────
