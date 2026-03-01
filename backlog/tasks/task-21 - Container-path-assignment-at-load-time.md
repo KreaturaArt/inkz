@@ -1,10 +1,10 @@
 ---
 id: TASK-21
 title: Container path assignment at load time
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:42'
-updated_date: '2026-03-01 17:31'
+updated_date: '2026-03-01 22:15'
 labels:
   - layer-2
   - loader
@@ -35,11 +35,11 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Root container has path ""
-- [ ] #2 Named child has path equal to its name (if parent is root)
-- [ ] #3 Index child has path parent.path + "." + index
-- [ ] #4 Parent pointer set correctly on all containers
-- [ ] #5 global decl container has correct path
+- [x] #1 Root container has path ""
+- [x] #2 Named child has path equal to its name (if parent is root)
+- [x] #3 Index child has path parent.path + "." + index
+- [x] #4 Parent pointer set correctly on all containers
+- [x] #5 global decl container has correct path
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -47,3 +47,9 @@ Tests:
 <!-- SECTION:NOTES:BEGIN -->
 Implementation complete in src/runtime/json_loader.zig — path and parent are assigned during parseContainer. Root gets path="", named children get name (or parent.path+"."+name), index children get parent.path+"."+itoa(index). No explicit tests for these path string values are written yet. All 5 ACs need explicit test coverage before marking Done.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Bug fixed: named inline containers (with #n) were getting index-based paths (e.g., "0.2") instead of name-based paths ("0.g-0"). Fixed in parseContainer: when a content-array container has a name, its path is updated to parent.path+"."+name before adding to named_content. Added 3 fixture tests covering all 5 ACs: hello_world (root path="", inner path="0", g-0 path="0.g-0"), basic_tunnel (f path="f", parent=root), const (global decl path="global decl", parent=root).
+<!-- SECTION:FINAL_SUMMARY:END -->
