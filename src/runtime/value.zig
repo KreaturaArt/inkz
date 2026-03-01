@@ -106,9 +106,13 @@ pub const NativeFunction = enum {
             .{ "?", .list_has },
             .{ "!?", .list_hasnt },
             .{ "INT()", .int_cast },
+            .{ "INT", .int_cast },
             .{ "FLOAT()", .float_cast },
+            .{ "FLOAT", .float_cast },
             .{ "FLOOR()", .floor },
+            .{ "FLOOR", .floor },
             .{ "CEILING()", .ceiling },
+            .{ "CEILING", .ceiling },
         });
         return map.get(s);
     }

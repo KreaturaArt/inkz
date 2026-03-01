@@ -200,7 +200,21 @@ pub const Story = struct {
         const container = ptr.container.?;
         const idx = ptr.index;
         if (idx < 0 or idx >= @as(i32, @intCast(container.content.len))) {
-            // Past end: null out and stop
+            // Past end of this container.
+            // If it's an inline sub-container (index_in_parent >= 0), step up to
+            // the parent and continue from the next item there. This implements
+            // natural "fall-through" after entering an inline conditional block.
+            var cur: *Container = container;
+            while (cur.index_in_parent >= 0) {
+                const parent = cur.parent orelse break;
+                const next: i32 = cur.index_in_parent + 1;
+                if (next < @as(i32, @intCast(parent.content.len))) {
+                    elem.current_pointer = .{ .container = parent, .index = next };
+                    return .ok;
+                }
+                cur = parent;
+            }
+            // No inline parent to step into: null out and stop.
             elem.current_pointer = Pointer.null_value;
             return .stopped;
         }
@@ -583,9 +597,9 @@ pub const Story = struct {
         if (path_str.len == 0) return Pointer{ .container = self.root, .index = 0 };
 
         if (path_str[0] != '.') {
-            // Absolute path: resolve container from root
-            const c = resolveContainerAbs(self.root, path_str) orelse return null;
-            return Pointer{ .container = c, .index = 0 };
+            // Absolute path: resolve from root.
+            // The final component may be a non-container index (execution position).
+            return resolvePointerAbs(self.root, path_str);
         }
 
         // Relative path: first '^' jumps from instruction to its container.
@@ -614,6 +628,29 @@ pub const Story = struct {
             }
         }
         return Pointer{ .container = current orelse return null, .index = 0 };
+    }
+
+    /// Resolve an absolute path to a Pointer, handling a non-container final component
+    /// as an execution position within the last container.
+    fn resolvePointerAbs(start: *Container, path_str: []const u8) ?Pointer {
+        var current: *Container = start;
+        var iter = std.mem.splitScalar(u8, path_str, '.');
+        while (iter.next()) |part| {
+            if (part.len == 0) continue;
+            if (std.fmt.parseInt(u32, part, 10)) |idx| {
+                if (idx >= current.content.len) return null;
+                if (current.content[idx] == .container) {
+                    current = current.content[idx].container;
+                } else {
+                    // Non-container index: check there are no more components
+                    if (iter.next()) |_| return null; // trailing components after index
+                    return Pointer{ .container = current, .index = @intCast(idx) };
+                }
+            } else |_| {
+                current = current.named_content.get(part) orelse return null;
+            }
+        }
+        return Pointer{ .container = current, .index = 0 };
     }
 
     fn resolveContainerAbs(start: *Container, components_str: []const u8) ?*Container {
@@ -992,6 +1029,32 @@ test "Story same_line_divert_is_inline" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings("We hurried home to Savile Row as fast as we could.\n", out);
+}
+
+// ── TASK-32: String native functions tests ────────────────────────────────────
+
+test "Story floor_ceiling_and_casts" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/floor_ceiling_and_casts.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // FLOOR(1.2)=1, INT(1.2)=1, CEILING(1.2)=2, CEILING(1.2)/3=0, CEILING(INT(1.2))/3=0, FLOOR(1)=1
+    try std.testing.expectEqualStrings("1\n1\n2\n0\n0\n1\n", out);
+}
+
+test "Story string_type_coercion" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "strings/string_type_coercion.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // str("5") == 5 → false (no coercion), str("blah") == 5 → false
+    try std.testing.expectEqualStrings("different\ndifferent\n", out);
 }
 
 // ── TASK-28: String evaluation mode tests ────────────────────────────────────
