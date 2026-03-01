@@ -89,10 +89,10 @@ pub const Story = struct {
 
         while (self.canContinue()) {
             const result = try self.step();
-            if (result == .stopped) break;
             // Implicit function return: if execution fell off the end of a named function
             // container the pointer becomes null while still inside a function frame.
-            // Pop the frame and resume at the call site.
+            // Pop the frame and resume at the call site. Must be checked before the
+            // stopped-break so functions without explicit ~ret can return normally.
             if (self.state.call_stack.currentElement().current_pointer.isNull()) {
                 if (self.state.call_stack.canPop(.function)) {
                     const fn_elem = self.state.call_stack.currentElement();
@@ -101,8 +101,10 @@ pub const Story = struct {
                     trimNewlinesFromOutputStream(&self.state.output_stream);
                     trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                     self.advancePointer();
+                    continue;
                 }
             }
+            if (result == .stopped) break;
         }
 
         return self.collectOutput();
@@ -464,8 +466,11 @@ pub const Story = struct {
                 return .ok;
             },
             .sequence_shuffle_index => {
+                // Pop count (n), then also pop the visit_index that `visit` pushed —
+                // all sequence types push exactly one result for consistency.
                 const count_val = self.state.evaluation_stack.pop() orelse RuntimeObject{ .int = 1 };
-                const count = switch (count_val) {
+                _ = self.state.evaluation_stack.pop(); // discard visit_idx; use visit_counts directly
+                const count: i64 = switch (count_val) {
                     .int => |n| n,
                     else => 1,
                 };
@@ -474,8 +479,14 @@ pub const Story = struct {
                     self.advancePointer();
                     return .ok;
                 };
-                const visits = self.state.visit_counts.get(cur_container.path) orelse 0;
-                const idx: i64 = if (count > 0) @intCast(visits % @as(u32, @intCast(count))) else 0;
+                // seqCount is the raw (1-based) visit count of the sequence container.
+                const seq_count = self.state.visit_counts.get(cur_container.path) orelse 1;
+                const idx: i64 = if (count > 0) shuffleIndex(
+                    cur_container.path,
+                    seq_count,
+                    @intCast(count),
+                    self.state.story_seed,
+                ) else 0;
                 try self.state.evaluation_stack.append(self.allocator,.{ .int = idx });
                 self.advancePointer();
                 return .ok;
@@ -547,18 +558,23 @@ pub const Story = struct {
         };
         const target_container = target_ptr.container orelse return error.DivertTargetNotFound;
 
+        // Only record a visit when entering a container from its start (index 0).
+        // Diverts into the middle of a container (e.g. jump-back-to-nop in sequences)
+        // must not count as a new visit.
+        if (target_ptr.index == 0) {
+            self.recordVisitIfNeeded(target_container);
+        }
+
         if (d.push_pop_type) |ppt| {
             // Function or tunnel call: save return point then jump
             const prev = elem.current_pointer;
             const stream_idx = self.state.output_stream.items.len;
             try self.state.call_stack.push(ppt, prev);
-            self.recordVisitIfNeeded(target_container);
             const new_elem = self.state.call_stack.currentElement();
             new_elem.current_pointer = target_ptr;
             new_elem.output_stream_index_at_push = stream_idx;
         } else {
             // Plain divert: jump without return
-            self.recordVisitIfNeeded(target_container);
             elem.current_pointer = target_ptr;
         }
         return .ok;
@@ -667,6 +683,77 @@ pub const Story = struct {
             }
         }
         return current;
+    }
+
+    /// Compute a deterministic shuffle index compatible with C# .NET Framework System.Random.
+    /// `seq_count` is the 1-based raw visit count of the sequence container.
+    /// `num_elements` is the number of items in the sequence.
+    /// `story_seed` is the current story seed (set via srnd).
+    fn shuffleIndex(path: []const u8, seq_count: u32, num_elements: u32, story_seed: u32) i64 {
+        const loop_index = seq_count / num_elements;
+        const iteration_index = seq_count % num_elements;
+
+        // Hash = sum of char values of the container path string.
+        var seq_hash: i32 = 0;
+        for (path) |c| seq_hash +%= @as(i32, @intCast(c));
+
+        const random_seed: i32 = seq_hash +% @as(i32, @bitCast(loop_index)) +% @as(i32, @bitCast(story_seed));
+
+        // .NET Framework System.Random (subtract-with-carry).
+        const MBIG: i32 = std.math.maxInt(i32);
+        const MSEED: i32 = 161803398;
+        var seed_array: [56]i32 = @splat(0);
+
+        const subtraction: i32 = if (random_seed == std.math.minInt(i32)) MBIG else @intCast(@abs(random_seed));
+        var mj: i32 = MSEED -% subtraction;
+        seed_array[55] = mj;
+        var mk: i32 = 1;
+        var i: usize = 1;
+        while (i < 55) : (i += 1) {
+            var ii: usize = 33 * i % 55;
+            if (ii == 0) ii = 55;
+            seed_array[ii] = mk;
+            mk = mj -% mk;
+            if (mk < 0) mk +%= MBIG;
+            mj = seed_array[ii];
+        }
+        var k: usize = 1;
+        while (k < 5) : (k += 1) {
+            var j: usize = 1;
+            while (j < 56) : (j += 1) {
+                seed_array[j] -%= seed_array[1 + (j + 30) % 55];
+                if (seed_array[j] < 0) seed_array[j] +%= MBIG;
+            }
+        }
+        var in_next: usize = 0;
+        var in_nextp: usize = 21;
+
+        // Fisher-Yates–like: pick the iteration_index-th element from a shuffled list.
+        var unpicked: [32]u32 = undefined; // max reasonable sequence length
+        const n = @min(num_elements, 32);
+        for (0..n) |x| unpicked[x] = @intCast(x);
+        var unpicked_count: u32 = n;
+
+        var idx: i32 = 0;
+        var it: u32 = 0;
+        while (it <= iteration_index) : (it += 1) {
+            // InternalSample
+            in_next += 1;
+            if (in_next >= 56) in_next = 1;
+            in_nextp += 1;
+            if (in_nextp >= 56) in_nextp = 1;
+            var ret_val: i32 = seed_array[in_next] -% seed_array[in_nextp];
+            if (ret_val == MBIG) ret_val -= 1;
+            if (ret_val < 0) ret_val +%= MBIG;
+            seed_array[in_next] = ret_val;
+
+            const chosen: u32 = @intCast(@rem(@as(i64, ret_val), @as(i64, unpicked_count)));
+            idx = @intCast(unpicked[chosen]);
+            // Remove chosen from unpicked by swapping with last
+            unpicked_count -= 1;
+            unpicked[chosen] = unpicked[unpicked_count];
+        }
+        return @intCast(idx);
     }
 
     fn recordVisitIfNeeded(self: *Story, c: *Container) void {
@@ -1149,4 +1236,74 @@ test "Story read_count_across_callstack" {
         "1) Seen first 1 times.\nIn second.\n2) Seen first 1 times.\n",
         out,
     );
+}
+
+test "turn_indices updated when entering flagged container" {
+    // variable_divert_target: "here" container has #f:3 (visits + turn_index counted)
+    // After cont(), turn_indices["here"] should be set to current_turn_index (0)
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_divert_target.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Here.\n", out);
+    const turn_idx = story.state.turn_indices.get("here");
+    try std.testing.expect(turn_idx != null);
+    try std.testing.expectEqual(@as(i32, 0), turn_idx.?);
+}
+
+test "turns_since returns -1 for never-visited path" {
+    // Unit: push a divert_target for a path we never visit; turns_since should return -1
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Push a divert_target pointing to a path that was never entered
+    const dt: RuntimeObject = .{ .divert_target = "some.never.visited.path" };
+    try story.state.evaluation_stack.append(alloc, dt);
+    _ = try story.dispatchObject(&RuntimeObject{ .control_command = .turns_since });
+
+    const top = story.state.evaluation_stack.items[story.state.evaluation_stack.items.len - 1];
+    try std.testing.expect(top == .int);
+    try std.testing.expectEqual(@as(i64, -1), top.int);
+}
+
+test "srnd sets story_seed" {
+    // AC #3: seed_random pops .int from eval stack and sets state.story_seed
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    try story.state.evaluation_stack.append(alloc, .{ .int = 42 });
+    _ = try story.dispatchObject(&RuntimeObject{ .control_command = .seed_random });
+    try std.testing.expectEqual(@as(u32, 42), story.state.story_seed);
+}
+
+test "Stopping sequence clamps at last item" {
+    // AC #4: f_stopping produces "one two two two" (clamps at last option on 3rd+ call)
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "sequences/all_sequence_types.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Stopping: one two two two") != null);
+}
+
+test "Cycle sequence wraps correctly" {
+    // AC #5: f_cycle produces "one two one two" (wraps after last option)
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "sequences/all_sequence_types.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Cycle: one two one two") != null);
 }
