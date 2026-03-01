@@ -1,9 +1,10 @@
 ---
 id: TASK-28
 title: String evaluation mode (str / /str)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:43'
+updated_date: '2026-03-01 17:33'
 labels:
   - layer-7
   - strings
@@ -35,3 +36,9 @@ Tests:
 - [ ] #3 strings_in_choices.ink.json produces correct choice text
 - [ ] #4 Unit test for manual str/str dispatch passes
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/story.zig. begin_string (.str): sets in_expression_evaluation=true and pushes a .control_command(.begin_string) sentinel onto output_stream. end_string (./str): scans backward to find the sentinel, collects .string items between it and the end, joins them, pops everything back to the sentinel, pushes joined .string onto evaluation_stack. No explicit tests written (string_constants.ink.json, strings_in_choices.ink.json).
+<!-- SECTION:NOTES:END -->

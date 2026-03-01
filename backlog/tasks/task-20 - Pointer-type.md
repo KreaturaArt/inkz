@@ -1,9 +1,10 @@
 ---
 id: TASK-20
 title: Pointer type
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:42'
+updated_date: '2026-03-01 17:43'
 labels:
   - layer-1
   - core-types
@@ -41,8 +42,18 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 null_value.isNull() == true
-- [ ] #2 null_value.resolve() == null
-- [ ] #3 Valid pointer resolve() returns correct content item
-- [ ] #4 Out-of-bounds index resolve() returns null
+- [x] #1 null_value.isNull() == true
+- [x] #2 null_value.resolve() == null
+- [x] #3 Valid pointer resolve() returns correct content item
+- [x] #4 Out-of-bounds index resolve() returns null
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/runtime/pointer.zig. Note: container field is ?*Container (mutable, not ?*const Container) to support resolvePath and recordVisitIfNeeded which need mutable container access. Verified by tests 11-13 (3 Pointer tests all pass).
+
+Gap found on verification: AC #2 (null_value.resolve() == null) is not tested. The test 'Pointer.null_value' only calls isNull(), never resolve(). The implementation handles it correctly (orelse return null) but there is no assertion. Need to add: try std.testing.expectEqual(@as(?*const RuntimeObject, null), Pointer.null_value.resolve());
+
+Fixed: 'Pointer.null_value' test now also asserts Pointer.null_value.resolve() == null.
+<!-- SECTION:NOTES:END -->

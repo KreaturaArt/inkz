@@ -1,10 +1,10 @@
 ---
 id: TASK-3
 title: Build system with test runner
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:17'
-updated_date: '2026-02-23 19:50'
+updated_date: '2026-03-01 17:30'
 labels:
   - layer-0
   - infrastructure
@@ -26,6 +26,12 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 zig build test completes without error
-- [ ] #2 helpers.loadFixture returns non-empty slice for hello_world.ink.json
+- [x] #1 zig build test completes without error
+- [x] #2 helpers.loadFixture returns non-empty slice for hello_world.ink.json
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Verified by: test 1 (root.test_0) and test 32 (test.helpers.test.loadFixture returns non-empty slice) — both pass. Implemented in build.zig, src/root.zig, src/test/helpers.zig. Uses std.Io.Dir.cwd().readFileAlloc with Io.Threaded pattern from Guidelines.md.
+<!-- SECTION:NOTES:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-18
 title: ControlCommand enum with fromString
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:42'
+updated_date: '2026-03-01 17:43'
 labels:
   - layer-1
   - core-types
@@ -56,9 +57,19 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 All 24 JSON command strings map to correct variants
-- [ ] #2 fromString returns null for unknown strings
-- [ ] #3 fromString("srnd") == .seed_random
-- [ ] #4 fromString("#") == .start_tag
-- [ ] #5 fromString("listInt") == .list_from_int
+- [x] #1 All 24 JSON command strings map to correct variants
+- [x] #2 fromString returns null for unknown strings
+- [x] #3 fromString("srnd") == .seed_random
+- [x] #4 fromString("#") == .start_tag
+- [x] #5 fromString("listInt") == .list_from_int
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/runtime/value.zig using std.StaticStringMap. Verified by test 2 (runtime.value.test.ControlCommand.fromString). All 24 command strings mapped; fromString returns null for unknown strings.
+
+Gap found on verification: AC #5 (fromString("listInt") == .list_from_int) is not in the test — the test only checks ev, ->->, choiceCnt, srnd, #, done, unknown. AC #1 (all 24 strings) is therefore also not exhaustively verified. Need to add the listInt assertion and verify the full 24-entry map.
+
+Fixed: 'ControlCommand.fromString' test now checks all 24 command strings exhaustively, including listInt → .list_from_int, range, lrnd, thread, end, and all others.
+<!-- SECTION:NOTES:END -->

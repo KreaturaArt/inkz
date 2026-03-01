@@ -1,9 +1,10 @@
 ---
 id: TASK-27
 title: Variable divert target
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:43'
+updated_date: '2026-03-01 17:33'
 labels:
   - layer-5
   - diverts
@@ -31,3 +32,9 @@ Tests:
 - [ ] #3 variable_divert_target.ink.json produces correct output
 - [ ] #4 Error if variable does not contain a divert_target value
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/story.zig. Variable divert (is_variable=true): looks up the variable via resolveVariable, expects a .divert_target value, resolves that path. .divert_target values pushed to eval stack when in eval mode. No explicit tests written yet for variable_divert_target.ink.json or similar fixtures.
+<!-- SECTION:NOTES:END -->

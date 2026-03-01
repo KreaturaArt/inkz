@@ -1,9 +1,10 @@
 ---
 id: TASK-32
 title: String native functions and builtins
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:44'
+updated_date: '2026-03-01 17:33'
 labels:
   - layer-9
   - strings
@@ -37,3 +38,9 @@ Tests:
 - [ ] #4 string_type_coercion.ink.json produces correct output
 - [ ] #5 floor_ceiling_and_casts.ink.json produces correct output
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation largely complete. String concat (add with two .string args): handled in story.zig handleNativeFunction before delegating to evaluation.zig. String equal/not_equal: handled by valuesEqual in evaluation.zig (std.mem.eql). int_cast/float_cast from string: std.fmt.parseInt/parseFloat in evaluation.zig. floor/ceiling: implemented. No explicit fixture tests written (string_contains.ink.json, string_type_coercion.ink.json, floor_ceiling_and_casts.ink.json).
+<!-- SECTION:NOTES:END -->

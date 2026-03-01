@@ -1,9 +1,10 @@
 ---
 id: TASK-19
 title: NativeFunction enum with fromString
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:42'
+updated_date: '2026-03-01 17:30'
 labels:
   - layer-1
   - core-types
@@ -55,9 +56,15 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 All 24 operator strings map to correct variants
-- [ ] #2 fromString returns null for unknown strings
-- [ ] #3 fromString("L^") == .list_intersect
-- [ ] #4 fromString("INT()") == .int_cast
-- [ ] #5 fromString("?") == .list_has
+- [x] #1 All 24 operator strings map to correct variants
+- [x] #2 fromString returns null for unknown strings
+- [x] #3 fromString("L^") == .list_intersect
+- [x] #4 fromString("INT()") == .int_cast
+- [x] #5 fromString("?") == .list_has
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implemented in src/runtime/value.zig using std.StaticStringMap. Verified by test 3 (runtime.value.test.NativeFunction.fromString). All 24 operator strings mapped; fromString returns null for unknown strings.
+<!-- SECTION:NOTES:END -->

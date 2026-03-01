@@ -1,9 +1,10 @@
 ---
 id: TASK-23
 title: Read count (CNT?) and visit tracking
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:43'
+updated_date: '2026-03-01 17:32'
 labels:
   - layer-4
   - variables
@@ -35,3 +36,9 @@ Tests:
 - [ ] #4 read_count_across_callstack.ink.json produces correct output
 - [ ] #5 visit_count_bug_due_to_nested_containers.ink.json produces correct output
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/story.zig. recordVisitIfNeeded() called when step() enters a container — increments state.visit_counts[container.path] if visits_should_be_counted flag set. CNT? (variable_reference with path_for_count) pushes visit_counts[path] ?? 0 to eval stack. No explicit tests written for visit counting or the two fixture tests (read_count_across_callstack.ink.json, visit_count_bug_due_to_nested_containers.ink.json).
+<!-- SECTION:NOTES:END -->

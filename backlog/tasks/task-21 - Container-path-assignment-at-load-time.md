@@ -1,9 +1,10 @@
 ---
 id: TASK-21
 title: Container path assignment at load time
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:42'
+updated_date: '2026-03-01 17:31'
 labels:
   - layer-2
   - loader
@@ -40,3 +41,9 @@ Tests:
 - [ ] #4 Parent pointer set correctly on all containers
 - [ ] #5 global decl container has correct path
 <!-- AC:END -->
+
+## Implementation Notes
+
+<!-- SECTION:NOTES:BEGIN -->
+Implementation complete in src/runtime/json_loader.zig — path and parent are assigned during parseContainer. Root gets path="", named children get name (or parent.path+"."+name), index children get parent.path+"."+itoa(index). No explicit tests for these path string values are written yet. All 5 ACs need explicit test coverage before marking Done.
+<!-- SECTION:NOTES:END -->
