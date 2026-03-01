@@ -984,6 +984,32 @@ test "Story same_line_divert_is_inline" {
     try std.testing.expectEqualStrings("We hurried home to Savile Row as fast as we could.\n", out);
 }
 
+// ── TASK-27: Variable divert target tests ────────────────────────────────────
+
+test "Story divert_targets_with_parameters" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/divert_targets_with_parameters.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Global x = divert_target("place"); root passes 5 via eval stack; place outputs it
+    try std.testing.expectEqualStrings("5\n", out);
+}
+
+test "Story variable_divert_target" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_divert_target.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Global x = divert_target("here"); "there" diverts via x to "here"
+    try std.testing.expectEqualStrings("Here.\n", out);
+}
+
 // ── TASK-26: Tunnel and conditional divert tests ─────────────────────────────
 
 test "Story complex_tunnels" {
