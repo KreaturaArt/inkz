@@ -98,6 +98,11 @@ fn parseContainer(
         // Named inline containers (with #n) also go into named_content
         if (obj == .container) {
             if (obj.container.name) |cname| {
+                // Named containers get path based on name, not index
+                obj.container.path = if (path.len > 0)
+                    try std.fmt.allocPrint(arena, "{s}.{s}", .{ path, cname })
+                else
+                    try arena.dupe(u8, cname);
                 try named_content.put(arena, cname, obj.container);
             }
             obj.container.index_in_parent = @intCast(idx);
@@ -338,4 +343,63 @@ test "loadStory list_basic_operations listDefs" {
     try std.testing.expectEqual(@as(usize, 5), list_def.object.count());
     try std.testing.expectEqual(@as(i64, 1), list_def.object.get("a").?.integer);
     try std.testing.expectEqual(@as(i64, 5), list_def.object.get("e").?.integer);
+}
+
+// ── TASK-21: Container path assignment tests ──────────────────────────────────
+
+test "Container paths hello_world" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "runtime/misc/hello_world.ink.json");
+    defer alloc.free(json);
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    const loaded = try loadStory(arena.allocator(), json);
+
+    // Root has path ""
+    try std.testing.expectEqualStrings("", loaded.root.path);
+    try std.testing.expect(loaded.root.parent == null);
+
+    // Inner container at index 0 has path "0"
+    const inner = loaded.root.content[0].container;
+    try std.testing.expectEqualStrings("0", inner.path);
+    try std.testing.expect(inner.parent == loaded.root);
+
+    // Named container "g-0" inside inner has path "0.g-0"
+    const g0 = inner.named_content.get("g-0") orelse return error.MissingContainer;
+    try std.testing.expectEqualStrings("0.g-0", g0.path);
+    try std.testing.expect(g0.parent == inner);
+}
+
+test "Container paths basic_tunnel" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "runtime/diverts/basic_tunnel.ink.json");
+    defer alloc.free(json);
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    const loaded = try loadStory(arena.allocator(), json);
+
+    // Named container "f" at root level has path "f"
+    const f = loaded.root.named_content.get("f") orelse return error.MissingContainer;
+    try std.testing.expectEqualStrings("f", f.path);
+    try std.testing.expect(f.parent == loaded.root);
+}
+
+test "Container paths global decl" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "runtime/variables/const.ink.json");
+    defer alloc.free(json);
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    const loaded = try loadStory(arena.allocator(), json);
+
+    // "global decl" container has path "global decl"
+    const gd = loaded.root.named_content.get("global decl") orelse return error.MissingContainer;
+    try std.testing.expectEqualStrings("global decl", gd.path);
+    try std.testing.expect(gd.parent == loaded.root);
 }
