@@ -318,3 +318,24 @@ test "loadStory basic_tunnel named content" {
     const loaded = try loadStory(arena.allocator(), json);
     try std.testing.expect(loaded.root.named_content.get("f") != null);
 }
+
+test "loadStory list_basic_operations listDefs" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "runtime/lists/list_basic_operations.ink.json");
+    defer alloc.free(json);
+
+    var arena = std.heap.ArenaAllocator.init(alloc);
+    defer arena.deinit();
+
+    const loaded = try loadStory(arena.allocator(), json);
+
+    // listDefs raw JSON has key "list" with 5 entries (a=1, b=2, c=3, d=4, e=5)
+    try std.testing.expect(loaded.list_defs_json == .object);
+    const list_def = loaded.list_defs_json.object.get("list") orelse {
+        return error.MissingListDef;
+    };
+    try std.testing.expect(list_def == .object);
+    try std.testing.expectEqual(@as(usize, 5), list_def.object.count());
+    try std.testing.expectEqual(@as(i64, 1), list_def.object.get("a").?.integer);
+    try std.testing.expectEqual(@as(i64, 5), list_def.object.get("e").?.integer);
+}
