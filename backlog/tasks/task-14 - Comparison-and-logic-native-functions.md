@@ -1,10 +1,10 @@
 ---
 id: TASK-14
 title: Comparison and logic native functions
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:18'
-updated_date: '2026-03-01 17:31'
+updated_date: '2026-03-01 18:44'
 labels:
   - layer-3
   - execution
@@ -33,9 +33,9 @@ Tests:
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
 - [x] #1 Comparison operators return int 0 or 1 for all supported types
-- [ ] #2 not_true.ink.json → "0\n"
-- [ ] #3 three_greater_than_one.ink.json → "1\n"
-- [ ] #4 true_plus_true.ink.json → "2\n"
+- [x] #2 not_true.ink.json → "0\n"
+- [x] #3 three_greater_than_one.ink.json → "1\n"
+- [x] #4 true_plus_true.ink.json → "2\n"
 - [x] #5 MIN and MAX work for int and float
 <!-- AC:END -->
 
