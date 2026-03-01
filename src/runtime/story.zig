@@ -984,6 +984,23 @@ test "Story same_line_divert_is_inline" {
     try std.testing.expectEqualStrings("We hurried home to Savile Row as fast as we could.\n", out);
 }
 
+// ── TASK-26: Tunnel and conditional divert tests ─────────────────────────────
+
+test "Story complex_tunnels" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/complex_tunnels.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Nested tunnels, temp vars passed via eval stack, float formatting
+    try std.testing.expectEqualStrings(
+        "one (1)\none and a half (1.5)\ntwo (2)\nthree (3)\n",
+        out,
+    );
+}
+
 // ── TASK-23: Visit count (CNT?) tests ────────────────────────────────────────
 
 test "Story read_count_across_callstack" {
