@@ -282,9 +282,13 @@ pub const Story = struct {
                 return .ok;
             },
             .variable_reference => |vr| {
-                if (vr.path_for_count) |path| {
-                    const count = self.state.visit_counts.get(path) orelse 0;
-                    try self.state.evaluation_stack.append(self.allocator,.{ .int = @intCast(count) });
+                if (vr.path_for_count) |path_str| {
+                    const from_ptr = elem.current_pointer;
+                    const count: u32 = if (self.resolvePath(path_str, from_ptr)) |p|
+                        if (p.container) |c| self.state.visit_counts.get(c.path) orelse 0 else 0
+                    else
+                        0;
+                    try self.state.evaluation_stack.append(self.allocator, .{ .int = @intCast(count) });
                 } else {
                     const val = self.resolveVariable(vr.name) orelse .void;
                     try self.state.evaluation_stack.append(self.allocator,val);
@@ -927,4 +931,21 @@ test "Story callstack_evaluation" {
     defer alloc.free(out);
     // six() + two() = (four() + two()) + two() = ((two()+two()) + two()) + two() = 8
     try std.testing.expectEqualStrings("8\n", out);
+}
+
+// ── TASK-23: Visit count (CNT?) tests ────────────────────────────────────────
+
+test "Story read_count_across_callstack" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/read_count_across_callstack.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // "first" is visited once; CNT?".^" inside it returns 1 both before and after tunnel
+    try std.testing.expectEqualStrings(
+        "1) Seen first 1 times.\nIn second.\n2) Seen first 1 times.\n",
+        out,
+    );
 }
