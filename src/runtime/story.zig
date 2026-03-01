@@ -545,7 +545,7 @@ pub const Story = struct {
         return .ok;
     }
 
-    fn resolveVariable(self: *Story, name: []const u8) ?RuntimeObject {
+    pub fn resolveVariable(self: *Story, name: []const u8) ?RuntimeObject {
         const thread = self.state.call_stack.currentThread();
         var i = thread.call_stack.items.len;
         while (i > 0) {
@@ -869,4 +869,62 @@ test "Story implicit_inline_glue" {
     defer alloc.free(out);
     // Function called inline should not introduce a spurious newline mid-line
     try std.testing.expectEqualStrings("I have five eggs.\n", out);
+}
+
+// ── TASK-17: Temporary variables and callstack scoping ────────────────────────
+
+test "Temp var found in function frame" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Push a function frame and assign temp "t" = 42
+    try story.state.call_stack.push(.function, Pointer.null_value);
+    const elem = story.state.call_stack.currentElement();
+    try elem.temporary_variables.set(alloc, "t", .{ .int = 42 });
+
+    // Lookup finds the temp in the current frame
+    const val = story.resolveVariable("t");
+    try std.testing.expect(val != null);
+    try std.testing.expectEqual(@as(i64, 42), val.?.int);
+
+    // Pop the frame; temp is gone
+    try story.state.call_stack.pop(.function);
+    try std.testing.expect(story.resolveVariable("t") == null);
+}
+
+test "Temp var shadows global; global restored after pop" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Set global x = 100
+    try story.state.variables_state.set(alloc, "x", .{ .int = 100 });
+
+    // Push function frame, set temp x = 99 (shadows global)
+    try story.state.call_stack.push(.function, Pointer.null_value);
+    const elem = story.state.call_stack.currentElement();
+    try elem.temporary_variables.set(alloc, "x", .{ .int = 99 });
+
+    try std.testing.expectEqual(@as(i64, 99), story.resolveVariable("x").?.int);
+
+    // After pop, global value is visible again
+    try story.state.call_stack.pop(.function);
+    try std.testing.expectEqual(@as(i64, 100), story.resolveVariable("x").?.int);
+}
+
+test "Story callstack_evaluation" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "callstack/callstack_evaluation.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // six() + two() = (four() + two()) + two() = ((two()+two()) + two()) + two() = 8
+    try std.testing.expectEqualStrings("8\n", out);
 }

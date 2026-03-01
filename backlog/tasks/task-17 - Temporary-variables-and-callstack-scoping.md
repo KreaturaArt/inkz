@@ -1,10 +1,10 @@
 ---
 id: TASK-17
 title: Temporary variables and callstack scoping
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:18'
-updated_date: '2026-03-01 17:31'
+updated_date: '2026-03-01 22:11'
 labels:
   - layer-4
   - variables
@@ -30,10 +30,10 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Temp var found in current callstack frame
-- [ ] #2 After pop, temp var no longer visible
-- [ ] #3 Temp shadows global of same name within frame
-- [ ] #4 callstack_evaluation.ink.json produces correct output (verify expected string before implementing)
+- [x] #1 Temp var found in current callstack frame
+- [x] #2 After pop, temp var no longer visible
+- [x] #3 Temp shadows global of same name within frame
+- [x] #4 callstack_evaluation.ink.json produces correct output (verify expected string before implementing)
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -41,3 +41,9 @@ Tests:
 <!-- SECTION:NOTES:BEGIN -->
 Implementation complete in src/runtime/story.zig and variables.zig. temp= stores in currentElement().temporary_variables; VAR? resolution order searches temp frames top-to-bottom before globals; popped frame's temps are deinit'd. Exercised implicitly by factorial_recursive test (uses temp vars for recursion). No explicit unit tests for temp var scoping or callstack_evaluation.ink.json fixture test written yet.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implementation was already complete. Added 3 unit tests and 1 fixture test: (1) temp var found in pushed frame, (2) temp gone after pop + global falls through as null, (3) temp shadows global in frame / global restored after pop, (4) callstack_evaluation.ink.json → "8\n" (six()+two() = recursive function chain). Made resolveVariable pub to enable unit testing.
+<!-- SECTION:FINAL_SUMMARY:END -->
