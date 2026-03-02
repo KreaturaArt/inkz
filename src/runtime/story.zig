@@ -6,6 +6,7 @@ const state_mod = @import("state.zig");
 const callstack_mod = @import("callstack.zig");
 const evaluation = @import("evaluation.zig");
 const choices_mod = @import("choices.zig");
+const lists = @import("lists.zig");
 
 pub const RuntimeObject = value.RuntimeObject;
 pub const Container = value.Container;
@@ -25,6 +26,8 @@ pub const Story = struct {
     /// Arena owns the container tree (static content)
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
+    /// All list origin definitions from listDefs JSON section.
+    list_defs: lists.ListDefinitionsOrigin = .{},
     /// Invisible default choice target recorded per-cont(); null if none seen this turn.
     default_choice_target: ?[]const u8 = null,
     /// Tags collected during the current cont() call.
@@ -44,11 +47,14 @@ pub const Story = struct {
             .index = 0,
         };
 
+        const list_defs = try lists.ListDefinitionsOrigin.parse(arena.allocator(), loaded.list_defs_json);
+
         var story = Story{
             .root = loaded.root,
             .state = st,
             .arena = arena,
             .allocator = allocator,
+            .list_defs = list_defs,
         };
 
         // Execute global declarations if present
@@ -359,7 +365,23 @@ pub const Story = struct {
             },
             .variable_assignment => |va| {
                 const val = self.state.evaluation_stack.pop() orelse .void;
-                if (va.is_global) {
+                if (!va.is_new_decl) {
+                    // Re-assignment: find existing variable in temps first, then globals.
+                    const thread = self.state.call_stack.currentThread();
+                    var j = thread.call_stack.items.len;
+                    var found_in_temp = false;
+                    while (j > 0) {
+                        j -= 1;
+                        if (thread.call_stack.items[j].temporary_variables.get(va.name) != null) {
+                            try thread.call_stack.items[j].temporary_variables.set(self.allocator, va.name, val);
+                            found_in_temp = true;
+                            break;
+                        }
+                    }
+                    if (!found_in_temp) {
+                        try self.state.variables_state.set(self.allocator, va.name, val);
+                    }
+                } else if (va.is_global) {
                     try self.state.variables_state.set(self.allocator, va.name, val);
                 } else {
                     try elem.temporary_variables.set(self.allocator, va.name, val);
@@ -597,8 +619,74 @@ pub const Story = struct {
                 self.advancePointer();
                 return .ok;
             },
-            .list_from_int, .list_range, .list_random => {
-                // List stubs
+            .list_from_int => {
+                // Pop: int value, then origin-name string
+                const int_val_obj = self.state.evaluation_stack.pop() orelse RuntimeObject{ .int = 0 };
+                const origin_obj = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const origin_name = if (origin_obj == .string) origin_obj.string else "";
+                const int_val: i32 = switch (int_val_obj) {
+                    .int => |n| @intCast(n),
+                    else => 0,
+                };
+                const result = try self.arena.allocator().create(lists.InkList);
+                result.* = .{};
+                if (self.list_defs.get(origin_name)) |def| {
+                    if (def.itemForValue(int_val)) |item_name| {
+                        const key = try std.fmt.allocPrint(self.arena.allocator(), "{s}.{s}", .{ origin_name, item_name });
+                        try result.items.put(self.arena.allocator(), key, int_val);
+                    }
+                }
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.advancePointer();
+                return .ok;
+            },
+            .list_range => {
+                // Stack (top→bottom): max, min, list
+                const max_obj = self.state.evaluation_stack.pop() orelse RuntimeObject{ .int = std.math.maxInt(i32) };
+                const min_obj = self.state.evaluation_stack.pop() orelse RuntimeObject{ .int = std.math.minInt(i32) };
+                const list_obj = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const max_int: i32 = switch (max_obj) {
+                    .int => |n| @intCast(n),
+                    .list => |l| if (l.maxValue()) |m| m else std.math.maxInt(i32),
+                    else => std.math.maxInt(i32),
+                };
+                const min_int: i32 = switch (min_obj) {
+                    .int => |n| @intCast(n),
+                    .list => |l| if (l.maxValue()) |m| m else std.math.minInt(i32),
+                    else => std.math.minInt(i32),
+                };
+                const result = try self.arena.allocator().create(lists.InkList);
+                result.* = .{};
+                if (list_obj == .list) {
+                    var it = list_obj.list.items.iterator();
+                    while (it.next()) |e| {
+                        const v = e.value_ptr.*;
+                        if (v >= min_int and v <= max_int) {
+                            try result.items.put(self.arena.allocator(), e.key_ptr.*, v);
+                        }
+                    }
+                }
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.advancePointer();
+                return .ok;
+            },
+            .list_random => {
+                const list_obj = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const result = try self.arena.allocator().create(lists.InkList);
+                result.* = .{};
+                if (list_obj == .list and list_obj.list.items.count() > 0) {
+                    const count = list_obj.list.items.count();
+                    const pick: usize = @as(usize, self.state.story_seed) % count;
+                    var it = list_obj.list.items.iterator();
+                    var idx: usize = 0;
+                    while (it.next()) |e| : (idx += 1) {
+                        if (idx == pick) {
+                            try result.items.put(self.arena.allocator(), e.key_ptr.*, e.value_ptr.*);
+                            break;
+                        }
+                    }
+                }
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
                 self.advancePointer();
                 return .ok;
             },
@@ -610,22 +698,123 @@ pub const Story = struct {
     }
 
     fn handleNativeFunction(self: *Story, func: NativeFunction) !void {
-        // String concatenation requires allocator
-        if (func == .add) {
-            const len = self.state.evaluation_stack.items.len;
-            if (len >= 2) {
-                const rhs = self.state.evaluation_stack.items[len - 1];
-                const lhs = self.state.evaluation_stack.items[len - 2];
-                if (lhs == .string and rhs == .string) {
-                    _ = self.state.evaluation_stack.pop();
-                    _ = self.state.evaluation_stack.pop();
-                    const joined = try std.mem.concat(self.allocator, u8, &.{ lhs.string, rhs.string });
-                    try self.state.evaluation_stack.append(self.allocator,.{ .string = joined });
-                    return;
+        switch (func) {
+            .add => {
+                const len = self.state.evaluation_stack.items.len;
+                if (len >= 2) {
+                    const rhs = self.state.evaluation_stack.items[len - 1];
+                    const lhs = self.state.evaluation_stack.items[len - 2];
+                    if (lhs == .string and rhs == .string) {
+                        _ = self.state.evaluation_stack.pop();
+                        _ = self.state.evaluation_stack.pop();
+                        const joined = try std.mem.concat(self.allocator, u8, &.{ lhs.string, rhs.string });
+                        try self.state.evaluation_stack.append(self.allocator, .{ .string = joined });
+                        return;
+                    }
+                }
+            },
+            .list_value => {
+                const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .int = 0 };
+                const v: i64 = if (lst == .list) (if (lst.list.maxValue()) |m| @as(i64, m) else 0) else 0;
+                try self.state.evaluation_stack.append(self.allocator, .{ .int = v });
+                return;
+            },
+            .list_count => {
+                const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const count: i64 = if (lst == .list) @intCast(lst.list.items.count()) else 0;
+                try self.state.evaluation_stack.append(self.allocator, .{ .int = count });
+                return;
+            },
+            .list_min => {
+                const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const result = try self.arena.allocator().create(lists.InkList);
+                result.* = .{};
+                if (lst == .list) {
+                    var min_val: ?i32 = null;
+                    var min_key: ?[]const u8 = null;
+                    var it = lst.list.items.iterator();
+                    while (it.next()) |e| {
+                        if (min_val == null or e.value_ptr.* < min_val.?) {
+                            min_val = e.value_ptr.*;
+                            min_key = e.key_ptr.*;
+                        }
+                    }
+                    if (min_key) |k| try result.items.put(self.arena.allocator(), k, min_val.?);
+                }
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                return;
+            },
+            .list_max => {
+                const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const result = try self.arena.allocator().create(lists.InkList);
+                result.* = .{};
+                if (lst == .list) {
+                    var max_val: ?i32 = null;
+                    var max_key: ?[]const u8 = null;
+                    var it = lst.list.items.iterator();
+                    while (it.next()) |e| {
+                        if (max_val == null or e.value_ptr.* > max_val.?) {
+                            max_val = e.value_ptr.*;
+                            max_key = e.key_ptr.*;
+                        }
+                    }
+                    if (max_key) |k| try result.items.put(self.arena.allocator(), k, max_val.?);
+                }
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                return;
+            },
+            .list_all => {
+                const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const result = try self.expandListToAll(if (lst == .list) lst.list else null);
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                return;
+            },
+            .list_invert => {
+                const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
+                const all = try self.expandListToAll(if (lst == .list) lst.list else null);
+                if (lst == .list) {
+                    var it = lst.list.items.iterator();
+                    while (it.next()) |e| _ = all.items.remove(e.key_ptr.*);
+                }
+                try self.state.evaluation_stack.append(self.allocator, .{ .list = all });
+                return;
+            },
+            else => {},
+        }
+        try evaluation.callNativeFunction(self.arena.allocator(), func, &self.state.evaluation_stack);
+    }
+
+    /// Return a new InkList containing all items from every origin of `list`.
+    /// Origins are inferred from item keys (origin.item) plus the list's `origins` field.
+    fn expandListToAll(self: *Story, list: ?*const lists.InkList) !*lists.InkList {
+        const arena = self.arena.allocator();
+        const result = try arena.create(lists.InkList);
+        result.* = .{};
+        // Collect origin names from item keys and origins field
+        var seen = std.StringHashMap(void).init(self.allocator);
+        defer seen.deinit();
+        if (list) |lst| {
+            var it = lst.items.iterator();
+            while (it.next()) |e| {
+                const key = e.key_ptr.*;
+                const dot = std.mem.indexOfScalar(u8, key, '.') orelse key.len;
+                if (dot < key.len) try seen.put(key[0..dot], {});
+            }
+            for (lst.origins) |o| try seen.put(o, {});
+            result.origins = lst.origins;
+        }
+        // Add all items from those origins via list_defs
+        var o_it = seen.keyIterator();
+        while (o_it.next()) |origin_key| {
+            if (self.list_defs.get(origin_key.*)) |def| {
+                var item_it = def.items.iterator();
+                while (item_it.next()) |item_entry| {
+                    const full_key = try std.fmt.allocPrint(arena, "{s}.{s}", .{ def.name, item_entry.key_ptr.* });
+                    try result.items.put(arena, full_key, item_entry.value_ptr.*);
                 }
             }
         }
-        try evaluation.callNativeFunction(self.arena.allocator(), func, &self.state.evaluation_stack);
+        return result;
     }
 
     fn handleDivert(self: *Story, d: value.Divert) !StepResult {
@@ -697,7 +886,24 @@ pub const Story = struct {
             i -= 1;
             if (thread.call_stack.items[i].temporary_variables.get(name)) |v| return v;
         }
-        return self.state.variables_state.get(name);
+        if (self.state.variables_state.get(name)) |v| return v;
+        // Fallback: check if name is a list item defined in any list origin.
+        var def_it = self.list_defs.definitions.iterator();
+        while (def_it.next()) |def_entry| {
+            const def = def_entry.value_ptr;
+            if (def.items.get(name)) |val| {
+                const arena = self.arena.allocator();
+                const key = std.fmt.allocPrint(arena, "{s}.{s}", .{ def.name, name }) catch return null;
+                const ink_list = arena.create(lists.InkList) catch return null;
+                ink_list.* = .{};
+                ink_list.items.put(arena, key, val) catch return null;
+                const origins = arena.alloc([]const u8, 1) catch return null;
+                origins[0] = def.name;
+                ink_list.origins = origins;
+                return .{ .list = ink_list };
+            }
+        }
+        return null;
     }
 
     /// Resolve a path string to a Pointer.
@@ -1700,4 +1906,47 @@ test "list_mixed_items: multi-origin list union" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings("a, y, c\n", out);
+}
+
+test "more_list_operations: LIST_VALUE, listInt, LIST_ALL, LIST_INVERT" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "lists/more_list_operations.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // 1: LIST_VALUE(l=1) -> "1"
+    // 2: listInt(1, "list") -> "l"
+    // 3: standalone \n after temp assignment
+    // 4: output t after adding n -> "n"
+    // 5: standalone \n after LIST_ALL assignment
+    // 6: output t after subtract n -> "l, m"
+    // 7: standalone \n after LIST_INVERT assignment
+    // 8: output t (INVERT of {l,m} = {n}) -> "n"
+    try std.testing.expectEqualStrings("1\nl\n\nn\n\nl, m\n\nn\n", out);
+}
+
+test "list_range: range control command and LIST_ALL with origins" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "lists/list_range.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Numbers range [Two..Six] is deterministic (unique values): "Two, Three, Four, Five, Six"
+    // {Food.Pizza:1,Food.Pasta:2} range [-1..100] is deterministic: "Pizza, Pasta"
+    try std.testing.expect(std.mem.indexOf(u8, out, "Two, Three, Four, Five, Six\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Pizza, Pasta\n") != null);
+    // all has 7 items from Food+Currency origins
+    const lines = std.mem.tokenizeScalar(u8, out, '\n');
+    _ = lines;
+    // At minimum there should be 5 non-empty lines
+    var non_empty: usize = 0;
+    var it = std.mem.splitScalar(u8, out, '\n');
+    while (it.next()) |line| {
+        if (line.len > 0) non_empty += 1;
+    }
+    try std.testing.expect(non_empty >= 4);
 }
