@@ -22,6 +22,8 @@ pub const StepResult = enum { ok, stopped };
 
 /// Signature for externally-bound functions callable from ink.
 pub const ExternalFn = *const fn (args: []const RuntimeObject) ?RuntimeObject;
+/// Callback type for variable observers registered via observeVariable().
+pub const ObserverFn = *const fn (name: []const u8, value: RuntimeObject) void;
 
 /// Options for bindExternalFunction.
 pub const BindOptions = struct {
@@ -140,6 +142,8 @@ pub const Story = struct {
     current_flow_name: []const u8 = "DEFAULT",
     /// Externally-bound functions callable from ink.
     external_functions: std.StringHashMapUnmanaged(ExternalFn) = .{},
+    /// Variable change observers: name → callback.
+    observers: std.StringHashMapUnmanaged(ObserverFn) = .{},
 
     pub fn initFromJson(allocator: std.mem.Allocator, json_text: []const u8) !Story {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -190,6 +194,7 @@ pub const Story = struct {
         while (it.next()) |entry| entry.value_ptr.deinit(self.allocator);
         self.named_flows.deinit(self.allocator);
         self.external_functions.deinit(self.allocator);
+        self.observers.deinit(self.allocator);
         self.state.deinit();
         self.arena.deinit();
         self.current_tags.deinit(self.allocator);
@@ -318,6 +323,19 @@ pub const Story = struct {
     pub fn bindExternalFunction(self: *Story, name: []const u8, func: ExternalFn, _: BindOptions) !void {
         const key = try self.arena.allocator().dupe(u8, name);
         try self.external_functions.put(self.allocator, key, func);
+    }
+
+    // ── Variable observers ────────────────────────────────────────────────────
+
+    /// Register a callback that fires whenever the global variable `name` changes value.
+    pub fn observeVariable(self: *Story, name: []const u8, func: ObserverFn) !void {
+        const key = try self.arena.allocator().dupe(u8, name);
+        try self.observers.put(self.allocator, key, func);
+    }
+
+    /// Fire the observer for `name` if one is registered.  Called after every global set.
+    fn notifyObservers(self: *Story, name: []const u8, new_val: RuntimeObject) void {
+        if (self.observers.get(name)) |func| func(name, new_val);
     }
 
     // ── Save / Load ───────────────────────────────────────────────────────────
@@ -910,9 +928,11 @@ pub const Story = struct {
                     }
                     if (!found_in_temp) {
                         try self.state.variables_state.set(self.allocator, va.name, val);
+                        self.notifyObservers(va.name, val);
                     }
                 } else if (va.is_global) {
                     try self.state.variables_state.set(self.allocator, va.name, val);
+                    self.notifyObservers(va.name, val);
                 } else {
                     try elem.temporary_variables.set(self.allocator, va.name, val);
                 }
@@ -2695,4 +2715,87 @@ test "save/load round-trip: list variables preserved across list_save_load" {
     defer alloc.free(out2);
     // elsewhere: t = t + z = {a,c,x,z}
     try std.testing.expectEqualStrings("a, c, x, z\n", out2);
+}
+
+// ── TASK-44: Variable observer tests ─────────────────────────────────────────
+
+test "observeVariable: fires when observed global changes" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    const Ctx = struct {
+        fired: bool = false,
+        last_val: RuntimeObject = .void,
+        fn callback(name: []const u8, new_val: RuntimeObject) void {
+            _ = name;
+            // Use a thread-local to communicate back (observer is a plain fn pointer)
+            result.fired = true;
+            result.last_val = new_val;
+        }
+        var result: @This() = .{};
+    };
+    Ctx.result = .{};
+
+    try story.observeVariable("x", Ctx.callback);
+    // Directly set the variable via variables_state to trigger the observer path
+    // (simulating what step() does)
+    try story.state.variables_state.set(alloc, "x", .{ .int = 5 });
+    story.notifyObservers("x", .{ .int = 5 });
+    try std.testing.expect(Ctx.result.fired);
+    try std.testing.expectEqual(RuntimeObject{ .int = 5 }, Ctx.result.last_val);
+}
+
+test "observeVariable: does not fire for unobserved variable" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    const Ctx = struct {
+        fired: bool = false,
+        fn callback(_: []const u8, _: RuntimeObject) void { result.fired = true; }
+        var result: @This() = .{};
+    };
+    Ctx.result = .{};
+
+    try story.observeVariable("y", Ctx.callback);
+    // Set a DIFFERENT variable — observer for "y" must not fire
+    story.notifyObservers("x", .{ .int = 5 });
+    try std.testing.expect(!Ctx.result.fired);
+}
+
+test "variable_observer.ink.json: observer fires during story execution" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "bindings/variable_observer.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    const Ctx = struct {
+        count: u32 = 0,
+        last_int: i64 = 0,
+        fn callback(_: []const u8, new_val: RuntimeObject) void {
+            result.count += 1;
+            if (new_val == .int) result.last_int = new_val.int;
+        }
+        var result: @This() = .{};
+    };
+    Ctx.result = .{};
+
+    try story.observeVariable("testVar", Ctx.callback);
+
+    // First cont(): sets testVar = 15 during execution
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("Hello world!\nHello world 2!\n", out1);
+    // testVar was set once (to 15)
+    try std.testing.expect(Ctx.result.count >= 1);
+    try std.testing.expectEqual(@as(i64, 15), Ctx.result.last_int);
 }
