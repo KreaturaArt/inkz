@@ -21,6 +21,15 @@ pub const VariablesState = struct {
     pub fn set(self: *VariablesState, allocator: std.mem.Allocator, name: []const u8, val: RuntimeObject) !void {
         try self.globals.put(allocator, name, val);
     }
+
+    pub fn clone(self: *const VariablesState, allocator: std.mem.Allocator) !VariablesState {
+        var new_vs = VariablesState.init();
+        var it = self.globals.iterator();
+        while (it.next()) |entry| {
+            try new_vs.globals.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+        }
+        return new_vs;
+    }
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

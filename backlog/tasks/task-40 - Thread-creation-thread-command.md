@@ -1,9 +1,10 @@
 ---
 id: TASK-40
 title: Thread creation (thread command)
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-02-23 19:45'
+updated_date: '2026-03-02 06:32'
 labels:
   - layer-11
   - threads

@@ -29,6 +29,16 @@ pub const Element = struct {
     pub fn deinit(self: *Element, allocator: std.mem.Allocator) void {
         self.temporary_variables.deinit(allocator);
     }
+
+    pub fn clone(self: *const Element, allocator: std.mem.Allocator) !Element {
+        return .{
+            .push_pop_type = self.push_pop_type,
+            .current_pointer = self.current_pointer,
+            .in_expression_evaluation = self.in_expression_evaluation,
+            .temporary_variables = try self.temporary_variables.clone(allocator),
+            .output_stream_index_at_push = self.output_stream_index_at_push,
+        };
+    }
 };
 
 pub const Thread = struct {
@@ -49,6 +59,18 @@ pub const Thread = struct {
     pub fn deinit(self: *Thread, allocator: std.mem.Allocator) void {
         for (self.call_stack.items) |*elem| elem.deinit(allocator);
         self.call_stack.deinit(allocator);
+    }
+
+    pub fn clone(self: *const Thread, allocator: std.mem.Allocator, new_index: u32) !Thread {
+        var new_thread = Thread{
+            .call_stack = std.ArrayList(Element).empty,
+            .thread_index = new_index,
+            .previous_pointer = self.previous_pointer,
+        };
+        for (self.call_stack.items) |elem| {
+            try new_thread.call_stack.append(allocator, try elem.clone(allocator));
+        }
+        return new_thread;
     }
 };
 
@@ -103,6 +125,24 @@ pub const CallStack = struct {
         if (t.call_stack.items.len <= 1) return false;
         const top = t.call_stack.items[t.call_stack.items.len - 1];
         return top.push_pop_type == ppt;
+    }
+
+    pub fn canPopThread(self: *const CallStack) bool {
+        return self.threads.items.len > 1;
+    }
+
+    /// Clone the current (last) thread and make the clone the new current thread.
+    pub fn pushThread(self: *CallStack) !void {
+        const new_thread = try self.currentThread().clone(self.allocator, self.thread_counter);
+        self.thread_counter += 1;
+        try self.threads.append(self.allocator, new_thread);
+    }
+
+    /// Pop (and deinit) the current thread; resumes the previous thread.
+    pub fn popThread(self: *CallStack) !void {
+        if (!self.canPopThread()) return error.CannotPopThread;
+        var t = self.threads.pop().?;
+        t.deinit(self.allocator);
     }
 };
 

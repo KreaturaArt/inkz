@@ -174,6 +174,9 @@ pub const Story = struct {
                     trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                     self.advancePointer();
                     continue;
+                } else if (self.state.call_stack.canPopThread()) {
+                    try self.state.call_stack.popThread();
+                    continue;
                 }
             }
             if (result == .stopped) break;
@@ -498,6 +501,10 @@ pub const Story = struct {
                 return .ok;
             },
             .done => {
+                if (self.state.call_stack.canPopThread()) {
+                    try self.state.call_stack.popThread();
+                    return .ok;
+                }
                 self.state.did_safe_exit = true;
                 return .stopped;
             },
@@ -691,7 +698,20 @@ pub const Story = struct {
                 return .ok;
             },
             .begin_thread => {
-                self.advancePointer();
+                // The instruction immediately following begin_thread is always a divert to
+                // the thread target.  We advance the ORIGINAL thread past that divert so
+                // it continues from after it, then fork a clone whose pointer lands on
+                // the divert so it can follow it into the thread body.
+                const orig_elem = self.state.call_stack.currentElement();
+                orig_elem.current_pointer.index += 1; // point to the divert
+                // Clone the thread (clone also points at the divert for now).
+                try self.state.call_stack.pushThread();
+                // Advance the ORIGINAL (now second-to-last) past the divert.
+                const threads = self.state.call_stack.threads.items;
+                const orig_thread = &threads[threads.len - 2];
+                const orig_top = &orig_thread.call_stack.items[orig_thread.call_stack.items.len - 1];
+                orig_top.current_pointer.index += 1;
+                // The clone (now current) stays at the divert and will follow it next step.
                 return .ok;
             },
         }
