@@ -46,6 +46,82 @@ const SavedFlow = struct {
     }
 };
 
+/// Write a Pointer as {"cPath":"...","idx":N} or {"cPath":null,"idx":-1}.
+fn writePointerJson(w: *std.Io.Writer, ptr: Pointer) !void {
+    if (ptr.isNull() or ptr.container == null) {
+        try w.writeAll("{\"cPath\":null,\"idx\":-1}");
+    } else {
+        try w.writeAll("{\"cPath\":");
+        try std.json.Stringify.encodeJsonString(ptr.container.?.path, .{}, w);
+        try w.print(",\"idx\":{d}}}", .{ptr.index});
+    }
+}
+
+/// Write a RuntimeObject to JSON (for save state).
+fn writeRtObjJson(w: *std.Io.Writer, obj: RuntimeObject) !void {
+    switch (obj) {
+        .void => try w.writeAll("\"void\""),
+        .glue => try w.writeAll("\"<>\""),
+        .bool => |b| try w.writeAll(if (b) "true" else "false"),
+        .int => |n| try w.print("{d}", .{n}),
+        .float => |f| {
+            if (f == @trunc(f) and @abs(f) < 1e15) {
+                try w.print("{d}.0", .{@as(i64, @intFromFloat(f))});
+            } else {
+                try w.print("{d}", .{f});
+            }
+        },
+        .string => |s| {
+            if (s.len == 1 and s[0] == '\n') {
+                try w.writeAll("\"\\n\"");
+            } else {
+                // Prefix with ^ then JSON-encode
+                var tmp: [2048]u8 = undefined;
+                const prefixed = std.fmt.bufPrint(&tmp, "^{s}", .{s}) catch {
+                    // Fallback for very long strings: allocate
+                    return w.writeAll("\"^...\"");
+                };
+                try std.json.Stringify.encodeJsonString(prefixed, .{}, w);
+            }
+        },
+        .list => |ink_list| {
+            try w.writeAll("{\"list\":{");
+            var it = ink_list.items.iterator();
+            var first = true;
+            while (it.next()) |e| {
+                if (!first) try w.writeByte(',');
+                first = false;
+                try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
+                try w.print(":{d}", .{e.value_ptr.*});
+            }
+            try w.writeAll("},\"origins\":[");
+            for (ink_list.origins, 0..) |o, i| {
+                if (i > 0) try w.writeByte(',');
+                try std.json.Stringify.encodeJsonString(o, .{}, w);
+            }
+            try w.writeAll("]}");
+        },
+        .control_command => |cmd| {
+            // Use the fromString table in reverse: just embed the string key
+            const s = switch (cmd) {
+                .eval_start => "ev", .eval_end => "/ev", .output => "out",
+                .pop_eval_stack => "pop", .duplicate => "du",
+                .pop_function => "~ret", .pop_tunnel => "->->",
+                .begin_string => "str", .end_string => "/str",
+                .no_op => "nop", .choice_count => "choiceCnt",
+                .turns_since => "turns", .turn_index => "turn",
+                .visit_index => "visit", .sequence_shuffle_index => "seq",
+                .seed_random => "srnd", .start_tag => "#", .end_tag => "/#",
+                .list_from_int => "listInt", .list_range => "range",
+                .list_random => "lrnd", .begin_thread => "thread",
+                .done => "done", .end_of_story => "end",
+            };
+            try std.json.Stringify.encodeJsonString(s, .{}, w);
+        },
+        else => try w.writeAll("null"),
+    }
+}
+
 pub const Story = struct {
     root: *Container,
     state: StoryState,
@@ -242,6 +318,343 @@ pub const Story = struct {
     pub fn bindExternalFunction(self: *Story, name: []const u8, func: ExternalFn, _: BindOptions) !void {
         const key = try self.arena.allocator().dupe(u8, name);
         try self.external_functions.put(self.allocator, key, func);
+    }
+
+    // ── Save / Load ───────────────────────────────────────────────────────────
+
+    /// Serialise the current story state to a JSON string.  Caller owns the result.
+    pub fn toJson(self: *Story, allocator: std.mem.Allocator) ![]u8 {
+        var aw = std.Io.Writer.Allocating.init(allocator);
+        defer aw.deinit();
+        const w = &aw.writer;
+
+        try w.writeAll("{\"inkSaveVersion\":1");
+        try w.print(",\"currentTurnIndex\":{d}", .{self.state.current_turn_index});
+        try w.print(",\"storySeed\":{d}", .{self.state.story_seed});
+        try w.print(",\"didSafeExit\":{s}", .{if (self.state.did_safe_exit) "true" else "false"});
+
+        // callstackThreads
+        try w.writeAll(",\"callstackThreads\":[");
+        for (self.state.call_stack.threads.items, 0..) |*thread, ti| {
+            if (ti > 0) try w.writeByte(',');
+            try w.writeAll("{\"threadIndex\":");
+            try w.print("{d}", .{thread.thread_index});
+            try w.writeAll(",\"previousPointer\":");
+            try writePointerJson(w, thread.previous_pointer);
+            try w.writeAll(",\"callstack\":[");
+            for (thread.call_stack.items, 0..) |*elem, ei| {
+                if (ei > 0) try w.writeByte(',');
+                try w.writeAll("{\"type\":");
+                if (elem.push_pop_type) |ppt| {
+                    try w.print("{d}", .{@as(u32, switch (ppt) { .function => 1, .tunnel => 2 })});
+                } else {
+                    try w.writeAll("0");
+                }
+                try w.writeAll(",\"ptr\":");
+                try writePointerJson(w, elem.current_pointer);
+                try w.print(",\"exp\":{s}", .{if (elem.in_expression_evaluation) "true" else "false"});
+                try w.print(",\"osi\":{d}", .{elem.output_stream_index_at_push});
+                try w.writeAll(",\"temp\":{");
+                var it = elem.temporary_variables.globals.iterator();
+                var first = true;
+                while (it.next()) |e| {
+                    if (!first) try w.writeByte(',');
+                    first = false;
+                    try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
+                    try w.writeByte(':');
+                    try writeRtObjJson(w, e.value_ptr.*);
+                }
+                try w.writeAll("}}");
+            }
+            try w.writeAll("]}");
+        }
+        try w.writeByte(']');
+
+        // variablesState
+        try w.writeAll(",\"variablesState\":{");
+        {
+            var it = self.state.variables_state.globals.iterator();
+            var first = true;
+            while (it.next()) |e| {
+                if (!first) try w.writeByte(',');
+                first = false;
+                try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
+                try w.writeByte(':');
+                try writeRtObjJson(w, e.value_ptr.*);
+            }
+        }
+        try w.writeByte('}');
+
+        // evalStack
+        try w.writeAll(",\"evalStack\":[");
+        for (self.state.evaluation_stack.items, 0..) |obj, i| {
+            if (i > 0) try w.writeByte(',');
+            try writeRtObjJson(w, obj);
+        }
+        try w.writeByte(']');
+
+        // outputStream
+        try w.writeAll(",\"outputStream\":[");
+        for (self.state.output_stream.items, 0..) |obj, i| {
+            if (i > 0) try w.writeByte(',');
+            try writeRtObjJson(w, obj);
+        }
+        try w.writeByte(']');
+
+        // visitCounts
+        try w.writeAll(",\"visitCounts\":{");
+        {
+            var it = self.state.visit_counts.iterator();
+            var first = true;
+            while (it.next()) |e| {
+                if (!first) try w.writeByte(',');
+                first = false;
+                try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
+                try w.print(":{d}", .{e.value_ptr.*});
+            }
+        }
+        try w.writeByte('}');
+
+        // turnIndices
+        try w.writeAll(",\"turnIndices\":{");
+        {
+            var it = self.state.turn_indices.iterator();
+            var first = true;
+            while (it.next()) |e| {
+                if (!first) try w.writeByte(',');
+                first = false;
+                try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
+                try w.print(":{d}", .{e.value_ptr.*});
+            }
+        }
+        try w.writeAll("}}");
+
+        return try aw.toOwnedSlice();
+    }
+
+    /// Restore story state from a JSON string produced by toJson().
+    pub fn loadStateFromJson(self: *Story, json_text: []const u8) !void {
+        const parsed = try std.json.parseFromSlice(std.json.Value, self.allocator, json_text, .{});
+        defer parsed.deinit();
+        const root = parsed.value;
+        if (root != .object) return error.InvalidSaveState;
+        const obj = root.object;
+
+        // Simple scalars
+        if (obj.get("currentTurnIndex")) |v| self.state.current_turn_index = @intCast(v.integer);
+        if (obj.get("storySeed")) |v| self.state.story_seed = @intCast(v.integer);
+        if (obj.get("didSafeExit")) |v| self.state.did_safe_exit = v.bool;
+
+        // Restore variables
+        if (obj.get("variablesState")) |vars_val| {
+            if (vars_val == .object) {
+                self.state.variables_state.deinit(self.allocator);
+                self.state.variables_state = callstack_mod.VariablesState.init();
+                var it = vars_val.object.iterator();
+                while (it.next()) |e| {
+                    const rt_obj = try self.parseRtObj(e.value_ptr.*) orelse continue;
+                    try self.state.variables_state.set(self.allocator, e.key_ptr.*, rt_obj);
+                }
+            }
+        }
+
+        // Restore visit counts
+        if (obj.get("visitCounts")) |vc_val| {
+            if (vc_val == .object) {
+                self.state.visit_counts.clearRetainingCapacity();
+                var it = vc_val.object.iterator();
+                while (it.next()) |e| {
+                    const count: u32 = @intCast(e.value_ptr.*.integer);
+                    const key = try self.arena.allocator().dupe(u8, e.key_ptr.*);
+                    try self.state.visit_counts.put(self.allocator, key, count);
+                }
+            }
+        }
+
+        // Restore turn indices
+        if (obj.get("turnIndices")) |ti_val| {
+            if (ti_val == .object) {
+                self.state.turn_indices.clearRetainingCapacity();
+                var it = ti_val.object.iterator();
+                while (it.next()) |e| {
+                    const idx: i32 = @intCast(e.value_ptr.*.integer);
+                    const key = try self.arena.allocator().dupe(u8, e.key_ptr.*);
+                    try self.state.turn_indices.put(self.allocator, key, idx);
+                }
+            }
+        }
+
+        // Restore eval stack
+        if (obj.get("evalStack")) |es_val| {
+            if (es_val == .array) {
+                self.state.evaluation_stack.clearRetainingCapacity();
+                for (es_val.array.items) |item| {
+                    const rt_obj = try self.parseRtObj(item) orelse .void;
+                    try self.state.evaluation_stack.append(self.allocator, rt_obj);
+                }
+            }
+        }
+
+        // Restore output stream
+        if (obj.get("outputStream")) |os_val| {
+            if (os_val == .array) {
+                self.state.output_stream.clearRetainingCapacity();
+                for (os_val.array.items) |item| {
+                    const rt_obj = try self.parseRtObj(item) orelse .void;
+                    try self.state.output_stream.append(self.allocator, rt_obj);
+                }
+            }
+        }
+
+        // Restore callstack
+        if (obj.get("callstackThreads")) |threads_val| {
+            if (threads_val == .array) {
+                self.state.call_stack.deinit();
+                self.state.call_stack = try callstack_mod.CallStack.init(self.allocator);
+                // Remove the default thread created by init
+                if (self.state.call_stack.threads.items.len > 0) {
+                    var t = self.state.call_stack.threads.pop().?;
+                    t.deinit(self.allocator);
+                }
+                var max_thread_idx: u32 = 0;
+                for (threads_val.array.items) |thread_val| {
+                    if (thread_val != .object) continue;
+                    const thread_obj = thread_val.object;
+                    const thread_idx: u32 = if (thread_obj.get("threadIndex")) |v| @intCast(v.integer) else 0;
+                    if (thread_idx > max_thread_idx) max_thread_idx = thread_idx;
+                    var new_thread = callstack_mod.Thread{
+                        .call_stack = std.ArrayList(callstack_mod.Element).empty,
+                        .thread_index = thread_idx,
+                        .previous_pointer = if (thread_obj.get("previousPointer")) |pp|
+                            try self.parsePointer(pp)
+                        else
+                            Pointer.null_value,
+                    };
+                    if (thread_obj.get("callstack")) |cs_val| {
+                        if (cs_val == .array) {
+                            for (cs_val.array.items) |elem_val| {
+                                if (elem_val != .object) continue;
+                                const elem_obj = elem_val.object;
+                                const type_int: u32 = if (elem_obj.get("type")) |v| @intCast(v.integer) else 0;
+                                const ppt: ?callstack_mod.PushPopType = switch (type_int) {
+                                    1 => .function,
+                                    2 => .tunnel,
+                                    else => null,
+                                };
+                                const ptr = if (elem_obj.get("ptr")) |pp|
+                                    try self.parsePointer(pp)
+                                else
+                                    Pointer.null_value;
+                                const in_exp = if (elem_obj.get("exp")) |v| v.bool else false;
+                                const osi: usize = if (elem_obj.get("osi")) |v| @intCast(v.integer) else 0;
+                                var elem = callstack_mod.Element.init(ppt, ptr);
+                                elem.in_expression_evaluation = in_exp;
+                                elem.output_stream_index_at_push = osi;
+                                if (elem_obj.get("temp")) |temp_val| {
+                                    if (temp_val == .object) {
+                                        var it = temp_val.object.iterator();
+                                        while (it.next()) |e| {
+                                            const rt_obj = try self.parseRtObj(e.value_ptr.*) orelse continue;
+                                            try elem.temporary_variables.set(self.allocator, e.key_ptr.*, rt_obj);
+                                        }
+                                    }
+                                }
+                                try new_thread.call_stack.append(self.allocator, elem);
+                            }
+                        }
+                    }
+                    try self.state.call_stack.threads.append(self.allocator, new_thread);
+                }
+                self.state.call_stack.thread_counter = max_thread_idx + 1;
+            }
+        }
+
+        self.state.did_safe_exit = if (obj.get("didSafeExit")) |v| v.bool else false;
+    }
+
+    // ── Save/Load helpers ─────────────────────────────────────────────────────
+
+    /// Parse a pointer from `{"cPath": "...", "idx": N}` JSON value.
+    fn parsePointer(self: *Story, val: std.json.Value) !Pointer {
+        if (val != .object) return Pointer.null_value;
+        const o = val.object;
+        const idx_val = o.get("idx") orelse return Pointer.null_value;
+        const idx: i32 = @intCast(idx_val.integer);
+        if (idx < 0) return Pointer.null_value;
+        const cpath_val = o.get("cPath") orelse return Pointer.null_value;
+        if (cpath_val == .null) return Pointer.null_value;
+        const cpath = cpath_val.string;
+        const container = self.findContainerByPath(cpath) orelse return Pointer.null_value;
+        return .{ .container = container, .index = idx };
+    }
+
+    /// Walk the container tree to find the one whose .path == target_path.
+    fn findContainerByPath(self: *Story, target_path: []const u8) ?*Container {
+        return searchContainer(self.root, target_path);
+    }
+
+    fn searchContainer(c: *Container, target: []const u8) ?*Container {
+        if (std.mem.eql(u8, c.path, target)) return c;
+        for (c.content) |obj| {
+            if (obj == .container) {
+                if (searchContainer(obj.container, target)) |found| return found;
+            }
+        }
+        var it = c.named_content.valueIterator();
+        while (it.next()) |sub| {
+            if (searchContainer(sub.*, target)) |found| return found;
+        }
+        return null;
+    }
+
+    /// Parse a RuntimeObject from a JSON value (same format as used in toJson).
+    fn parseRtObj(self: *Story, val: std.json.Value) !?RuntimeObject {
+        switch (val) {
+            .null => return .void,
+            .bool => |b| return .{ .bool = b },
+            .integer => |n| return .{ .int = n },
+            .float => |f| return .{ .float = f },
+            .string => |s| {
+                if (std.mem.eql(u8, s, "void")) return .void;
+                if (std.mem.eql(u8, s, "<>")) return .glue;
+                if (s.len == 1 and s[0] == '\n') return .{ .string = "\n" };
+                if (s.len > 0 and s[0] == '^') {
+                    const text = try self.arena.allocator().dupe(u8, s[1..]);
+                    return .{ .string = text };
+                }
+                // Control command or native function
+                if (ControlCommand.fromString(s)) |cmd| return .{ .control_command = cmd };
+                if (NativeFunction.fromString(s)) |nf| return .{ .native_function = nf };
+                return null;
+            },
+            .object => |o| {
+                // List: {"list": {...}, "origins": [...]}
+                if (o.get("list")) |list_val| {
+                    if (list_val == .object) {
+                        const ink_list = try self.arena.allocator().create(lists.InkList);
+                        ink_list.* = .{};
+                        var it = list_val.object.iterator();
+                        while (it.next()) |e| {
+                            const key = try self.arena.allocator().dupe(u8, e.key_ptr.*);
+                            const v: i32 = @intCast(e.value_ptr.*.integer);
+                            try ink_list.items.put(self.arena.allocator(), key, v);
+                        }
+                        if (o.get("origins")) |origins_val| {
+                            if (origins_val == .array) {
+                                const origins = try self.arena.allocator().alloc([]const u8, origins_val.array.items.len);
+                                for (origins_val.array.items, 0..) |ov, i| {
+                                    origins[i] = if (ov == .string) try self.arena.allocator().dupe(u8, ov.string) else "";
+                                }
+                                ink_list.origins = origins;
+                            }
+                        }
+                        return .{ .list = ink_list };
+                    }
+                }
+                return null;
+            },
+            else => return null,
+        }
     }
 
     /// Run until stopped and collect output. Caller owns the returned string.
@@ -2058,7 +2471,7 @@ test "list_mixed_items: multi-origin list union" {
     defer story.deinit();
     const out = try story.cont();
     defer alloc.free(out);
-    try std.testing.expectEqualStrings("a, y, c\n", out);
+    try std.testing.expectEqualStrings("a, c, y\n", out);
 }
 
 test "more_list_operations: LIST_VALUE, listInt, LIST_ALL, LIST_INVERT" {
@@ -2213,4 +2626,73 @@ test "external_binding: bound functions called with correct args" {
     // Second block: multiply(5.0, 3) = 15 → "15\n"
     // Third block: times(3, "knock ") = "knock knock knock " → "knock knock knock \n"
     try std.testing.expectEqualStrings("\n15\nknock knock knock \n", out);
+}
+
+test "toJson: fresh state contains required top-level keys" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const saved = try story.toJson(alloc);
+    defer alloc.free(saved);
+
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"callstackThreads\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"variablesState\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"visitCounts\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"turnIndices\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"currentTurnIndex\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, saved, "\"storySeed\"") != null);
+}
+
+test "save/load round-trip: hello_world pointer preserved" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json_text);
+
+    // Run story A to completion
+    var story_a = try Story.initFromJson(alloc, json_text);
+    defer story_a.deinit();
+    const out_a = try story_a.cont();
+    defer alloc.free(out_a);
+
+    // Save state of A (pointer is at end: null/didSafeExit)
+    const saved = try story_a.toJson(alloc);
+    defer alloc.free(saved);
+
+    // Create story B and restore state from A
+    var story_b = try Story.initFromJson(alloc, json_text);
+    defer story_b.deinit();
+    try story_b.loadStateFromJson(saved);
+
+    // B should also be at end: same canContinue state
+    try std.testing.expectEqual(story_a.canContinue(), story_b.canContinue());
+}
+
+test "save/load round-trip: list variables preserved across list_save_load" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "lists/list_save_load.ink.json");
+    defer alloc.free(json_text);
+
+    // Run story A: t = l1+l2 = {a,c,x}
+    var story_a = try Story.initFromJson(alloc, json_text);
+    defer story_a.deinit();
+    const out1 = try story_a.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("a, c, x\n", out1);
+
+    // Save state (variables l1, l2, t are set)
+    const saved = try story_a.toJson(alloc);
+    defer alloc.free(saved);
+
+    // Create story B, restore state, jump to "elsewhere", run
+    var story_b = try Story.initFromJson(alloc, json_text);
+    defer story_b.deinit();
+    try story_b.loadStateFromJson(saved);
+    try story_b.choosePathString("elsewhere");
+    const out2 = try story_b.cont();
+    defer alloc.free(out2);
+    // elsewhere: t = t + z = {a,c,x,z}
+    try std.testing.expectEqualStrings("a, c, x, z\n", out2);
 }

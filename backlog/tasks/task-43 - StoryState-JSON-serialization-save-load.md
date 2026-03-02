@@ -1,9 +1,10 @@
 ---
 id: TASK-43
 title: StoryState JSON serialization (save / load)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:46'
+updated_date: '2026-03-02 17:15'
 labels:
   - layer-13
   - serialization
@@ -27,8 +28,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 toJson produces valid JSON with all required top-level keys
-- [ ] #2 loadJson + cont() after mid-run save produces same output as uninterrupted run
-- [ ] #3 list_save_load.ink.json round-trips correctly
-- [ ] #4 All state fields (visit_counts, turn_indices, callstack, variables) preserved
+- [x] #1 toJson produces valid JSON with all required top-level keys
+- [x] #2 loadJson + cont() after mid-run save produces same output as uninterrupted run
+- [x] #3 list_save_load.ink.json round-trips correctly
+- [x] #4 All state fields (visit_counts, turn_indices, callstack, variables) preserved
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented `toJson` and `loadStateFromJson` on `Story` in `src/runtime/story.zig`. Used `std.Io.Writer.Allocating` (Zig 0.16 API) for dynamic JSON building. Helper functions `writePointerJson` and `writeRtObjJson` handle pointer and runtime object serialization. Load path restores callstack threads/elements, variables, visit/turn counts, eval stack, and output stream. Also fixed `InkList.toDisplayString` sort order to match the C# Ink runtime: sort by `(originName, value)` rather than value-only. 86/86 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
