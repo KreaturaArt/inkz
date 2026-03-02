@@ -9,10 +9,12 @@ pub const InkList = struct {
     /// Origin list names (e.g. ["Colour"]). Used for LIST_ALL and LIST_INVERT.
     origins: []const []const u8 = &.{},
 
-    /// Return a heap-allocated comma-separated display string (items sorted by value).
+    /// Return a heap-allocated comma-separated display string.
+    /// Items are sorted by origin name first, then by value within the origin
+    /// (matching the C# Ink runtime's `orderedItems` behaviour).
     /// Caller owns the returned slice. Example: "a, c".
     pub fn toDisplayString(self: *const InkList, allocator: std.mem.Allocator) ![]u8 {
-        const Entry = struct { name: []const u8, val: i32 };
+        const Entry = struct { origin: []const u8, name: []const u8, val: i32 };
         var buf: [256]Entry = undefined;
         var count: usize = 0;
         var it = self.items.iterator();
@@ -20,13 +22,16 @@ pub const InkList = struct {
             if (count >= buf.len) break;
             const full = e.key_ptr.*;
             const dot = std.mem.indexOfScalar(u8, full, '.') orelse full.len;
+            const origin = full[0..dot];
             const name = if (dot < full.len) full[dot + 1 ..] else full;
-            buf[count] = .{ .name = name, .val = e.value_ptr.* };
+            buf[count] = .{ .origin = origin, .name = name, .val = e.value_ptr.* };
             count += 1;
         }
         const entries = buf[0..count];
         std.sort.block(Entry, entries, {}, struct {
             pub fn lessThan(_: void, a: Entry, b: Entry) bool {
+                const cmp = std.mem.order(u8, a.origin, b.origin);
+                if (cmp != .eq) return cmp == .lt;
                 return a.val < b.val;
             }
         }.lessThan);
