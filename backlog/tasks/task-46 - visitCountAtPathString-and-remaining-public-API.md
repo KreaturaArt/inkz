@@ -1,9 +1,10 @@
 ---
 id: TASK-46
 title: visitCountAtPathString and remaining public API
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:46'
+updated_date: '2026-03-02 19:34'
 labels:
   - layer-14
   - api
@@ -31,8 +32,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 visitCountAtPathString returns 0 for unvisited, correct count for visited
-- [ ] #2 globalTags returns story-level tags correctly
-- [ ] #3 currentFlowIsDefaultFlow correct before and after switchFlow
-- [ ] #4 on_error callback fires for warnings
+- [x] #1 visitCountAtPathString returns 0 for unvisited, correct count for visited
+- [x] #2 globalTags returns story-level tags correctly
+- [x] #3 currentFlowIsDefaultFlow correct before and after switchFlow
+- [x] #4 on_error callback fires for warnings
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added visitCountAtPathString, currentFlowName, currentFlowIsDefaultFlow, globalTags (with tagsLeadingContent descent), ErrorType enum, and on_error field. globalTags descends into inner containers to find leading tag sequences. Three tests covering visitCount, flow switching, and global tags. All tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

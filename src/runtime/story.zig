@@ -24,6 +24,8 @@ pub const StepResult = enum { ok, stopped };
 pub const ExternalFn = *const fn (args: []const RuntimeObject) ?RuntimeObject;
 /// Callback type for variable observers registered via observeVariable().
 pub const ObserverFn = *const fn (name: []const u8, value: RuntimeObject) void;
+/// Severity level passed to the on_error callback.
+pub const ErrorType = enum { error_, warning };
 
 /// Options for bindExternalFunction.
 pub const BindOptions = struct {
@@ -144,6 +146,8 @@ pub const Story = struct {
     external_functions: std.StringHashMapUnmanaged(ExternalFn) = .{},
     /// Variable change observers: name → callback.
     observers: std.StringHashMapUnmanaged(ObserverFn) = .{},
+    /// Optional error/warning handler (non-fatal conditions).
+    on_error: ?*const fn (message: []const u8, error_type: ErrorType) void = null,
 
     pub fn initFromJson(allocator: std.mem.Allocator, json_text: []const u8) !Story {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -203,6 +207,65 @@ pub const Story = struct {
     /// Return tags collected during the most recent cont() call.
     pub fn currentTags(self: *const Story) []const []const u8 {
         return self.current_tags.items;
+    }
+
+    /// Return the number of times a path (knot/stitch) has been visited.
+    pub fn visitCountAtPathString(self: *const Story, path: []const u8) u32 {
+        const ptr = self.resolvePath(path, .{ .container = null, .index = -1 }) orelse return 0;
+        const c = ptr.container orelse return 0;
+        return self.state.visit_counts.get(c.path) orelse 0;
+    }
+
+    /// Return the name of the currently-active flow.
+    pub fn currentFlowName(self: *const Story) []const u8 {
+        return self.current_flow_name;
+    }
+
+    /// Return true when the active flow is the default flow.
+    pub fn currentFlowIsDefaultFlow(self: *const Story) bool {
+        return std.mem.eql(u8, self.current_flow_name, "DEFAULT");
+    }
+
+    /// Return story-level global tags (tags at the very start of the initial content).
+    /// Scans recursively into the first inner container if needed.
+    /// The returned slice is caller-owned (allocated with self.allocator).
+    pub fn globalTags(self: *Story) ![][]const u8 {
+        return self.tagsLeadingContent(self.root);
+    }
+
+    /// Collect tag strings from the leading tag sequences of `c`, descending into
+    /// inner containers at index 0 as needed.
+    fn tagsLeadingContent(self: *Story, c: *Container) ![][]const u8 {
+        var tags = std.ArrayList([]const u8).empty;
+        defer tags.deinit(self.allocator);
+        var in_tag = false;
+        var tag_buf = std.ArrayList(u8).empty;
+        defer tag_buf.deinit(self.allocator);
+        for (c.content) |obj| {
+            switch (obj) {
+                .control_command => |cmd| switch (cmd) {
+                    .start_tag => { in_tag = true; tag_buf.clearRetainingCapacity(); },
+                    .end_tag => {
+                        in_tag = false;
+                        const tag = try self.arena.allocator().dupe(u8, tag_buf.items);
+                        try tags.append(self.allocator, tag);
+                        tag_buf.clearRetainingCapacity();
+                    },
+                    else => if (!in_tag) break,
+                },
+                .string => |s| if (in_tag) {
+                    try tag_buf.appendSlice(self.allocator, s);
+                } else break,
+                // Descend into the first inner container
+                .container => |inner| if (!in_tag and tags.items.len == 0) {
+                    const inner_tags = try self.tagsLeadingContent(inner);
+                    defer self.allocator.free(inner_tags);
+                    try tags.appendSlice(self.allocator, inner_tags);
+                } else if (!in_tag) break,
+                else => if (!in_tag) break,
+            }
+        }
+        return try tags.toOwnedSlice(self.allocator);
     }
 
     /// Jump directly to a named path (knot/stitch) by absolute path string.
@@ -2931,4 +2994,60 @@ test "evaluateFunction: story state fully restored after call" {
     const out1 = try story.cont();
     defer alloc.free(out1);
     try std.testing.expectEqualStrings("One\nTwo\nThree\n", out1);
+}
+
+// ── TASK-46: remaining public API tests ──────────────────────────────────────
+
+test "visitCountAtPathString: 0 before visit, 1 after" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "knots/knot_stitch_gather_counts.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    // Before visiting: count is 0
+    try std.testing.expectEqual(@as(u32, 0), story.visitCountAtPathString("knot_count_test"));
+
+    // Run the story (which visits knot_count_test multiple times)
+    const out = try story.cont();
+    defer alloc.free(out);
+
+    // After running: count should be > 0
+    try std.testing.expect(story.visitCountAtPathString("knot_count_test") > 0);
+}
+
+test "currentFlowIsDefaultFlow: true initially, false after switchFlow" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "misc/hello_world.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    try std.testing.expect(story.currentFlowIsDefaultFlow());
+    try std.testing.expectEqualStrings("DEFAULT", story.currentFlowName());
+
+    try story.switchFlow("other");
+    try std.testing.expect(!story.currentFlowIsDefaultFlow());
+    try std.testing.expectEqualStrings("other", story.currentFlowName());
+
+    try story.switchToDefaultFlow();
+    try std.testing.expect(story.currentFlowIsDefaultFlow());
+}
+
+test "globalTags: returns story-level tags from tags.ink.json" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "tags/tags.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    const tags = try story.globalTags();
+    defer alloc.free(tags);
+
+    try std.testing.expectEqual(@as(usize, 2), tags.len);
+    try std.testing.expectEqualStrings("author: Joe", tags[0]);
+    try std.testing.expectEqualStrings("title: My Great Story", tags[1]);
 }
