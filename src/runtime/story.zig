@@ -20,6 +20,15 @@ pub const Choice = choices_mod.Choice;
 
 pub const StepResult = enum { ok, stopped };
 
+/// Signature for externally-bound functions callable from ink.
+pub const ExternalFn = *const fn (args: []const RuntimeObject) ?RuntimeObject;
+
+/// Options for bindExternalFunction.
+pub const BindOptions = struct {
+    /// If true the function may be called during lookahead without side effects.
+    lookahead_safe: bool = false,
+};
+
 /// Per-flow execution state snapshot (used by the multi-flow API).
 const SavedFlow = struct {
     call_stack: callstack_mod.CallStack,
@@ -53,6 +62,8 @@ pub const Story = struct {
     named_flows: std.StringHashMapUnmanaged(SavedFlow) = .{},
     /// Name of the currently-active flow.
     current_flow_name: []const u8 = "DEFAULT",
+    /// Externally-bound functions callable from ink.
+    external_functions: std.StringHashMapUnmanaged(ExternalFn) = .{},
 
     pub fn initFromJson(allocator: std.mem.Allocator, json_text: []const u8) !Story {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -102,6 +113,7 @@ pub const Story = struct {
         var it = self.named_flows.iterator();
         while (it.next()) |entry| entry.value_ptr.deinit(self.allocator);
         self.named_flows.deinit(self.allocator);
+        self.external_functions.deinit(self.allocator);
         self.state.deinit();
         self.arena.deinit();
         self.current_tags.deinit(self.allocator);
@@ -222,6 +234,14 @@ pub const Story = struct {
         var it = self.named_flows.keyIterator();
         while (it.next()) |key| try names.append(key.*);
         return try names.toOwnedSlice();
+    }
+
+    // ── External function binding ─────────────────────────────────────────────
+
+    /// Register an external function callable from ink.  Keys are arena-duped.
+    pub fn bindExternalFunction(self: *Story, name: []const u8, func: ExternalFn, _: BindOptions) !void {
+        const key = try self.arena.allocator().dupe(u8, name);
+        try self.external_functions.put(self.allocator, key, func);
     }
 
     /// Run until stopped and collect output. Caller owns the returned string.
@@ -935,6 +955,23 @@ pub const Story = struct {
 
     fn handleDivert(self: *Story, d: value.Divert) !StepResult {
         const elem = self.state.call_stack.currentElement();
+
+        // External function call: dispatch before normal path resolution.
+        if (d.external_args > 0) {
+            self.advancePointer();
+            const func = self.external_functions.get(d.target) orelse return error.FunctionNotBound;
+            // Args were pushed left-to-right; pop right-to-left then reverse.
+            const args = try self.allocator.alloc(RuntimeObject, d.external_args);
+            defer self.allocator.free(args);
+            var idx: usize = d.external_args;
+            while (idx > 0) {
+                idx -= 1;
+                args[idx] = self.state.evaluation_stack.pop() orelse .void;
+            }
+            const result = func(args) orelse RuntimeObject.void;
+            try self.state.evaluation_stack.append(self.allocator, result);
+            return .ok;
+        }
 
         // Conditional divert: pop condition, skip if false
         if (d.is_conditional) {
@@ -2132,4 +2169,48 @@ test "multi_flow_basics: separate flow states maintained" {
 
     // removeFlow("DEFAULT") should error
     try std.testing.expectError(error.CannotRemoveDefaultFlow, story.removeFlow("DEFAULT"));
+}
+
+// External function helpers used in tests (module-level so they can be passed as fn pointers).
+fn extMultiply(args: []const RuntimeObject) ?RuntimeObject {
+    const a: f64 = switch (args[0]) {
+        .float => |f| f,
+        .int => |n| @floatFromInt(n),
+        else => return null,
+    };
+    const b: f64 = switch (args[1]) {
+        .float => |f| f,
+        .int => |n| @floatFromInt(n),
+        else => return null,
+    };
+    return .{ .float = a * b };
+}
+
+fn extMessage(_: []const RuntimeObject) ?RuntimeObject {
+    return null; // void return
+}
+
+fn extTimes(args: []const RuntimeObject) ?RuntimeObject {
+    // times(count: int, text: string) -> repeated string (static buffer for test)
+    _ = args;
+    return .{ .string = "knock knock knock " };
+}
+
+test "external_binding: bound functions called with correct args" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "bindings/external_binding.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.bindExternalFunction("message", extMessage, .{});
+    try story.bindExternalFunction("multiply", extMultiply, .{});
+    try story.bindExternalFunction("times", extTimes, .{});
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    // First block: message("hello world") result discarded → just "\n"
+    // Second block: multiply(5.0, 3) = 15 → "15\n"
+    // Third block: times(3, "knock ") = "knock knock knock " → "knock knock knock \n"
+    try std.testing.expectEqualStrings("\n15\nknock knock knock \n", out);
 }
