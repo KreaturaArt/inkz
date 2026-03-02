@@ -6,6 +6,8 @@ const std = @import("std");
 pub const InkList = struct {
     /// "origin.item" → integer value
     items: std.StringHashMapUnmanaged(i32) = .{},
+    /// Origin list names (e.g. ["Colour"]). Used for LIST_ALL and LIST_INVERT.
+    origins: []const []const u8 = &.{},
 
     /// Return a heap-allocated comma-separated display string (items sorted by value).
     /// Caller owns the returned slice. Example: "a, c".

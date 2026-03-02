@@ -269,6 +269,15 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, obj: std.json.ObjectMap) P
                 try ink_list.items.put(arena, key, v);
             }
         }
+        if (obj.get("origins")) |origins_val| {
+            if (origins_val == .array) {
+                const origins = try arena.alloc([]const u8, origins_val.array.items.len);
+                for (origins_val.array.items, 0..) |o, i| {
+                    origins[i] = if (o == .string) try arena.dupe(u8, o.string) else "";
+                }
+                ink_list.origins = origins;
+            }
+        }
         return .{ .list = ink_list };
     }
     return error.UnknownObjectFormat;

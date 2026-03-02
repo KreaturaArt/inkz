@@ -310,6 +310,11 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
                 try stack.append(allocator, .{ .int = @max(l, r) });
             }
         },
+        // List builtins handled by the Story (need list_defs access)
+        .list_value, .list_count, .list_min, .list_max, .list_all, .list_invert => {
+            // These are dispatched in story.handleNativeFunction before reaching here
+            return error.UnhandledListBuiltin;
+        },
         // List operations
         .list_intersect => {
             const rhs = stack.pop().?;
