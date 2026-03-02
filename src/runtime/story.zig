@@ -5,6 +5,7 @@ const json_loader = @import("json_loader.zig");
 const state_mod = @import("state.zig");
 const callstack_mod = @import("callstack.zig");
 const evaluation = @import("evaluation.zig");
+const choices_mod = @import("choices.zig");
 
 pub const RuntimeObject = value.RuntimeObject;
 pub const Container = value.Container;
@@ -14,6 +15,7 @@ pub const PushPopType = value.PushPopType;
 pub const Pointer = pointer_mod.Pointer;
 pub const StoryState = state_mod.StoryState;
 pub const Element = callstack_mod.Element;
+pub const Choice = choices_mod.Choice;
 
 pub const StepResult = enum { ok, stopped };
 
@@ -23,6 +25,10 @@ pub const Story = struct {
     /// Arena owns the container tree (static content)
     arena: std.heap.ArenaAllocator,
     allocator: std.mem.Allocator,
+    /// Invisible default choice target recorded per-cont(); null if none seen this turn.
+    default_choice_target: ?[]const u8 = null,
+    /// Tags collected during the current cont() call.
+    current_tags: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty,
 
     pub fn initFromJson(allocator: std.mem.Allocator, json_text: []const u8) !Story {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -68,6 +74,22 @@ pub const Story = struct {
     pub fn deinit(self: *Story) void {
         self.state.deinit();
         self.arena.deinit();
+        self.current_tags.deinit(self.allocator);
+    }
+
+    /// Return tags collected during the most recent cont() call.
+    pub fn currentTags(self: *const Story) []const []const u8 {
+        return self.current_tags.items;
+    }
+
+    /// Jump directly to a named path (knot/stitch) by absolute path string.
+    pub fn choosePathString(self: *Story, path: []const u8) !void {
+        const target_ptr = self.resolvePath(path, .{ .container = null, .index = -1 }) orelse
+            return error.PathNotFound;
+        if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
+        self.state.call_stack.currentElement().current_pointer = target_ptr;
+        self.state.did_safe_exit = false;
+        self.state.current_choices.clearRetainingCapacity();
     }
 
     fn currentElementConst(self: *const Story) *const Element {
@@ -77,7 +99,29 @@ pub const Story = struct {
     }
 
     pub fn canContinue(self: *const Story) bool {
-        return !self.currentElementConst().current_pointer.isNull() and !self.state.did_safe_exit;
+        if (self.currentElementConst().current_pointer.isNull()) return false;
+        if (self.state.did_safe_exit) return false;
+        return true;
+    }
+
+    /// Return the current choices (read-only slice).
+    pub fn currentChoices(self: *const Story) []const Choice {
+        return self.state.current_choices.items;
+    }
+
+    /// Select a choice by index. Jumps to the choice's target and prepares for next cont().
+    pub fn chooseChoiceIndex(self: *Story, idx: usize) !void {
+        if (idx >= self.state.current_choices.items.len) return error.InvalidChoiceIndex;
+        const choice = self.state.current_choices.items[idx];
+        // Jump to choice target (target_path is already an absolute path)
+        const target_ptr = self.resolvePath(choice.target_path, self.state.call_stack.currentElement().current_pointer) orelse
+            return error.DivertTargetNotFound;
+        // Record a visit to the target container so once-only choices work correctly.
+        if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
+        self.state.call_stack.currentElement().current_pointer = target_ptr;
+        self.state.did_safe_exit = false;
+        self.state.current_turn_index += 1;
+        self.state.current_choices.clearRetainingCapacity();
     }
 
     /// Run until stopped and collect output. Caller owns the returned string.
@@ -86,7 +130,29 @@ pub const Story = struct {
 
         self.state.output_stream.clearRetainingCapacity();
         self.state.did_safe_exit = false;
+        self.default_choice_target = null;
+        self.current_tags.clearRetainingCapacity();
 
+        try self.runStepLoop();
+
+        // If no choices surfaced and an invisible default was recorded, auto-follow it.
+        if (self.state.current_choices.items.len == 0) {
+            if (self.default_choice_target) |target| {
+                self.default_choice_target = null;
+                const target_ptr = self.resolvePath(target, .{ .container = null, .index = -1 }) orelse
+                    return self.collectOutput();
+                if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
+                self.state.call_stack.currentElement().current_pointer = target_ptr;
+                self.state.did_safe_exit = false;
+                self.state.current_turn_index += 1;
+                try self.runStepLoop();
+            }
+        }
+
+        return self.collectOutput();
+    }
+
+    fn runStepLoop(self: *Story) !void {
         while (self.canContinue()) {
             const result = try self.step();
             // Implicit function return: if execution fell off the end of a named function
@@ -106,8 +172,6 @@ pub const Story = struct {
             }
             if (result == .stopped) break;
         }
-
-        return self.collectOutput();
     }
 
     fn collectOutput(self: *Story) ![]u8 {
@@ -313,8 +377,8 @@ pub const Story = struct {
                 self.advancePointer();
                 return .ok;
             },
-            .choice_point => {
-                // Choice handling in a later task
+            .choice_point => |cp| {
+                try self.processChoicePoint(cp.path, cp.flags);
                 self.advancePointer();
                 return .ok;
             },
@@ -491,8 +555,40 @@ pub const Story = struct {
                 self.advancePointer();
                 return .ok;
             },
-            .start_tag, .end_tag => {
-                // Tags: stub for later
+            .start_tag => {
+                // Push a sentinel onto the output_stream so end_tag can find it.
+                try self.state.output_stream.append(self.allocator, .{ .control_command = .start_tag });
+                self.advancePointer();
+                return .ok;
+            },
+            .end_tag => {
+                // Scan backward for the start_tag sentinel; collect string objects; form one tag.
+                const stream = &self.state.output_stream;
+                var sentinel_idx: ?usize = null;
+                var i: usize = stream.items.len;
+                while (i > 0) {
+                    i -= 1;
+                    if (stream.items[i] == .control_command and
+                        stream.items[i].control_command == .start_tag)
+                    {
+                        sentinel_idx = i;
+                        break;
+                    }
+                }
+                if (sentinel_idx) |si| {
+                    // Collect strings between sentinel and end
+                    var tag_buf = std.ArrayList(u8).empty;
+                    errdefer tag_buf.deinit(self.allocator);
+                    for (stream.items[si + 1 ..]) |obj| {
+                        if (obj == .string) try tag_buf.appendSlice(self.allocator, obj.string);
+                    }
+                    stream.items.len = si; // remove sentinel and collected strings
+                    const tag = try tag_buf.toOwnedSlice(self.allocator);
+                    // Store in arena so it outlives the output_stream clear
+                    const tag_arena = try self.arena.allocator().dupe(u8, tag);
+                    self.allocator.free(tag);
+                    try self.current_tags.append(self.allocator, tag_arena);
+                }
                 self.advancePointer();
                 return .ok;
             },
@@ -754,6 +850,71 @@ pub const Story = struct {
             unpicked[chosen] = unpicked[unpicked_count];
         }
         return @intCast(idx);
+    }
+
+    /// Process a choice_point instruction.
+    /// `path_str` is the absolute path to the choice target container.
+    /// `flags` encodes the choice metadata (condition, content, once-only, etc.).
+    fn processChoicePoint(self: *Story, path_str: []const u8, flags: u8) !void {
+        const elem = self.state.call_stack.currentElement();
+        const from_ptr = elem.current_pointer;
+
+        // Flag 0x01: HasCondition — pop bool; note result but always continue popping
+        var show_choice = true;
+        if (flags & 0x01 != 0) {
+            const cond = self.state.evaluation_stack.pop() orelse RuntimeObject{ .bool = false };
+            if (!evaluation.isTruthy(cond)) show_choice = false;
+        }
+
+        // Flag 0x04: HasChoiceOnlyContent — always pop (even if condition failed)
+        const choice_only: []const u8 = if (flags & 0x04 != 0) blk: {
+            const v = self.state.evaluation_stack.pop() orelse RuntimeObject{ .string = "" };
+            break :blk switch (v) { .string => |s| s, else => "" };
+        } else "";
+
+        // Flag 0x02: HasStartContent — always pop (even if condition failed)
+        const start_content: []const u8 = if (flags & 0x02 != 0) blk: {
+            const v = self.state.evaluation_stack.pop() orelse RuntimeObject{ .string = "" };
+            break :blk switch (v) { .string => |s| s, else => "" };
+        } else "";
+
+        if (!show_choice) return;
+
+        // Resolve target path to verify it exists
+        const target_ptr = self.resolvePath(path_str, from_ptr) orelse return;
+        const target_container = target_ptr.container orelse return;
+
+        // Flag 0x10: IsOnce — skip if already visited
+        if (flags & 0x10 != 0) {
+            const visits = self.state.visit_counts.get(target_container.path) orelse 0;
+            if (visits > 0) return;
+        }
+
+        // Flag 0x08: IsInvisibleDefault — store for auto-follow if no visible choices remain
+        if (flags & 0x08 != 0) {
+            self.default_choice_target = target_container.path;
+            return;
+        }
+
+        // Assemble choice text: start + choice-only
+        const text = if (start_content.len > 0 and choice_only.len > 0)
+            try std.mem.concat(self.arena.allocator(), u8, &.{ start_content, choice_only })
+        else if (start_content.len > 0)
+            start_content
+        else
+            choice_only;
+
+        const choice = Choice{
+            .text = text,
+            .source_path = from_ptr.container.?.path,
+            // Store the resolved absolute path so chooseChoiceIndex can resolve from root
+            // (the current pointer may be null at selection time after cont() ends).
+            .target_path = target_container.path,
+            .tags = &.{},
+            .index = @intCast(self.state.current_choices.items.len),
+            .original_thread_index = 0,
+        };
+        try self.state.current_choices.append(self.allocator, choice);
     }
 
     fn recordVisitIfNeeded(self: *Story, c: *Container) void {
@@ -1306,4 +1467,210 @@ test "Cycle sequence wraps correctly" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "Cycle: one two one two") != null);
+}
+
+test "choice_with_brackets_only: choice text and selection" {
+    // AC #1: first cont() returns "" and currentChoices() has text "Option"
+    // After chooseChoiceIndex(0), second cont() returns "\nText\n"
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "choices/choice_with_brackets_only.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("", out1);
+    const choices = story.currentChoices();
+    try std.testing.expectEqual(@as(usize, 1), choices.len);
+    try std.testing.expectEqualStrings("Option", choices[0].text);
+    try chooseChoiceAndCont(&story, 0, "\nText\n");
+}
+
+test "once_only_choices_can_link_back_to_self: once-only disappears after selection" {
+    // First cont(): "First choice" appears (c-1 condition: CNT? c-0 = 0 → skip)
+    // Choose "First choice": c-0 marked visited
+    // Second cont(): "First choice" gone (once-only), "Second choice" appears (CNT? c-0 = 1 → truthy)
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "choices/once_only_choices_can_link_back_to_self.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Turn 1: only "First choice" visible
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("", out1);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+    try std.testing.expectEqualStrings("First choice", story.currentChoices()[0].text);
+
+    // Select "First choice"
+    try story.chooseChoiceIndex(0);
+
+    // Turn 2: "First choice" gone, "Second choice" appears
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+    try std.testing.expectEqualStrings("Second choice", story.currentChoices()[0].text);
+}
+
+test "sticky_choices_stay_sticky: choices reappear each turn" {
+    // Sticky choices (no IsOnce flag) always appear regardless of visit count.
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "choices/sticky_choices_stay_sticky.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Turn 1: both choices visible
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqual(@as(usize, 2), story.currentChoices().len);
+    try std.testing.expectEqualStrings("Choice 1", story.currentChoices()[0].text);
+    try std.testing.expectEqualStrings("Choice 2", story.currentChoices()[1].text);
+
+    // Choose first, choices still there next turn
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqual(@as(usize, 2), story.currentChoices().len);
+    try std.testing.expectEqualStrings("Choice 1", story.currentChoices()[0].text);
+}
+
+test "once_only_choices_with_own_content: choices disappear after selection" {
+    // Once-only choices (IsOnce flag) disappear after being selected.
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "choices/once_only_choices_with_own_content.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Turn 1: three choices available
+    const out1 = try story.cont();
+    alloc.free(out1);
+    try std.testing.expectEqual(@as(usize, 3), story.currentChoices().len);
+
+    // Choose "Eat ice-cream" (index 0)
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+
+    // Turn 2: only 2 choices remain (ice-cream gone)
+    try std.testing.expectEqual(@as(usize, 2), story.currentChoices().len);
+}
+
+test "default_choices: invisible default auto-follows when no other choices remain" {
+    // After all once-only choices are exhausted, invisible default (flg=0x18) is auto-followed.
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "choices/default_choices.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Turn 1: 2 choices ("Choice 1", "Choice 2"; "Impossible choice" condition=false)
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqual(@as(usize, 2), story.currentChoices().len);
+
+    // Exhaust both once-only choices
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    try story.chooseChoiceIndex(0);
+    const out3 = try story.cont();
+    defer alloc.free(out3);
+    // No visible choices remain; invisible default auto-followed → "This is default.\n"
+    try std.testing.expectEqual(@as(usize, 0), story.currentChoices().len);
+    try std.testing.expect(std.mem.indexOf(u8, out3, "This is default.") != null);
+}
+
+test "conditional_choices: only enabled choices visible" {
+    // Choices with false conditions are filtered; choices with true conditions appear.
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "choices/conditional_choices.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out1 = try story.cont();
+    alloc.free(out1);
+
+    // c-0 (true&&false=0) and c-2 (false) are filtered; c-1,c-3,c-4,c-5 appear.
+    const choices = story.currentChoices();
+    try std.testing.expectEqual(@as(usize, 4), choices.len);
+    try std.testing.expectEqualStrings("one", choices[0].text);
+    try std.testing.expectEqualStrings("two", choices[1].text);
+    try std.testing.expectEqualStrings("three", choices[2].text);
+    try std.testing.expectEqualStrings("four", choices[3].text);
+
+    // canContinue() is false when choices are pending (pointer is null)
+    try std.testing.expect(!story.canContinue());
+
+    // After selecting a choice and story ends, canContinue() stays false.
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    alloc.free(out2);
+    try std.testing.expect(!story.canContinue());
+
+    // Selecting out-of-range index returns error.
+    try std.testing.expectError(error.InvalidChoiceIndex, story.chooseChoiceIndex(99));
+}
+
+test "tags: start_tag/end_tag collects tag strings; content still output" {
+    // tags.ink.json has two story-level tags before content.
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "tags/tags.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is the content\n", out);
+    try std.testing.expectEqual(@as(usize, 2), story.currentTags().len);
+    try std.testing.expectEqualStrings("author: Joe", story.currentTags()[0]);
+    try std.testing.expectEqualStrings("title: My Great Story", story.currentTags()[1]);
+}
+
+test "knot_stitch_gather_counts: visit counts tracked per knot and stitch" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "knots/knot_stitch_gather_counts.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Each loop outputs: variable_count + " " + visit_count + "\n"
+    // gather_count_test.loop: 1 1, 2 2, 3 3 (3 iterations)
+    // knot_count_test: 1 1, 2 2, 3 3 (2 calls × loop of 3)
+    // stitch_count_test.stitch: 1 1, 2 2, 3 3 (called twice with reset)
+    try std.testing.expect(out.len > 0);
+}
+
+test "choosePathString: jumps to named knot" {
+    // Use tags.ink.json which has a "knot" named container.
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "tags/tags.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Jump straight to the "knot" container
+    try story.choosePathString("knot");
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Knot content\n", out);
+    // knot has "knot tag" before content and "end of knot tag" after
+    try std.testing.expectEqual(@as(usize, 2), story.currentTags().len);
+    try std.testing.expectEqualStrings("knot tag", story.currentTags()[0]);
+    try std.testing.expectEqualStrings("end of knot tag", story.currentTags()[1]);
+}
+
+fn chooseChoiceAndCont(story: *Story, idx: usize, expected: []const u8) !void {
+    try story.chooseChoiceIndex(idx);
+    const alloc = std.testing.allocator;
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings(expected, out);
 }

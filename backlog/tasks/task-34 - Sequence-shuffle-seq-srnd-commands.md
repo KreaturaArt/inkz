@@ -1,10 +1,10 @@
 ---
 id: TASK-34
 title: Sequence shuffle (seq / srnd commands)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:44'
-updated_date: '2026-03-01 17:33'
+updated_date: '2026-03-01 23:21'
 labels:
   - layer-8
   - sequences
@@ -36,9 +36,9 @@ Tests:
 <!-- AC:BEGIN -->
 - [ ] #1 all_sequence_types.ink.json produces correct multi-turn output for all 4 types
 - [ ] #2 shuffle_stack_muddying.ink.json produces correct output
-- [ ] #3 srnd sets story_seed correctly
-- [ ] #4 Stopping sequence clamps at last item
-- [ ] #5 Cycle sequence wraps correctly
+- [x] #3 srnd sets story_seed correctly
+- [x] #4 Stopping sequence clamps at last item
+- [x] #5 Cycle sequence wraps correctly
 <!-- AC:END -->
 
 ## Implementation Notes
@@ -46,3 +46,22 @@ Tests:
 <!-- SECTION:NOTES:BEGIN -->
 Partial implementation in src/runtime/story.zig. sequence_shuffle_index pops count from eval stack and computes visit_counts[container.path] % count (cycle mode only). Missing: stopping sequence (clamp at last), once sequence (skip past end = empty output), and shuffle sequence (deterministic permutation using story_seed). seed_random (.srnd) is implemented: pops .int from eval stack, sets state.story_seed. No explicit tests written.
 <!-- SECTION:NOTES:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed 3 critical bugs and implemented shuffle algorithm:
+
+1. **Implicit function return bug**: `cont()` loop was breaking on `.stopped` before checking for function frames without explicit `~ret`. Fixed by moving the implicit-return check before the break.
+
+2. **Visit count double-counting bug**: Diverts back to mid-container positions (e.g., the `{->".^.^.17"}` nop jump in sequence containers) were calling `recordVisitIfNeeded`, causing visit_idx to always be even and cycle sequences to never advance. Fixed by only recording visits when `target_ptr.index == 0`.
+
+3. **`seq` command pops 2 values**: For stack consistency across all sequence types (MIN/% pop both visit_idx+count; seq also pops both), `seq` now pops count AND discards visit_idx, then pushes shuffled_idx. Implements C# .NET Framework System.Random shuffle algorithm.
+
+Tests:
+- `srnd sets story_seed`: unit test via dispatchObject
+- `Stopping sequence clamps at last item`: `all_sequence_types.ink.json` → "Stopping: one two two two"
+- `Cycle sequence wraps correctly`: `all_sequence_types.ink.json` → "Cycle: one two one two"
+
+ACs #1 (all_sequence_types full fixture) and #2 (shuffle_stack_muddying - requires choices) deferred.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-31
 title: Choice selection and cont() loop
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:44'
+updated_date: '2026-03-02 04:33'
 labels:
   - layer-6
   - choices
@@ -31,8 +32,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 choice_with_brackets_only.ink.json: full play-through gives correct output
-- [ ] #2 conditional_choices.ink.json: only enabled choices visible
-- [ ] #3 canContinue() false after story ends
-- [ ] #4 chooseChoiceIndex out of range returns error
+- [x] #1 choice_with_brackets_only.ink.json: full play-through gives correct output
+- [x] #2 conditional_choices.ink.json: only enabled choices visible
+- [x] #3 canContinue() false after story ends
+- [x] #4 chooseChoiceIndex out of range returns error
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+All implementation already complete from TASK-29/30. Added tests: conditional_choices.ink.json → 4 choices visible (c-0 and c-2 filtered by false conditions), canContinue() false after story ends, chooseChoiceIndex out-of-range returns error.InvalidChoiceIndex.
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-29
 title: ChoicePoint — build Choice from eval stack
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:44'
+updated_date: '2026-03-01 23:33'
 labels:
   - layer-6
   - choices
@@ -36,8 +37,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 choice_with_brackets_only.ink.json: currentChoices() has 1 choice with text "Option"
-- [ ] #2 Once-only flag skips choice when visit_count > 0
-- [ ] #3 Condition flag skips choice when eval stack bool is false
-- [ ] #4 Choice text assembled correctly from start+only content parts
+- [x] #1 choice_with_brackets_only.ink.json: currentChoices() has 1 choice with text "Option"
+- [x] #2 Once-only flag skips choice when visit_count > 0
+- [x] #3 Condition flag skips choice when eval stack bool is false
+- [x] #4 Choice text assembled correctly from start+only content parts
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented processChoicePoint in story.zig. Key fixes: (1) condition pop always happens, then choice_only and start pops happen unconditionally before deciding whether to add the choice — early return after condition left stale values on eval stack; (2) target_path in Choice stores the resolved absolute container.path (not the relative path_str) so chooseChoiceIndex works when the pointer is null post-cont(); (3) IsInvisibleDefault (0x08) skips adding to current_choices; (4) chooseChoiceIndex calls recordVisitIfNeeded on the target so once-only choices are properly tracked. Tests: choice_with_brackets_only → 1 choice "Option" → "\nText\n"; once_only_choices_can_link_back_to_self → turn 1 shows "First choice" only (c-1 condition CNT?=0 falsy), turn 2 after selecting "First choice" shows "Second choice" only (c-0 once-only, visited).
+<!-- SECTION:FINAL_SUMMARY:END -->
