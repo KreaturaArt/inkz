@@ -1970,3 +1970,38 @@ test "list_range: range control command and LIST_ALL with origins" {
     }
     try std.testing.expect(non_empty >= 4);
 }
+
+test "thread_done: forked thread ends with done, main continues" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "threads/thread_done.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is a thread example\nHello.\nThe example is now complete.\n", out);
+}
+
+test "multi_thread: choices from both threads merged" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "threads/multi_thread.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Both threads produce introductory text and one choice each.
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is place 1.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is place 2.") != null);
+    const choices = story.currentChoices();
+    try std.testing.expectEqual(@as(usize, 2), choices.len);
+    // Choice texts (trimmed)
+    var found1 = false;
+    var found2 = false;
+    for (choices) |c| {
+        if (std.mem.indexOf(u8, c.text, "choice in place 1") != null) found1 = true;
+        if (std.mem.indexOf(u8, c.text, "choice in place 2") != null) found2 = true;
+    }
+    try std.testing.expect(found1);
+    try std.testing.expect(found2);
+}
