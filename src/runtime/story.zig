@@ -338,6 +338,71 @@ pub const Story = struct {
         if (self.observers.get(name)) |func| func(name, new_val);
     }
 
+    // ── evaluateFunction ─────────────────────────────────────────────────────
+
+    /// Call a named ink function from game code.
+    /// Saves the full story state, runs the function in isolation, then restores.
+    /// `args` are the function arguments in declaration order (first arg = args[0]).
+    /// If `text_out` is non-null, any text output produced by the function is appended to it.
+    /// Returns the function's return value, or null if the function returned void / no value.
+    pub fn evaluateFunction(
+        self: *Story,
+        name: []const u8,
+        args: []const RuntimeObject,
+        text_out: ?*std.ArrayList(u8),
+    ) !?RuntimeObject {
+        // 1. Snapshot current state so we can restore it after the call.
+        const saved_json = try self.toJson(self.allocator);
+        defer self.allocator.free(saved_json);
+
+        // 2. Find the function container by name.
+        const func_container = self.root.named_content.get(name) orelse return error.FunctionNotFound;
+        const func_ptr = Pointer{ .container = func_container, .index = 0 };
+
+        // 3. Prepare isolated state for this call:
+        //    - Null out the parent frame so the loop stops after pop_function + advancePointer.
+        //    - Clear output so we capture only the function's text.
+        self.state.call_stack.currentElement().current_pointer = Pointer.null_value;
+        self.state.output_stream.clearRetainingCapacity();
+        self.state.did_safe_exit = false;
+
+        // 4. Push args in declaration order (arg[0] first → arg[last] on top of stack).
+        //    The function body uses temp= to pop them in reverse, matching ink convention.
+        for (args) |arg| {
+            try self.state.evaluation_stack.append(self.allocator, arg);
+        }
+
+        // 5. Push a function call frame and point it at the function body.
+        const stream_idx = self.state.output_stream.items.len;
+        try self.state.call_stack.push(.function, Pointer.null_value);
+        const func_elem = self.state.call_stack.currentElement();
+        func_elem.current_pointer = func_ptr;
+        func_elem.output_stream_index_at_push = stream_idx;
+
+        // 6. Run until the function returns (or hits done/end).
+        try self.runStepLoop();
+
+        // 7. Capture text output before restoring state.
+        if (text_out) |out| {
+            const text = try self.collectOutput();
+            defer self.allocator.free(text);
+            try out.appendSlice(self.allocator, text);
+        }
+
+        // 8. Pop the return value: ink pushes it via `ev … /ev` before `~ret`.
+        //    A void-returning function pushes `.void`; we return null in that case.
+        const return_val: ?RuntimeObject = blk: {
+            const top = self.state.evaluation_stack.pop();
+            if (top) |v| break :blk if (v == .void) null else v;
+            break :blk null;
+        };
+
+        // 9. Restore state fully (undoes all side effects of the call).
+        try self.loadStateFromJson(saved_json);
+
+        return return_val;
+    }
+
     // ── Save / Load ───────────────────────────────────────────────────────────
 
     /// Serialise the current story state to a JSON string.  Caller owns the result.
@@ -2798,4 +2863,72 @@ test "variable_observer.ink.json: observer fires during story execution" {
     // testVar was set once (to 15)
     try std.testing.expect(Ctx.result.count >= 1);
     try std.testing.expectEqual(@as(i64, 15), Ctx.result.last_int);
+}
+
+// ── TASK-45: evaluateFunction tests ──────────────────────────────────────────
+
+test "evaluateFunction: func1 returns int value and captures text" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "evaluation/evaluating_ink_functions_from_game_2.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    // Call func1: outputs "This is a function\n", returns 5
+    var text_out = std.ArrayList(u8).empty;
+    defer text_out.deinit(alloc);
+    const result = try story.evaluateFunction("func1", &.{}, &text_out);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(RuntimeObject{ .int = 5 }, result.?);
+    // pop_function trims trailing newlines from output, matching C# Ink runtime behaviour
+    try std.testing.expectEqualStrings("This is a function", text_out.items);
+}
+
+test "evaluateFunction: func2 returns null (void function)" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "evaluation/evaluating_ink_functions_from_game_2.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    const result = try story.evaluateFunction("func2", &.{}, null);
+    try std.testing.expectEqual(@as(?RuntimeObject, null), result);
+}
+
+test "evaluateFunction: add(x,y) returns x+y" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "evaluation/evaluating_ink_functions_from_game_2.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    const result = try story.evaluateFunction("add", &.{ .{ .int = 3 }, .{ .int = 4 } }, null);
+    try std.testing.expect(result != null);
+    try std.testing.expectEqual(RuntimeObject{ .int = 7 }, result.?);
+}
+
+test "evaluateFunction: story state fully restored after call" {
+    const alloc = std.testing.allocator;
+    const json_text = try readFixture(alloc, "evaluation/evaluating_ink_functions_from_game_2.ink.json");
+    defer alloc.free(json_text);
+
+    var story = try Story.initFromJson(alloc, json_text);
+    defer story.deinit();
+
+    // Before any cont(): story can continue
+    try std.testing.expect(story.canContinue());
+
+    // evaluateFunction must not corrupt canContinue state
+    _ = try story.evaluateFunction("func1", &.{}, null);
+
+    // Story should still be continuable (evaluateFunction must restore state)
+    try std.testing.expect(story.canContinue());
+
+    // And cont() still produces the expected top-level output
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("One\nTwo\nThree\n", out1);
 }
