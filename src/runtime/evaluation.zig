@@ -1,8 +1,10 @@
 const std = @import("std");
 const value = @import("value.zig");
+const lists = @import("lists.zig");
 
 pub const RuntimeObject = value.RuntimeObject;
 pub const NativeFunction = value.NativeFunction;
+pub const InkList = lists.InkList;
 
 /// Coerce a value to f64 for arithmetic. Returns null if not numeric.
 fn toFloat(obj: RuntimeObject) ?f64 {
@@ -34,6 +36,61 @@ pub fn isTruthy(obj: RuntimeObject) bool {
         else => true,
     };
 }
+
+// ── List helpers ─────────────────────────────────────────────────────────────
+
+fn createListUnion(allocator: std.mem.Allocator, lhs: *const InkList, rhs: *const InkList) !*InkList {
+    const result = try allocator.create(InkList);
+    result.* = .{};
+    var it = lhs.items.iterator();
+    while (it.next()) |e| try result.items.put(allocator, e.key_ptr.*, e.value_ptr.*);
+    var it2 = rhs.items.iterator();
+    while (it2.next()) |e| try result.items.put(allocator, e.key_ptr.*, e.value_ptr.*);
+    return result;
+}
+
+fn createListDiff(allocator: std.mem.Allocator, lhs: *const InkList, rhs: *const InkList) !*InkList {
+    const result = try allocator.create(InkList);
+    result.* = .{};
+    var it = lhs.items.iterator();
+    while (it.next()) |e| {
+        if (!rhs.items.contains(e.key_ptr.*))
+            try result.items.put(allocator, e.key_ptr.*, e.value_ptr.*);
+    }
+    return result;
+}
+
+fn createListIntersect(allocator: std.mem.Allocator, lhs: *const InkList, rhs: *const InkList) !*InkList {
+    const result = try allocator.create(InkList);
+    result.* = .{};
+    var it = lhs.items.iterator();
+    while (it.next()) |e| {
+        if (rhs.items.contains(e.key_ptr.*))
+            try result.items.put(allocator, e.key_ptr.*, e.value_ptr.*);
+    }
+    return result;
+}
+
+/// Returns true if every item in rhs is present in lhs.
+fn listContainsAll(lhs: *const InkList, rhs: *const InkList) bool {
+    var it = rhs.items.iterator();
+    while (it.next()) |e| {
+        if (!lhs.items.contains(e.key_ptr.*)) return false;
+    }
+    return true;
+}
+
+fn listEquals(lhs: *const InkList, rhs: *const InkList) bool {
+    if (lhs.items.count() != rhs.items.count()) return false;
+    var it = lhs.items.iterator();
+    while (it.next()) |e| {
+        const rv = rhs.items.get(e.key_ptr.*) orelse return false;
+        if (rv != e.value_ptr.*) return false;
+    }
+    return true;
+}
+
+// ── Native function dispatch ──────────────────────────────────────────────────
 
 /// Execute a native function by popping args from the stack and pushing the result.
 pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stack: *std.ArrayList(RuntimeObject)) !void {
@@ -98,6 +155,12 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
         .add => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
+            // List union
+            if (lhs == .list and rhs == .list) {
+                const result = try createListUnion(allocator, lhs.list, rhs.list);
+                try stack.append(allocator, .{ .list = result });
+                return;
+            }
             // String concatenation
             if (lhs == .string and rhs == .string) {
                 // We can't allocate here without an allocator; callers must handle string concat
@@ -117,6 +180,12 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
         .subtract => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
+            // List difference
+            if (lhs == .list and rhs == .list) {
+                const result = try createListDiff(allocator, lhs.list, rhs.list);
+                try stack.append(allocator, .{ .list = result });
+                return;
+            }
             if (lhs == .float or rhs == .float) {
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
@@ -241,11 +310,34 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
                 try stack.append(allocator, .{ .int = @max(l, r) });
             }
         },
-        // List operations (stub — replaced in later task)
-        .list_intersect, .list_has, .list_hasnt => {
-            _ = stack.pop();
-            _ = stack.pop();
-            try stack.append(allocator, .{ .int = 0 });
+        // List operations
+        .list_intersect => {
+            const rhs = stack.pop().?;
+            const lhs = stack.pop().?;
+            if (lhs == .list and rhs == .list) {
+                const result = try createListIntersect(allocator, lhs.list, rhs.list);
+                try stack.append(allocator, .{ .list = result });
+            } else {
+                try stack.append(allocator, .{ .int = 0 });
+            }
+        },
+        .list_has => {
+            const rhs = stack.pop().?;
+            const lhs = stack.pop().?;
+            if (lhs == .list and rhs == .list) {
+                try stack.append(allocator, .{ .int = if (listContainsAll(lhs.list, rhs.list)) 1 else 0 });
+            } else {
+                try stack.append(allocator, .{ .int = 0 });
+            }
+        },
+        .list_hasnt => {
+            const rhs = stack.pop().?;
+            const lhs = stack.pop().?;
+            if (lhs == .list and rhs == .list) {
+                try stack.append(allocator, .{ .int = if (!listContainsAll(lhs.list, rhs.list)) 1 else 0 });
+            } else {
+                try stack.append(allocator, .{ .int = 1 });
+            }
         },
     }
 }
@@ -279,6 +371,10 @@ fn valuesEqual(lhs: RuntimeObject, rhs: RuntimeObject) bool {
         },
         .string => |l| switch (rhs) {
             .string => |r| return std.mem.eql(u8, l, r),
+            else => return false,
+        },
+        .list => |l| switch (rhs) {
+            .list => |r| return listEquals(l, r),
             else => return false,
         },
         else => return false,

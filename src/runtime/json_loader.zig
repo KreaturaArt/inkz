@@ -254,9 +254,22 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, obj: std.json.ObjectMap) P
             .context_index = ctx,
         } };
     }
-    if (obj.get("list") != null) {
-        // Stub — InkList support added in later task
-        return .void;
+    if (obj.get("list")) |list_val| {
+        const ink_list = try arena.create(value.InkList);
+        ink_list.* = .{};
+        if (list_val == .object) {
+            var it = list_val.object.iterator();
+            while (it.next()) |entry| {
+                const key = try arena.dupe(u8, entry.key_ptr.*);
+                const v: i32 = switch (entry.value_ptr.*) {
+                    .integer => |n| @intCast(n),
+                    .float => |f| @intFromFloat(f),
+                    else => 0,
+                };
+                try ink_list.items.put(arena, key, v);
+            }
+        }
+        return .{ .list = ink_list };
     }
     return error.UnknownObjectFormat;
 }

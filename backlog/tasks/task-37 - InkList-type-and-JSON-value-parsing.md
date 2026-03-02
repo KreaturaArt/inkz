@@ -1,9 +1,10 @@
 ---
 id: TASK-37
 title: InkList type and JSON value parsing
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:45'
+updated_date: '2026-03-02 04:43'
 labels:
   - layer-10
   - lists
@@ -30,8 +31,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 InkList format() produces comma-separated sorted item names
-- [ ] #2 list_basic_operations.ink.json: global list variable is .list not .void
-- [ ] #3 Empty InkList formats as empty string
-- [ ] #4 JSON loader correctly parses {"list": {...}} objects
+- [x] #1 InkList format() produces comma-separated sorted item names
+- [x] #2 list_basic_operations.ink.json: global list variable is .list not .void
+- [x] #3 Empty InkList formats as empty string
+- [x] #4 JSON loader correctly parses {"list": {...}} objects
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added InkList to lists.zig with items: StringHashMapUnmanaged(i32) keyed by "origin.item" strings, toDisplayString(alloc) for sorted comma-separated output, and maxValue() helper. Updated RuntimeObject.list from *anyopaque to *InkList. Updated json_loader to parse {"list": {...}} objects into .list(InkList) (arena-allocated). Note: Zig 0.16 requires "{f}" format specifier to call custom format methods; used toDisplayString instead. Tests: toDisplayString "a, c", empty "", JSON loader parses list_basic_operations correctly.
+<!-- SECTION:FINAL_SUMMARY:END -->

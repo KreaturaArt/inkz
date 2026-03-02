@@ -8,6 +8,7 @@ pub const callstack = @import("runtime/callstack.zig");
 pub const state = @import("runtime/state.zig");
 pub const evaluation = @import("runtime/evaluation.zig");
 pub const story = @import("runtime/story.zig");
+pub const lists = @import("runtime/lists.zig");
 
 pub const Story = story.Story;
 pub const RuntimeObject = value.RuntimeObject;
@@ -24,5 +25,6 @@ test {
     _ = state;
     _ = evaluation;
     _ = story;
+    _ = lists;
     _ = @import("test/helpers.zig");
 }

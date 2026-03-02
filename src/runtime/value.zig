@@ -1,4 +1,6 @@
 const std = @import("std");
+const lists = @import("lists.zig");
+pub const InkList = lists.InkList;
 
 pub const ControlCommand = enum {
     eval_start,
@@ -169,8 +171,8 @@ pub const RuntimeObject = union(enum) {
     choice_point: struct { path: []const u8, flags: u8 },
     variable_assignment: struct { name: []const u8, is_new_decl: bool, is_global: bool },
     variable_reference: struct { name: []const u8, path_for_count: ?[]const u8 },
-    /// Stub for InkList — replaced in later task
-    list: *anyopaque,
+    /// An Ink list value; heap-allocated so the union remains copyable.
+    list: *InkList,
     container: *Container,
 };
 
