@@ -1,9 +1,10 @@
 ---
 id: TASK-42
 title: External function binding
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:45'
+updated_date: '2026-03-02 16:30'
 labels:
   - layer-12
   - bindings
@@ -30,8 +31,8 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 external_binding.ink.json: bound function called with correct args and result used
+- [x] #1 external_binding.ink.json: bound function called with correct args and result used
 - [ ] #2 game_ink_back_and_forth.ink.json produces correct output
-- [ ] #3 Unbound function returns error when not lookahead_safe
-- [ ] #4 Function args popped in correct order
+- [x] #3 Unbound function returns error when not lookahead_safe
+- [x] #4 Function args popped in correct order
 <!-- AC:END -->
