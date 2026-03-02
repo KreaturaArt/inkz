@@ -1,9 +1,10 @@
 ---
 id: TASK-45
 title: evaluateFunction
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:46'
+updated_date: '2026-03-02 17:47'
 labels:
   - layer-14
   - api
@@ -32,8 +33,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 evaluateFunction returns correct value
-- [ ] #2 Story state restored after call (no side-effects)
-- [ ] #3 text_out captures function output text
-- [ ] #4 evaluating_ink_functions_from_game.ink.json produces correct result
+- [x] #1 evaluateFunction returns correct value
+- [x] #2 Story state restored after call (no side-effects)
+- [x] #3 text_out captures function output text
+- [x] #4 evaluating_ink_functions_from_game.ink.json produces correct result
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented `evaluateFunction` on Story: saves full state via toJson, sets up isolated function call (null return address → loop stops after pop_function), pushes args, runs step loop, captures text output (trailing newlines trimmed by pop_function, matching C# runtime), pops return value, restores full state via loadStateFromJson. Four tests: func1 returns int+text, func2 returns null (void), add(x,y) returns sum, state fully restored. 93/93 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
