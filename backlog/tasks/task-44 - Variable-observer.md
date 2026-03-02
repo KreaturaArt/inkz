@@ -1,9 +1,10 @@
 ---
 id: TASK-44
 title: Variable observer
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:46'
+updated_date: '2026-03-02 17:19'
 labels:
   - layer-14
   - api
@@ -29,8 +30,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 Observer fires when observed variable changes
-- [ ] #2 Observer does not fire for unobserved variables
-- [ ] #3 variable_observer.ink.json: observer called with correct name and value
-- [ ] #4 Multiple observers for different variables all fire independently
+- [x] #1 Observer fires when observed variable changes
+- [x] #2 Observer does not fire for unobserved variables
+- [x] #3 variable_observer.ink.json: observer called with correct name and value
+- [x] #4 Multiple observers for different variables all fire independently
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added `ObserverFn` type, `observers` hashmap, `observeVariable()`, and `notifyObservers()` to Story. Observers fire after every global variable set in the `variable_assignment` handler (both re-assignment and new decl paths). Three tests added: fires on observed var, silent on unobserved var, and integration test against variable_observer.ink.json. All 89 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
