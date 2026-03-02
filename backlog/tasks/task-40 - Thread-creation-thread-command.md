@@ -1,10 +1,10 @@
 ---
 id: TASK-40
 title: Thread creation (thread command)
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-02-23 19:45'
-updated_date: '2026-03-02 06:32'
+updated_date: '2026-03-02 14:14'
 labels:
   - layer-11
   - threads
@@ -29,8 +29,8 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 multi_thread.ink.json: choices from all threads merged
-- [ ] #2 thread_done.ink.json: thread done before story end works
-- [ ] #3 Thread clone executes from correct position
-- [ ] #4 done in thread removes it from active list
+- [x] #1 multi_thread.ink.json: choices from all threads merged
+- [x] #2 thread_done.ink.json: thread done before story end works
+- [x] #3 Thread clone executes from correct position
+- [x] #4 done in thread removes it from active list
 <!-- AC:END -->
