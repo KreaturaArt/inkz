@@ -1,9 +1,10 @@
 ---
 id: TASK-41
 title: Multi-flow API
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:45'
+updated_date: '2026-03-02 14:43'
 labels:
   - layer-11
   - multiflow
@@ -30,8 +31,8 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 multi_flow_basics.ink.json: separate flow states maintained
+- [x] #1 multi_flow_basics.ink.json: separate flow states maintained
 - [ ] #2 multi_flow_save_load_threads.ink.json produces correct output
-- [ ] #3 switchFlow creates new flow if it doesn't exist
-- [ ] #4 removeFlow errors on default flow
+- [x] #3 switchFlow creates new flow if it doesn't exist
+- [x] #4 removeFlow errors on default flow
 <!-- AC:END -->

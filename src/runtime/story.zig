@@ -20,6 +20,23 @@ pub const Choice = choices_mod.Choice;
 
 pub const StepResult = enum { ok, stopped };
 
+/// Per-flow execution state snapshot (used by the multi-flow API).
+const SavedFlow = struct {
+    call_stack: callstack_mod.CallStack,
+    output_stream: std.ArrayList(RuntimeObject),
+    evaluation_stack: std.ArrayList(RuntimeObject),
+    current_choices: std.ArrayList(Choice),
+    did_safe_exit: bool,
+    default_choice_target: ?[]const u8,
+
+    fn deinit(self: *SavedFlow, allocator: std.mem.Allocator) void {
+        self.call_stack.deinit();
+        self.output_stream.deinit(allocator);
+        self.evaluation_stack.deinit(allocator);
+        self.current_choices.deinit(allocator);
+    }
+};
+
 pub const Story = struct {
     root: *Container,
     state: StoryState,
@@ -32,6 +49,10 @@ pub const Story = struct {
     default_choice_target: ?[]const u8 = null,
     /// Tags collected during the current cont() call.
     current_tags: std.ArrayList([]const u8) = std.ArrayList([]const u8).empty,
+    /// Named flows (all except the currently-active one are stored here).
+    named_flows: std.StringHashMapUnmanaged(SavedFlow) = .{},
+    /// Name of the currently-active flow.
+    current_flow_name: []const u8 = "DEFAULT",
 
     pub fn initFromJson(allocator: std.mem.Allocator, json_text: []const u8) !Story {
         var arena = std.heap.ArenaAllocator.init(allocator);
@@ -78,6 +99,9 @@ pub const Story = struct {
     }
 
     pub fn deinit(self: *Story) void {
+        var it = self.named_flows.iterator();
+        while (it.next()) |entry| entry.value_ptr.deinit(self.allocator);
+        self.named_flows.deinit(self.allocator);
         self.state.deinit();
         self.arena.deinit();
         self.current_tags.deinit(self.allocator);
@@ -128,6 +152,76 @@ pub const Story = struct {
         self.state.did_safe_exit = false;
         self.state.current_turn_index += 1;
         self.state.current_choices.clearRetainingCapacity();
+    }
+
+    // ── Multi-flow API ────────────────────────────────────────────────────────
+
+    /// Switch to a named flow, saving the current flow's state.
+    /// Creates a fresh flow (pointer at story root) if the name is new.
+    pub fn switchFlow(self: *Story, name: []const u8) !void {
+        if (std.mem.eql(u8, name, self.current_flow_name)) return;
+
+        // Save the current flow into named_flows under its name.
+        const saved = SavedFlow{
+            .call_stack = self.state.call_stack,
+            .output_stream = self.state.output_stream,
+            .evaluation_stack = self.state.evaluation_stack,
+            .current_choices = self.state.current_choices,
+            .did_safe_exit = self.state.did_safe_exit,
+            .default_choice_target = self.default_choice_target,
+        };
+        const saved_key = try self.arena.allocator().dupe(u8, self.current_flow_name);
+        try self.named_flows.put(self.allocator, saved_key, saved);
+
+        // Restore target flow or initialise a fresh one.
+        if (self.named_flows.fetchRemove(name)) |entry| {
+            const f = entry.value;
+            self.state.call_stack = f.call_stack;
+            self.state.output_stream = f.output_stream;
+            self.state.evaluation_stack = f.evaluation_stack;
+            self.state.current_choices = f.current_choices;
+            self.state.did_safe_exit = f.did_safe_exit;
+            self.default_choice_target = f.default_choice_target;
+        } else {
+            // Brand-new flow: fresh callstack pointing at the story root.
+            var new_cs = try callstack_mod.CallStack.init(self.allocator);
+            new_cs.currentElement().current_pointer = .{ .container = self.root, .index = 0 };
+            self.state.call_stack = new_cs;
+            self.state.output_stream = std.ArrayList(RuntimeObject).empty;
+            self.state.evaluation_stack = std.ArrayList(RuntimeObject).empty;
+            self.state.current_choices = std.ArrayList(Choice).empty;
+            self.state.did_safe_exit = false;
+            self.default_choice_target = null;
+        }
+        self.current_flow_name = try self.arena.allocator().dupe(u8, name);
+    }
+
+    /// Switch back to the default "DEFAULT" flow.
+    pub fn switchToDefaultFlow(self: *Story) !void {
+        try self.switchFlow("DEFAULT");
+    }
+
+    /// Remove a named flow (errors if it is "DEFAULT" or the current flow).
+    pub fn removeFlow(self: *Story, name: []const u8) !void {
+        if (std.mem.eql(u8, name, "DEFAULT")) return error.CannotRemoveDefaultFlow;
+        if (std.mem.eql(u8, name, self.current_flow_name)) {
+            // Switch to DEFAULT first so the current flow is saved, then delete it.
+            try self.switchFlow("DEFAULT");
+        }
+        if (self.named_flows.fetchRemove(name)) |entry| {
+            var f = entry.value;
+            f.deinit(self.allocator);
+        }
+    }
+
+    /// Return all active flow names (caller owns the returned slice; strings are arena-owned).
+    pub fn aliveFlowNames(self: *const Story, allocator: std.mem.Allocator) ![][]const u8 {
+        var names = std.ArrayList([]const u8).init(allocator);
+        errdefer names.deinit();
+        try names.append(self.current_flow_name);
+        var it = self.named_flows.keyIterator();
+        while (it.next()) |key| try names.append(key.*);
+        return try names.toOwnedSlice();
     }
 
     /// Run until stopped and collect output. Caller owns the returned string.
@@ -509,6 +603,8 @@ pub const Story = struct {
                 return .stopped;
             },
             .end_of_story => {
+                self.state.did_safe_exit = true;
+                self.state.call_stack.currentElement().current_pointer = Pointer.null_value;
                 return .stopped;
             },
             .seed_random => {
@@ -2004,4 +2100,36 @@ test "multi_thread: choices from both threads merged" {
     }
     try std.testing.expect(found1);
     try std.testing.expect(found2);
+}
+
+test "multi_flow_basics: separate flow states maintained" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "multiflow/multi_flow_basics.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Flow 1: run knot1
+    try story.switchFlow("f1");
+    try story.choosePathString("knot1");
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("knot 1 line 1\nknot 1 line 2\n", out1);
+
+    // Flow 2: run knot2 independently
+    try story.switchFlow("f2");
+    try story.choosePathString("knot2");
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqualStrings("knot 2 line 1\nknot 2 line 2\n", out2);
+
+    // Switch back to f1: it should be at end (canContinue false)
+    try story.switchFlow("f1");
+    try std.testing.expect(!story.canContinue());
+
+    // removeFlow("f2") should work without error
+    try story.removeFlow("f2");
+
+    // removeFlow("DEFAULT") should error
+    try std.testing.expectError(error.CannotRemoveDefaultFlow, story.removeFlow("DEFAULT"));
 }
