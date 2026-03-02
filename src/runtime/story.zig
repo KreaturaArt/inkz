@@ -216,6 +216,11 @@ pub const Story = struct {
             },
             .float => |f| try formatFloat(allocator, buf, f),
             .bool => |b| try buf.appendSlice(allocator, if (b) "1" else "0"),
+            .list => |ink_list| {
+                const s = try ink_list.toDisplayString(allocator);
+                defer allocator.free(s);
+                try buf.appendSlice(allocator, s);
+            },
             .void => {},
             else => {},
         }
@@ -382,9 +387,9 @@ pub const Story = struct {
                 self.advancePointer();
                 return .ok;
             },
-            .list => {
+            .list => |ink_list| {
                 if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator, .void);
+                    try self.state.evaluation_stack.append(self.allocator, .{ .list = ink_list });
                 }
                 self.advancePointer();
                 return .ok;
@@ -1673,4 +1678,26 @@ fn chooseChoiceAndCont(story: *Story, idx: usize, expected: []const u8) !void {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings(expected, out);
+}
+
+test "list_basic_operations: union, intersect, has, hasnt" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "lists/list_basic_operations.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("b, d\na, b, c, e\nb, c\n0\n1\n1\n", out);
+}
+
+test "list_mixed_items: multi-origin list union" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "lists/list_mixed_items.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("a, y, c\n", out);
 }

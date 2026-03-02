@@ -1,9 +1,10 @@
 ---
 id: TASK-38
 title: List native operations
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:45'
+updated_date: '2026-03-02 04:52'
 labels:
   - layer-10
   - lists
@@ -34,8 +35,20 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 list_basic_operations.ink.json produces all 6 correct lines
-- [ ] #2 list_mixed_items.ink.json produces correct output
-- [ ] #3 Union, subtract, intersect operations correct
-- [ ] #4 has/hasnt return 0 or 1 correctly
+- [x] #1 list_basic_operations.ink.json produces all 6 correct lines
+- [x] #2 list_mixed_items.ink.json produces correct output
+- [x] #3 Union, subtract, intersect operations correct
+- [x] #4 has/hasnt return 0 or 1 correctly
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented list native operations in evaluation.zig and story.zig:
+- Added helper functions: createListUnion, createListDiff, createListIntersect, listContainsAll, listEquals
+- Updated callNativeFunction: add (list union), subtract (list diff), list_intersect, list_has (?), list_hasnt (!?)
+- Added list equality to valuesEqual
+- Fixed dispatchObject: .list now pushes the actual InkList pointer onto eval stack (was pushing .void)
+- Added .list case to appendObjectText: calls toDisplayString and appends to output
+- Tests: list_basic_operations (6 lines: union, intersect, has, hasnt) and list_mixed_items (multi-origin union)
+<!-- SECTION:FINAL_SUMMARY:END -->

@@ -1,9 +1,10 @@
 ---
 id: TASK-36
 title: ListDefinition and listDefs parsing
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:45'
+updated_date: '2026-03-02 04:39'
 labels:
   - layer-10
   - lists
@@ -31,8 +32,14 @@ Tests:
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 listDefs parsed into ListDefinitionsOrigin correctly
-- [ ] #2 valueForItem returns correct value
-- [ ] #3 itemForValue returns correct name
-- [ ] #4 Empty listDefs handled without error
+- [x] #1 listDefs parsed into ListDefinitionsOrigin correctly
+- [x] #2 valueForItem returns correct value
+- [x] #3 itemForValue returns correct name
+- [x] #4 Empty listDefs handled without error
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Created src/runtime/lists.zig with ListDefinition (name, items: StringHashMapUnmanaged(i32), valueForItem, itemForValue) and ListDefinitionsOrigin (definitions map, parse() from std.json.Value, get() accessor). Tests: valueForItem/itemForValue unit test; parse from list_basic_operations.ink.json → "list" has 5 items (a=1..e=5), c=3, itemForValue(3)="c"; empty listDefs → count=0.
+<!-- SECTION:FINAL_SUMMARY:END -->
