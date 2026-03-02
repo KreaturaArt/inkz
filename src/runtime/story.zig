@@ -2068,6 +2068,73 @@ test "Story true_plus_true" {
     try std.testing.expectEqualStrings("2\n", out);
 }
 
+test "Story false_plus_false" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/false_plus_false.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
+
+test "Story not_one" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/not_one.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
+
+test "Story true_equals_one" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/true_equals_one.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\n", out);
+}
+
+test "Story true_plus_one" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/true_plus_one.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("2\n", out);
+}
+
+test "Story two_plus_true" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/two_plus_true.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("3\n", out);
+}
+
+test "Story list_hasnt" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "booleans/list_hasnt.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // list = {b, d}; c !? list → c is not in list → true → 1
+    try std.testing.expectEqualStrings("1\n", out);
+}
+
 test "Story simple_glue" {
     const alloc = std.testing.allocator;
     const json = try readFixture(alloc, "glue/simple_glue.ink.json");
