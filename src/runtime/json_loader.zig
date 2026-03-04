@@ -17,8 +17,10 @@ pub const LoadedStory = struct {
 
 /// Load an ink.json story from text. `arena` owns all allocations for the container tree.
 pub fn loadStory(arena: std.mem.Allocator, json_text: []const u8) !LoadedStory {
+    // Strip UTF-8 BOM if present (some older Inklecate versions emit it)
+    const text = if (std.mem.startsWith(u8, json_text, "\xEF\xBB\xBF")) json_text[3..] else json_text;
     // parseFromSliceLeaky is ideal with an ArenaAllocator — no separate Parsed wrapper needed
-    const root_val = try std.json.parseFromSliceLeaky(std.json.Value, arena, json_text, .{});
+    const root_val = try std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{});
 
     if (root_val != .object) return error.InvalidInkJson;
     const obj = root_val.object;
