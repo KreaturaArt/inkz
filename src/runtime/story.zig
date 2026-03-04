@@ -113,7 +113,7 @@ fn writeRtObjJson(w: *std.Io.Writer, obj: RuntimeObject) !void {
                 .pop_function => "~ret", .pop_tunnel => "->->",
                 .begin_string => "str", .end_string => "/str",
                 .no_op => "nop", .choice_count => "choiceCnt",
-                .turns_since => "turns", .turn_index => "turn",
+                .turns_since => "turns", .read_count => "readc", .turn_index => "turn",
                 .visit_index => "visit", .sequence_shuffle_index => "seq",
                 .seed_random => "srnd", .start_tag => "#", .end_tag => "/#",
                 .list_from_int => "listInt", .list_range => "range",
@@ -302,11 +302,12 @@ pub const Story = struct {
         // Jump to choice target (target_path is already an absolute path)
         const target_ptr = self.resolvePath(choice.target_path, self.state.call_stack.currentElement().current_pointer) orelse
             return error.DivertTargetNotFound;
-        // Record a visit to the target container so once-only choices work correctly.
-        if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
         self.state.call_stack.currentElement().current_pointer = target_ptr;
         self.state.did_safe_exit = false;
         self.state.current_turn_index += 1;
+        // Record a visit to the target container so once-only choices work correctly.
+        // Turn index must be incremented first so turns_since() reflects the new turn.
+        if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
         self.state.current_choices.clearRetainingCapacity();
     }
 
@@ -843,7 +844,7 @@ pub const Story = struct {
                     const fn_elem = self.state.call_stack.currentElement();
                     const fn_output_start = fn_elem.output_stream_index_at_push;
                     try self.state.call_stack.pop(.function);
-                    trimNewlinesFromOutputStream(&self.state.output_stream);
+                    trimNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                     trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                     self.advancePointer();
                     continue;
@@ -1132,9 +1133,9 @@ pub const Story = struct {
             .pop_function => {
                 const fn_output_start = self.state.call_stack.currentElement().output_stream_index_at_push;
                 try self.state.call_stack.pop(.function);
-                // Trim trailing newlines the function body may have left in the output stream.
-                // These are structural newlines from conditional blocks in pure computation functions.
-                trimNewlinesFromOutputStream(&self.state.output_stream);
+                // Trim trailing newlines the function body may have left in the output stream,
+                // but only from fn_output_start onward to preserve output written before the call.
+                trimNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                 trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                 self.advancePointer(); // advance past the function call divert
                 return .ok;
@@ -1230,6 +1231,22 @@ pub const Story = struct {
                 const turn = self.state.turn_indices.get(path_str);
                 const result: i64 = if (turn) |t| @intCast(self.state.current_turn_index - t) else -1;
                 try self.state.evaluation_stack.append(self.allocator,.{ .int = result });
+                self.advancePointer();
+                return .ok;
+            },
+            .read_count => {
+                // Pop a divert_target and push the visit count for that path (0 if unvisited).
+                const val = self.state.evaluation_stack.pop() orelse .void;
+                const path_str = switch (val) {
+                    .divert_target => |p| p,
+                    else => {
+                        try self.state.evaluation_stack.append(self.allocator,.{ .int = 0 });
+                        self.advancePointer();
+                        return .ok;
+                    },
+                };
+                const count = self.state.visit_counts.get(path_str) orelse 0;
+                try self.state.evaluation_stack.append(self.allocator,.{ .int = @intCast(count) });
                 self.advancePointer();
                 return .ok;
             },
@@ -1852,10 +1869,11 @@ pub const Story = struct {
         }
     }
 
-    /// Remove trailing "\n" RuntimeObjects from the output stream.
-    /// Called after a function returns to discard structural newlines from conditional blocks.
-    fn trimNewlinesFromOutputStream(stream: *std.ArrayList(RuntimeObject)) void {
-        while (stream.items.len > 0) {
+    /// Remove trailing "\n" RuntimeObjects from the output stream, but only from `from` onward.
+    /// Called after a function returns to discard structural newlines from conditional blocks
+    /// without affecting output written before the function was called.
+    fn trimNewlinesFromOutputStream(stream: *std.ArrayList(RuntimeObject), from: usize) void {
+        while (stream.items.len > from) {
             const last = stream.items[stream.items.len - 1];
             if (last == .string and std.mem.eql(u8, last.string, "\n")) {
                 stream.items.len -= 1;
@@ -2389,6 +2407,158 @@ test "Story read_count_across_callstack" {
         "1) Seen first 1 times.\nIn second.\n2) Seen first 1 times.\n",
         out,
     );
+}
+
+// ── TASK-49: builtin fixture tests ───────────────────────────────────────────
+
+test "Story read_count_dot_separated_path" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/read_count_dot_separated_path.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // tunnels to hi.stitch_to_count 3 times (each outputs "hi\n"), then CNT?=3
+    try std.testing.expectEqualStrings("hi\nhi\nhi\n3\n", out);
+}
+
+test "Story read_count_variable_target" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/read_count_variable_target.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // knot tunneled 3 times; read count via variable, literal path, and CNT? all agree
+    try std.testing.expectEqualStrings("Count start: 0 0 0\n1\n2\n3\nCount end: 3 3 3\n", out);
+}
+
+test "Story read_count_across_threads" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/read_count_across_threads.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // thread forks aside (choice filtered by condition=false); main outputs CNT?(top) twice
+    try std.testing.expectEqualStrings("1\n1\n", out);
+    try std.testing.expectEqual(@as(usize, 0), story.currentChoices().len);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story turns_since_nested" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/turns_since_nested.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Before any choice: turns_since(c-0) = -1
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("-1 = -1\n", out1);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    // After "stuff": turns_since(c-0) = 0 (same turn as entry)
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqualStrings("stuff\n0 = 0\n", out2);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    // After "more stuff": turns_since(outer c-0) = 1 (entered one turn ago)
+    try story.chooseChoiceIndex(0);
+    const out3 = try story.cont();
+    defer alloc.free(out3);
+    try std.testing.expectEqualStrings("more stuff\n1 = 1\n", out3);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story turns_since_with_variable_target" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/turns_since_with_variable_target.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // start visited at turn 0; beats(start) = turns_since(start) = 0
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("0\n0\n", out1);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    // After choice: turn=1; beats(start) = turns_since(start) = 1
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "1\n") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story turns (turn_index cycles)" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/turns.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Initial cont via c-0 divert: outputs turn_index (= 0) then loops to choice
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "0") != null);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    // After choosing: turn increments to 1
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "1") != null);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+}
+
+test "Story visit_count_bug_due_to_nested_containers" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/visit_count_bug_due_to_nested_containers.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // The gather container is entered once; CNT?(".^") must be 1, not 2
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("1\n", out1);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    // After choosing, g-0 outputs CNT?("0.gather") which is still 1
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "1\n") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story visit_counts_when_choosing" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/visit_counts_when_choosing.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Root is immediately done; navigate explicitly to TestKnot
+    try story.choosePathString("TestKnot");
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "this is a test") != null);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "this is the end") != null);
+    try std.testing.expect(!story.canContinue());
 }
 
 test "turn_indices updated when entering flagged container" {
