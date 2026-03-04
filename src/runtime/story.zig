@@ -2238,6 +2238,37 @@ test "Story callstack_evaluation" {
     try std.testing.expectEqualStrings("8\n", out);
 }
 
+// ── TASK-50: callstack fixture tests ─────────────────────────────────────────
+
+test "Story call_stack_evaluation" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "callstack/call_stack_evaluation.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // six() + two() = 8
+    try std.testing.expectEqualStrings("8\n", out);
+}
+
+test "Story clean_callstack_reset_on_path_choice" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "callstack/clean_callstack_reset_on_path_choice.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Initial run: RunAThing outputs both lines as a void function
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("The first line.\nThe second line.\n", out1);
+    // Jump to SomewhereElse knot and continue
+    try story.choosePathString("SomewhereElse");
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqualStrings("somewhere else\n", out2);
+}
+
 // ── TASK-24: Path resolution unit tests ──────────────────────────────────────
 
 test "resolvePath absolute named container" {
