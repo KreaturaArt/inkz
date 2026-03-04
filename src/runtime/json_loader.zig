@@ -187,7 +187,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, obj: std.json.ObjectMap) P
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
             .is_conditional = obj.get("c") != null,
-            .is_variable = false,
+            .is_variable = obj.get("var") != null,
             .push_pop_type = .tunnel,
             .external_args = 0,
         } };
