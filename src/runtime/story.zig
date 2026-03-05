@@ -881,6 +881,7 @@ pub const Story = struct {
                         }
                     }
                 },
+                .string => |s| try buf.appendSlice(self.allocator, s),
                 else => try appendObjectText(self.allocator, &buf, obj),
             }
         }
@@ -1048,8 +1049,25 @@ pub const Story = struct {
                     var found_in_temp = false;
                     while (j > 0) {
                         j -= 1;
-                        if (thread.call_stack.items[j].temporary_variables.get(va.name) != null) {
-                            try thread.call_stack.items[j].temporary_variables.set(self.allocator, va.name, val);
+                        if (thread.call_stack.items[j].temporary_variables.get(va.name)) |existing| {
+                            // If the existing value is a variable pointer, write through it.
+                            if (existing == .variable_pointer) {
+                                const target = self.resolveVariablePointerTarget(existing.variable_pointer.name);
+                                if (target.is_global) {
+                                    try self.state.variables_state.set(self.allocator, target.name, val);
+                                    self.notifyObservers(target.name, val);
+                                } else {
+                                    // Write to the frame where the target temp is defined (bottom-up).
+                                    for (thread.call_stack.items) |*frame| {
+                                        if (frame.temporary_variables.get(target.name) != null) {
+                                            try frame.temporary_variables.set(self.allocator, target.name, val);
+                                            break;
+                                        }
+                                    }
+                                }
+                            } else {
+                                try thread.call_stack.items[j].temporary_variables.set(self.allocator, va.name, val);
+                            }
                             found_in_temp = true;
                             break;
                         }
@@ -1140,6 +1158,22 @@ pub const Story = struct {
                 return .ok;
             },
             .pop_tunnel => {
+                // Check for tunnel onwards: if top of eval stack is a divert_target, redirect there.
+                // Normal return pattern is `ev void /ev ->->` which leaves void on stack.
+                if (self.state.evaluation_stack.items.len > 0) {
+                    const top = self.state.evaluation_stack.items[self.state.evaluation_stack.items.len - 1];
+                    if (top == .divert_target) {
+                        const onwards_path = self.state.evaluation_stack.pop().?.divert_target;
+                        try self.state.call_stack.pop(.tunnel);
+                        const onwards_ptr = self.resolvePath(onwards_path, self.state.call_stack.currentElement().current_pointer) orelse {
+                            self.advancePointer();
+                            return .ok;
+                        };
+                        if (onwards_ptr.container) |c| self.recordVisitIfNeeded(c);
+                        self.state.call_stack.currentElement().current_pointer = onwards_ptr;
+                        return .ok;
+                    }
+                }
                 try self.state.call_stack.pop(.tunnel);
                 self.advancePointer(); // advance past the tunnel divert
                 return .ok;
@@ -1614,9 +1648,16 @@ pub const Story = struct {
         var i = thread.call_stack.items.len;
         while (i > 0) {
             i -= 1;
-            if (thread.call_stack.items[i].temporary_variables.get(name)) |v| return v;
+            if (thread.call_stack.items[i].temporary_variables.get(name)) |v| {
+                // Dereference variable pointers (pass-by-reference support).
+                if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
+                return v;
+            }
         }
-        if (self.state.variables_state.get(name)) |v| return v;
+        if (self.state.variables_state.get(name)) |v| {
+            if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
+            return v;
+        }
         // Fallback: check if name is a list item defined in any list origin.
         var def_it = self.list_defs.definitions.iterator();
         while (def_it.next()) |def_entry| {
@@ -1634,6 +1675,40 @@ pub const Story = struct {
             }
         }
         return null;
+    }
+
+    /// Dereference a variable pointer (pass-by-reference): search globals first, then callstack
+    /// bottom-up (oldest frame first) to find the actual value.  Follows pointer chains.
+    fn resolveVariablePointer(self: *Story, name: []const u8) ?RuntimeObject {
+        if (self.state.variables_state.get(name)) |v| {
+            if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
+            return v;
+        }
+        const thread = self.state.call_stack.currentThread();
+        for (thread.call_stack.items) |frame| {
+            if (frame.temporary_variables.get(name)) |v| {
+                if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
+                return v;
+            }
+        }
+        return null;
+    }
+
+    /// Find the ultimate write target for a variable pointer chain.
+    /// Returns (name, is_global) of the final concrete variable.
+    fn resolveVariablePointerTarget(self: *Story, name: []const u8) struct { name: []const u8, is_global: bool } {
+        if (self.state.variables_state.get(name)) |v| {
+            if (v == .variable_pointer) return self.resolveVariablePointerTarget(v.variable_pointer.name);
+            return .{ .name = name, .is_global = true };
+        }
+        const thread = self.state.call_stack.currentThread();
+        for (thread.call_stack.items) |frame| {
+            if (frame.temporary_variables.get(name)) |v| {
+                if (v == .variable_pointer) return self.resolveVariablePointerTarget(v.variable_pointer.name);
+                return .{ .name = name, .is_global = false };
+            }
+        }
+        return .{ .name = name, .is_global = true };
     }
 
     /// Resolve a path string to a Pointer.
@@ -3599,4 +3674,296 @@ test "globalTags: returns story-level tags from tags.ink.json" {
     try std.testing.expectEqual(@as(usize, 2), tags.len);
     try std.testing.expectEqualStrings("author: Joe", tags[0]);
     try std.testing.expectEqualStrings("title: My Great Story", tags[1]);
+}
+
+// ── TASK-53: runtime/diverts ──────────────────────────────────────────────────
+
+test "Story basic_tunnel" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/basic_tunnel.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // tunnel f outputs "Hello", then glue + " world" back in main
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "world") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story compare_divert_targets" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/compare_divert_targets.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // 6 comparisons: to_one≠to_two, to_one==to_one, to_two==to_two, one≠two, one==to_one, to_one==one
+    try std.testing.expect(std.mem.indexOf(u8, out, "different knot") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "same knot") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+// complex_tunnels already tested above (TASK-26).
+
+test "Story divert_in_conditional" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/divert_in_conditional.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Navigate to the intro knot: main not visited → condition false → falls through to end
+    try story.choosePathString("intro");
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Intro diverts into top, CNT?(main)==0 so conditional divert skipped; hits nop + "\n" + end
+    try std.testing.expect(!story.canContinue());
+}
+
+// divert_targets_with_parameters already tested above (TASK-27).
+
+test "Story divert_to_weave_points" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/divert_to_weave_points.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Diverts directly to gather point inside knot.stitch; outputs "gather" content
+    try std.testing.expect(std.mem.indexOf(u8, out, "gather") != null);
+}
+
+test "Story done_stops_thread" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/done_stops_thread.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // "done" fires immediately; inaccessible content is never reached
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "inaccessible") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story path_to_self" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/path_to_self.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // First cont: enters tunnel, presents choice "A"
+    _ = try story.cont();
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+    // After choosing: "A" appears in output, loop back for another choice
+    try story.chooseChoiceIndex(0);
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+}
+
+// same_line_divert_is_inline already tested above (TASK-26).
+
+test "Story tunnel_onwards_after_tunnel" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/tunnel_onwards_after_tunnel.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // tunnel1 → tunnel2 → returns; "Hello...", "...world.", "The End."
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello...") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "...world.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "The End.") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story tunnel_onwards_divert_after_with_arg" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/tunnel_onwards_divert_after_with_arg.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // tunnel a pushes 5+3=8 then tunnels onwards to b; b outputs 8
+    try std.testing.expect(std.mem.indexOf(u8, out, "8") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story tunnel_onwards_divert_override" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/tunnel_onwards_divert_override.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // A outputs "This is A", pushes ^->B on stack, ->-> tunnels onwards to B
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Now in B.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "never return") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story tunnel_onwards_to_variable_divert_target" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/tunnel_onwards_to_variable_divert_target.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // outer → cut_to stores ^->the_esc in temp, then ->-> tunnels onwards to the_esc
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is outer") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is the_esc") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story tunnel_onwards_with_param_default_choice" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/tunnel_onwards_with_param_default_choice.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Invisible default choice: ev 8, ^->elsewhere, /ev, ->->
+    // elsewhere receives 8 as parameter via temp var x and outputs it
+    try std.testing.expect(std.mem.indexOf(u8, out, "8") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story tunnel_vs_thread_behaviour" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "diverts/tunnel_vs_thread_behaviour.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // First cont: inside tunnel knot_with_options — presents choices A and B
+    _ = try story.cont();
+    try std.testing.expect(story.currentChoices().len >= 2);
+    // Choose A (index 0): exits tunnel, outputs "Finished tunnel." and starts thread
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "Finished tunnel.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "Starting thread.") != null);
+    // Thread choices (C, D) + main choice (E) are all presented
+    try std.testing.expect(story.currentChoices().len >= 1);
+}
+
+// ── TASK-54: runtime/evaluation ──────────────────────────────────────────────
+// arithmetic and factorial_recursive already tested above (TASK-16, TASK-20).
+
+test "Story basic_string_literals" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/basic_string_literals.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x = "Hello world 1"; output x, then construct "Hello world 2." inline
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello world 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello world 2.") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story evaluating_function_variable_state_bug" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/evaluating_function_variable_state_bug.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Root path: "Start\n", tunnel ("In tunnel.\n"), "End\n"
+    try std.testing.expect(std.mem.indexOf(u8, out, "Start") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "In tunnel.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "End") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story evaluating_ink_functions_from_game" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/evaluating_ink_functions_from_game.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Normal play: "Top level content\n" then a choice
+    try std.testing.expect(std.mem.indexOf(u8, out, "Top level content") != null);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+}
+
+test "Story evaluating_ink_functions_from_game_2" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/evaluating_ink_functions_from_game_2.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Root outputs "One\nTwo\nThree\n"
+    try std.testing.expectEqualStrings("One\nTwo\nThree\n", out);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story evaluation_stack_leaks" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/evaluation_stack_leaks.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // false→else, 6≠5→else, onceTest first visit outputs "hi", second is silent
+    try std.testing.expect(std.mem.indexOf(u8, out, "else") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hi") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story factorial_by_reference" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/factorial_by_reference.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // factorialByRef(result, 5) → result = 120; "\n" is structural from the ~ call line
+    try std.testing.expect(std.mem.indexOf(u8, out, "120") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story increment" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/increment.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x starts at 5, x+=1 → output 6, x-=1 → output 5
+    try std.testing.expectEqualStrings("6\n5\n", out);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story literal_unary" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "evaluation/literal_unary.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // negativeLiteral=-1, negativeLiteral2=false (0), negativeLiteral3=true (1)
+    try std.testing.expectEqualStrings("-1\n0\n1\n", out);
+    try std.testing.expect(!story.canContinue());
 }

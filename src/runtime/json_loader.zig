@@ -230,7 +230,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, obj: std.json.ObjectMap) P
     if (obj.get("temp=")) |n| {
         return .{ .variable_assignment = .{
             .name = try arena.dupe(u8, n.string),
-            .is_new_decl = true,
+            .is_new_decl = obj.get("re") == null,
             .is_global = false,
         } };
     }

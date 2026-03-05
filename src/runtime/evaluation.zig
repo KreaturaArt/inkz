@@ -382,6 +382,10 @@ fn valuesEqual(lhs: RuntimeObject, rhs: RuntimeObject) bool {
             .list => |r| return listEquals(l, r),
             else => return false,
         },
+        .divert_target => |l| switch (rhs) {
+            .divert_target => |r| return std.mem.eql(u8, l, r),
+            else => return false,
+        },
         else => return false,
     }
 }
