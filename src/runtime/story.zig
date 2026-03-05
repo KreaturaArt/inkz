@@ -3020,6 +3020,77 @@ test "Story various_default_choices" {
     try std.testing.expect(!story.canContinue());
 }
 
+// ── TASK-52: conditions fixture tests ────────────────────────────────────────
+
+test "Story all_switch_branches_fail_is_clean" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "conditions/all_switch_branches_fail_is_clean.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Switch on 1: neither 1==2 nor 1==3 matches; stack is popped cleanly; outputs "\n"
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("\n", out);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story conditionals" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "conditions/conditionals.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Multiple conditions: false/else, 5>4, 2*2>3, nested else, switch w/ match
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "true") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "great") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "not true") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story else_branches" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "conditions/else_branches.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // x=3; conditions x==1 and x==2 both fail; else branch outputs "other" each time
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "other") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "one") == null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "two") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story empty_multiline_conditional_branch" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "conditions/empty_multiline_conditional_branch.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Switch on 3: 3==3 matches empty branch; 3==4 skipped; "txt" not output
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "txt") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story trivial_condition" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "conditions/trivial_condition.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Condition false: "beep" is not output; just structural newline(s)
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "beep") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
 test "tags: start_tag/end_tag collects tag strings; content still output" {
     // tags.ink.json has two story-level tags before content.
     const alloc = std.testing.allocator;
