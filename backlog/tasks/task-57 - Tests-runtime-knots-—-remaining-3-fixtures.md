@@ -1,9 +1,10 @@
 ---
 id: TASK-57
 title: 'Tests: runtime/knots — remaining 3 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:24'
+updated_date: '2026-03-06 10:44'
 labels:
   - tests
   - knots

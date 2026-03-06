@@ -1,9 +1,10 @@
 ---
 id: TASK-47
 title: Full fixture integration test harness
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-02-23 19:46'
+updated_date: '2026-03-06 14:02'
 labels:
   - layer-15
   - integration

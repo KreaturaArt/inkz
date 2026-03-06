@@ -1,9 +1,10 @@
 ---
 id: TASK-54
 title: 'Tests: runtime/evaluation — remaining 7 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:23'
+updated_date: '2026-03-06 10:43'
 labels:
   - tests
   - evaluation

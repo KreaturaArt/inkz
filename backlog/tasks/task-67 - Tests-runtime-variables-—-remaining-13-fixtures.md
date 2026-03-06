@@ -1,9 +1,10 @@
 ---
 id: TASK-67
 title: 'Tests: runtime/variables — remaining 13 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:24'
+updated_date: '2026-03-06 13:58'
 labels:
   - tests
   - variables

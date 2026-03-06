@@ -1,9 +1,10 @@
 ---
 id: TASK-61
 title: 'Tests: runtime/multiflow — 1 remaining fixture'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:24'
+updated_date: '2026-03-06 13:58'
 labels:
   - tests
   - multiflow
