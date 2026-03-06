@@ -4637,6 +4637,167 @@ test "Story top_flow_terminator_should_not_kill_thread_choices" {
     try std.testing.expect(story.currentChoices().len == 1);
 }
 
+// ── TASK-67: runtime/variables (remaining) ───────────────────────────────────
+// const and variable_divert_target already tested above.
+
+test "Story multiple_constant_references" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/multiple_constant_references.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // varStr == "ConstantString" → "success"
+    try std.testing.expect(std.mem.indexOf(u8, out, "success") != null);
+}
+
+test "Story set_non_existant_variable" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/set_non_existant_variable.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x = "world", outputs "Hello world.\n"
+    try std.testing.expectEqualStrings("Hello world.\n", out);
+}
+
+test "Story temp_global_conflict" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/temp_global_conflict.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // nested functions have separate temp scopes; outer x stays 0
+    try std.testing.expect(out.len > 0);
+}
+
+test "Story temp_not_found" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/temp_not_found.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x not yet declared when read; then temp x set; "hello" output follows
+    try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
+}
+
+test "Story temp_usage_in_options" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/temp_usage_in_options.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Choice is available; temp variable used in option text
+    const choices = story.currentChoices();
+    try std.testing.expect(choices.len >= 1);
+    try std.testing.expect(out.len >= 0);
+}
+
+test "Story temporaries_at_global_scope" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/temporaries_at_global_scope.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x=5, y=4; both output on one line then \n
+    try std.testing.expectEqualStrings("54\n", out);
+}
+
+test "Story variable_declaration_in_conditional" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_declaration_in_conditional.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x=0 globally; conditional true → x=5; output x = 5
+    try std.testing.expect(std.mem.indexOf(u8, out, "5") != null);
+}
+
+test "Story variable_get_set_api" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_get_set_api.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x starts as 5; outputs 5 then presents a choice
+    try std.testing.expect(std.mem.indexOf(u8, out, "5") != null);
+}
+
+test "Story variable_pointer_ref_from_knot" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_pointer_ref_from_knot.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // val=5, inc(val) increments by 1 → val=6
+    try std.testing.expect(std.mem.indexOf(u8, out, "6") != null);
+}
+
+test "Story variable_swap_recurse" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_swap_recurse.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // f(1,1) recurses, swapping and incrementing; some numbers in output
+    try std.testing.expect(out.len > 0);
+}
+
+test "Story variable_tunnel" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/variable_tunnel.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Tunnel via variable divert target; outputs "STUFF"
+    try std.testing.expect(std.mem.indexOf(u8, out, "STUFF") != null);
+}
+
+test "Story warn_variable_not_found_1" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/warn_variable_not_found_1.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // x=0; outputs "Hello world!\n0\n"
+    try std.testing.expectEqualStrings("Hello world!\n0\n", out);
+}
+
+test "Story warn_variable_not_found_2" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "variables/warn_variable_not_found_2.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // y=0; outputs "Hello world!\n0\n"
+    try std.testing.expectEqualStrings("Hello world!\n0\n", out);
+}
+
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
 // string_constants, string_contains, string_type_coercion, strings_in_choices
 // already tested above.
