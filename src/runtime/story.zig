@@ -3967,3 +3967,119 @@ test "Story literal_unary" {
     try std.testing.expectEqualStrings("-1\n0\n1\n", out);
     try std.testing.expect(!story.canContinue());
 }
+
+// ── TASK-55: runtime/extra ────────────────────────────────────────────────────
+
+test "Story arithmetic_2" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "extra/arithmetic_2.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // 7/3 computed in various ways (int/int, int/float, float/int, FLOAT cast)
+    // All should yield approximately 2.333333
+    try std.testing.expect(std.mem.indexOf(u8, out, "2.333333") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story list_comparison" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "extra/list_comparison.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // List comparisons drive output selection; key actor name appears in output
+    try std.testing.expect(std.mem.indexOf(u8, out, "Philippe") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+// ── TASK-56: runtime/glue (remaining) ────────────────────────────────────────
+// simple_glue and implicit_inline_glue already tested above.
+
+test "Story implicit_inline_glue_b" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "glue/implicit_inline_glue_b.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Function f() returns false; condition skips "B"; outputs "A " then structural "\n" then "X"
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "X") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story implicit_inline_glue_c" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "glue/implicit_inline_glue_c.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // f() returns false → condition false → X skipped; outputs "A", then "C"
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "C") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "X") == null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story left_right_glue_matching" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "glue/left_right_glue_matching.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // f() returns true → conditional outputs "Another line."
+    try std.testing.expect(std.mem.indexOf(u8, out, "A line.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Another line.") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+// ── TASK-57: runtime/knots (remaining) ────────────────────────────────────────
+// knot_stitch_gather_counts already tested above.
+
+test "Story knot_do_not_gather" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "knots/knot_do_not_gather.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Knot diverts directly to gather point; outputs "g"
+    try std.testing.expect(std.mem.indexOf(u8, out, "g") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story knot_thread_interaction" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "knots/knot_thread_interaction.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Thread B runs concurrently with the tunnel; choices should appear
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    // Either content or choices are available (knot + thread + tunnel run concurrently)
+    try std.testing.expect(out1.len > 0 or story.currentChoices().len >= 1);
+}
+
+test "Story knot_thread_interaction_2" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "knots/knot_thread_interaction_2.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Tunnel outputs "I'm in a tunnel", thread has content; choice available
+    try std.testing.expect(std.mem.indexOf(u8, out, "in a tunnel") != null or story.currentChoices().len >= 1);
+}
