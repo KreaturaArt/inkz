@@ -4501,6 +4501,47 @@ test "Story leading_newline_multiline_sequence" {
     try std.testing.expect(out.len >= 0);
 }
 
+// ── TASK-61: runtime/multiflow (remaining) ───────────────────────────────────
+
+test "Story multi_flow_save_load_threads" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "multiflow/multi_flow_save_load_threads.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    // Default flow: "Default line 1\nDefault line 2\n"
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "Default line 1") != null);
+
+    // Switch to "red" flow and run the red knot
+    try story.switchFlow("red");
+    try story.choosePathString("red");
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "Hello I'm red") != null);
+
+    // Two thread choices should be available
+    const choices = story.currentChoices();
+    try std.testing.expect(choices.len == 2);
+
+    // Save state and reload
+    const saved = try story.toJson(alloc);
+    defer alloc.free(saved);
+    try story.loadStateFromJson(saved);
+
+    // After reload choices should still be present
+    const choices2 = story.currentChoices();
+    try std.testing.expect(choices2.len == 2);
+
+    // Choose thread 1 and verify output
+    try story.chooseChoiceIndex(0);
+    const out3 = try story.cont();
+    defer alloc.free(out3);
+    try std.testing.expect(out3.len > 0);
+}
+
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
 // string_constants, string_contains, string_type_coercion, strings_in_choices
 // already tested above.
