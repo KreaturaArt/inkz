@@ -4,9 +4,9 @@
 
 The ink pipeline broadly consists of 3 stages:
 
- * The ink parser - interprets the ink text files to a hierarchy of objects
- * The runtime code generation
- * The runtime engine itself
+* The ink parser - interprets the ink text files to a hierarchy of objects
+* The runtime code generation
+* The runtime engine itself
 
 The following is a fairly brief tour of these 3 stages, hopefully enough to give you a foundation for exploring the codebase yourself.
 
@@ -82,8 +82,8 @@ These runtime objects are built by the `Parsed.Object` hierarchy, however not im
 
 Instead, the hard work of converting the parsed hierarchy into runtime code is saved for two steps that are done later:
 
- * Main code generation
- * Resolving of references
+* Main code generation
+* Resolving of references
 
 In most cases, a single `Parsed.Object` is converted to one or more `Runtime.Object`, through the following function:
 
@@ -145,7 +145,7 @@ Alongside the content that's designed to be seen by the player, additional comma
 
 Some important and useful features of the main runtime engine in `story.zig`:
 
- * `cont()` is the top level point where iteration of the content happens, and has this rough structure internally:
+* `cont()` is the top level point where iteration of the content happens, and has this rough structure internally:
 
 ```zig
 while (try self.step() or self.tryFollowDefaultInvisibleChoice()) {}

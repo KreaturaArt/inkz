@@ -1938,10 +1938,11 @@ pub const Story = struct {
     }
 
     fn recordVisitIfNeeded(self: *Story, c: *Container) void {
-        if (!c.flags.visits_should_be_counted) return;
-        const entry = self.state.visit_counts.getOrPut(self.allocator, c.path) catch return;
-        if (!entry.found_existing) entry.value_ptr.* = 0;
-        entry.value_ptr.* += 1;
+        if (c.flags.visits_should_be_counted) {
+            const entry = self.state.visit_counts.getOrPut(self.allocator, c.path) catch return;
+            if (!entry.found_existing) entry.value_ptr.* = 0;
+            entry.value_ptr.* += 1;
+        }
         if (c.flags.turn_index_should_be_counted) {
             self.state.turn_indices.put(self.allocator, c.path, self.state.current_turn_index) catch {};
         }
@@ -2605,6 +2606,27 @@ test "Story turns_since_with_variable_target" {
     defer alloc.free(out2);
     try std.testing.expect(std.mem.indexOf(u8, out2, "1\n") != null);
     try std.testing.expect(!story.canContinue());
+}
+
+test "Story turns_since" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "builtins/turns_since.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    // initially: turns_since(test) = -1; after calling test(): turns_since(test) = 0
+    try std.testing.expect(std.mem.indexOf(u8, out1, "-1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "0") != null);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "1") != null);
+    try story.chooseChoiceIndex(0);
+    const out3 = try story.cont();
+    defer alloc.free(out3);
+    try std.testing.expect(std.mem.indexOf(u8, out3, "2") != null);
 }
 
 test "Story turns (turn_index cycles)" {
@@ -4194,6 +4216,25 @@ test "Story more_list_operations" {
     try std.testing.expect(!story.canContinue());
 }
 
+test "Story list_random" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "lists/list_random.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // list l = {B, C, D}; outputs 10 random elements from the list
+    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, out, "\n"));
+    var it = std.mem.splitScalar(u8, std.mem.trimEnd(u8, out, "\n"), '\n');
+    while (it.next()) |line| {
+        const valid = std.mem.eql(u8, line, "B") or
+            std.mem.eql(u8, line, "C") or
+            std.mem.eql(u8, line, "D");
+        try std.testing.expect(valid);
+    }
+}
+
 // ── TASK-59: runtime/logic ────────────────────────────────────────────────────
 
 test "Story logic_lines_with_newlines" {
@@ -4503,6 +4544,22 @@ test "Story leading_newline_multiline_sequence" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expect(out.len >= 0);
+}
+
+test "Story shuffle_stack_muddying" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "sequences/shuffle_stack_muddying.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // condFunc shuffles 4 items (false, true, true, false) → exactly 2 choices visible
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqual(@as(usize, 2), story.currentChoices().len);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(!story.canContinue());
 }
 
 // ── TASK-61: runtime/multiflow (remaining) ───────────────────────────────────
@@ -4911,8 +4968,37 @@ test "Story weave_within_sequence" {
 }
 
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
-// string_constants, string_contains, string_type_coercion, strings_in_choices
-// already tested above.
+// string_constants and string_type_coercion already tested above.
+
+test "Story string_contains" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "strings/string_contains.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // "hello world" ? "o wo" = 1; "hello world" ? "something else" = 0
+    // "hello" ? "" = 1; "" ? "" = 1
+    try std.testing.expectEqualStrings("1\n0\n1\n1\n", out);
+}
+
+test "Story strings_in_choices" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "strings/strings_in_choices.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    // choice inner content includes test1 and test4 string evaluations
+    try std.testing.expect(std.mem.indexOf(u8, out2, "test1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "test4") != null);
+}
 
 // ── TASK-69: runtime/bindings (remaining) ────────────────────────────────────
 // external_binding and variable_observer already tested above.

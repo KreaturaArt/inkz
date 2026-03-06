@@ -333,6 +333,8 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             const lhs = stack.pop().?;
             if (lhs == .list and rhs == .list) {
                 try stack.append(allocator, .{ .int = if (listContainsAll(lhs.list, rhs.list)) 1 else 0 });
+            } else if (lhs == .string and rhs == .string) {
+                try stack.append(allocator, .{ .int = if (std.mem.indexOf(u8, lhs.string, rhs.string) != null) 1 else 0 });
             } else {
                 try stack.append(allocator, .{ .int = 0 });
             }
@@ -342,6 +344,8 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             const lhs = stack.pop().?;
             if (lhs == .list and rhs == .list) {
                 try stack.append(allocator, .{ .int = if (!listContainsAll(lhs.list, rhs.list)) 1 else 0 });
+            } else if (lhs == .string and rhs == .string) {
+                try stack.append(allocator, .{ .int = if (std.mem.indexOf(u8, lhs.string, rhs.string) == null) 1 else 0 });
             } else {
                 try stack.append(allocator, .{ .int = 1 });
             }
