@@ -1,9 +1,10 @@
 ---
 id: TASK-55
 title: 'Tests: runtime/extra — 2 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:23'
+updated_date: '2026-03-06 10:44'
 labels:
   - tests
   - extra

@@ -1,9 +1,10 @@
 ---
 id: TASK-53
 title: 'Tests: runtime/diverts — remaining 11 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:23'
+updated_date: '2026-03-06 10:43'
 labels:
   - tests
   - diverts

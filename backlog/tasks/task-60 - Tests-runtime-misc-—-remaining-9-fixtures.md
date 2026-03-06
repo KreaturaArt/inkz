@@ -1,9 +1,10 @@
 ---
 id: TASK-60
 title: 'Tests: runtime/misc — remaining 9 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:24'
+updated_date: '2026-03-06 10:44'
 labels:
   - tests
   - misc

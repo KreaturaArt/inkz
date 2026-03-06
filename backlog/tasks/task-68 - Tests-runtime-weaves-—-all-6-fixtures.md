@@ -1,9 +1,10 @@
 ---
 id: TASK-68
 title: 'Tests: runtime/weaves — all 6 fixtures'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-02 20:24'
+updated_date: '2026-03-06 13:59'
 labels:
   - tests
   - weaves
