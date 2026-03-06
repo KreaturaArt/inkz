@@ -1568,7 +1568,11 @@ pub const Story = struct {
         const elem = self.state.call_stack.currentElement();
 
         // External function call: dispatch before normal path resolution.
-        if (d.external_args > 0) {
+        // Triggered when external_args > 0 OR when push_pop_type == .function
+        // and the target is a registered external function.
+        const is_external_call = d.external_args > 0 or
+            (d.push_pop_type == .function and self.external_functions.contains(d.target));
+        if (is_external_call) {
             self.advancePointer();
             const func = self.external_functions.get(d.target) orelse return error.FunctionNotBound;
             // Args were pushed left-to-right; pop right-to-left then reverse.
@@ -4909,3 +4913,62 @@ test "Story weave_within_sequence" {
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
 // string_constants, string_contains, string_type_coercion, strings_in_choices
 // already tested above.
+
+// ── TASK-69: runtime/bindings (remaining) ────────────────────────────────────
+// external_binding and variable_observer already tested above.
+
+fn extNoOp(_: []const RuntimeObject) ?RuntimeObject {
+    return null;
+}
+
+fn extGameInc(args: []const RuntimeObject) ?RuntimeObject {
+    const x: i64 = switch (args[0]) {
+        .int => |n| n,
+        else => 0,
+    };
+    return .{ .int = x + 1 };
+}
+
+test "Story game_ink_back_and_forth" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "bindings/game_ink_back_and_forth.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Bind gameInc as an external that increments x
+    try story.bindExternalFunction("gameInc", extGameInc, .{});
+    // Call topExternal(5) via evaluateFunction — it calls gameInc(5)=6 and returns
+    var text_out = std.ArrayList(u8).empty;
+    defer text_out.deinit(alloc);
+    _ = try story.evaluateFunction("topExternal", &.{.{ .int = 5 }}, &text_out);
+    // topExternal outputs "In top external\n" to text_out
+    try std.testing.expect(std.mem.indexOf(u8, text_out.items, "In top external") != null);
+}
+
+test "Story lookup_safe_or_not" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "bindings/lookup_safe_or_not.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    try story.bindExternalFunction("myAction", extNoOp, .{});
+    const out = try story.cont();
+    defer alloc.free(out);
+    // "One\n" + (void myAction) + "\n" + "Two\n"
+    try std.testing.expect(std.mem.indexOf(u8, out, "One") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Two") != null);
+}
+
+test "Story lookup_safe_or_not_with_post_glue" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "bindings/lookup_safe_or_not_with_post_glue.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    try story.bindExternalFunction("myAction", extNoOp, .{});
+    const out = try story.cont();
+    defer alloc.free(out);
+    // "One\n" + (void myAction) + glue + " Two\n" — glue absorbs preceding newline
+    try std.testing.expect(std.mem.indexOf(u8, out, "One") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Two") != null);
+}
