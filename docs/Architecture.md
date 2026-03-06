@@ -6,7 +6,7 @@ High-level diagrams for the Zig ink runtime and compiler. All diagrams use [Merm
 
 ## 1. Full Pipeline Overview
 
-The ink toolchain has two distinct stages: a **compiler** (`.ink` → `.json`) and a **runtime** (`.json` → story output).
+The ink toolchain has two distinct stages: a **compiler** (`.ink` → `.ink.json`) and a **runtime** (`.ink.json` → story output). Both stages share the same **Data Oriented Programming (DOP) AST** — the compiler builds and serializes it to `.ink.json`; the runtime deserializes `.ink.json` back into the same DOP AST and executes it directly. All memory allocation happens at startup or during parsing; there is **zero dynamic allocation** during story execution.
 
 ```mermaid
 flowchart LR
@@ -16,9 +16,9 @@ flowchart LR
         Tokenizer["Tokenizer\n(labeled switch)"]
         Parser["Recursive Descent\nParser"]
         ParsedAST["Parsed AST\nParsed.Story"]
-        CodeGen["Code Generator\ngenerateRuntimeObject()"]
+        CodeGen["DOP AST Builder\ngenerateRuntimeObject()"]
         RefResolve["Reference Resolver\nresolveReferences()"]
-        JSON[".ink.json"]
+        JSON[".ink.json\n(serialized DOP AST)"]
 
         ink --> Tokenizer --> Parser --> ParsedAST --> CodeGen --> RefResolve --> JSON
     end
@@ -26,12 +26,12 @@ flowchart LR
     subgraph Runtime["Stage 2 — Runtime"]
         direction TB
         JSONIn[".ink.json"]
-        Loader["JSON Loader\nStory.initFromJson()"]
-        StoryObj["Runtime.Story"]
-        Engine["Step Loop\ncont() / step()"]
+        Loader["JSON Deserializer\nStory.initFromJson()"]
+        DOPASTNode["DOP AST\n(same structure as compiler output)\nall memory allocated at startup"]
+        Engine["Step Loop\ncont() / step()\nzero allocation during execution"]
         Output["Text Output\n+ Choices"]
 
-        JSONIn --> Loader --> StoryObj --> Engine --> Output
+        JSONIn --> Loader --> DOPASTNode --> Engine --> Output
     end
 
     JSON -->|embed or load| JSONIn
@@ -46,9 +46,9 @@ flowchart LR
 
 ---
 
-## 2. Runtime Object Model
+## 2. DOP AST Object Model (Compiler & Runtime)
 
-The runtime is built from a single general-purpose `Container` type and a tagged union `RuntimeObject` for all content.
+The DOP AST is the shared intermediate representation used by both the compiler (to serialize to `.ink.json`) and the runtime (deserialized from `.ink.json` at startup). It is built from a single general-purpose `Container` type and a tagged union `RuntimeObject` for all content. Node data is stored in flat arrays (see `MultiArrayList` in Guidelines); no virtual dispatch or heap allocation occurs during execution.
 
 ```mermaid
 classDiagram
@@ -273,30 +273,30 @@ flowchart TD
 
 ---
 
-## 5. Code Generation & Reference Resolution
+## 5. DOP AST Construction & Serialization
 
-Two-pass code generation converts the parsed AST into the flat, container-based runtime format.
+Two-pass code generation converts the parsed AST into the shared DOP AST, which is then serialized to `.ink.json`. The runtime deserializes that JSON back into the same DOP AST structure — there is no separate "runtime format".
 
 ```mermaid
 sequenceDiagram
     participant P as Parsed.Story
     participant CG as generateRuntimeObject()
-    participant RC as Runtime.Container
+    participant DA as DOP AST (Container)
     participant RR as resolveReferences()
-    participant RS as Runtime.Story
+    participant JS as JSON Serializer
 
     P->>CG: exportRuntime(allocator)
     loop for each Parsed.Object
-        CG->>RC: create Runtime.Object(s)
-        Note over CG,RC: Knots/Stitches/Choices → nested Containers
+        CG->>DA: create Container / RuntimeObject node(s)
+        Note over CG,DA: Knots/Stitches/Choices → nested Containers
     end
-    CG->>RS: assemble root container
+    CG->>DA: assemble root container
 
     P->>RR: resolveReferences(context)
     loop for each Parsed.Divert / Parsed.Choice
-        RR->>RC: patch target_path from name → runtime Path
+        RR->>DA: patch target_path from name → runtime Path
     end
-    RR-->>RS: fully linked Runtime.Story
+    RR-->>JS: fully linked DOP AST → serialize to .ink.json
 ```
 
 ---
@@ -388,10 +388,18 @@ flowchart LR
 
 ## 8. Memory Strategy
 
-The runtime is designed to minimise heap allocation during story evaluation.
+**All** memory allocation happens at startup or during JSON parsing/deserialization. There is **zero dynamic heap allocation** during story execution (`step()`, `cont()`). The DOP AST nodes are allocated once into the Story Arena and remain immutable for the lifetime of the story.
 
 ```mermaid
 flowchart TD
+    subgraph Phases["Allocation Phases"]
+        direction LR
+        P1["Startup / Parse\n(Story.initFromJson)\nall DOP AST nodes allocated"]
+        P2["Runtime Execution\n(cont / step)\nzero allocation"]
+        P3["State transitions\n(save / load / reset)\nState Arena recycled"]
+        P1 --> P2 --> P3
+    end
+
     subgraph Arenas["Allocator Strategy"]
         GA["GeneralPurposeAllocator\nor ArenaAllocator"]
         StoryArena["Story Arena\n(freed on story.deinit)"]
@@ -404,7 +412,7 @@ flowchart TD
     GA --> TurnArena
 
     subgraph Owned["Owned at each level"]
-        StoryArena --> SC["Static content:\nContainers, Strings,\nList definitions"]
+        StoryArena --> SC["DOP AST nodes:\nContainers, RuntimeObjects,\nStrings, List definitions\n(immutable after init)"]
         StateArena --> SS["Mutable state:\nCallStack, VariablesState,\nVisit counts"]
         TurnArena --> SO["Per-turn output:\ntext lines, choice text,\ntag slices"]
     end

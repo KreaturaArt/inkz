@@ -55,6 +55,19 @@ pub fn next(t: *Tokenizer, src: [:0]const u8, skip_comments: bool) Token {
 
 
 
+## Shared DOP AST & Zero Runtime Allocation
+
+The compiler and runtime share the same **Data Oriented Programming (DOP) AST**:
+
+- The compiler builds the DOP AST from `.ink` source and serializes it to `.ink.json`.
+- The runtime deserializes `.ink.json` into the **same** DOP AST structure at startup (`Story.initFromJson()`).
+- **All memory allocation must happen at startup or during JSON deserialization.** There must be **zero dynamic heap allocation** during story execution (`step()`, `cont()`).
+
+This means:
+- Do not call `allocator.alloc` / `ArrayList.append` inside `step()` or any function called from the hot evaluation path.
+- Pre-allocate buffers, use fixed-size stack arrays, or slice into already-allocated memory.
+- Output strings should be slices into the source JSON buffer or a pre-allocated intern pool.
+
 ## AST Parsers
 
 Node data should be stored as a MultiArrayList, the tree is represented by parent_idx, first_child_idx and child_len all idx should index into this one MultiArrayList.
