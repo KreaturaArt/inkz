@@ -16,8 +16,6 @@ The runtime should deserialize the .ink.json file into the same Data Oriented Pr
 
 The runtime should not have any dynamic memory allocation at runtime, all memory allocation should happen at startup or during the parsing & processing of the input files.
 
-
-
 # 23.2.2026
 
 In this project we want to create a zig 0.16 rewrite of Ink is inkle's scripting language

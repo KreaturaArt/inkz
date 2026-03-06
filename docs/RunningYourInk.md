@@ -34,7 +34,7 @@ pub const Script = struct {
 
 ## Getting started with the runtime API
 
-As mentioned above, your `.ink` file(s) are compiled to a single `.json` file. You can embed this directly in your binary at compile time or load it from disk at runtime.
+As mentioned above, your `.ink` file(s) are compiled to a single `.ink.json` file. This file contains the serialized **Data Oriented Programming (DOP) AST** — the shared intermediate representation used by both the compiler and the runtime. When you load it with `Story.initFromJson()`, all DOP AST nodes are allocated once at startup; there is **zero dynamic heap allocation** during story execution. You can embed this file directly in your binary at compile time or load it from disk at startup.
 
 The API for loading and running your story is very straightforward. Construct a new `Story` by passing in the JSON string. For example:
 
@@ -464,7 +464,7 @@ list.contains(other_list)   // equivalent to (list ? other_list) in ink
 
 ## Using the compiler
 
-Precompiling your stories is more efficient than loading `.ink` at runtime. That said, it's a useful approach for some situations, and can be done with the following code:
+Precompiling your stories to `.ink.json` is strongly recommended. The compiler builds the DOP AST and serializes it once; the runtime then deserializes it at startup with no further allocation during execution. Loading `.ink` directly at runtime skips the serialization step but produces the same in-memory DOP AST — useful for development, but less efficient for shipped builds. It can be done with the following code:
 
 ```zig
 // ink_source: e.g. @embedFile("story.ink") or loaded from disk

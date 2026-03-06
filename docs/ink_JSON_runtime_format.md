@@ -1,6 +1,6 @@
 # ink's JSON runtime format
 
-When ink is compiled to JSON, it is converted to a low level format for use by the runtime, and is made up of smaller, simpler building blocks. For an overview of the full pipeline, including a description of the runtime itself see the [Architecture and Development documentation](ArchitectureAndDevOverview.md).
+When ink is compiled to JSON, it is serialized from the **Data Oriented Programming (DOP) AST** — the shared intermediate representation used by both the compiler and the runtime. The runtime deserializes this JSON back into the same DOP AST structure at startup, with all memory allocated once and **zero dynamic allocation** during story execution. The format is made up of smaller, simpler building blocks (Containers, Values, Control Commands, etc.). For an overview of the full pipeline, including a description of the shared DOP AST, see the [Architecture and Development documentation](ArchitectureAndDevOverview.md).
 
 ## Top level
 
