@@ -4607,6 +4607,36 @@ test "Story tags_on_choice" {
     try std.testing.expect(std.mem.indexOf(u8, out2, "Hello") != null);
 }
 
+// ── TASK-66: runtime/threads (remaining) ─────────────────────────────────────
+// thread_done and multi_thread already tested above.
+
+test "Story thread_in_logic" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "threads/thread_in_logic.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Main flow tunnels `once` twice; first visit spawns a thread with "Content"
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Content") != null);
+    try std.testing.expect(!story.canContinue());
+}
+
+test "Story top_flow_terminator_should_not_kill_thread_choices" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "threads/top_flow_terminator_should_not_kill_thread_choices.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Main flow: thread "move" (which offers "boop" choice) + "Limes\n" + done
+    // The done at end of main flow must not kill thread choices
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Limes") != null);
+    try std.testing.expect(story.currentChoices().len == 1);
+}
+
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
 // string_constants, string_contains, string_type_coercion, strings_in_choices
 // already tested above.
