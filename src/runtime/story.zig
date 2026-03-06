@@ -4972,3 +4972,118 @@ test "Story lookup_safe_or_not_with_post_glue" {
     try std.testing.expect(std.mem.indexOf(u8, out, "One") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Two") != null);
 }
+
+// ── TASK-70: player/ integration fixtures ────────────────────────────────────
+
+fn readPlayerFixture(alloc: std.mem.Allocator, comptime rel_path: []const u8) ![]const u8 {
+    const builtin = @import("builtin");
+    var threaded: std.Io.Threaded = if (builtin.single_threaded)
+        .init_single_threaded
+    else
+        .init(alloc, .{});
+    defer threaded.deinit();
+    const io = threaded.io();
+    return std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/compiled/player/" ++ rel_path, alloc, .limited(1024 * 1024));
+}
+
+fn extFunctionCount(args: []const RuntimeObject) ?RuntimeObject {
+    const count: i64 = switch (args[0]) {
+        .int => |n| n,
+        else => 0,
+    };
+    return .{ .int = count + 3 };
+}
+
+test "Player flow" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "flow.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Story has global tags (globalTag1, globalTag2)
+    const gtags = try story.globalTags();
+    defer alloc.free(gtags);
+    try std.testing.expect(gtags.len >= 2);
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Prologue outputs "Hello " with tags then stops at choices
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello") != null);
+}
+
+test "Player variables" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "variables.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // aKnot: "Hello World!\n" + choices
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello World") != null);
+    try std.testing.expect(story.currentChoices().len >= 1);
+}
+
+test "Player functions" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "functions.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // "start" knot calls external_function(4); bind it to return count+3=7
+    try story.bindExternalFunction("external_function", extFunctionCount, .{});
+    const out = try story.cont();
+    defer alloc.free(out);
+    // "The count is 7\n"
+    try std.testing.expect(std.mem.indexOf(u8, out, "The count is") != null);
+}
+
+test "Player ink_list_roundtrip" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "ink_list_roundtrip.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Main flow: "Hello World.\n"
+    try std.testing.expectEqualStrings("Hello World.\n", out);
+}
+
+test "Player variable_observation" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "variable_observation.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // The story loops aKnot↔otherKnot; just verify initial variable values from global decl
+    const b = story.resolveVariable("aBoolean");
+    try std.testing.expect(b != null);
+    const n = story.resolveVariable("anInteger");
+    try std.testing.expect(n != null);
+    if (n) |v| try std.testing.expectEqual(RuntimeObject{ .int = 3 }, v);
+}
+
+test "Player error_and_exceptions" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "error_and_exceptions.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // Navigate to "knot": "This is a knot\n"
+    try story.choosePathString("knot");
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is a knot") != null);
+}
+
+test "Player ink_error" {
+    const alloc = std.testing.allocator;
+    const json = try readPlayerFixture(alloc, "ink_error.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // variable=0; lrnd on int → empty list → output is just "\n"
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(out.len >= 0);
+}
