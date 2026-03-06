@@ -72,32 +72,36 @@ The `string` rule is like `parseString` except that it **constructs rules** rath
 
 Other transformers and structuring concepts exist, but hopefully this should give you enough of a taste to get started.
 
-## Runtime code generation
+## DOP AST construction (compiler code generation)
 
-The parsed hierarchy closely resembles the ink as it was originally written. However, the data that's loaded by the ink engine at runtime is very different. It's built out of smaller, more fundamental units, sort of like byte code, though not that low level. This content is exported to a JSON based format ready to be loaded by the runtime engine within the game. For more information on this format, [see the documentation](ink_JSON_runtime_format.md).
+The parsed hierarchy closely resembles the ink as it was originally written. The compiler's job is to convert it into the **Data Oriented Programming (DOP) AST** — a flat, container-based representation that is shared by both the compiler and the runtime.
 
-In the runtime, there's no concept of Knots, Stitches, Weave, or other high level ink structures. Instead, the runtime consists mainly of general purpose `Runtime.Container` objects and content, represented as `Runtime.Object` tagged unions.
+The DOP AST is built out of smaller, more fundamental units (sort of like byte code, though not that low level). This AST is serialized to a JSON-based format (`.ink.json`) by the compiler, and deserialized back into the **same DOP AST structure** by the runtime at startup. For more information on the JSON format, [see the documentation](ink_JSON_runtime_format.md).
 
-These runtime objects are built by the `Parsed.Object` hierarchy, however not immediately. The `init` functions of `Parsed.Object` types are kept as lightweight as possible, since the rewinding of the parser when rules fail can potentially cause them to be built and destroyed multiple times before a final successful hierarchy is produced.
+> **Key architectural constraint**: the runtime has **no dynamic memory allocation** during story execution. All DOP AST nodes are allocated once during `Story.initFromJson()` and remain immutable for the lifetime of the story.
 
-Instead, the hard work of converting the parsed hierarchy into runtime code is saved for two steps that are done later:
+In the DOP AST, there's no concept of Knots, Stitches, Weave, or other high level ink structures. Instead, the AST consists mainly of general purpose `Container` objects and content, represented as `RuntimeObject` tagged unions.
 
-* Main code generation
+These DOP AST nodes are built from the `Parsed.Object` hierarchy, however not immediately. The `init` functions of `Parsed.Object` types are kept as lightweight as possible, since the rewinding of the parser when rules fail can potentially cause them to be built and destroyed multiple times before a final successful hierarchy is produced.
+
+Instead, the hard work of converting the parsed hierarchy into the DOP AST is saved for two steps done later:
+
+* Main DOP AST construction
 * Resolving of references
 
-In most cases, a single `Parsed.Object` is converted to one or more `Runtime.Object`, through the following function:
+In most cases, a single `Parsed.Object` is converted to one or more `RuntimeObject` nodes, through the following function:
 
 ```zig
-pub fn generateRuntimeObject(self: *Parsed.Object, allocator: Allocator) !*Runtime.Object { ... }
+pub fn generateRuntimeObject(self: *Parsed.Object, allocator: Allocator) !*RuntimeObject { ... }
 ```
 
-At the top level, this code generation process is kicked off by the `Parsed.Story` in:
+At the top level, this construction process is kicked off by the `Parsed.Story` in:
 
 ```zig
-pub fn exportRuntime(self: *Parsed.Story, allocator: Allocator) !*Runtime.Story
+pub fn exportRuntime(self: *Parsed.Story, allocator: Allocator) !*Story
 ```
 
-Once the full runtime hierarchy has been constructed, references are resolved. This has to be done in a separate pass, since the target of references (such as divert targets - knot names etc) may not exist yet until the full hierarchy exists.
+Once the full DOP AST has been constructed, references are resolved. This has to be done in a separate pass, since the target of references (such as divert targets — knot names etc) may not exist until the full AST exists.
 
 Each `Parsed.Object` can implement:
 
@@ -113,13 +117,15 @@ if (self.target_content) |target| {
 }
 ```
 
+After reference resolution, the fully linked DOP AST is serialized to `.ink.json`. The runtime then deserializes this JSON back into the same DOP AST structure via `Story.initFromJson()`, with all allocation happening at that point.
+
 ## Runtime ink engine
 
-As mentioned above, the runtime code is built out of smaller, simpler, objects compared to the ink as it's parsed directly.
+The runtime operates directly on the **DOP AST** deserialized from `.ink.json` at startup. Because the compiler and runtime share the same AST structure, there is no translation step at runtime — `Story.initFromJson()` allocates all nodes once, and `step()` traverses them with zero further allocation.
 
 All the higher level structures, including the story itself, any knots and stitches, and even choices, are built out of containers. Within the containers, content is iterated through sequentially, and appended to the output.
 
-This structure is loaded by the ink engine in a [JSON based format](ink_JSON_runtime_format.md).
+This structure is loaded by the ink engine from a [JSON based format](ink_JSON_runtime_format.md).
 
 ### Containers
 
