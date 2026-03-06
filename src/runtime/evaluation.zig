@@ -71,8 +71,10 @@ fn createListIntersect(allocator: std.mem.Allocator, lhs: *const InkList, rhs: *
     return result;
 }
 
-/// Returns true if every item in rhs is present in lhs.
+/// Returns true if rhs is non-empty and every item in rhs is present in lhs.
+/// Ink semantics: `anything ? {}` is always false (empty list on right → false).
 fn listContainsAll(lhs: *const InkList, rhs: *const InkList) bool {
+    if (rhs.items.count() == 0) return false;
     var it = rhs.items.iterator();
     while (it.next()) |e| {
         if (!lhs.items.contains(e.key_ptr.*)) return false;
