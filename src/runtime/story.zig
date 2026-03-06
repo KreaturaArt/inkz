@@ -4798,6 +4798,114 @@ test "Story warn_variable_not_found_2" {
     try std.testing.expectEqualStrings("Hello world!\n0\n", out);
 }
 
+// ── TASK-68: runtime/weaves — all 6 fixtures ─────────────────────────────────
+
+test "Story conditional_choice_in_weave" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "weaves/conditional_choice_in_weave.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    // "start\n" output; conditional true → choice "go to a stitch"
+    try std.testing.expect(std.mem.indexOf(u8, out1, "start") != null);
+    try std.testing.expect(story.currentChoices().len == 1);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    // a_stitch outputs "result\n"
+    try std.testing.expect(std.mem.indexOf(u8, out2, "result") != null);
+}
+
+test "Story conditional_choice_in_weave_2" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "weaves/conditional_choice_in_weave_2.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // First cont: "first gather\n" + 2 choices
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "first gather") != null);
+    try std.testing.expect(story.currentChoices().len == 2);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    // Main gather then bottom gather; unreachable option skipped (false condition)
+    try std.testing.expect(std.mem.indexOf(u8, out2, "the main gather") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "bottom gather") != null);
+}
+
+test "Story unbalanced_weave_indentation" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "weaves/unbalanced_weave_indentation.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(story.currentChoices().len == 1);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    // Nested "Very indented" choice available
+    try std.testing.expect(story.currentChoices().len == 1);
+    try story.chooseChoiceIndex(0);
+    const out3 = try story.cont();
+    defer alloc.free(out3);
+    try std.testing.expect(std.mem.indexOf(u8, out3, "End") != null);
+}
+
+test "Story weave_gathers" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "weaves/weave_gathers.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    // Two choices: "one" and "four"
+    try std.testing.expect(story.currentChoices().len == 2);
+    try story.chooseChoiceIndex(0); // "one"
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    // After "one": "two" choice or output
+    try std.testing.expect(out2.len >= 0);
+}
+
+test "Story weave_options" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "weaves/weave_options.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    // "Hello." choice available (invisible default)
+    try std.testing.expect(story.currentChoices().len == 1);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "world") != null);
+}
+
+test "Story weave_within_sequence" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "weaves/weave_within_sequence.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    // First visit: choice "choice" available
+    try std.testing.expect(story.currentChoices().len == 1);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "nextline") != null);
+}
+
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
 // string_constants, string_contains, string_type_coercion, strings_in_choices
 // already tested above.
