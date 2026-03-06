@@ -4542,6 +4542,71 @@ test "Story multi_flow_save_load_threads" {
     try std.testing.expect(out3.len > 0);
 }
 
+// ── TASK-65: runtime/tags (remaining) ────────────────────────────────────────
+// tags.ink.json already tested above (multiple tests).
+
+test "Story tags_dynamic_content" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "tags/tags_dynamic_content.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    // Output includes "tag " text; tag has dynamic content (pic<n><colour>.jpg)
+    try std.testing.expect(std.mem.indexOf(u8, out, "tag") != null);
+    const tags = story.currentTags();
+    try std.testing.expect(tags.len > 0);
+    try std.testing.expect(std.mem.indexOf(u8, tags[0], "pic") != null);
+}
+
+test "Story tags_in_choice" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "tags/tags_in_choice.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // cont() builds the choice list; story stops at choice point
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    const choices = story.currentChoices();
+    try std.testing.expect(choices.len == 1);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(out2.len > 0);
+}
+
+test "Story tags_in_seq" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "tags/tags_in_seq.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // First cont: knot called twice via tunnels; first visit produces tag "red"
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "sequence") != null);
+}
+
+test "Story tags_on_choice" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "tags/tags_on_choice.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    // cont() advances to the choice point
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    const choices = story.currentChoices();
+    try std.testing.expect(choices.len == 1);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    // After choosing, text "Hello" is output
+    try std.testing.expect(std.mem.indexOf(u8, out2, "Hello") != null);
+}
+
 // ── TASK-64: runtime/strings (remaining) ─────────────────────────────────────
 // string_constants, string_contains, string_type_coercion, strings_in_choices
 // already tested above.

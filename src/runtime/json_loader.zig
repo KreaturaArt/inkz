@@ -256,6 +256,10 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, obj: std.json.ObjectMap) P
             .context_index = ctx,
         } };
     }
+    // inkVersion 20: inline tag objects {"#":"tag_text"} — stored as void (tags not captured)
+    if (obj.get("#")) |_| {
+        return .void;
+    }
     if (obj.get("list")) |list_val| {
         const ink_list = try arena.create(value.InkList);
         ink_list.* = .{};
