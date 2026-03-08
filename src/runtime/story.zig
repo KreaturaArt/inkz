@@ -10,6 +10,8 @@ const lists = @import("lists.zig");
 
 pub const RuntimeObject = value.RuntimeObject;
 pub const Container = value.Container;
+pub const NamedEntry = value.NamedEntry;
+pub const null_container_idx = value.null_container_idx;
 pub const ControlCommand = value.ControlCommand;
 pub const NativeFunction = value.NativeFunction;
 pub const PushPopType = value.PushPopType;
@@ -51,12 +53,12 @@ const SavedFlow = struct {
 };
 
 /// Write a Pointer as {"cPath":"...","idx":N} or {"cPath":null,"idx":-1}.
-fn writePointerJson(w: *std.Io.Writer, ptr: Pointer) !void {
-    if (ptr.isNull() or ptr.container == null) {
+fn writePointerJson(w: *std.Io.Writer, ptr: Pointer, containers: []const Container) !void {
+    if (ptr.isNull()) {
         try w.writeAll("{\"cPath\":null,\"idx\":-1}");
     } else {
         try w.writeAll("{\"cPath\":");
-        try std.json.Stringify.encodeJsonString(ptr.container.?.path, .{}, w);
+        try std.json.Stringify.encodeJsonString(containers[ptr.container_idx].path, .{}, w);
         try w.print(",\"idx\":{d}}}", .{ptr.index});
     }
 }
@@ -127,7 +129,12 @@ fn writeRtObjJson(w: *std.Io.Writer, obj: RuntimeObject) !void {
 }
 
 pub const Story = struct {
-    root: *Container,
+    /// Flat array of all containers; root is containers[0]. Arena-owned.
+    containers: []Container,
+    /// Global named-child table; each Container holds a slice range. Arena-owned.
+    named_entries: []NamedEntry,
+    /// Map from container path string → index in containers. Arena-owned.
+    path_to_idx: std.StringHashMapUnmanaged(u32) = .{},
     state: StoryState,
     /// Arena owns the container tree (static content)
     arena: std.heap.ArenaAllocator,
@@ -157,27 +164,35 @@ pub const Story = struct {
         var st = try StoryState.init(allocator);
         errdefer st.deinit();
 
-        // Set initial pointer to root container index 0
+        // Set initial pointer to root container (index 0) at position 0.
         st.call_stack.currentElement().current_pointer = .{
-            .container = loaded.root,
+            .container_idx = 0,
             .index = 0,
         };
 
         const list_defs = try lists.ListDefinitionsOrigin.parse(arena.allocator(), loaded.list_defs_json);
 
+        // Build path_to_idx map (used for save/load pointer resolution).
+        var path_to_idx = std.StringHashMapUnmanaged(u32){};
+        for (loaded.containers, 0..) |c, i| {
+            try path_to_idx.put(arena.allocator(), c.path, @intCast(i));
+        }
+
         var story = Story{
-            .root = loaded.root,
+            .containers = loaded.containers,
+            .named_entries = loaded.named_entries,
+            .path_to_idx = path_to_idx,
             .state = st,
             .arena = arena,
             .allocator = allocator,
             .list_defs = list_defs,
         };
 
-        // Execute global declarations if present
-        if (loaded.root.named_content.get("global decl")) |global_decl| {
+        // Execute global declarations if present.
+        if (story.namedLookup(0, "global decl")) |global_decl_idx| {
             const saved_ptr = story.state.call_stack.currentElement().current_pointer;
             story.state.call_stack.currentElement().current_pointer = .{
-                .container = global_decl,
+                .container_idx = global_decl_idx,
                 .index = 0,
             };
             while (true) {
@@ -200,6 +215,8 @@ pub const Story = struct {
         self.external_functions.deinit(self.allocator);
         self.observers.deinit(self.allocator);
         self.state.deinit();
+        // Deinit path_to_idx before arena (both use arena allocator).
+        self.path_to_idx.deinit(self.arena.allocator());
         self.arena.deinit();
         self.current_tags.deinit(self.allocator);
     }
@@ -209,11 +226,25 @@ pub const Story = struct {
         return self.current_tags.items;
     }
 
+    /// Return a pointer to the container at `idx` in the flat array.
+    pub fn containerAt(self: *const Story, idx: u32) *Container {
+        return &self.containers[idx];
+    }
+
+    /// Linear search for a named child of `container_idx`. Returns child index or null.
+    pub fn namedLookup(self: *const Story, container_idx: u32, name: []const u8) ?u32 {
+        const c = &self.containers[container_idx];
+        for (self.named_entries[c.first_named .. c.first_named + c.named_len]) |e| {
+            if (std.mem.eql(u8, e.name, name)) return e.container_idx;
+        }
+        return null;
+    }
+
     /// Return the number of times a path (knot/stitch) has been visited.
     pub fn visitCountAtPathString(self: *const Story, path: []const u8) u32 {
-        const ptr = self.resolvePath(path, .{ .container = null, .index = -1 }) orelse return 0;
-        const c = ptr.container orelse return 0;
-        return self.state.visit_counts.get(c.path) orelse 0;
+        const ptr = self.resolvePath(path, Pointer.null_value) orelse return 0;
+        if (ptr.isNull()) return 0;
+        return self.state.visit_counts.get(self.containers[ptr.container_idx].path) orelse 0;
     }
 
     /// Return the name of the currently-active flow.
@@ -230,17 +261,18 @@ pub const Story = struct {
     /// Scans recursively into the first inner container if needed.
     /// The returned slice is caller-owned (allocated with self.allocator).
     pub fn globalTags(self: *Story) ![][]const u8 {
-        return self.tagsLeadingContent(self.root);
+        return self.tagsLeadingContent(0);
     }
 
-    /// Collect tag strings from the leading tag sequences of `c`, descending into
-    /// inner containers at index 0 as needed.
-    fn tagsLeadingContent(self: *Story, c: *Container) ![][]const u8 {
+    /// Collect tag strings from the leading tag sequences of the container at `container_idx`,
+    /// descending into inner containers at index 0 as needed.
+    fn tagsLeadingContent(self: *Story, container_idx: u32) ![][]const u8 {
         var tags = std.ArrayList([]const u8).empty;
         defer tags.deinit(self.allocator);
         var in_tag = false;
         var tag_buf = std.ArrayList(u8).empty;
         defer tag_buf.deinit(self.allocator);
+        const c = &self.containers[container_idx];
         for (c.content) |obj| {
             switch (obj) {
                 .control_command => |cmd| switch (cmd) {
@@ -257,8 +289,8 @@ pub const Story = struct {
                     try tag_buf.appendSlice(self.allocator, s);
                 } else break,
                 // Descend into the first inner container
-                .container => |inner| if (!in_tag and tags.items.len == 0) {
-                    const inner_tags = try self.tagsLeadingContent(inner);
+                .container => |inner_idx| if (!in_tag and tags.items.len == 0) {
+                    const inner_tags = try self.tagsLeadingContent(inner_idx);
                     defer self.allocator.free(inner_tags);
                     try tags.appendSlice(self.allocator, inner_tags);
                 } else if (!in_tag) break,
@@ -270,9 +302,9 @@ pub const Story = struct {
 
     /// Jump directly to a named path (knot/stitch) by absolute path string.
     pub fn choosePathString(self: *Story, path: []const u8) !void {
-        const target_ptr = self.resolvePath(path, .{ .container = null, .index = -1 }) orelse
+        const target_ptr = self.resolvePath(path, Pointer.null_value) orelse
             return error.PathNotFound;
-        if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
+        if (!target_ptr.isNull()) self.recordVisitIfNeeded(target_ptr.container_idx);
         self.state.call_stack.currentElement().current_pointer = target_ptr;
         self.state.did_safe_exit = false;
         self.state.current_choices.clearRetainingCapacity();
@@ -307,7 +339,7 @@ pub const Story = struct {
         self.state.current_turn_index += 1;
         // Record a visit to the target container so once-only choices work correctly.
         // Turn index must be incremented first so turns_since() reflects the new turn.
-        if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
+        if (!target_ptr.isNull()) self.recordVisitIfNeeded(target_ptr.container_idx);
         self.state.current_choices.clearRetainingCapacity();
     }
 
@@ -342,7 +374,7 @@ pub const Story = struct {
         } else {
             // Brand-new flow: fresh callstack pointing at the story root.
             var new_cs = try callstack_mod.CallStack.init(self.allocator);
-            new_cs.currentElement().current_pointer = .{ .container = self.root, .index = 0 };
+            new_cs.currentElement().current_pointer = .{ .container_idx = 0, .index = 0 };
             self.state.call_stack = new_cs;
             self.state.output_stream = std.ArrayList(RuntimeObject).empty;
             self.state.evaluation_stack = std.ArrayList(RuntimeObject).empty;
@@ -420,8 +452,8 @@ pub const Story = struct {
         defer self.allocator.free(saved_json);
 
         // 2. Find the function container by name.
-        const func_container = self.root.named_content.get(name) orelse return error.FunctionNotFound;
-        const func_ptr = Pointer{ .container = func_container, .index = 0 };
+        const func_container_idx = self.namedLookup(0, name) orelse return error.FunctionNotFound;
+        const func_ptr = Pointer{ .container_idx = func_container_idx, .index = 0 };
 
         // 3. Prepare isolated state for this call:
         //    - Null out the parent frame so the loop stops after pop_function + advancePointer.
@@ -487,7 +519,7 @@ pub const Story = struct {
             try w.writeAll("{\"threadIndex\":");
             try w.print("{d}", .{thread.thread_index});
             try w.writeAll(",\"previousPointer\":");
-            try writePointerJson(w, thread.previous_pointer);
+            try writePointerJson(w, thread.previous_pointer, self.containers);
             try w.writeAll(",\"callstack\":[");
             for (thread.call_stack.items, 0..) |*elem, ei| {
                 if (ei > 0) try w.writeByte(',');
@@ -498,7 +530,7 @@ pub const Story = struct {
                     try w.writeAll("0");
                 }
                 try w.writeAll(",\"ptr\":");
-                try writePointerJson(w, elem.current_pointer);
+                try writePointerJson(w, elem.current_pointer, self.containers);
                 try w.print(",\"exp\":{s}", .{if (elem.in_expression_evaluation) "true" else "false"});
                 try w.print(",\"osi\":{d}", .{elem.output_stream_index_at_push});
                 try w.writeAll(",\"temp\":{");
@@ -731,27 +763,8 @@ pub const Story = struct {
         const cpath_val = o.get("cPath") orelse return Pointer.null_value;
         if (cpath_val == .null) return Pointer.null_value;
         const cpath = cpath_val.string;
-        const container = self.findContainerByPath(cpath) orelse return Pointer.null_value;
-        return .{ .container = container, .index = idx };
-    }
-
-    /// Walk the container tree to find the one whose .path == target_path.
-    fn findContainerByPath(self: *Story, target_path: []const u8) ?*Container {
-        return searchContainer(self.root, target_path);
-    }
-
-    fn searchContainer(c: *Container, target: []const u8) ?*Container {
-        if (std.mem.eql(u8, c.path, target)) return c;
-        for (c.content) |obj| {
-            if (obj == .container) {
-                if (searchContainer(obj.container, target)) |found| return found;
-            }
-        }
-        var it = c.named_content.valueIterator();
-        while (it.next()) |sub| {
-            if (searchContainer(sub.*, target)) |found| return found;
-        }
-        return null;
+        const container_idx = self.path_to_idx.get(cpath) orelse return Pointer.null_value;
+        return .{ .container_idx = container_idx, .index = idx };
     }
 
     /// Parse a RuntimeObject from a JSON value (same format as used in toJson).
@@ -820,8 +833,8 @@ pub const Story = struct {
         while (self.state.current_choices.items.len == 0) {
             const target = self.default_choice_target orelse break;
             self.default_choice_target = null;
-            const target_ptr = self.resolvePath(target, .{ .container = null, .index = -1 }) orelse break;
-            if (target_ptr.container) |c| self.recordVisitIfNeeded(c);
+            const target_ptr = self.resolvePath(target, Pointer.null_value) orelse break;
+            if (!target_ptr.isNull()) self.recordVisitIfNeeded(target_ptr.container_idx);
             self.state.call_stack.currentElement().current_pointer = target_ptr;
             self.state.did_safe_exit = false;
             self.state.current_turn_index += 1;
@@ -951,22 +964,24 @@ pub const Story = struct {
 
         if (ptr.isNull()) return .stopped;
 
-        const container = ptr.container.?;
+        const container = &self.containers[ptr.container_idx];
         const idx = ptr.index;
         if (idx < 0 or idx >= @as(i32, @intCast(container.content.len))) {
             // Past end of this container.
             // If it's an inline sub-container (index_in_parent >= 0), step up to
             // the parent and continue from the next item there. This implements
             // natural "fall-through" after entering an inline conditional block.
-            var cur: *Container = container;
-            while (cur.index_in_parent >= 0) {
-                const parent = cur.parent orelse break;
+            var cur_idx = ptr.container_idx;
+            while (self.containers[cur_idx].index_in_parent >= 0) {
+                const cur = &self.containers[cur_idx];
+                const parent_idx = cur.parent_idx;
+                if (parent_idx == null_container_idx) break;
                 const next: i32 = cur.index_in_parent + 1;
-                if (next < @as(i32, @intCast(parent.content.len))) {
-                    elem.current_pointer = .{ .container = parent, .index = next };
+                if (next < @as(i32, @intCast(self.containers[parent_idx].content.len))) {
+                    elem.current_pointer = .{ .container_idx = parent_idx, .index = next };
                     return .ok;
                 }
-                cur = parent;
+                cur_idx = parent_idx;
             }
             // No inline parent to step into: null out and stop.
             elem.current_pointer = Pointer.null_value;
@@ -981,9 +996,9 @@ pub const Story = struct {
         const elem = self.state.call_stack.currentElement();
 
         switch (obj.*) {
-            .container => |c| {
-                self.recordVisitIfNeeded(c);
-                elem.current_pointer = .{ .container = c, .index = 0 };
+            .container => |cidx| {
+                self.recordVisitIfNeeded(cidx);
+                elem.current_pointer = .{ .container_idx = cidx, .index = 0 };
                 return .ok;
             },
             .void => {
@@ -1089,7 +1104,7 @@ pub const Story = struct {
                 if (vr.path_for_count) |path_str| {
                     const from_ptr = elem.current_pointer;
                     const count: u32 = if (self.resolvePath(path_str, from_ptr)) |p|
-                        if (p.container) |c| self.state.visit_counts.get(c.path) orelse 0 else 0
+                        if (!p.isNull()) self.state.visit_counts.get(self.containers[p.container_idx].path) orelse 0 else 0
                     else
                         0;
                     try self.state.evaluation_stack.append(self.allocator, .{ .int = @intCast(count) });
@@ -1169,7 +1184,7 @@ pub const Story = struct {
                             self.advancePointer();
                             return .ok;
                         };
-                        if (onwards_ptr.container) |c| self.recordVisitIfNeeded(c);
+                        if (!onwards_ptr.isNull()) self.recordVisitIfNeeded(onwards_ptr.container_idx);
                         self.state.call_stack.currentElement().current_pointer = onwards_ptr;
                         return .ok;
                     }
@@ -1234,15 +1249,16 @@ pub const Story = struct {
                 return .ok;
             },
             .visit_index => {
-                const container = elem.current_pointer.container orelse {
-                    try self.state.evaluation_stack.append(self.allocator,.{ .int = 0 });
+                if (elem.current_pointer.isNull()) {
+                    try self.state.evaluation_stack.append(self.allocator, .{ .int = 0 });
                     self.advancePointer();
                     return .ok;
-                };
-                const count = self.state.visit_counts.get(container.path) orelse 0;
+                }
+                const cpath = self.containers[elem.current_pointer.container_idx].path;
+                const count = self.state.visit_counts.get(cpath) orelse 0;
                 // 0-based visit index
                 const idx: i64 = if (count > 0) @intCast(count - 1) else 0;
-                try self.state.evaluation_stack.append(self.allocator,.{ .int = idx });
+                try self.state.evaluation_stack.append(self.allocator, .{ .int = idx });
                 self.advancePointer();
                 return .ok;
             },
@@ -1299,15 +1315,16 @@ pub const Story = struct {
                     .int => |n| n,
                     else => 1,
                 };
-                const cur_container = elem.current_pointer.container orelse {
-                    try self.state.evaluation_stack.append(self.allocator,.{ .int = 0 });
+                if (elem.current_pointer.isNull()) {
+                    try self.state.evaluation_stack.append(self.allocator, .{ .int = 0 });
                     self.advancePointer();
                     return .ok;
-                };
+                }
+                const cur_cpath = self.containers[elem.current_pointer.container_idx].path;
                 // seqCount is the raw (1-based) visit count of the sequence container.
-                const seq_count = self.state.visit_counts.get(cur_container.path) orelse 1;
+                const seq_count = self.state.visit_counts.get(cur_cpath) orelse 1;
                 const idx: i64 = if (count > 0) shuffleIndex(
-                    cur_container.path,
+                    cur_cpath,
                     seq_count,
                     @intCast(count),
                     self.state.story_seed,
@@ -1614,13 +1631,13 @@ pub const Story = struct {
         const target_ptr = self.resolvePath(target_path, elem.current_pointer) orelse {
             return error.DivertTargetNotFound;
         };
-        const target_container = target_ptr.container orelse return error.DivertTargetNotFound;
+        if (target_ptr.isNull()) return error.DivertTargetNotFound;
 
         // Only record a visit when entering a container from its start (index 0).
         // Diverts into the middle of a container (e.g. jump-back-to-nop in sequences)
         // must not count as a new visit.
         if (target_ptr.index == 0) {
-            self.recordVisitIfNeeded(target_container);
+            self.recordVisitIfNeeded(target_ptr.container_idx);
         }
 
         if (d.push_pop_type) |ppt| {
@@ -1717,88 +1734,76 @@ pub const Story = struct {
 
     /// Resolve a path string to a Pointer.
     ///
-    /// Absolute paths (no leading '.') are resolved from root, targeting the container at index 0.
+    /// Absolute paths (no leading '.') are resolved from root (containers[0]).
     ///
     /// Relative paths (leading '.') are resolved starting from `from_ptr`:
-    ///   - The first '^' component steps from the INSTRUCTION LEVEL to `from_ptr.container`.
-    ///   - Subsequent '^' components traverse `.parent` links.
+    ///   - The first '^' component steps from the INSTRUCTION LEVEL to `from_ptr.container_idx`.
+    ///   - Subsequent '^' components traverse `.parent_idx` links.
     ///   - A numeric component that hits a sub-container enters it (index 0).
-    ///   - A numeric component that hits a non-container returns {current_container, idx}.
-    ///   - A name component does a named_content lookup.
+    ///   - A numeric component that hits a non-container returns {current_container_idx, idx}.
+    ///   - A name component does a namedLookup().
     pub fn resolvePath(self: *const Story, path_str: []const u8, from_ptr: Pointer) ?Pointer {
-        if (path_str.len == 0) return Pointer{ .container = self.root, .index = 0 };
+        if (path_str.len == 0) return Pointer{ .container_idx = 0, .index = 0 };
 
         if (path_str[0] != '.') {
             // Absolute path: resolve from root.
-            // The final component may be a non-container index (execution position).
-            return resolvePointerAbs(self.root, path_str);
+            return self.resolvePointerAbs(path_str);
         }
 
         // Relative path: first '^' jumps from instruction to its container.
-        var current: ?*Container = null; // null = "instruction level"
+        var current: ?u32 = null; // null = "instruction level"
         var iter = std.mem.splitScalar(u8, path_str[1..], '.');
         while (iter.next()) |part| {
             if (part.len == 0) continue;
             if (std.mem.eql(u8, part, "^")) {
                 if (current == null) {
-                    current = from_ptr.container orelse return null;
+                    if (from_ptr.isNull()) return null;
+                    current = from_ptr.container_idx;
                 } else {
-                    current = current.?.parent orelse return null;
+                    const parent_idx = self.containers[current.?].parent_idx;
+                    if (parent_idx == null_container_idx) return null;
+                    current = parent_idx;
                 }
             } else if (std.fmt.parseInt(u32, part, 10)) |idx| {
-                const c = current orelse return null;
+                const cidx = current orelse return null;
+                const c = &self.containers[cidx];
                 if (idx >= c.content.len) return null;
                 if (c.content[idx] == .container) {
                     current = c.content[idx].container;
                 } else {
                     // Non-container index: execution position within current container
-                    return Pointer{ .container = c, .index = @intCast(idx) };
+                    return Pointer{ .container_idx = cidx, .index = @intCast(idx) };
                 }
             } else |_| {
-                const c = current orelse return null;
-                current = c.named_content.get(part) orelse return null;
+                const cidx = current orelse return null;
+                current = self.namedLookup(cidx, part) orelse return null;
             }
         }
-        return Pointer{ .container = current orelse return null, .index = 0 };
+        return Pointer{ .container_idx = current orelse return null, .index = 0 };
     }
 
     /// Resolve an absolute path to a Pointer, handling a non-container final component
     /// as an execution position within the last container.
-    fn resolvePointerAbs(start: *Container, path_str: []const u8) ?Pointer {
-        var current: *Container = start;
+    fn resolvePointerAbs(self: *const Story, path_str: []const u8) ?Pointer {
+        var current: u32 = 0; // root
         var iter = std.mem.splitScalar(u8, path_str, '.');
         while (iter.next()) |part| {
             if (part.len == 0) continue;
             if (std.fmt.parseInt(u32, part, 10)) |idx| {
-                if (idx >= current.content.len) return null;
-                if (current.content[idx] == .container) {
-                    current = current.content[idx].container;
+                const c = &self.containers[current];
+                if (idx >= c.content.len) return null;
+                if (c.content[idx] == .container) {
+                    current = c.content[idx].container;
                 } else {
                     // Non-container index: check there are no more components
                     if (iter.next()) |_| return null; // trailing components after index
-                    return Pointer{ .container = current, .index = @intCast(idx) };
+                    return Pointer{ .container_idx = current, .index = @intCast(idx) };
                 }
             } else |_| {
-                current = current.named_content.get(part) orelse return null;
+                current = self.namedLookup(current, part) orelse return null;
             }
         }
-        return Pointer{ .container = current, .index = 0 };
-    }
-
-    fn resolveContainerAbs(start: *Container, components_str: []const u8) ?*Container {
-        var current: *Container = start;
-        var iter = std.mem.splitScalar(u8, components_str, '.');
-        while (iter.next()) |part| {
-            if (part.len == 0) continue;
-            if (std.fmt.parseInt(u32, part, 10)) |idx| {
-                if (idx >= current.content.len) return null;
-                if (current.content[idx] != .container) return null;
-                current = current.content[idx].container;
-            } else |_| {
-                current = current.named_content.get(part) orelse return null;
-            }
-        }
-        return current;
+        return Pointer{ .container_idx = current, .index = 0 };
     }
 
     /// Compute a deterministic shuffle index compatible with C# .NET Framework System.Random.
@@ -1902,17 +1907,18 @@ pub const Story = struct {
 
         // Resolve target path to verify it exists
         const target_ptr = self.resolvePath(path_str, from_ptr) orelse return;
-        const target_container = target_ptr.container orelse return;
+        if (target_ptr.isNull()) return;
+        const target_cpath = self.containers[target_ptr.container_idx].path;
 
         // Flag 0x10: IsOnce — skip if already visited
         if (flags & 0x10 != 0) {
-            const visits = self.state.visit_counts.get(target_container.path) orelse 0;
+            const visits = self.state.visit_counts.get(target_cpath) orelse 0;
             if (visits > 0) return;
         }
 
         // Flag 0x08: IsInvisibleDefault — store for auto-follow if no visible choices remain
         if (flags & 0x08 != 0) {
-            self.default_choice_target = target_container.path;
+            self.default_choice_target = target_cpath;
             return;
         }
 
@@ -1924,12 +1930,13 @@ pub const Story = struct {
         else
             choice_only;
 
+        const source_cpath = if (!from_ptr.isNull()) self.containers[from_ptr.container_idx].path else "";
         const choice = Choice{
             .text = text,
-            .source_path = from_ptr.container.?.path,
+            .source_path = source_cpath,
             // Store the resolved absolute path so chooseChoiceIndex can resolve from root
             // (the current pointer may be null at selection time after cont() ends).
-            .target_path = target_container.path,
+            .target_path = target_cpath,
             .tags = &.{},
             .index = @intCast(self.state.current_choices.items.len),
             .original_thread_index = 0,
@@ -1937,7 +1944,8 @@ pub const Story = struct {
         try self.state.current_choices.append(self.allocator, choice);
     }
 
-    fn recordVisitIfNeeded(self: *Story, c: *Container) void {
+    fn recordVisitIfNeeded(self: *Story, container_idx: u32) void {
+        const c = &self.containers[container_idx];
         if (c.flags.visits_should_be_counted) {
             const entry = self.state.visit_counts.getOrPut(self.allocator, c.path) catch return;
             if (!entry.found_existing) entry.value_ptr.* = 0;
@@ -1995,22 +2003,21 @@ pub const Story = struct {
         var ptr = &elem.current_pointer;
 
         while (true) {
-            const container = ptr.container orelse break;
+            if (ptr.isNull()) break;
+            const container = &self.containers[ptr.container_idx];
             if (ptr.index < @as(i32, @intCast(container.content.len))) break;
 
             // Past end of this container — go to parent
             const idx_in_parent = container.index_in_parent;
-            const parent = container.parent;
+            const parent_idx = container.parent_idx;
 
-            if (idx_in_parent >= 0) {
-                if (parent) |p| {
-                    ptr.* = .{
-                        .container = p,
-                        .index = idx_in_parent + 1,
-                    };
-                    // Loop to check if we're also past end of parent
-                    continue;
-                }
+            if (idx_in_parent >= 0 and parent_idx != null_container_idx) {
+                ptr.* = .{
+                    .container_idx = parent_idx,
+                    .index = idx_in_parent + 1,
+                };
+                // Loop to check if we're also past end of parent
+                continue;
             }
 
             // No parent or named-only: execution ends
@@ -2359,7 +2366,7 @@ test "resolvePath absolute named container" {
 
     const from_ptr = story.state.call_stack.currentElement().current_pointer;
     const p = story.resolvePath("f", from_ptr).?;
-    try std.testing.expectEqualStrings("f", p.container.?.path);
+    try std.testing.expectEqualStrings("f", story.containers[p.container_idx].path);
 }
 
 test "resolvePath relative with ^ traverses parent" {
@@ -2369,12 +2376,12 @@ test "resolvePath relative with ^ traverses parent" {
     var story = try Story.initFromJson(alloc, json);
     defer story.deinit();
 
-    // inner container is at root.content[0]
-    const inner = story.root.content[0].container;
-    const from_ptr = Pointer{ .container = inner, .index = 0 };
+    // inner container is at containers[0].content[0] (a container index)
+    const inner_idx = story.containers[0].content[0].container;
+    const from_ptr = Pointer{ .container_idx = inner_idx, .index = 0 };
     // ".^.g-0": ^ steps to inner container, then g-0 looks up named child
     const p = story.resolvePath(".^.g-0", from_ptr).?;
-    try std.testing.expectEqualStrings("0.g-0", p.container.?.path);
+    try std.testing.expectEqualStrings("0.g-0", story.containers[p.container_idx].path);
 }
 
 test "resolvePath non-existent returns null" {
