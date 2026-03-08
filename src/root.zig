@@ -2,6 +2,7 @@
 pub const compiler = struct {
     pub const parsed = @import("compiler/parsed.zig");
     pub const tokenizer = @import("compiler/tokenizer.zig");
+    pub const parser = @import("compiler/parser.zig");
 };
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
@@ -37,4 +38,5 @@ test {
     // Compiler
     _ = @import("compiler/parsed.zig");
     _ = @import("compiler/tokenizer.zig");
+    _ = @import("compiler/parser.zig");
 }
