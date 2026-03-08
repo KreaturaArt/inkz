@@ -1,3 +1,10 @@
+// ── Compiler ──────────────────────────────────────────────────────────────────
+pub const compiler = struct {
+    pub const parsed = @import("compiler/parsed.zig");
+    pub const tokenizer = @import("compiler/tokenizer.zig");
+};
+
+// ── Runtime ───────────────────────────────────────────────────────────────────
 pub const value = @import("runtime/value.zig");
 pub const path = @import("runtime/path.zig");
 pub const pointer = @import("runtime/pointer.zig");
@@ -27,4 +34,7 @@ test {
     _ = story;
     _ = lists;
     _ = @import("test/helpers.zig");
+    // Compiler
+    _ = @import("compiler/parsed.zig");
+    _ = @import("compiler/tokenizer.zig");
 }
