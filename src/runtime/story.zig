@@ -135,6 +135,12 @@ pub const Story = struct {
     named_entries: []NamedEntry,
     /// Map from container path string → index in containers. Arena-owned.
     path_to_idx: std.StringHashMapUnmanaged(u32) = .{},
+    /// Visit counts indexed by container_idx. Arena-owned, zero-initialized.
+    visit_counts: []u32 = &.{},
+    /// Turn indices indexed by container_idx. Arena-owned, -1 = never visited.
+    turn_indices: []i32 = &.{},
+    /// Scratch buffer for end_string / end_tag text assembly (no hot-path allocation).
+    string_eval_buf: [4096]u8 = undefined,
     state: StoryState,
     /// Arena owns the container tree (static content)
     arena: std.heap.ArenaAllocator,
@@ -187,6 +193,22 @@ pub const Story = struct {
             .allocator = allocator,
             .list_defs = list_defs,
         };
+
+        // Pre-allocate visit/turn tracking arrays (direct-indexed by container_idx).
+        story.visit_counts = try story.arena.allocator().alloc(u32, story.containers.len);
+        @memset(story.visit_counts, 0);
+        story.turn_indices = try story.arena.allocator().alloc(i32, story.containers.len);
+        @memset(story.turn_indices, -1);
+
+        // Pre-allocate hot-path ArrayLists so step() never calls the allocator.
+        try story.state.evaluation_stack.ensureTotalCapacity(story.allocator, 256);
+        try story.state.output_stream.ensureTotalCapacity(story.allocator, 1024);
+        try story.state.current_choices.ensureTotalCapacity(story.allocator, 32);
+        try story.current_tags.ensureTotalCapacity(story.allocator, 16);
+
+        // Pre-allocate global variable slots so setAssumeCapacity works in the hot path.
+        // This covers both the init loop below AND normal story execution.
+        try story.state.variables_state.globals.ensureTotalCapacity(story.allocator, 256);
 
         // Execute global declarations if present.
         if (story.namedLookup(0, "global decl")) |global_decl_idx| {
@@ -244,7 +266,7 @@ pub const Story = struct {
     pub fn visitCountAtPathString(self: *const Story, path: []const u8) u32 {
         const ptr = self.resolvePath(path, Pointer.null_value) orelse return 0;
         if (ptr.isNull()) return 0;
-        return self.state.visit_counts.get(self.containers[ptr.container_idx].path) orelse 0;
+        return self.visit_counts[ptr.container_idx];
     }
 
     /// Return the name of the currently-active flow.
@@ -376,9 +398,15 @@ pub const Story = struct {
             var new_cs = try callstack_mod.CallStack.init(self.allocator);
             new_cs.currentElement().current_pointer = .{ .container_idx = 0, .index = 0 };
             self.state.call_stack = new_cs;
-            self.state.output_stream = std.ArrayList(RuntimeObject).empty;
-            self.state.evaluation_stack = std.ArrayList(RuntimeObject).empty;
-            self.state.current_choices = std.ArrayList(Choice).empty;
+            var new_output = std.ArrayList(RuntimeObject).empty;
+            try new_output.ensureTotalCapacity(self.allocator, 1024);
+            self.state.output_stream = new_output;
+            var new_eval = std.ArrayList(RuntimeObject).empty;
+            try new_eval.ensureTotalCapacity(self.allocator, 256);
+            self.state.evaluation_stack = new_eval;
+            var new_choices = std.ArrayList(Choice).empty;
+            try new_choices.ensureTotalCapacity(self.allocator, 32);
+            self.state.current_choices = new_choices;
             self.state.did_safe_exit = false;
             self.default_choice_target = null;
         }
@@ -580,30 +608,30 @@ pub const Story = struct {
         }
         try w.writeByte(']');
 
-        // visitCounts
+        // visitCounts — only emit non-zero entries, keyed by container path.
         try w.writeAll(",\"visitCounts\":{");
         {
-            var it = self.state.visit_counts.iterator();
             var first = true;
-            while (it.next()) |e| {
+            for (self.containers, 0..) |c, i| {
+                if (self.visit_counts[i] == 0) continue;
                 if (!first) try w.writeByte(',');
                 first = false;
-                try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
-                try w.print(":{d}", .{e.value_ptr.*});
+                try std.json.Stringify.encodeJsonString(c.path, .{}, w);
+                try w.print(":{d}", .{self.visit_counts[i]});
             }
         }
         try w.writeByte('}');
 
-        // turnIndices
+        // turnIndices — only emit non-negative entries, keyed by container path.
         try w.writeAll(",\"turnIndices\":{");
         {
-            var it = self.state.turn_indices.iterator();
             var first = true;
-            while (it.next()) |e| {
+            for (self.containers, 0..) |c, i| {
+                if (self.turn_indices[i] < 0) continue;
                 if (!first) try w.writeByte(',');
                 first = false;
-                try std.json.Stringify.encodeJsonString(e.key_ptr.*, .{}, w);
-                try w.print(":{d}", .{e.value_ptr.*});
+                try std.json.Stringify.encodeJsonString(c.path, .{}, w);
+                try w.print(":{d}", .{self.turn_indices[i]});
             }
         }
         try w.writeAll("}}");
@@ -640,12 +668,13 @@ pub const Story = struct {
         // Restore visit counts
         if (obj.get("visitCounts")) |vc_val| {
             if (vc_val == .object) {
-                self.state.visit_counts.clearRetainingCapacity();
+                @memset(self.visit_counts, 0);
                 var it = vc_val.object.iterator();
                 while (it.next()) |e| {
                     const count: u32 = @intCast(e.value_ptr.*.integer);
-                    const key = try self.arena.allocator().dupe(u8, e.key_ptr.*);
-                    try self.state.visit_counts.put(self.allocator, key, count);
+                    if (self.path_to_idx.get(e.key_ptr.*)) |cidx| {
+                        self.visit_counts[cidx] = count;
+                    }
                 }
             }
         }
@@ -653,12 +682,13 @@ pub const Story = struct {
         // Restore turn indices
         if (obj.get("turnIndices")) |ti_val| {
             if (ti_val == .object) {
-                self.state.turn_indices.clearRetainingCapacity();
+                @memset(self.turn_indices, -1);
                 var it = ti_val.object.iterator();
                 while (it.next()) |e| {
                     const idx: i32 = @intCast(e.value_ptr.*.integer);
-                    const key = try self.arena.allocator().dupe(u8, e.key_ptr.*);
-                    try self.state.turn_indices.put(self.allocator, key, idx);
+                    if (self.path_to_idx.get(e.key_ptr.*)) |cidx| {
+                        self.turn_indices[cidx] = idx;
+                    }
                 }
             }
         }
@@ -738,6 +768,11 @@ pub const Story = struct {
                                         }
                                     }
                                 }
+                                // Ensure spare slots so setAssumeCapacity works after load.
+                                try elem.temporary_variables.globals.ensureTotalCapacity(
+                                    self.allocator,
+                                    elem.temporary_variables.globals.count() + 32,
+                                );
                                 try new_thread.call_stack.append(self.allocator, elem);
                             }
                         }
@@ -749,6 +784,11 @@ pub const Story = struct {
         }
 
         self.state.did_safe_exit = if (obj.get("didSafeExit")) |v| v.bool else false;
+
+        // Re-ensure pre-allocated capacity so the hot path can use appendAssumeCapacity.
+        try self.state.evaluation_stack.ensureTotalCapacity(self.allocator, 256);
+        try self.state.output_stream.ensureTotalCapacity(self.allocator, 1024);
+        try self.state.current_choices.ensureTotalCapacity(self.allocator, 32);
     }
 
     // ── Save/Load helpers ─────────────────────────────────────────────────────
@@ -1003,7 +1043,7 @@ pub const Story = struct {
             },
             .void => {
                 if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator, .void);
+                    self.state.evaluation_stack.appendAssumeCapacity(.void);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1011,35 +1051,35 @@ pub const Story = struct {
             .string => {
                 // During str/str collection, strings always go to output_stream
                 if (self.inStringEvalMode() or !elem.in_expression_evaluation) {
-                    try self.state.output_stream.append(self.allocator, obj.*);
+                    self.state.output_stream.appendAssumeCapacity(obj.*);
                 } else {
-                    try self.state.evaluation_stack.append(self.allocator, obj.*);
+                    self.state.evaluation_stack.appendAssumeCapacity(obj.*);
                 }
                 self.advancePointer();
                 return .ok;
             },
             .int, .float, .bool => {
                 if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator,obj.*);
+                    self.state.evaluation_stack.appendAssumeCapacity(obj.*);
                 }
                 self.advancePointer();
                 return .ok;
             },
             .glue => {
-                try self.state.output_stream.append(self.allocator,.glue);
+                self.state.output_stream.appendAssumeCapacity(.glue);
                 self.advancePointer();
                 return .ok;
             },
             .divert_target => {
                 if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator,obj.*);
+                    self.state.evaluation_stack.appendAssumeCapacity(obj.*);
                 }
                 self.advancePointer();
                 return .ok;
             },
             .variable_pointer => {
                 if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator,obj.*);
+                    self.state.evaluation_stack.appendAssumeCapacity(obj.*);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1069,33 +1109,34 @@ pub const Story = struct {
                             if (existing == .variable_pointer) {
                                 const target = self.resolveVariablePointerTarget(existing.variable_pointer.name);
                                 if (target.is_global) {
-                                    try self.state.variables_state.set(self.allocator, target.name, val);
+                                    self.state.variables_state.setAssumeCapacity(target.name, val);
                                     self.notifyObservers(target.name, val);
                                 } else {
                                     // Write to the frame where the target temp is defined (bottom-up).
                                     for (thread.call_stack.items) |*frame| {
                                         if (frame.temporary_variables.get(target.name) != null) {
-                                            try frame.temporary_variables.set(self.allocator, target.name, val);
+                                            frame.temporary_variables.setAssumeCapacity(target.name, val);
                                             break;
                                         }
                                     }
                                 }
                             } else {
-                                try thread.call_stack.items[j].temporary_variables.set(self.allocator, va.name, val);
+                                thread.call_stack.items[j].temporary_variables.setAssumeCapacity(va.name, val);
                             }
                             found_in_temp = true;
                             break;
                         }
                     }
                     if (!found_in_temp) {
-                        try self.state.variables_state.set(self.allocator, va.name, val);
+                        self.state.variables_state.setAssumeCapacity(va.name, val);
                         self.notifyObservers(va.name, val);
                     }
                 } else if (va.is_global) {
-                    try self.state.variables_state.set(self.allocator, va.name, val);
+                    self.state.variables_state.setAssumeCapacity(va.name, val);
                     self.notifyObservers(va.name, val);
                 } else {
-                    try elem.temporary_variables.set(self.allocator, va.name, val);
+                    // New temp var declaration: pre-allocated capacity in callstack.push ensures no resize.
+                    elem.temporary_variables.setAssumeCapacity(va.name, val);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1104,13 +1145,13 @@ pub const Story = struct {
                 if (vr.path_for_count) |path_str| {
                     const from_ptr = elem.current_pointer;
                     const count: u32 = if (self.resolvePath(path_str, from_ptr)) |p|
-                        if (!p.isNull()) self.state.visit_counts.get(self.containers[p.container_idx].path) orelse 0 else 0
+                        if (!p.isNull()) self.visit_counts[p.container_idx] else 0
                     else
                         0;
-                    try self.state.evaluation_stack.append(self.allocator, .{ .int = @intCast(count) });
+                    self.state.evaluation_stack.appendAssumeCapacity(.{ .int = @intCast(count) });
                 } else {
                     const val = self.resolveVariable(vr.name) orelse .void;
-                    try self.state.evaluation_stack.append(self.allocator,val);
+                    self.state.evaluation_stack.appendAssumeCapacity(val);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1122,7 +1163,7 @@ pub const Story = struct {
             },
             .list => |ink_list| {
                 if (elem.in_expression_evaluation) {
-                    try self.state.evaluation_stack.append(self.allocator, .{ .list = ink_list });
+                    self.state.evaluation_stack.appendAssumeCapacity(.{ .list = ink_list });
                 }
                 self.advancePointer();
                 return .ok;
@@ -1145,7 +1186,7 @@ pub const Story = struct {
             },
             .output => {
                 const val = self.state.evaluation_stack.pop() orelse .void;
-                try self.state.output_stream.append(self.allocator,val);
+                self.state.output_stream.appendAssumeCapacity(val);
                 self.advancePointer();
                 return .ok;
             },
@@ -1157,7 +1198,7 @@ pub const Story = struct {
             .duplicate => {
                 if (self.state.evaluation_stack.items.len > 0) {
                     const top = self.state.evaluation_stack.items[self.state.evaluation_stack.items.len - 1];
-                    try self.state.evaluation_stack.append(self.allocator,top);
+                    self.state.evaluation_stack.appendAssumeCapacity(top);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1195,14 +1236,12 @@ pub const Story = struct {
             },
             .begin_string => {
                 // Push sentinel; strings now route to output_stream (detected via inStringEvalMode())
-                try self.state.output_stream.append(self.allocator, .{ .control_command = .begin_string });
+                self.state.output_stream.appendAssumeCapacity(.{ .control_command = .begin_string });
                 self.advancePointer();
                 return .ok;
             },
             .end_string => {
-                var text = std.ArrayList(u8).empty;
-                defer text.deinit(self.allocator);
-                // Find begin_string marker and collect strings after it
+                // Find begin_string marker and collect strings after it into string_eval_buf.
                 var start: usize = self.state.output_stream.items.len;
                 for (self.state.output_stream.items, 0..) |it, ki| {
                     if (it == .control_command and it.control_command == .begin_string) {
@@ -1210,13 +1249,17 @@ pub const Story = struct {
                     }
                 }
                 if (start >= self.state.output_stream.items.len) return error.MissingBeginString;
+                var len: usize = 0;
                 for (self.state.output_stream.items[start + 1 ..]) |it| {
-                    if (it == .string) try text.appendSlice(self.allocator, it.string);
+                    if (it == .string) {
+                        @memcpy(self.string_eval_buf[len..][0..it.string.len], it.string);
+                        len += it.string.len;
+                    }
                 }
                 self.state.output_stream.shrinkRetainingCapacity(start);
                 // Dupe into the arena so the string lives until story.deinit()
-                const s = try self.arena.allocator().dupe(u8, text.items);
-                try self.state.evaluation_stack.append(self.allocator, .{ .string = s });
+                const s = try self.arena.allocator().dupe(u8, self.string_eval_buf[0..len]);
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .string = s });
                 self.advancePointer();
                 return .ok;
             },
@@ -1244,26 +1287,25 @@ pub const Story = struct {
                     else => 0,
                 };
                 self.state.story_seed = seed;
-                try self.state.evaluation_stack.append(self.allocator,.void);
+                self.state.evaluation_stack.appendAssumeCapacity(.void);
                 self.advancePointer();
                 return .ok;
             },
             .visit_index => {
                 if (elem.current_pointer.isNull()) {
-                    try self.state.evaluation_stack.append(self.allocator, .{ .int = 0 });
+                    self.state.evaluation_stack.appendAssumeCapacity(.{ .int = 0 });
                     self.advancePointer();
                     return .ok;
                 }
-                const cpath = self.containers[elem.current_pointer.container_idx].path;
-                const count = self.state.visit_counts.get(cpath) orelse 0;
+                const count = self.visit_counts[elem.current_pointer.container_idx];
                 // 0-based visit index
                 const idx: i64 = if (count > 0) @intCast(count - 1) else 0;
-                try self.state.evaluation_stack.append(self.allocator, .{ .int = idx });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = idx });
                 self.advancePointer();
                 return .ok;
             },
             .turn_index => {
-                try self.state.evaluation_stack.append(self.allocator,.{ .int = self.state.current_turn_index });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = self.state.current_turn_index });
                 self.advancePointer();
                 return .ok;
             },
@@ -1272,14 +1314,18 @@ pub const Story = struct {
                 const path_str = switch (val) {
                     .divert_target => |p| p,
                     else => {
-                        try self.state.evaluation_stack.append(self.allocator,.{ .int = -1 });
+                        self.state.evaluation_stack.appendAssumeCapacity(.{ .int = -1 });
                         self.advancePointer();
                         return .ok;
                     },
                 };
-                const turn = self.state.turn_indices.get(path_str);
-                const result: i64 = if (turn) |t| @intCast(self.state.current_turn_index - t) else -1;
-                try self.state.evaluation_stack.append(self.allocator,.{ .int = result });
+                // Resolve path to container_idx, then look up direct-indexed turn_indices.
+                const result: i64 = if (self.resolvePath(path_str, elem.current_pointer)) |p| blk: {
+                    if (p.isNull()) break :blk -1;
+                    const t = self.turn_indices[p.container_idx];
+                    break :blk if (t < 0) -1 else @intCast(self.state.current_turn_index - t);
+                } else -1;
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = result });
                 self.advancePointer();
                 return .ok;
             },
@@ -1289,18 +1335,21 @@ pub const Story = struct {
                 const path_str = switch (val) {
                     .divert_target => |p| p,
                     else => {
-                        try self.state.evaluation_stack.append(self.allocator,.{ .int = 0 });
+                        self.state.evaluation_stack.appendAssumeCapacity(.{ .int = 0 });
                         self.advancePointer();
                         return .ok;
                     },
                 };
-                const count = self.state.visit_counts.get(path_str) orelse 0;
-                try self.state.evaluation_stack.append(self.allocator,.{ .int = @intCast(count) });
+                const count: u32 = if (self.resolvePath(path_str, Pointer.null_value)) |p|
+                    if (!p.isNull()) self.visit_counts[p.container_idx] else 0
+                else
+                    0;
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = @intCast(count) });
                 self.advancePointer();
                 return .ok;
             },
             .choice_count => {
-                try self.state.evaluation_stack.append(self.allocator,.{
+                self.state.evaluation_stack.appendAssumeCapacity(.{
                     .int = @intCast(self.state.current_choices.items.len),
                 });
                 self.advancePointer();
@@ -1316,26 +1365,28 @@ pub const Story = struct {
                     else => 1,
                 };
                 if (elem.current_pointer.isNull()) {
-                    try self.state.evaluation_stack.append(self.allocator, .{ .int = 0 });
+                    self.state.evaluation_stack.appendAssumeCapacity(.{ .int = 0 });
                     self.advancePointer();
                     return .ok;
                 }
-                const cur_cpath = self.containers[elem.current_pointer.container_idx].path;
+                const cur_cidx = elem.current_pointer.container_idx;
+                const cur_cpath = self.containers[cur_cidx].path;
                 // seqCount is the raw (1-based) visit count of the sequence container.
-                const seq_count = self.state.visit_counts.get(cur_cpath) orelse 1;
+                const seq_count = self.visit_counts[cur_cidx];
+                const seq_count_1based = if (seq_count == 0) @as(u32, 1) else seq_count;
                 const idx: i64 = if (count > 0) shuffleIndex(
                     cur_cpath,
-                    seq_count,
+                    seq_count_1based,
                     @intCast(count),
                     self.state.story_seed,
                 ) else 0;
-                try self.state.evaluation_stack.append(self.allocator,.{ .int = idx });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = idx });
                 self.advancePointer();
                 return .ok;
             },
             .start_tag => {
                 // Push a sentinel onto the output_stream so end_tag can find it.
-                try self.state.output_stream.append(self.allocator, .{ .control_command = .start_tag });
+                self.state.output_stream.appendAssumeCapacity(.{ .control_command = .start_tag });
                 self.advancePointer();
                 return .ok;
             },
@@ -1354,18 +1405,18 @@ pub const Story = struct {
                     }
                 }
                 if (sentinel_idx) |si| {
-                    // Collect strings between sentinel and end
-                    var tag_buf = std.ArrayList(u8).empty;
-                    errdefer tag_buf.deinit(self.allocator);
+                    // Collect strings between sentinel and end into string_eval_buf.
+                    var tag_len: usize = 0;
                     for (stream.items[si + 1 ..]) |obj| {
-                        if (obj == .string) try tag_buf.appendSlice(self.allocator, obj.string);
+                        if (obj == .string) {
+                            @memcpy(self.string_eval_buf[tag_len..][0..obj.string.len], obj.string);
+                            tag_len += obj.string.len;
+                        }
                     }
                     stream.items.len = si; // remove sentinel and collected strings
-                    const tag = try tag_buf.toOwnedSlice(self.allocator);
-                    // Store in arena so it outlives the output_stream clear
-                    const tag_arena = try self.arena.allocator().dupe(u8, tag);
-                    self.allocator.free(tag);
-                    try self.current_tags.append(self.allocator, tag_arena);
+                    // Dupe into the arena so the tag string outlives the output_stream clear.
+                    const tag_arena = try self.arena.allocator().dupe(u8, self.string_eval_buf[0..tag_len]);
+                    self.current_tags.appendAssumeCapacity(tag_arena);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1387,7 +1438,7 @@ pub const Story = struct {
                         try result.items.put(self.arena.allocator(), key, int_val);
                     }
                 }
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = result });
                 self.advancePointer();
                 return .ok;
             },
@@ -1417,7 +1468,7 @@ pub const Story = struct {
                         }
                     }
                 }
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = result });
                 self.advancePointer();
                 return .ok;
             },
@@ -1437,7 +1488,7 @@ pub const Story = struct {
                         }
                     }
                 }
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = result });
                 self.advancePointer();
                 return .ok;
             },
@@ -1471,8 +1522,9 @@ pub const Story = struct {
                     if (lhs == .string and rhs == .string) {
                         _ = self.state.evaluation_stack.pop();
                         _ = self.state.evaluation_stack.pop();
-                        const joined = try std.mem.concat(self.allocator, u8, &.{ lhs.string, rhs.string });
-                        try self.state.evaluation_stack.append(self.allocator, .{ .string = joined });
+                        // Use arena so concat lives until deinit(); no general heap allocation.
+                        const joined = try std.mem.concat(self.arena.allocator(), u8, &.{ lhs.string, rhs.string });
+                        self.state.evaluation_stack.appendAssumeCapacity(.{ .string = joined });
                         return;
                     }
                 }
@@ -1480,13 +1532,13 @@ pub const Story = struct {
             .list_value => {
                 const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .int = 0 };
                 const v: i64 = if (lst == .list) (if (lst.list.maxValue()) |m| @as(i64, m) else 0) else 0;
-                try self.state.evaluation_stack.append(self.allocator, .{ .int = v });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = v });
                 return;
             },
             .list_count => {
                 const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
                 const count: i64 = if (lst == .list) @intCast(lst.list.items.count()) else 0;
-                try self.state.evaluation_stack.append(self.allocator, .{ .int = count });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .int = count });
                 return;
             },
             .list_min => {
@@ -1505,7 +1557,7 @@ pub const Story = struct {
                     }
                     if (min_key) |k| try result.items.put(self.arena.allocator(), k, min_val.?);
                 }
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = result });
                 return;
             },
             .list_max => {
@@ -1524,13 +1576,13 @@ pub const Story = struct {
                     }
                     if (max_key) |k| try result.items.put(self.arena.allocator(), k, max_val.?);
                 }
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = result });
                 return;
             },
             .list_all => {
                 const lst = self.state.evaluation_stack.pop() orelse RuntimeObject{ .void = {} };
                 const result = try self.expandListToAll(if (lst == .list) lst.list else null);
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = result });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = result });
                 return;
             },
             .list_invert => {
@@ -1540,7 +1592,7 @@ pub const Story = struct {
                     var it = lst.list.items.iterator();
                     while (it.next()) |e| _ = all.items.remove(e.key_ptr.*);
                 }
-                try self.state.evaluation_stack.append(self.allocator, .{ .list = all });
+                self.state.evaluation_stack.appendAssumeCapacity(.{ .list = all });
                 return;
             },
             else => {},
@@ -1912,7 +1964,7 @@ pub const Story = struct {
 
         // Flag 0x10: IsOnce — skip if already visited
         if (flags & 0x10 != 0) {
-            const visits = self.state.visit_counts.get(target_cpath) orelse 0;
+            const visits = self.visit_counts[target_ptr.container_idx];
             if (visits > 0) return;
         }
 
@@ -1941,19 +1993,15 @@ pub const Story = struct {
             .index = @intCast(self.state.current_choices.items.len),
             .original_thread_index = 0,
         };
-        try self.state.current_choices.append(self.allocator, choice);
+        self.state.current_choices.appendAssumeCapacity(choice);
     }
 
     fn recordVisitIfNeeded(self: *Story, container_idx: u32) void {
         const c = &self.containers[container_idx];
-        if (c.flags.visits_should_be_counted) {
-            const entry = self.state.visit_counts.getOrPut(self.allocator, c.path) catch return;
-            if (!entry.found_existing) entry.value_ptr.* = 0;
-            entry.value_ptr.* += 1;
-        }
-        if (c.flags.turn_index_should_be_counted) {
-            self.state.turn_indices.put(self.allocator, c.path, self.state.current_turn_index) catch {};
-        }
+        if (c.flags.visits_should_be_counted)
+            self.visit_counts[container_idx] += 1;
+        if (c.flags.turn_index_should_be_counted)
+            self.turn_indices[container_idx] = self.state.current_turn_index;
     }
 
     /// Remove trailing "\n" RuntimeObjects from the output stream, but only from `from` onward.
@@ -2710,9 +2758,12 @@ test "turn_indices updated when entering flagged container" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Here.\n", out);
-    const turn_idx = story.state.turn_indices.get("here");
-    try std.testing.expect(turn_idx != null);
-    try std.testing.expectEqual(@as(i32, 0), turn_idx.?);
+    // Look up "here" container via path_to_idx and check the direct-indexed turn_indices.
+    const here_idx = story.path_to_idx.get("here") orelse {
+        try std.testing.expect(false); // "here" container not found
+        return;
+    };
+    try std.testing.expectEqual(@as(i32, 0), story.turn_indices[here_idx]);
 }
 
 test "turns_since returns -1 for never-visited path" {

@@ -3,9 +3,10 @@ id: TASK-72
 title: >-
   Zero runtime allocation — pre-allocate stacks, indexed visit counts, string
   buffer
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 13:08'
+updated_date: '2026-03-08 15:26'
 labels:
   - runtime
   - architecture
@@ -125,3 +126,33 @@ Remove `visit_counts` and `turn_indices` fields (now live in `Story`, indexed by
 - [ ] #6 string_eval_buf: [4096]u8 field on Story; end_string uses it instead of ArrayList
 - [ ] #7 std.mem.concat uses arena allocator in evaluation.zig (not self.allocator)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+## Zero Runtime Allocation — Complete
+
+All allocator calls eliminated from the hot execution path (`step()`, `dispatchObject()`, `handleControlCommand()`, `recordVisitIfNeeded()`).
+
+### Changes made:
+
+**state.zig**: Removed `visit_counts`/`turn_indices` StringHashMaps from `StoryState`.
+
+**story.zig**:
+- Added `visit_counts: []u32`, `turn_indices: []i32`, `string_eval_buf: [4096]u8` fields
+- Pre-allocate all ArrayLists at `initFromJson()` (256 eval, 1024 output, 32 choices, 16 tags, 256 globals)
+- `recordVisitIfNeeded()` uses direct array writes (`self.visit_counts[idx] += 1`)
+- `end_string`/`end_tag` use `string_eval_buf` instead of ArrayList
+- String concat uses `self.arena.allocator()` instead of `self.allocator`
+- All hot-path `append(allocator, x)` → `appendAssumeCapacity(x)`
+- Variable assignment uses `setAssumeCapacity` (no allocator in dispatchObject)
+- `loadStateFromJson` ensures 32 spare temp-var slots per loaded call stack element
+
+**variables.zig**: Added `setAssumeCapacity`, updated `clone()` to pre-allocate count+32 slots.
+
+**callstack.zig**: `Thread.init()` and `CallStack.push()` pre-allocate 32 temp-var slots per element.
+
+**evaluation.zig**: All `stack.append(allocator, x)` → `stack.appendAssumeCapacity(x)` in `callNativeFunction`.
+
+All 240 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

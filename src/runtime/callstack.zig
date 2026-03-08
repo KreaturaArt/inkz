@@ -52,7 +52,10 @@ pub const Thread = struct {
             .thread_index = index,
             .previous_pointer = Pointer.null_value,
         };
-        try t.call_stack.append(allocator, Element.init(null, Pointer.null_value));
+        var initial_elem = Element.init(null, Pointer.null_value);
+        // Pre-allocate temp-var capacity so setAssumeCapacity never needs to resize.
+        try initial_elem.temporary_variables.globals.ensureTotalCapacity(allocator, 32);
+        try t.call_stack.append(allocator, initial_elem);
         return t;
     }
 
@@ -111,7 +114,10 @@ pub const CallStack = struct {
     }
 
     pub fn push(self: *CallStack, ppt: PushPopType, ptr: Pointer) !void {
-        try self.currentThread().call_stack.append(self.allocator, Element.init(ppt, ptr));
+        var elem = Element.init(ppt, ptr);
+        // Pre-allocate 32 temp-var slots so setAssumeCapacity never needs to grow.
+        try elem.temporary_variables.globals.ensureTotalCapacity(self.allocator, 32);
+        try self.currentThread().call_stack.append(self.allocator, elem);
     }
 
     pub fn pop(self: *CallStack, ppt: PushPopType) !void {
