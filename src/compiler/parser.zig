@@ -601,6 +601,353 @@ test "Compiler parser: knot_thread_interaction knot names" {
     try testing.expectEqualStrings("threadB", story.knots[2].name);
 }
 
+// ── Corner-case tests (inline source strings) ─────────────────────────────────
+
+test "Compiler parser: empty source produces empty story" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "");
+    try testing.expectEqual(@as(usize, 0), story.root_content.len);
+    try testing.expectEqual(@as(usize, 0), story.knots.len);
+    try testing.expectEqual(@as(usize, 0), story.global_decls.len);
+}
+
+test "Compiler parser: only newlines produces empty story" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "\n\n\n");
+    try testing.expectEqual(@as(usize, 0), story.root_content.len);
+    try testing.expectEqual(@as(usize, 0), story.knots.len);
+}
+
+test "Compiler parser: only comments produces empty story" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "// a comment\n/* block\ncomment */\n");
+    try testing.expectEqual(@as(usize, 0), story.root_content.len);
+}
+
+test "Compiler parser: divert to END" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "-> END\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const d = story.root_content[0];
+    try testing.expect(d == .divert);
+    try testing.expectEqualStrings("END", d.divert.target);
+    try testing.expect(!d.divert.is_tunnel);
+}
+
+test "Compiler parser: divert to DONE" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "-> DONE\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    try testing.expectEqualStrings("DONE", story.root_content[0].divert.target);
+}
+
+test "Compiler parser: divert_return ->->" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "->->\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const d = story.root_content[0];
+    try testing.expect(d == .divert);
+    try testing.expectEqualStrings("->->", d.divert.target);
+}
+
+test "Compiler parser: tunnel call -> target ->" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "-> mytunnel ->\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const d = story.root_content[0];
+    try testing.expect(d == .divert);
+    try testing.expectEqualStrings("mytunnel", d.divert.target);
+    try testing.expect(d.divert.is_tunnel);
+}
+
+test "Compiler parser: dotted divert path knot.stitch" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "-> outer.inner\n");
+    const d = story.root_content[0];
+    try testing.expect(d == .divert);
+    try testing.expectEqualStrings("outer.inner", d.divert.target);
+}
+
+test "Compiler parser: inline divert at end of text line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // "go there -> target" — text stops before ->, then divert element.
+    const story = try parse(arena.allocator(), "go there -> target\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const item = story.root_content[0];
+    try testing.expect(item == .text);
+    const elems = item.text.elements;
+    try testing.expect(elems.len >= 2);
+    try testing.expect(elems[0] == .text);
+    try testing.expect(std.mem.indexOf(u8, elems[0].text, "go") != null);
+    try testing.expect(elems[elems.len - 1] == .divert);
+    try testing.expectEqualStrings("target", elems[elems.len - 1].divert.target);
+}
+
+test "Compiler parser: text line with hash tag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "Some text # mytag\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const item = story.root_content[0];
+    try testing.expect(item == .text);
+    var found_tag = false;
+    for (item.text.elements) |e| {
+        if (e == .tag and std.mem.eql(u8, e.tag, "mytag")) found_tag = true;
+    }
+    try testing.expect(found_tag);
+}
+
+test "Compiler parser: brace block at line start is skipped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // A bare {expr} line contributes no FlowItem (skipped for TASK-74).
+    const story = try parse(arena.allocator(), "{2 + 3}\n");
+    try testing.expectEqual(@as(usize, 0), story.root_content.len);
+}
+
+test "Compiler parser: nested braces skipped correctly" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "{outer {inner} still}\ntext\n");
+    // The brace block is skipped; "text" comes through as a FlowItem.
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    try testing.expect(story.root_content[0] == .text);
+}
+
+test "Compiler parser: VAR bool true" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR flag = true\n");
+    try testing.expectEqual(@as(usize, 1), story.global_decls.len);
+    try testing.expectEqualStrings("flag", story.global_decls[0].name);
+    try testing.expect(story.global_decls[0].initial.* == .bool_lit);
+    try testing.expectEqual(true, story.global_decls[0].initial.bool_lit);
+}
+
+test "Compiler parser: VAR bool false" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR flag = false\n");
+    try testing.expect(story.global_decls[0].initial.* == .bool_lit);
+    try testing.expectEqual(false, story.global_decls[0].initial.bool_lit);
+}
+
+test "Compiler parser: VAR float literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR pi = 3.14\n");
+    try testing.expectEqual(@as(usize, 1), story.global_decls.len);
+    try testing.expect(story.global_decls[0].initial.* == .float_lit);
+    try testing.expectApproxEqAbs(@as(f64, 3.14), story.global_decls[0].initial.float_lit, 1e-9);
+}
+
+test "Compiler parser: VAR negative integer" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR debt = -42\n");
+    try testing.expect(story.global_decls[0].initial.* == .int_lit);
+    try testing.expectEqual(@as(i64, -42), story.global_decls[0].initial.int_lit);
+}
+
+test "Compiler parser: VAR string literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR name = \"Alice\"\n");
+    try testing.expect(story.global_decls[0].initial.* == .string_lit);
+    try testing.expectEqualStrings("Alice", story.global_decls[0].initial.string_lit);
+}
+
+test "Compiler parser: VAR identifier reference (CONST forwarding)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR x = MYCONST\n");
+    try testing.expect(story.global_decls[0].initial.* == .var_ref);
+    try testing.expectEqualStrings("MYCONST", story.global_decls[0].initial.var_ref);
+}
+
+test "Compiler parser: multiple VAR declarations" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR a = 1\nVAR b = 2\nVAR c = 3\n");
+    try testing.expectEqual(@as(usize, 3), story.global_decls.len);
+    try testing.expectEqualStrings("a", story.global_decls[0].name);
+    try testing.expectEqualStrings("b", story.global_decls[1].name);
+    try testing.expectEqualStrings("c", story.global_decls[2].name);
+    try testing.expectEqual(@as(i64, 1), story.global_decls[0].initial.int_lit);
+    try testing.expectEqual(@as(i64, 2), story.global_decls[1].initial.int_lit);
+    try testing.expectEqual(@as(i64, 3), story.global_decls[2].initial.int_lit);
+}
+
+test "Compiler parser: malformed VAR no equals — no crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // "VAR x" with no = value — parser returns null and skips the line.
+    const story = try parse(arena.allocator(), "VAR x\nsome text\n");
+    try testing.expectEqual(@as(usize, 0), story.global_decls.len);
+    // The text line after should still be parsed.
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+}
+
+test "Compiler parser: malformed VAR no name — no crash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "VAR = 5\ntext\n");
+    try testing.expectEqual(@as(usize, 0), story.global_decls.len);
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+}
+
+test "Compiler parser: CONST all literal types" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "CONST a = 7\nCONST b = 2.5\nCONST c = true\nCONST d = \"hi\"\n");
+    try testing.expectEqual(@as(usize, 4), story.constants.len);
+    try testing.expect(story.constants[0].value.* == .int_lit);
+    try testing.expect(story.constants[1].value.* == .float_lit);
+    try testing.expect(story.constants[2].value.* == .bool_lit);
+    try testing.expect(story.constants[3].value.* == .string_lit);
+}
+
+test "Compiler parser: knot_marker === three-equals" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "=== myknot ===\n");
+    try testing.expectEqual(@as(usize, 1), story.knots.len);
+    try testing.expectEqualStrings("myknot", story.knots[0].name);
+}
+
+test "Compiler parser: knot_marker == two-equals" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "== myknot ==\n");
+    try testing.expectEqual(@as(usize, 1), story.knots.len);
+    try testing.expectEqualStrings("myknot", story.knots[0].name);
+}
+
+test "Compiler parser: knot with text and divert content" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "=== myknot ===\nSome content\n-> END\n");
+    try testing.expectEqual(@as(usize, 1), story.knots.len);
+    const k = story.knots[0];
+    try testing.expectEqualStrings("myknot", k.name);
+    try testing.expectEqual(@as(usize, 2), k.content.len);
+    try testing.expect(k.content[0] == .text);
+    try testing.expect(k.content[1] == .divert);
+    try testing.expectEqualStrings("END", k.content[1].divert.target);
+}
+
+test "Compiler parser: empty knot (no content before next knot)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(), "=== empty ===\n=== next ===\n");
+    try testing.expectEqual(@as(usize, 2), story.knots.len);
+    try testing.expectEqualStrings("empty", story.knots[0].name);
+    try testing.expectEqual(@as(usize, 0), story.knots[0].content.len);
+    try testing.expectEqual(@as(usize, 0), story.knots[0].stitches.len);
+    try testing.expectEqualStrings("next", story.knots[1].name);
+}
+
+test "Compiler parser: knot with single stitch" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "=== myknot ===\n= mystitch\nStitch text\n");
+    try testing.expectEqual(@as(usize, 1), story.knots.len);
+    const k = story.knots[0];
+    try testing.expectEqual(@as(usize, 1), k.stitches.len);
+    try testing.expectEqualStrings("mystitch", k.stitches[0].name);
+    try testing.expectEqual(@as(usize, 1), k.stitches[0].content.len);
+    try testing.expect(k.stitches[0].content[0] == .text);
+}
+
+test "Compiler parser: knot with multiple stitches" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "=== k ===\n= s1\nA\n= s2\nB\n= s3\nC\n");
+    const k = story.knots[0];
+    try testing.expectEqual(@as(usize, 3), k.stitches.len);
+    try testing.expectEqualStrings("s1", k.stitches[0].name);
+    try testing.expectEqualStrings("s2", k.stitches[1].name);
+    try testing.expectEqualStrings("s3", k.stitches[2].name);
+}
+
+test "Compiler parser: VAR inside stitch goes to global_decls" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "=== k ===\n= s\nVAR counter = 0\n");
+    try testing.expectEqual(@as(usize, 1), story.global_decls.len);
+    try testing.expectEqualStrings("counter", story.global_decls[0].name);
+    try testing.expectEqual(@as(i64, 0), story.global_decls[0].initial.int_lit);
+}
+
+test "Compiler parser: multiple knots" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "=== a ===\ntext a\n=== b ===\ntext b\n=== c ===\ntext c\n");
+    try testing.expectEqual(@as(usize, 3), story.knots.len);
+    try testing.expectEqualStrings("a", story.knots[0].name);
+    try testing.expectEqualStrings("b", story.knots[1].name);
+    try testing.expectEqualStrings("c", story.knots[2].name);
+    for (story.knots) |k| {
+        try testing.expectEqual(@as(usize, 1), k.content.len);
+        try testing.expect(k.content[0] == .text);
+    }
+}
+
+test "Compiler parser: root content before first knot" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const story = try parse(arena.allocator(),
+        "-> start\n=== start ===\nKnot text\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    try testing.expect(story.root_content[0] == .divert);
+    try testing.expectEqualStrings("start", story.root_content[0].divert.target);
+    try testing.expectEqual(@as(usize, 1), story.knots.len);
+}
+
+test "Compiler parser: glue <> preserved inside text element" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // <> glue: < is not followed by -, so it stays in the text token.
+    const story = try parse(arena.allocator(), "hello <> world\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const item = story.root_content[0];
+    try testing.expect(item == .text);
+    // The text element must contain the glue chars.
+    var found_glue = false;
+    for (item.text.elements) |e| {
+        if (e == .text and std.mem.indexOf(u8, e.text, "<>") != null)
+            found_glue = true;
+    }
+    try testing.expect(found_glue);
+}
+
+test "Compiler parser: whitespace-only text line produces no FlowItem" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // A line with only spaces — the tokenizer skips leading whitespace, so
+    // nothing remains and parseTextLine returns null.
+    const story = try parse(arena.allocator(), "   \nreal text\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    try testing.expect(story.root_content[0] == .text);
+}
+
+// ── Fixture tests ─────────────────────────────────────────────────────────────
+
 test "Compiler parser: stitch_gather_counts VAR in knot" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
