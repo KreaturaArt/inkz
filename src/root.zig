@@ -3,6 +3,9 @@ pub const compiler = struct {
     pub const parsed = @import("compiler/parsed.zig");
     pub const tokenizer = @import("compiler/tokenizer.zig");
     pub const parser = @import("compiler/parser.zig");
+    pub const codegen = @import("compiler/codegen.zig");
+    pub const serializer = @import("compiler/serializer.zig");
+    pub const compile = @import("compiler/compiler.zig");
 };
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
@@ -39,4 +42,8 @@ test {
     _ = @import("compiler/parsed.zig");
     _ = @import("compiler/tokenizer.zig");
     _ = @import("compiler/parser.zig");
+    _ = @import("compiler/codegen.zig");
+    _ = @import("compiler/serializer.zig");
+    _ = @import("compiler/compiler.zig");
+    _ = @import("test/compiler_helpers.zig");
 }
