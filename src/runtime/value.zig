@@ -155,16 +155,30 @@ pub const ContainerFlags = packed struct(u8) {
     _pad: u5 = 0,
 };
 
+/// Sentinel index meaning "no container" (replaces null pointer).
+pub const null_container_idx: u32 = std.math.maxInt(u32);
+
+/// Entry in the global flat named-child table.
+pub const NamedEntry = struct {
+    name: []const u8,
+    container_idx: u32,
+};
+
 /// A container holds a sequence of RuntimeObjects plus optional named sub-containers.
 /// Container and RuntimeObject are mutually recursive, so both live in this file.
+/// Named children are stored in a global flat NamedEntry slice; each Container holds
+/// the range [first_named, first_named+named_len) into that slice.
 pub const Container = struct {
     name: ?[]const u8 = null,
     content: []RuntimeObject = &.{},
-    named_content: std.StringHashMapUnmanaged(*Container) = .{},
+    /// Offset into Story.named_entries for this container's named children.
+    first_named: u32 = 0,
+    named_len: u32 = 0,
     flags: ContainerFlags = .{},
     path: []const u8 = "",
-    parent: ?*Container = null,
-    /// Index in parent.content; -1 if accessed only via named_content.
+    /// Index of parent container in Story.containers; null_container_idx if no parent.
+    parent_idx: u32 = null_container_idx,
+    /// Index in parent.content; -1 if accessed only via named content.
     index_in_parent: i32 = -1,
 };
 
@@ -187,7 +201,8 @@ pub const RuntimeObject = union(enum) {
     variable_reference: struct { name: []const u8, path_for_count: ?[]const u8 },
     /// An Ink list value; heap-allocated so the union remains copyable.
     list: *InkList,
-    container: *Container,
+    /// Index into Story.containers (was *Container).
+    container: u32,
 };
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -283,10 +298,8 @@ test "RuntimeObject variants" {
     try std.testing.expectEqualStrings("score", obj_vr.variable_reference.name);
     try std.testing.expectEqual(@as(?[]const u8, null), obj_vr.variable_reference.path_for_count);
 
-    var content = [_]RuntimeObject{.{ .int = 1 }};
-    var c = Container{ .content = &content };
-    const obj_container: RuntimeObject = .{ .container = &c };
-    try std.testing.expectEqual(@as(usize, 1), obj_container.container.content.len);
+    const obj_container: RuntimeObject = .{ .container = 42 };
+    try std.testing.expectEqual(@as(u32, 42), obj_container.container);
 }
 
 test "ContainerFlags" {
