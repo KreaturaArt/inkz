@@ -101,25 +101,25 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
         .negate => {
             const a = stack.pop().?;
             switch (a) {
-                .int => |n| try stack.append(allocator, .{ .int = -n }),
-                .float => |f| try stack.append(allocator, .{ .float = -f }),
+                .int => |n| stack.appendAssumeCapacity(.{ .int = -n }),
+                .float => |f| stack.appendAssumeCapacity(.{ .float = -f }),
                 else => return error.TypeMismatch,
             }
         },
         .not => {
             const a = stack.pop().?;
             const result: i64 = if (isTruthy(a)) 0 else 1;
-            try stack.append(allocator, .{ .int = result });
+            stack.appendAssumeCapacity(.{ .int = result });
         },
         .int_cast => {
             const a = stack.pop().?;
             switch (a) {
-                .int => try stack.append(allocator, a),
-                .float => |f| try stack.append(allocator, .{ .int = @intFromFloat(f) }),
-                .bool => |b| try stack.append(allocator, .{ .int = if (b) 1 else 0 }),
+                .int => stack.appendAssumeCapacity(a),
+                .float => |f| stack.appendAssumeCapacity(.{ .int = @intFromFloat(f) }),
+                .bool => |b| stack.appendAssumeCapacity(.{ .int = if (b) 1 else 0 }),
                 .string => |s| {
                     const n = std.fmt.parseInt(i64, s, 10) catch return error.TypeMismatch;
-                    try stack.append(allocator, .{ .int = n });
+                    stack.appendAssumeCapacity(.{ .int = n });
                 },
                 else => return error.TypeMismatch,
             }
@@ -127,12 +127,12 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
         .float_cast => {
             const a = stack.pop().?;
             switch (a) {
-                .float => try stack.append(allocator, a),
-                .int => |n| try stack.append(allocator, .{ .float = @floatFromInt(n) }),
-                .bool => |b| try stack.append(allocator, .{ .float = if (b) 1.0 else 0.0 }),
+                .float => stack.appendAssumeCapacity(a),
+                .int => |n| stack.appendAssumeCapacity(.{ .float = @floatFromInt(n) }),
+                .bool => |b| stack.appendAssumeCapacity(.{ .float = if (b) 1.0 else 0.0 }),
                 .string => |s| {
                     const f = std.fmt.parseFloat(f64, s) catch return error.TypeMismatch;
-                    try stack.append(allocator, .{ .float = f });
+                    stack.appendAssumeCapacity(.{ .float = f });
                 },
                 else => return error.TypeMismatch,
             }
@@ -140,16 +140,16 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
         .floor => {
             const a = stack.pop().?;
             switch (a) {
-                .int => try stack.append(allocator, a),
-                .float => |f| try stack.append(allocator, .{ .int = @intFromFloat(@floor(f)) }),
+                .int => stack.appendAssumeCapacity(a),
+                .float => |f| stack.appendAssumeCapacity(.{ .int = @intFromFloat(@floor(f)) }),
                 else => return error.TypeMismatch,
             }
         },
         .ceiling => {
             const a = stack.pop().?;
             switch (a) {
-                .int => try stack.append(allocator, a),
-                .float => |f| try stack.append(allocator, .{ .int = @intFromFloat(@ceil(f)) }),
+                .int => stack.appendAssumeCapacity(a),
+                .float => |f| stack.appendAssumeCapacity(.{ .int = @intFromFloat(@ceil(f)) }),
                 else => return error.TypeMismatch,
             }
         },
@@ -160,23 +160,23 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             // List union
             if (lhs == .list and rhs == .list) {
                 const result = try createListUnion(allocator, lhs.list, rhs.list);
-                try stack.append(allocator, .{ .list = result });
+                stack.appendAssumeCapacity(.{ .list = result });
                 return;
             }
             // String concatenation
             if (lhs == .string and rhs == .string) {
-                // We can't allocate here without an allocator; callers must handle string concat
+                // String concat is handled by story.handleNativeFunction before reaching here.
                 return error.StringConcatNotSupported;
             }
             // Numeric
             if (lhs == .float or rhs == .float) {
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .float = l + r });
+                stack.appendAssumeCapacity(.{ .float = l + r });
             } else {
                 const l = toInt(lhs) orelse return error.TypeMismatch;
                 const r = toInt(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .int = l + r });
+                stack.appendAssumeCapacity(.{ .int = l + r });
             }
         },
         .subtract => {
@@ -185,17 +185,17 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             // List difference
             if (lhs == .list and rhs == .list) {
                 const result = try createListDiff(allocator, lhs.list, rhs.list);
-                try stack.append(allocator, .{ .list = result });
+                stack.appendAssumeCapacity(.{ .list = result });
                 return;
             }
             if (lhs == .float or rhs == .float) {
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .float = l - r });
+                stack.appendAssumeCapacity(.{ .float = l - r });
             } else {
                 const l = toInt(lhs) orelse return error.TypeMismatch;
                 const r = toInt(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .int = l - r });
+                stack.appendAssumeCapacity(.{ .int = l - r });
             }
         },
         .multiply => {
@@ -204,11 +204,11 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             if (lhs == .float or rhs == .float) {
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .float = l * r });
+                stack.appendAssumeCapacity(.{ .float = l * r });
             } else {
                 const l = toInt(lhs) orelse return error.TypeMismatch;
                 const r = toInt(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .int = l * r });
+                stack.appendAssumeCapacity(.{ .int = l * r });
             }
         },
         .divide => {
@@ -218,13 +218,13 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
                 if (r == 0.0) return error.DivisionByZero;
-                try stack.append(allocator, .{ .float = l / r });
+                stack.appendAssumeCapacity(.{ .float = l / r });
             } else {
                 const l = toInt(lhs) orelse return error.TypeMismatch;
                 const r = toInt(rhs) orelse return error.TypeMismatch;
                 if (r == 0) return error.DivisionByZero;
                 // Integer division truncates toward zero
-                try stack.append(allocator, .{ .int = @divTrunc(l, r) });
+                stack.appendAssumeCapacity(.{ .int = @divTrunc(l, r) });
             }
         },
         .mod => {
@@ -233,58 +233,58 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             const l = toInt(lhs) orelse return error.TypeMismatch;
             const r = toInt(rhs) orelse return error.TypeMismatch;
             if (r == 0) return error.DivisionByZero;
-            try stack.append(allocator, .{ .int = @mod(l, r) });
+            stack.appendAssumeCapacity(.{ .int = @mod(l, r) });
         },
         // Comparison
         .equal => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             const result = valuesEqual(lhs, rhs);
-            try stack.append(allocator, .{ .int = if (result) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (result) 1 else 0 });
         },
         .not_equal => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             const result = valuesEqual(lhs, rhs);
-            try stack.append(allocator, .{ .int = if (!result) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (!result) 1 else 0 });
         },
         .greater => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             const l = toFloat(lhs) orelse return error.TypeMismatch;
             const r = toFloat(rhs) orelse return error.TypeMismatch;
-            try stack.append(allocator, .{ .int = if (l > r) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (l > r) 1 else 0 });
         },
         .less => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             const l = toFloat(lhs) orelse return error.TypeMismatch;
             const r = toFloat(rhs) orelse return error.TypeMismatch;
-            try stack.append(allocator, .{ .int = if (l < r) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (l < r) 1 else 0 });
         },
         .greater_or_equal => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             const l = toFloat(lhs) orelse return error.TypeMismatch;
             const r = toFloat(rhs) orelse return error.TypeMismatch;
-            try stack.append(allocator, .{ .int = if (l >= r) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (l >= r) 1 else 0 });
         },
         .less_or_equal => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             const l = toFloat(lhs) orelse return error.TypeMismatch;
             const r = toFloat(rhs) orelse return error.TypeMismatch;
-            try stack.append(allocator, .{ .int = if (l <= r) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (l <= r) 1 else 0 });
         },
         .and_ => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
-            try stack.append(allocator, .{ .int = if (isTruthy(lhs) and isTruthy(rhs)) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (isTruthy(lhs) and isTruthy(rhs)) 1 else 0 });
         },
         .or_ => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
-            try stack.append(allocator, .{ .int = if (isTruthy(lhs) or isTruthy(rhs)) 1 else 0 });
+            stack.appendAssumeCapacity(.{ .int = if (isTruthy(lhs) or isTruthy(rhs)) 1 else 0 });
         },
         .min => {
             const rhs = stack.pop().?;
@@ -292,11 +292,11 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             if (lhs == .float or rhs == .float) {
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .float = @min(l, r) });
+                stack.appendAssumeCapacity(.{ .float = @min(l, r) });
             } else {
                 const l = toInt(lhs) orelse return error.TypeMismatch;
                 const r = toInt(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .int = @min(l, r) });
+                stack.appendAssumeCapacity(.{ .int = @min(l, r) });
             }
         },
         .max => {
@@ -305,11 +305,11 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             if (lhs == .float or rhs == .float) {
                 const l = toFloat(lhs) orelse return error.TypeMismatch;
                 const r = toFloat(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .float = @max(l, r) });
+                stack.appendAssumeCapacity(.{ .float = @max(l, r) });
             } else {
                 const l = toInt(lhs) orelse return error.TypeMismatch;
                 const r = toInt(rhs) orelse return error.TypeMismatch;
-                try stack.append(allocator, .{ .int = @max(l, r) });
+                stack.appendAssumeCapacity(.{ .int = @max(l, r) });
             }
         },
         // List builtins handled by the Story (need list_defs access)
@@ -323,31 +323,31 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
             const lhs = stack.pop().?;
             if (lhs == .list and rhs == .list) {
                 const result = try createListIntersect(allocator, lhs.list, rhs.list);
-                try stack.append(allocator, .{ .list = result });
+                stack.appendAssumeCapacity(.{ .list = result });
             } else {
-                try stack.append(allocator, .{ .int = 0 });
+                stack.appendAssumeCapacity(.{ .int = 0 });
             }
         },
         .list_has => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             if (lhs == .list and rhs == .list) {
-                try stack.append(allocator, .{ .int = if (listContainsAll(lhs.list, rhs.list)) 1 else 0 });
+                stack.appendAssumeCapacity(.{ .int = if (listContainsAll(lhs.list, rhs.list)) 1 else 0 });
             } else if (lhs == .string and rhs == .string) {
-                try stack.append(allocator, .{ .int = if (std.mem.indexOf(u8, lhs.string, rhs.string) != null) 1 else 0 });
+                stack.appendAssumeCapacity(.{ .int = if (std.mem.indexOf(u8, lhs.string, rhs.string) != null) 1 else 0 });
             } else {
-                try stack.append(allocator, .{ .int = 0 });
+                stack.appendAssumeCapacity(.{ .int = 0 });
             }
         },
         .list_hasnt => {
             const rhs = stack.pop().?;
             const lhs = stack.pop().?;
             if (lhs == .list and rhs == .list) {
-                try stack.append(allocator, .{ .int = if (!listContainsAll(lhs.list, rhs.list)) 1 else 0 });
+                stack.appendAssumeCapacity(.{ .int = if (!listContainsAll(lhs.list, rhs.list)) 1 else 0 });
             } else if (lhs == .string and rhs == .string) {
-                try stack.append(allocator, .{ .int = if (std.mem.indexOf(u8, lhs.string, rhs.string) == null) 1 else 0 });
+                stack.appendAssumeCapacity(.{ .int = if (std.mem.indexOf(u8, lhs.string, rhs.string) == null) 1 else 0 });
             } else {
-                try stack.append(allocator, .{ .int = 1 });
+                stack.appendAssumeCapacity(.{ .int = 1 });
             }
         },
     }
@@ -359,7 +359,7 @@ pub fn addStrings(allocator: std.mem.Allocator, stack: *std.ArrayList(RuntimeObj
     const lhs = stack.pop().?;
     if (lhs != .string or rhs != .string) return error.TypeMismatch;
     const joined = try std.mem.concat(allocator, u8, &.{ lhs.string, rhs.string });
-    try stack.append(allocator, .{ .string = joined });
+    stack.appendAssumeCapacity(.{ .string = joined });
 }
 
 fn valuesEqual(lhs: RuntimeObject, rhs: RuntimeObject) bool {

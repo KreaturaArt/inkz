@@ -15,8 +15,6 @@ pub const StoryState = struct {
     evaluation_stack: std.ArrayList(RuntimeObject),
     current_choices: std.ArrayList(Choice),
     variables_state: VariablesState,
-    visit_counts: std.StringHashMapUnmanaged(u32),
-    turn_indices: std.StringHashMapUnmanaged(i32),
     current_turn_index: i32,
     story_seed: u32,
     did_safe_exit: bool,
@@ -29,8 +27,6 @@ pub const StoryState = struct {
             .evaluation_stack = std.ArrayList(RuntimeObject).empty,
             .current_choices = std.ArrayList(Choice).empty,
             .variables_state = VariablesState.init(),
-            .visit_counts = .{},
-            .turn_indices = .{},
             .current_turn_index = 0,
             .story_seed = 0,
             .did_safe_exit = false,
@@ -44,8 +40,6 @@ pub const StoryState = struct {
         self.evaluation_stack.deinit(self.allocator);
         self.current_choices.deinit(self.allocator);
         self.variables_state.deinit(self.allocator);
-        self.visit_counts.deinit(self.allocator);
-        self.turn_indices.deinit(self.allocator);
     }
 };
 

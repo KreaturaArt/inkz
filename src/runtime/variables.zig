@@ -22,11 +22,20 @@ pub const VariablesState = struct {
         try self.globals.put(allocator, name, val);
     }
 
+    /// Update a variable without calling the allocator.
+    /// Requires that capacity was pre-allocated (ensureTotalCapacity) before calling,
+    /// OR that the key already exists (update-in-place). In both cases no resize occurs.
+    pub fn setAssumeCapacity(self: *VariablesState, name: []const u8, val: RuntimeObject) void {
+        self.globals.putAssumeCapacity(name, val);
+    }
+
     pub fn clone(self: *const VariablesState, allocator: std.mem.Allocator) !VariablesState {
         var new_vs = VariablesState.init();
+        // Pre-allocate at least 32 extra slots so setAssumeCapacity works after cloning.
+        try new_vs.globals.ensureTotalCapacity(allocator, self.globals.count() + 32);
         var it = self.globals.iterator();
         while (it.next()) |entry| {
-            try new_vs.globals.put(allocator, entry.key_ptr.*, entry.value_ptr.*);
+            new_vs.globals.putAssumeCapacity(entry.key_ptr.*, entry.value_ptr.*);
         }
         return new_vs;
     }
