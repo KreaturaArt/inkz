@@ -16,15 +16,17 @@ const Tokenizer = tok_mod.Tokenizer;
 /// Tokenise `src` and parse it into a Parsed.Story.
 /// All allocations go into `alloc` (use an arena for easy teardown).
 pub fn parse(alloc: std.mem.Allocator, src: []const u8) !Parsed.Story {
+    // Null-terminate so the tokenizer can use the NUL sentinel for EOF.
+    const srcZ = try alloc.dupeZ(u8, src);
     // Tokenise the whole source up front.
     var tokens = std.ArrayList(Token).empty;
-    var t = Tokenizer.init(src);
+    var t = Tokenizer.init(srcZ);
     while (true) {
         const tk = t.next();
         try tokens.append(alloc, tk);
         if (tk.tag == .eof) break;
     }
-    var p = Parser.init(alloc, try tokens.toOwnedSlice(alloc));
+    var p = Parser.init(alloc, srcZ, try tokens.toOwnedSlice(alloc));
     return p.parseStory();
 }
 
@@ -32,18 +34,19 @@ pub fn parse(alloc: std.mem.Allocator, src: []const u8) !Parsed.Story {
 
 pub const Parser = struct {
     alloc: std.mem.Allocator,
+    src: [:0]const u8,
     tokens: []const Token,
     pos: usize,
 
-    pub fn init(alloc: std.mem.Allocator, tokens: []const Token) Parser {
-        return .{ .alloc = alloc, .tokens = tokens, .pos = 0 };
+    pub fn init(alloc: std.mem.Allocator, src: [:0]const u8, tokens: []const Token) Parser {
+        return .{ .alloc = alloc, .src = src, .tokens = tokens, .pos = 0 };
     }
 
     // -- Cursor helpers -------------------------------------------------------
 
     fn cur(self: *const Parser) Token {
         if (self.pos >= self.tokens.len)
-            return .{ .tag = .eof, .text = "", .line = 0, .col = 0 };
+            return .{ .tag = .eof, .loc = .{ .start = 0, .end = 0 }, .line = 0 };
         return self.tokens[self.pos];
     }
 
@@ -154,7 +157,7 @@ pub const Parser = struct {
                 },
 
                 .text => {
-                    const text = self.cur().text;
+                    const text = self.cur().loc.slice(self.src);
                     if (startsWithKeyword(text, "VAR")) {
                         if (try self.parseVarLine()) |decl|
                             try global_decls.append(self.alloc, decl)
@@ -210,7 +213,7 @@ pub const Parser = struct {
 
         // The rest of the header line is a text token like " knot_name ===".
         const name = if (self.cur().tag == .text)
-            extractFirstIdentifier(self.eat().text)
+            extractFirstIdentifier(self.eat().loc.slice(self.src))
         else
             "";
         self.skipToEol();
@@ -244,7 +247,7 @@ pub const Parser = struct {
         _ = self.eat(); // stitch_marker
 
         const name = if (self.cur().tag == .text)
-            extractFirstIdentifier(self.eat().text)
+            extractFirstIdentifier(self.eat().loc.slice(self.src))
         else
             "";
         self.skipToEol();
@@ -271,9 +274,10 @@ pub const Parser = struct {
 
                 .text => {
                     const t = self.eat();
+                    const ttext = t.loc.slice(self.src);
                     // Skip empty/whitespace-only text tokens.
-                    if (std.mem.indexOfNone(u8, t.text, " \t") != null)
-                        try elements.append(self.alloc, .{ .text = t.text });
+                    if (std.mem.indexOfNone(u8, ttext, " \t") != null)
+                        try elements.append(self.alloc, .{ .text = ttext });
                 },
 
                 .left_brace => {
@@ -303,7 +307,7 @@ pub const Parser = struct {
                 .hash => {
                     _ = self.eat();
                     const tag_text = if (self.cur().tag == .text)
-                        std.mem.trim(u8, self.eat().text, " \t")
+                        std.mem.trim(u8, self.eat().loc.slice(self.src), " \t")
                     else
                         "";
                     if (tag_text.len > 0)
@@ -339,7 +343,7 @@ pub const Parser = struct {
                 _ = self.eat();
                 // Target name is in the next text token.
                 const target = if (self.cur().tag == .text)
-                    extractFirstIdentifier(self.eat().text)
+                    extractFirstIdentifier(self.eat().loc.slice(self.src))
                 else
                     "";
                 // Trailing -> means tunnel call (e.g. "-> knot ->").
@@ -354,7 +358,7 @@ pub const Parser = struct {
     // -- Declarations ---------------------------------------------------------
 
     fn parseVarLine(self: *Parser) !?Parsed.VarDecl {
-        const line_text = self.eat().text; // "VAR name = value ..."
+        const line_text = self.eat().loc.slice(self.src); // "VAR name = value ..."
         self.skipToEol(); // consume any trailing tokens (shouldn't be any for simple literals)
 
         var rest = trimLeft(line_text[3..]); // skip "VAR"
@@ -372,7 +376,7 @@ pub const Parser = struct {
     }
 
     fn parseConstLine(self: *Parser) !?Parsed.Constant {
-        const line_text = self.eat().text; // "CONST name = value"
+        const line_text = self.eat().loc.slice(self.src); // "CONST name = value"
         self.skipToEol();
 
         var rest = trimLeft(line_text[5..]); // skip "CONST"
@@ -390,7 +394,7 @@ pub const Parser = struct {
     }
 
     fn parseIncludeLine(self: *Parser) ?[]const u8 {
-        const line_text = self.eat().text; // "INCLUDE path"
+        const line_text = self.eat().loc.slice(self.src); // "INCLUDE path"
         self.skipToEol();
 
         var rest = std.mem.trim(u8, line_text[7..], " \t"); // skip "INCLUDE"
