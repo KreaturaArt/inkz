@@ -130,14 +130,8 @@ test "ListDefinition valueForItem and itemForValue" {
 }
 
 test "ListDefinitionsOrigin.parse from list_basic_operations" {
-    const builtin = @import("builtin");
+    const io = std.testing.io;
     const gpa = std.testing.allocator;
-    var threaded: std.Io.Threaded = if (builtin.single_threaded)
-        .init_single_threaded
-    else
-        .init(gpa, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
     const json_text = try std.Io.Dir.cwd().readFileAlloc(
         io,
         "test/fixture/compiled/runtime/lists/list_basic_operations.ink.json",

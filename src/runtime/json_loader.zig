@@ -319,13 +319,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 fn readFixture(alloc: std.mem.Allocator, comptime rel_path: []const u8) ![]const u8 {
-    const builtin = @import("builtin");
-    var threaded: std.Io.Threaded = if (builtin.single_threaded)
-        .init_single_threaded
-    else
-        .init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
     return std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/compiled/" ++ rel_path, alloc, .limited(1024 * 1024));
 }
 

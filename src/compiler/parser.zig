@@ -534,16 +534,10 @@ fn parseLiteralExpr(alloc: std.mem.Allocator, raw: []const u8) error{OutOfMemory
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
-const builtin = @import("builtin");
 
 fn readOriginalFixture(alloc: std.mem.Allocator, comptime rel: []const u8) ![]u8 {
     const path = "test/fixture/original/" ++ rel;
-    var threaded: std.Io.Threaded = if (builtin.single_threaded)
-        .init_single_threaded
-    else
-        .init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
     return std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
 }
 

@@ -350,16 +350,10 @@ pub const Tokenizer = struct {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
-const builtin = @import("builtin");
 
 fn readOriginalFixture(alloc: std.mem.Allocator, comptime rel: []const u8) ![:0]u8 {
     const path = "test/fixture/original/" ++ rel;
-    var threaded: std.Io.Threaded = if (builtin.single_threaded)
-        .init_single_threaded
-    else
-        .init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
     const data = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
     defer alloc.free(data);
     return alloc.dupeZ(u8, data);
