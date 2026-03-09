@@ -3,7 +3,6 @@
 /// compileAndRun compiles Ink source to JSON, loads it in the runtime,
 /// drives the story through a choice sequence, and returns the output.
 const std = @import("std");
-const builtin = @import("builtin");
 const Story = @import("../runtime/story.zig").Story;
 const compiler = @import("../compiler/compiler.zig");
 
@@ -48,12 +47,7 @@ pub fn compileFixtureAndRun(
     choices: []const usize,
 ) ![]u8 {
     const path = "test/fixture/original/" ++ rel_path;
-    var threaded: std.Io.Threaded = if (builtin.single_threaded)
-        .init_single_threaded
-    else
-        .init(alloc, .{});
-    defer threaded.deinit();
-    const io = threaded.io();
+    const io = std.testing.io;
 
     const src = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
