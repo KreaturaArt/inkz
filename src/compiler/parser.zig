@@ -3,7 +3,11 @@
 /// The parser is purely recursive-descent with backtracking (save/restore).
 /// All allocated memory is owned by the caller-supplied allocator (typically
 /// an arena); the returned Parsed.Story borrows string slices directly from
-/// the token text (which in turn point into the original source buffer).
+/// the null-terminated source buffer (srcZ) owned by the same arena.
+///
+/// Parse errors (malformed declarations, etc.) are collected in the returned
+/// `story.errors` slice rather than propagating as error values.  The only
+/// error that can be returned is `error.OutOfMemory`.
 const std = @import("std");
 const Parsed = @import("parsed.zig");
 const tok_mod = @import("tokenizer.zig");
@@ -15,7 +19,8 @@ const Tokenizer = tok_mod.Tokenizer;
 
 /// Tokenise `src` and parse it into a Parsed.Story.
 /// All allocations go into `alloc` (use an arena for easy teardown).
-pub fn parse(alloc: std.mem.Allocator, src: []const u8) !Parsed.Story {
+/// Only `error.OutOfMemory` can be returned; syntax errors go into `story.errors`.
+pub fn parse(alloc: std.mem.Allocator, src: []const u8) error{OutOfMemory}!Parsed.Story {
     // Null-terminate so the tokenizer can use the NUL sentinel for EOF.
     const srcZ = try alloc.dupeZ(u8, src);
     // Tokenise the whole source up front.
@@ -37,9 +42,16 @@ pub const Parser = struct {
     src: [:0]const u8,
     tokens: []const Token,
     pos: usize,
+    errors: std.ArrayList(Parsed.ParseError),
 
     pub fn init(alloc: std.mem.Allocator, src: [:0]const u8, tokens: []const Token) Parser {
-        return .{ .alloc = alloc, .src = src, .tokens = tokens, .pos = 0 };
+        return .{
+            .alloc = alloc,
+            .src = src,
+            .tokens = tokens,
+            .pos = 0,
+            .errors = .empty,
+        };
     }
 
     // -- Cursor helpers -------------------------------------------------------
@@ -99,9 +111,13 @@ pub const Parser = struct {
         }
     }
 
+    fn addError(self: *Parser, tag: Parsed.ParseErrorTag, line: u32) error{OutOfMemory}!void {
+        try self.errors.append(self.alloc, .{ .tag = tag, .line = line });
+    }
+
     // -- Top-level parse ------------------------------------------------------
 
-    pub fn parseStory(self: *Parser) !Parsed.Story {
+    pub fn parseStory(self: *Parser) error{OutOfMemory}!Parsed.Story {
         var root_content = std.ArrayList(Parsed.FlowItem).empty;
         var knots = std.ArrayList(Parsed.Knot).empty;
         var global_decls = std.ArrayList(Parsed.VarDecl).empty;
@@ -131,6 +147,7 @@ pub const Parser = struct {
             .includes = try includes.toOwnedSlice(self.alloc),
             .knots = try knots.toOwnedSlice(self.alloc),
             .root_content = try root_content.toOwnedSlice(self.alloc),
+            .errors = try self.errors.toOwnedSlice(self.alloc),
         };
     }
 
@@ -139,6 +156,9 @@ pub const Parser = struct {
     /// Parse flow items into `items` until a stop condition is met:
     ///   • always stops at `eof` and `knot_marker`
     ///   • stops at `stitch_marker` when `stop_at_stitch` is true
+    ///
+    /// Uses a labeled-switch state machine: each case either returns (stop) or
+    /// calls `continue :parse self.cur().tag` to re-enter for the next token.
     fn parseContent(
         self: *Parser,
         items: *std.ArrayList(Parsed.FlowItem),
@@ -146,58 +166,69 @@ pub const Parser = struct {
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
         stop_at_stitch: bool,
-    ) !void {
-        while (true) {
-            self.skipNewlines();
+    ) error{OutOfMemory}!void {
+        parse: switch (self.cur().tag) {
+            .eof, .knot_marker => {},
 
-            switch (self.cur().tag) {
-                .eof, .knot_marker => break,
-                .stitch_marker => if (stop_at_stitch) break else {
-                    self.skipToEol();
-                },
+            .newline => {
+                _ = self.eat();
+                continue :parse self.cur().tag;
+            },
 
-                .text => {
-                    const text = self.cur().loc.slice(self.src);
-                    if (startsWithKeyword(text, "VAR")) {
-                        if (try self.parseVarLine()) |decl|
-                            try global_decls.append(self.alloc, decl)
-                        else
-                            self.skipToEol();
-                    } else if (startsWithKeyword(text, "CONST")) {
-                        if (try self.parseConstLine()) |c|
-                            try constants.append(self.alloc, c)
-                        else
-                            self.skipToEol();
-                    } else if (startsWithKeyword(text, "INCLUDE")) {
-                        if (self.parseIncludeLine()) |path|
-                            try includes.append(self.alloc, path)
-                        else
-                            self.skipToEol();
-                    } else if (startsWithKeyword(text, "EXTERNAL")) {
-                        self.skipToEol(); // handled in a later task
-                    } else {
-                        if (try self.parseTextLine()) |item|
-                            try items.append(self.alloc, item);
-                    }
-                },
+            .stitch_marker => if (stop_at_stitch) {} else {
+                self.skipToEol();
+                continue :parse self.cur().tag;
+            },
 
-                .divert_arrow, .divert_return => {
-                    if (try self.parseDivertLine()) |item|
+            .text => {
+                const text = self.cur().loc.slice(self.src);
+                if (startsWithKeyword(text, "VAR")) {
+                    if (try self.parseVarLine()) |decl|
+                        try global_decls.append(self.alloc, decl)
+                    else
+                        self.skipToEol();
+                } else if (startsWithKeyword(text, "CONST")) {
+                    if (try self.parseConstLine()) |c|
+                        try constants.append(self.alloc, c)
+                    else
+                        self.skipToEol();
+                } else if (startsWithKeyword(text, "INCLUDE")) {
+                    if (self.parseIncludeLine()) |path|
+                        try includes.append(self.alloc, path)
+                    else
+                        self.skipToEol();
+                } else if (startsWithKeyword(text, "EXTERNAL")) {
+                    self.skipToEol(); // handled in a later task
+                } else {
+                    if (try self.parseTextLine()) |item|
                         try items.append(self.alloc, item);
-                },
+                }
+                continue :parse self.cur().tag;
+            },
 
-                // These are handled in later tasks; skip for now.
-                .logic_line, .choice_once, .choice_sticky, .gather,
-                .thread_start, .hash => self.skipToEol(),
+            .divert_arrow, .divert_return => {
+                if (try self.parseDivertLine()) |item|
+                    try items.append(self.alloc, item);
+                continue :parse self.cur().tag;
+            },
 
-                .left_brace => {
-                    // Inline conditional / sequence at line start.
-                    self.skipBraceBlock();
-                    if (self.cur().tag == .newline) _ = self.eat();
-                },
+            // These are handled in later tasks; skip for now.
+            .logic_line, .choice_once, .choice_sticky, .gather,
+            .thread_start, .hash => {
+                self.skipToEol();
+                continue :parse self.cur().tag;
+            },
 
-                else => _ = self.eat(),
-            }
+            .left_brace => {
+                // Inline conditional / sequence at line start.
+                self.skipBraceBlock();
+                continue :parse self.cur().tag;
+            },
+
+            else => {
+                _ = self.eat();
+                continue :parse self.cur().tag;
+            },
         }
     }
 
@@ -208,7 +239,7 @@ pub const Parser = struct {
         global_decls: *std.ArrayList(Parsed.VarDecl),
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
-    ) !Parsed.Knot {
+    ) error{OutOfMemory}!Parsed.Knot {
         _ = self.eat(); // knot_marker
 
         // The rest of the header line is a text token like " knot_name ===".
@@ -243,7 +274,7 @@ pub const Parser = struct {
         global_decls: *std.ArrayList(Parsed.VarDecl),
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
-    ) !Parsed.Stitch {
+    ) error{OutOfMemory}!Parsed.Stitch {
         _ = self.eat(); // stitch_marker
 
         const name = if (self.cur().tag == .text)
@@ -265,7 +296,7 @@ pub const Parser = struct {
 
     /// Parse a plain text line into FlowItem.text.
     /// Handles inline diverts (->), tags (#), and ignores {expr} blocks.
-    fn parseTextLine(self: *Parser) !?Parsed.FlowItem {
+    fn parseTextLine(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
         var elements = std.ArrayList(Parsed.InlineElement).empty;
 
         line: while (true) {
@@ -327,13 +358,13 @@ pub const Parser = struct {
 
     // -- Diverts --------------------------------------------------------------
 
-    fn parseDivertLine(self: *Parser) !?Parsed.FlowItem {
+    fn parseDivertLine(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
         const d = try self.parseDivertInline() orelse return null;
         if (self.cur().tag == .newline) _ = self.eat();
         return .{ .divert = d };
     }
 
-    fn parseDivertInline(self: *Parser) !?Parsed.Divert {
+    fn parseDivertInline(self: *Parser) error{OutOfMemory}!?Parsed.Divert {
         switch (self.cur().tag) {
             .divert_return => {
                 _ = self.eat();
@@ -357,36 +388,52 @@ pub const Parser = struct {
 
     // -- Declarations ---------------------------------------------------------
 
-    fn parseVarLine(self: *Parser) !?Parsed.VarDecl {
-        const line_text = self.eat().loc.slice(self.src); // "VAR name = value ..."
+    fn parseVarLine(self: *Parser) error{OutOfMemory}!?Parsed.VarDecl {
+        const tok = self.eat(); // "VAR name = value ..."
+        const line_text = tok.loc.slice(self.src);
+        const tok_line = tok.line;
         self.skipToEol(); // consume any trailing tokens (shouldn't be any for simple literals)
 
         var rest = trimLeft(line_text[3..]); // skip "VAR"
 
         const name_end = identEnd(rest);
-        if (name_end == 0) return null;
+        if (name_end == 0) {
+            try self.addError(.malformed_var_decl, tok_line);
+            return null;
+        }
         const name = rest[0..name_end];
         rest = trimLeft(rest[name_end..]);
 
-        if (rest.len == 0 or rest[0] != '=') return null;
+        if (rest.len == 0 or rest[0] != '=') {
+            try self.addError(.malformed_var_decl, tok_line);
+            return null;
+        }
         rest = trimLeft(rest[1..]);
 
         const expr = try parseLiteralExpr(self.alloc, rest) orelse return null;
         return .{ .name = name, .initial = expr };
     }
 
-    fn parseConstLine(self: *Parser) !?Parsed.Constant {
-        const line_text = self.eat().loc.slice(self.src); // "CONST name = value"
+    fn parseConstLine(self: *Parser) error{OutOfMemory}!?Parsed.Constant {
+        const tok = self.eat(); // "CONST name = value"
+        const line_text = tok.loc.slice(self.src);
+        const tok_line = tok.line;
         self.skipToEol();
 
         var rest = trimLeft(line_text[5..]); // skip "CONST"
 
         const name_end = identEnd(rest);
-        if (name_end == 0) return null;
+        if (name_end == 0) {
+            try self.addError(.malformed_const_decl, tok_line);
+            return null;
+        }
         const name = rest[0..name_end];
         rest = trimLeft(rest[name_end..]);
 
-        if (rest.len == 0 or rest[0] != '=') return null;
+        if (rest.len == 0 or rest[0] != '=') {
+            try self.addError(.malformed_const_decl, tok_line);
+            return null;
+        }
         rest = trimLeft(rest[1..]);
 
         const expr = try parseLiteralExpr(self.alloc, rest) orelse return null;
@@ -397,7 +444,7 @@ pub const Parser = struct {
         const line_text = self.eat().loc.slice(self.src); // "INCLUDE path"
         self.skipToEol();
 
-        var rest = std.mem.trim(u8, line_text[7..], " \t"); // skip "INCLUDE"
+        const rest = std.mem.trim(u8, line_text[7..], " \t"); // skip "INCLUDE"
         if (rest.len == 0) return null;
         return rest;
     }
@@ -440,7 +487,7 @@ fn extractFirstIdentifier(text: []const u8) []const u8 {
 
 /// Parse a literal expression from a trimmed string value.
 /// Handles: integers, floats, booleans, double-quoted strings, identifiers.
-fn parseLiteralExpr(alloc: std.mem.Allocator, raw: []const u8) !?*Parsed.Expression {
+fn parseLiteralExpr(alloc: std.mem.Allocator, raw: []const u8) error{OutOfMemory}!?*Parsed.Expression {
     const s = std.mem.trim(u8, raw, " \t\r\n");
     if (s.len == 0) return null;
 
@@ -791,21 +838,26 @@ test "Compiler parser: multiple VAR declarations" {
     try testing.expectEqual(@as(i64, 3), story.global_decls[2].initial.int_lit);
 }
 
-test "Compiler parser: malformed VAR no equals — no crash" {
+test "Compiler parser: malformed VAR no equals — no crash, parse error recorded" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    // "VAR x" with no = value — parser returns null and skips the line.
+    // "VAR x" with no = value — parser records an error and skips.
     const story = try parse(arena.allocator(), "VAR x\nsome text\n");
     try testing.expectEqual(@as(usize, 0), story.global_decls.len);
+    // A parse error must be recorded.
+    try testing.expectEqual(@as(usize, 1), story.errors.len);
+    try testing.expectEqual(Parsed.ParseErrorTag.malformed_var_decl, story.errors[0].tag);
     // The text line after should still be parsed.
     try testing.expectEqual(@as(usize, 1), story.root_content.len);
 }
 
-test "Compiler parser: malformed VAR no name — no crash" {
+test "Compiler parser: malformed VAR no name — no crash, parse error recorded" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const story = try parse(arena.allocator(), "VAR = 5\ntext\n");
     try testing.expectEqual(@as(usize, 0), story.global_decls.len);
+    try testing.expectEqual(@as(usize, 1), story.errors.len);
+    try testing.expectEqual(Parsed.ParseErrorTag.malformed_var_decl, story.errors[0].tag);
     try testing.expectEqual(@as(usize, 1), story.root_content.len);
 }
 

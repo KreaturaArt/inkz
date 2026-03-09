@@ -5,6 +5,18 @@ const std = @import("std");
 
 // ── Top-level story ───────────────────────────────────────────────────────────
 
+/// Parse errors collected during parsing.  An entry here means the source
+/// had a recoverable syntax problem; the story is still returned.
+pub const ParseErrorTag = enum {
+    malformed_var_decl,
+    malformed_const_decl,
+};
+
+pub const ParseError = struct {
+    tag: ParseErrorTag,
+    line: u32,
+};
+
 pub const Story = struct {
     list_defs: []ListDef,
     global_decls: []VarDecl,
@@ -13,6 +25,7 @@ pub const Story = struct {
     includes: [][]const u8,
     knots: []Knot,
     root_content: []FlowItem,
+    errors: []ParseError = &.{},
 };
 
 // ── Knots / stitches ──────────────────────────────────────────────────────────
@@ -214,6 +227,8 @@ pub const InkListLiteral = struct {
 
 test "parsed types compile" {
     // Just verifying all types can be referenced without errors.
+    _ = ParseErrorTag;
+    _ = ParseError;
     _ = Story;
     _ = Knot;
     _ = Stitch;
