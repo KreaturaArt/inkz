@@ -113,6 +113,12 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             var tmp: [64]u8 = undefined;
             const s = std.fmt.bufPrint(&tmp, "{d}", .{f}) catch unreachable;
             try buf.appendSlice(alloc, s);
+            // Ensure a decimal point so the runtime parses this as a float.
+            if (std.mem.indexOfScalar(u8, s, '.') == null and
+                std.mem.indexOfScalar(u8, s, 'e') == null)
+            {
+                try buf.appendSlice(alloc, ".0");
+            }
         },
         .bool_ => |b| {
             if (b) try buf.appendSlice(alloc, "true") else try buf.appendSlice(alloc, "false");
@@ -137,6 +143,15 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try buf.appendSlice(alloc, "{\"VAR?\":\"");
             try writeJsonStr(alloc, buf, name);
             try buf.appendSlice(alloc, "\"}");
+        },
+        .temp_assign => |ta| {
+            try buf.appendSlice(alloc, "{\"temp=\":\"");
+            try writeJsonStr(alloc, buf, ta.name);
+            if (ta.is_new) {
+                try buf.appendSlice(alloc, "\"}");
+            } else {
+                try buf.appendSlice(alloc, "\",\"re\":true}");
+            }
         },
     }
 }

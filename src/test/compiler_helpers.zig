@@ -155,3 +155,91 @@ test "Compiler e2e: misc/whitespace.ink fixture" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Hello!\nWorld.\n", out);
 }
+
+// ── Expression / evaluation tests ─────────────────────────────────────────────
+
+test "Compiler e2e: inline boolean true" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "{true}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\n", out);
+}
+
+test "Compiler e2e: inline boolean false" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "{false}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
+
+test "Compiler e2e: inline not true" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "{not true}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
+
+test "Compiler e2e: inline comparison 3 > 1" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "{3 > 1}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\n", out);
+}
+
+test "Compiler e2e: inline arithmetic 2 + 3" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "{2 + 3}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("5\n", out);
+}
+
+test "Compiler e2e: arithmetic.ink fixture" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/arithmetic.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("36\n2\n3\n2\n2.333333\n8\n8\n", out);
+}
+
+// ── Variable tests ────────────────────────────────────────────────────────────
+
+test "Compiler e2e: VAR inline ref" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "VAR x = 5\n{x}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("5\n", out);
+}
+
+test "Compiler e2e: temp var" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "~ temp y = 4\n{y}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("4\n", out);
+}
+
+test "Compiler e2e: temp reassignment" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "~ temp y = 1\n~ y = 7\n{y}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("7\n", out);
+}
+
+test "Compiler e2e: CONST substitution in VAR" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc, "CONST c = 5\nVAR x = c\n{x}\n", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("5\n", out);
+}
+
+test "Compiler e2e: temporaries_at_global_scope.ink fixture" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/temporaries_at_global_scope.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("54\n", out);
+}
+
+test "Compiler e2e: const.ink fixture" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/const.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("5\n", out);
+}

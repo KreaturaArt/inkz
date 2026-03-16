@@ -31,6 +31,7 @@ pub const CObject = union(enum) {
     string: []const u8, // string literal (not ^-prefixed)
     var_assign: struct { name: []const u8, is_new: bool }, // {"VAR=":"name"} or with "re":true
     var_ref: []const u8, // {"VAR?":"name"}
+    temp_assign: struct { name: []const u8, is_new: bool }, // {"temp=":"name"} or with "re":true
 };
 
 pub const NamedChild = struct {
@@ -58,6 +59,9 @@ pub fn generate(alloc: std.mem.Allocator, story: Parsed.Story) !*CContainer {
 
 const Gen = struct {
     alloc: std.mem.Allocator,
+    /// Compile-time constant values, keyed by name.  Used to substitute CONST
+    /// references at codegen time so no {"VAR?":"name"} appears for constants.
+    const_map: std.StringHashMapUnmanaged(*const Parsed.Expression) = .{},
 
     fn newContainer(self: *Gen, name: ?[]const u8) !*CContainer {
         const c = try self.alloc.create(CContainer);
@@ -66,6 +70,10 @@ const Gen = struct {
     }
 
     fn generateRoot(self: *Gen, story: Parsed.Story) !*CContainer {
+        // Populate CONST map so value substitution works during genExpr.
+        for (story.constants) |c| {
+            try self.const_map.put(self.alloc, c.name, c.value);
+        }
         // 1. Root content sub-container (position 0 inside root).
         var root_flow = std.ArrayList(CObject).empty;
         for (story.root_content) |item| {
@@ -155,7 +163,7 @@ const Gen = struct {
             },
             .divert => |d| try self.genDivert(out, d),
             .tag => {}, // TASK-82
-            .logic => {}, // TASK-77
+            .logic => |ll| try self.genLogicLine(out, ll),
             .conditional => {}, // TASK-78
             .choice => {}, // TASK-79
             .gather => {}, // TASK-79
@@ -178,6 +186,30 @@ const Gen = struct {
         }
     }
 
+    fn genLogicLine(self: *Gen, out: *std.ArrayList(CObject), ll: Parsed.LogicLine) !void {
+        switch (ll) {
+            .temp_decl => |td| {
+                try out.append(self.alloc, .eval_start);
+                try self.genExpr(out, td.initial.*);
+                try out.append(self.alloc, .eval_end);
+                try out.append(self.alloc, .{ .temp_assign = .{ .name = td.name, .is_new = true } });
+            },
+            .assignment => |a| {
+                try out.append(self.alloc, .eval_start);
+                try self.genExpr(out, a.value.*);
+                try out.append(self.alloc, .eval_end);
+                if (a.is_temp) {
+                    try out.append(self.alloc, .{ .temp_assign = .{ .name = a.name, .is_new = false } });
+                } else {
+                    try out.append(self.alloc, .{ .var_assign = .{ .name = a.name, .is_new = false } });
+                }
+            },
+            .return_stmt => {}, // TASK-80
+            .var_decl => {}, // handled via global_decls
+            .include => {}, // TASK-84
+        }
+    }
+
     fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement) !void {
         switch (elem) {
             .text => |t| {
@@ -186,7 +218,12 @@ const Gen = struct {
             },
             .glue => try out.append(self.alloc, .glue),
             .divert => |d| try self.genDivert(out, d),
-            .inline_expr => {}, // TASK-76
+            .inline_expr => |expr| {
+                try out.append(self.alloc, .eval_start);
+                try self.genExpr(out, expr.*);
+                try out.append(self.alloc, .eval_output);
+                try out.append(self.alloc, .eval_end);
+            },
             .sequence => {}, // TASK-81
             .tag => {}, // TASK-82
         }
@@ -197,12 +234,51 @@ const Gen = struct {
             .int_lit => |v| try out.append(self.alloc, .{ .int = v }),
             .float_lit => |v| try out.append(self.alloc, .{ .float = v }),
             .bool_lit => |v| try out.append(self.alloc, .{ .bool_ = v }),
-            .string_lit => |v| try out.append(self.alloc, .{ .string = v }),
-            .var_ref => |name| try out.append(self.alloc, .{ .var_ref = name }),
-            else => {}, // complex expressions handled in TASK-76
+            .string_lit => |v| {
+                try out.append(self.alloc, .{ .string = "str" });
+                try out.append(self.alloc, .{ .text = v });
+                try out.append(self.alloc, .{ .string = "/str" });
+            },
+            .var_ref => |name| {
+                // Substitute CONST values at codegen time.
+                if (self.const_map.get(name)) |const_expr| {
+                    try self.genExpr(out, const_expr.*);
+                } else {
+                    try out.append(self.alloc, .{ .var_ref = name });
+                }
+            },
+            .binary => |b| {
+                try self.genExpr(out, b.lhs.*);
+                try self.genExpr(out, b.rhs.*);
+                try out.append(self.alloc, .{ .string = opStr(b.op) });
+            },
+            .unary => |u| {
+                try self.genExpr(out, u.operand.*);
+                const s: []const u8 = if (u.op == .not) "!" else "_";
+                try out.append(self.alloc, .{ .string = s });
+            },
+            else => {}, // remaining expression types in later tasks
         }
     }
 };
+
+fn opStr(op: Parsed.BinaryOp) []const u8 {
+    return switch (op) {
+        .add => "+",
+        .sub => "-",
+        .mul => "*",
+        .div => "/",
+        .mod => "%",
+        .eq => "==",
+        .ne => "!=",
+        .gt => ">",
+        .lt => "<",
+        .ge => ">=",
+        .le => "<=",
+        .and_ => "&&",
+        .or_ => "||",
+    };
+}
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
