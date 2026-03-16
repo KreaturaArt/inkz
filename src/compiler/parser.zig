@@ -43,6 +43,9 @@ pub const Parser = struct {
     tokens: []const Token,
     pos: usize,
     errors: std.ArrayList(Parsed.ParseError),
+    /// Names declared with `~ temp` in the current scope, used to determine
+    /// whether `~ name = expr` is a temp reassignment or a global assignment.
+    temp_names: std.ArrayList([]const u8),
 
     pub fn init(alloc: std.mem.Allocator, src: [:0]const u8, tokens: []const Token) Parser {
         return .{
@@ -51,6 +54,7 @@ pub const Parser = struct {
             .tokens = tokens,
             .pos = 0,
             .errors = .empty,
+            .temp_names = .empty,
         };
     }
 
@@ -212,16 +216,24 @@ pub const Parser = struct {
                 continue :parse self.cur().tag;
             },
 
+            .logic_line => {
+                if (try self.parseLogicLine()) |item|
+                    try items.append(self.alloc, item);
+                continue :parse self.cur().tag;
+            },
+
             // These are handled in later tasks; skip for now.
-            .logic_line, .choice_once, .choice_sticky, .gather,
+            .choice_once, .choice_sticky, .gather,
             .thread_start, .hash => {
                 self.skipToEol();
                 continue :parse self.cur().tag;
             },
 
             .left_brace => {
-                // Inline conditional / sequence at line start.
-                self.skipBraceBlock();
+                // Delegate to parseTextLine which handles multi-brace lines like {x}{y}
+                // and falls back to skipBraceBlock for non-expression braces.
+                if (try self.parseTextLine()) |item|
+                    try items.append(self.alloc, item);
                 continue :parse self.cur().tag;
             },
 
@@ -312,8 +324,11 @@ pub const Parser = struct {
                 },
 
                 .left_brace => {
-                    // Inline expression / conditional — skip for TASK-74.
-                    self.skipBraceBlock();
+                    if (try self.parseBraceExpr()) |expr| {
+                        try elements.append(self.alloc, .{ .inline_expr = expr });
+                    } else {
+                        self.skipBraceBlock();
+                    }
                 },
 
                 .left_bracket, .right_bracket => _ = self.eat(),
@@ -410,7 +425,8 @@ pub const Parser = struct {
         }
         rest = trimLeft(rest[1..]);
 
-        const expr = try parseLiteralExpr(self.alloc, rest) orelse return null;
+        var ep = ExprParser.init(self.alloc, rest);
+        const expr = (try ep.parseExpr()) orelse return null;
         return .{ .name = name, .initial = expr };
     }
 
@@ -436,7 +452,8 @@ pub const Parser = struct {
         }
         rest = trimLeft(rest[1..]);
 
-        const expr = try parseLiteralExpr(self.alloc, rest) orelse return null;
+        var ep = ExprParser.init(self.alloc, rest);
+        const expr = (try ep.parseExpr()) orelse return null;
         return .{ .name = name, .value = expr };
     }
 
@@ -447,6 +464,92 @@ pub const Parser = struct {
         const rest = std.mem.trim(u8, line_text[7..], " \t"); // skip "INCLUDE"
         if (rest.len == 0) return null;
         return rest;
+    }
+
+    // -- Logic lines ----------------------------------------------------------
+
+    /// Parse a `~` logic line into a FlowItem.logic.
+    /// Handles: `~ temp x = expr`, `~ x = expr`, `~ return [expr]`.
+    /// Returns null (and skips the line) for unsupported or malformed forms.
+    fn parseLogicLine(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
+        _ = self.eat(); // logic_line (~)
+        // Grab the rest of the line as a single text token.
+        const line_tok = if (self.cur().tag == .text) self.eat() else {
+            self.skipToEol();
+            return null;
+        };
+        self.skipToEol();
+        const text = std.mem.trim(u8, line_tok.loc.slice(self.src), " \t");
+
+        // ~ return [expr]
+        if (startsWithKeyword(text, "return")) {
+            const after = trimLeft(text[6..]);
+            if (after.len == 0) {
+                return .{ .logic = .{ .return_stmt = null } };
+            }
+            var ep = ExprParser.init(self.alloc, after);
+            const expr = try ep.parseExpr();
+            return .{ .logic = .{ .return_stmt = expr } };
+        }
+
+        // ~ temp name = expr
+        if (startsWithKeyword(text, "temp")) {
+            var rest = trimLeft(text[4..]);
+            const name_end = identEnd(rest);
+            if (name_end == 0) return null;
+            const name = rest[0..name_end];
+            rest = trimLeft(rest[name_end..]);
+            if (rest.len == 0 or rest[0] != '=') return null;
+            rest = trimLeft(rest[1..]);
+            var ep = ExprParser.init(self.alloc, rest);
+            const expr = (try ep.parseExpr()) orelse return null;
+            try self.temp_names.append(self.alloc, name);
+            return .{ .logic = .{ .temp_decl = .{ .name = name, .initial = expr } } };
+        }
+
+        // ~ name = expr  (assignment — not `==`)
+        const name_end = identEnd(text);
+        if (name_end == 0) return null;
+        const name = text[0..name_end];
+        var rest = trimLeft(text[name_end..]);
+        if (rest.len == 0 or rest[0] != '=') return null;
+        if (rest.len > 1 and rest[1] == '=') return null; // equality, not assignment
+        rest = trimLeft(rest[1..]);
+        var ep = ExprParser.init(self.alloc, rest);
+        const expr = (try ep.parseExpr()) orelse return null;
+        const is_temp = self.isTempVar(name);
+        return .{ .logic = .{ .assignment = .{ .name = name, .value = expr, .is_temp = is_temp } } };
+    }
+
+    fn isTempVar(self: *const Parser, name: []const u8) bool {
+        for (self.temp_names.items) |n| {
+            if (std.mem.eql(u8, n, name)) return true;
+        }
+        return false;
+    }
+
+    // -- Brace expression -----------------------------------------------------
+
+    /// Try to parse `{expr}` as a single Expression.
+    /// Returns the expression on success (having consumed `{`, text, `}`).
+    /// Returns null if the content is not a simple expression (conditional,
+    /// sequence, divert-target, etc.); the parser position is fully restored
+    /// so the caller can use `skipBraceBlock` instead.
+    fn parseBraceExpr(self: *Parser) error{OutOfMemory}!?*Parsed.Expression {
+        if (self.cur().tag != .left_brace) return null;
+        const saved = self.save();
+        _ = self.eat(); // {
+        // A simple expression: one text token followed immediately by }.
+        if (self.cur().tag == .text) {
+            const text_tok = self.eat();
+            if (self.cur().tag == .right_brace) {
+                _ = self.eat(); // }
+                var ep = ExprParser.init(self.alloc, text_tok.loc.slice(self.src));
+                if (try ep.parseExpr()) |expr| return expr;
+            }
+        }
+        self.restore(saved);
+        return null;
     }
 };
 
@@ -529,6 +632,233 @@ fn parseLiteralExpr(alloc: std.mem.Allocator, raw: []const u8) error{OutOfMemory
 
     alloc.destroy(e);
     return null;
+}
+
+// ── Expression parser ─────────────────────────────────────────────────────────
+
+/// Character-level precedence-climbing expression parser.
+/// Operates on the raw text slice inside a `{...}` brace block.
+const ExprParser = struct {
+    alloc: std.mem.Allocator,
+    src: []const u8,
+    pos: usize,
+
+    fn init(alloc: std.mem.Allocator, src: []const u8) ExprParser {
+        return .{ .alloc = alloc, .src = src, .pos = 0 };
+    }
+
+    fn skipWs(self: *ExprParser) void {
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (c != ' ' and c != '\t') break;
+            self.pos += 1;
+        }
+    }
+
+    fn rest(self: *const ExprParser) []const u8 {
+        return self.src[self.pos..];
+    }
+
+    pub fn parseExpr(self: *ExprParser) error{OutOfMemory}!?*Parsed.Expression {
+        self.skipWs();
+        return self.parseBinary(0);
+    }
+
+    fn parseBinary(self: *ExprParser, min_prec: u8) error{OutOfMemory}!?*Parsed.Expression {
+        var lhs = (try self.parseUnary()) orelse return null;
+        while (true) {
+            self.skipWs();
+            var op_len: usize = undefined;
+            const op = epPeekBinaryOp(self.rest(), &op_len) orelse break;
+            const prec = binOpPrec(op);
+            if (prec < min_prec) break;
+            self.pos += op_len;
+            self.skipWs();
+            const rhs = (try self.parseBinary(prec + 1)) orelse break;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .binary = .{ .op = op, .lhs = lhs, .rhs = rhs } };
+            lhs = node;
+        }
+        return lhs;
+    }
+
+    fn parseUnary(self: *ExprParser) error{OutOfMemory}!?*Parsed.Expression {
+        self.skipWs();
+        const s = self.rest();
+        if (s.len == 0) return null;
+
+        if (epKwStartsWith(s, "not")) {
+            self.pos += 3;
+            self.skipWs();
+            const operand = (try self.parseUnary()) orelse return null;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .unary = .{ .op = .not, .operand = operand } };
+            return node;
+        }
+        if (s[0] == '!') {
+            self.pos += 1;
+            self.skipWs();
+            const operand = (try self.parseUnary()) orelse return null;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .unary = .{ .op = .not, .operand = operand } };
+            return node;
+        }
+        // Unary `-` only when NOT immediately followed by a digit
+        // (negative numeric literals are handled in parsePrimary).
+        if (s[0] == '-' and (s.len < 2 or !std.ascii.isDigit(s[1]))) {
+            self.pos += 1;
+            self.skipWs();
+            const operand = (try self.parseUnary()) orelse return null;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .unary = .{ .op = .negate, .operand = operand } };
+            return node;
+        }
+        return self.parsePrimary();
+    }
+
+    fn parsePrimary(self: *ExprParser) error{OutOfMemory}!?*Parsed.Expression {
+        self.skipWs();
+        const s = self.rest();
+        if (s.len == 0) return null;
+
+        if (s[0] == '(') {
+            self.pos += 1;
+            const inner = (try self.parseBinary(0)) orelse return null;
+            self.skipWs();
+            if (self.pos < self.src.len and self.src[self.pos] == ')') self.pos += 1;
+            return inner;
+        }
+        if (s[0] == '"') {
+            self.pos += 1;
+            const start = self.pos;
+            while (self.pos < self.src.len and self.src[self.pos] != '"') self.pos += 1;
+            const content = self.src[start..self.pos];
+            if (self.pos < self.src.len) self.pos += 1;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .string_lit = content };
+            return node;
+        }
+        if (epKwStartsWith(s, "true")) {
+            self.pos += 4;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .bool_lit = true };
+            return node;
+        }
+        if (epKwStartsWith(s, "false")) {
+            self.pos += 5;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .bool_lit = false };
+            return node;
+        }
+        if (s[0] == '-' and s.len > 1 and std.ascii.isDigit(s[1])) {
+            return self.parseNumberLiteral();
+        }
+        if (std.ascii.isDigit(s[0])) {
+            return self.parseNumberLiteral();
+        }
+        if (std.ascii.isAlphabetic(s[0]) or s[0] == '_') {
+            return self.parseIdentOrCall();
+        }
+        return null;
+    }
+
+    fn parseNumberLiteral(self: *ExprParser) error{OutOfMemory}!?*Parsed.Expression {
+        const start = self.pos;
+        if (self.pos < self.src.len and self.src[self.pos] == '-') self.pos += 1;
+        while (self.pos < self.src.len and std.ascii.isDigit(self.src[self.pos])) self.pos += 1;
+        var is_float = false;
+        if (self.pos < self.src.len and self.src[self.pos] == '.') {
+            if (self.pos + 1 < self.src.len and std.ascii.isDigit(self.src[self.pos + 1])) {
+                is_float = true;
+                self.pos += 1;
+                while (self.pos < self.src.len and std.ascii.isDigit(self.src[self.pos])) self.pos += 1;
+            }
+        }
+        const num_str = self.src[start..self.pos];
+        const node = try self.alloc.create(Parsed.Expression);
+        if (is_float) {
+            node.* = .{ .float_lit = std.fmt.parseFloat(f64, num_str) catch return null };
+        } else {
+            node.* = .{ .int_lit = std.fmt.parseInt(i64, num_str, 10) catch return null };
+        }
+        return node;
+    }
+
+    fn parseIdentOrCall(self: *ExprParser) error{OutOfMemory}!?*Parsed.Expression {
+        const start = self.pos;
+        while (self.pos < self.src.len) {
+            const c = self.src[self.pos];
+            if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.') break;
+            self.pos += 1;
+        }
+        const name = self.src[start..self.pos];
+        self.skipWs();
+        if (self.pos < self.src.len and self.src[self.pos] == '(') {
+            self.pos += 1;
+            var args = std.ArrayList(*Parsed.Expression).empty;
+            self.skipWs();
+            while (self.pos < self.src.len and self.src[self.pos] != ')') {
+                const arg = (try self.parseBinary(0)) orelse break;
+                try args.append(self.alloc, arg);
+                self.skipWs();
+                if (self.pos < self.src.len and self.src[self.pos] == ',') {
+                    self.pos += 1;
+                    self.skipWs();
+                }
+            }
+            if (self.pos < self.src.len and self.src[self.pos] == ')') self.pos += 1;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .call = .{ .name = name, .args = try args.toOwnedSlice(self.alloc) } };
+            return node;
+        }
+        const node = try self.alloc.create(Parsed.Expression);
+        node.* = .{ .var_ref = name };
+        return node;
+    }
+};
+
+/// True if `s` starts with keyword `kw` followed by a non-ident char (or end).
+fn epKwStartsWith(s: []const u8, kw: []const u8) bool {
+    if (!std.mem.startsWith(u8, s, kw)) return false;
+    if (s.len == kw.len) return true;
+    const c = s[kw.len];
+    return !std.ascii.isAlphanumeric(c) and c != '_';
+}
+
+/// Binary operator precedence (higher = tighter binding).
+fn binOpPrec(op: Parsed.BinaryOp) u8 {
+    return switch (op) {
+        .or_ => 1,
+        .and_ => 2,
+        .eq, .ne => 3,
+        .gt, .lt, .ge, .le => 4,
+        .add, .sub => 5,
+        .mul, .div, .mod => 6,
+    };
+}
+
+/// Peek a binary operator at the start of `s`; write its byte-length into `out_len`.
+fn epPeekBinaryOp(s: []const u8, out_len: *usize) ?Parsed.BinaryOp {
+    if (s.len == 0) return null;
+    if (std.mem.startsWith(u8, s, "==")) { out_len.* = 2; return .eq; }
+    if (std.mem.startsWith(u8, s, "!=")) { out_len.* = 2; return .ne; }
+    if (std.mem.startsWith(u8, s, ">=")) { out_len.* = 2; return .ge; }
+    if (std.mem.startsWith(u8, s, "<=")) { out_len.* = 2; return .le; }
+    if (std.mem.startsWith(u8, s, "&&")) { out_len.* = 2; return .and_; }
+    if (std.mem.startsWith(u8, s, "||")) { out_len.* = 2; return .or_; }
+    if (epKwStartsWith(s, "and")) { out_len.* = 3; return .and_; }
+    if (epKwStartsWith(s, "or"))  { out_len.* = 2; return .or_; }
+    if (epKwStartsWith(s, "mod")) { out_len.* = 3; return .mod; }
+    switch (s[0]) {
+        '+' => { out_len.* = 1; return .add; },
+        '-' => { out_len.* = 1; return .sub; },
+        '*' => { out_len.* = 1; return .mul; },
+        '/' => { out_len.* = 1; return .div; },
+        '%' => { out_len.* = 1; return .mod; },
+        '>' => { out_len.* = 1; return .gt; },
+        '<' => { out_len.* = 1; return .lt; },
+        else => return null,
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -751,12 +1081,18 @@ test "Compiler parser: text line with hash tag" {
     try testing.expect(found_tag);
 }
 
-test "Compiler parser: brace block at line start is skipped" {
+test "Compiler parser: brace expr at line start produces inline_expr FlowItem" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    // A bare {expr} line contributes no FlowItem (skipped for TASK-74).
     const story = try parse(arena.allocator(), "{2 + 3}\n");
-    try testing.expectEqual(@as(usize, 0), story.root_content.len);
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const item = story.root_content[0];
+    try testing.expect(item == .text);
+    try testing.expectEqual(@as(usize, 1), item.text.elements.len);
+    try testing.expect(item.text.elements[0] == .inline_expr);
+    const expr = item.text.elements[0].inline_expr;
+    try testing.expect(expr.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.add, expr.binary.op);
 }
 
 test "Compiler parser: nested braces skipped correctly" {
@@ -994,6 +1330,122 @@ test "Compiler parser: whitespace-only text line produces no FlowItem" {
     const story = try parse(arena.allocator(), "   \nreal text\n");
     try testing.expectEqual(@as(usize, 1), story.root_content.len);
     try testing.expect(story.root_content[0] == .text);
+}
+
+// ── ExprParser unit tests ─────────────────────────────────────────────────────
+
+test "Compiler parser: ExprParser int literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "42");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .int_lit);
+    try testing.expectEqual(@as(i64, 42), expr.?.int_lit);
+}
+
+test "Compiler parser: ExprParser float literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "3.14");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .float_lit);
+    try testing.expectApproxEqAbs(@as(f64, 3.14), expr.?.float_lit, 1e-9);
+}
+
+test "Compiler parser: ExprParser boolean true" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "true");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .bool_lit);
+    try testing.expectEqual(true, expr.?.bool_lit);
+}
+
+test "Compiler parser: ExprParser binary add" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "2 + 3");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.add, expr.?.binary.op);
+    try testing.expectEqual(@as(i64, 2), expr.?.binary.lhs.int_lit);
+    try testing.expectEqual(@as(i64, 3), expr.?.binary.rhs.int_lit);
+}
+
+test "Compiler parser: ExprParser operator precedence mul before add" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // "2 * 3 + 5" should parse as (2*3)+5, not 2*(3+5).
+    var ep = ExprParser.init(arena.allocator(), "2 * 3 + 5");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.add, expr.?.binary.op);
+    try testing.expect(expr.?.binary.lhs.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.mul, expr.?.binary.lhs.binary.op);
+}
+
+test "Compiler parser: ExprParser unary not keyword" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "not true");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .unary);
+    try testing.expectEqual(Parsed.UnaryOp.not, expr.?.unary.op);
+    try testing.expect(expr.?.unary.operand.* == .bool_lit);
+    try testing.expectEqual(true, expr.?.unary.operand.bool_lit);
+}
+
+test "Compiler parser: ExprParser parenthesized expression" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "2 * (5 - 1)");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.mul, expr.?.binary.op);
+    try testing.expect(expr.?.binary.rhs.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.sub, expr.?.binary.rhs.binary.op);
+}
+
+test "Compiler parser: ExprParser mod keyword" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "8 mod 3");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.mod, expr.?.binary.op);
+}
+
+test "Compiler parser: ExprParser comparison operators" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    var ep = ExprParser.init(arena.allocator(), "3 > 1");
+    const expr = try ep.parseExpr();
+    try testing.expect(expr != null);
+    try testing.expect(expr.?.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.gt, expr.?.binary.op);
+}
+
+test "Compiler parser: ExprParser inline brace expr with spaces" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // "{ 2 * 3 + 5 * 6 }" — leading/trailing spaces inside braces are trimmed by ExprParser.
+    const story = try parse(arena.allocator(), "{ 2 * 3 + 5 * 6 }\n");
+    try testing.expectEqual(@as(usize, 1), story.root_content.len);
+    const item = story.root_content[0];
+    try testing.expect(item == .text);
+    try testing.expectEqual(@as(usize, 1), item.text.elements.len);
+    try testing.expect(item.text.elements[0] == .inline_expr);
+    const expr = item.text.elements[0].inline_expr;
+    try testing.expect(expr.* == .binary);
+    try testing.expectEqual(Parsed.BinaryOp.add, expr.binary.op);
 }
 
 // ── Fixture tests ─────────────────────────────────────────────────────────────
