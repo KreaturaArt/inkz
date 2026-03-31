@@ -17,7 +17,7 @@ pub fn compile(alloc: std.mem.Allocator, source: []const u8) ![]u8 {
 
     const story = try parser.parse(aa, source);
     const root = try codegen.generate(aa, story);
-    return serializer.serialize(alloc, root);
+    return serializer.serializeWithListDefs(alloc, root, story.list_defs);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────

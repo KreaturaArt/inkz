@@ -1,9 +1,10 @@
 ---
 id: TASK-75
 title: 'Compiler codegen + serializer: basic flow end-to-end'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:46'
+updated_date: '2026-03-31 18:12'
 labels:
   - compiler
   - codegen
@@ -45,3 +46,9 @@ Implement codegen, serializer, compiler entry point, and test helper. Closes the
 - [ ] #3 compileAndRun passes for all knots/ fixtures
 - [ ] #4 zig build test passes (240 runtime + new compiler tests)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Codegen (Parsed.Story → CContainer tree), serializer (CContainer → JSON string), compiler entry point, and e2e test helper compileAndRun. All misc/ and knots/ basic fixtures pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

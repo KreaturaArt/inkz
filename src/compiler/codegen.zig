@@ -32,6 +32,17 @@ pub const CObject = union(enum) {
     var_assign: struct { name: []const u8, is_new: bool }, // {"VAR=":"name"} or with "re":true
     var_ref: []const u8, // {"VAR?":"name"}
     temp_assign: struct { name: []const u8, is_new: bool }, // {"temp=":"name"} or with "re":true
+    // Conditional objects
+    branch_divert_true, // {"->":".^.b","c":true}  — conditional branch jump
+    dup, // "du"  — duplicate top of stack (used in switch comparisons)
+    // Choice objects
+    choice_point: struct { path: []const u8, flags: u32 }, // {"*":"path","flg":N}
+    divert_target_val: []const u8, // {"^->":"path"}  push divert target as value
+    divert_via_var: []const u8, // {"->":"name","var":true}  follow a var's stored path
+    // Read-count and function-call objects
+    read_count: []const u8, // {"CNT?":"path"}  visit count of a knot/stitch
+    function_call: struct { name: []const u8, arg_count: u32 }, // {"f()":"name"} or {"f(N)":"name"}
+    func_return, // "~ret"
 };
 
 pub const NamedChild = struct {
@@ -62,6 +73,14 @@ const Gen = struct {
     /// Compile-time constant values, keyed by name.  Used to substitute CONST
     /// references at codegen time so no {"VAR?":"name"} appears for constants.
     const_map: std.StringHashMapUnmanaged(*const Parsed.Expression) = .{},
+    /// Names of declared knots/stitches (and function knots).  In a condition
+    /// expression, a bare name that matches a knot becomes {"CNT?":"name"}
+    /// (visit-count check) rather than {"VAR?":"name"} (variable lookup).
+    knot_names: std.StringHashMapUnmanaged(void) = .{},
+    /// Names of declared global VARs.  A divert to a var name becomes divert_via_var.
+    var_names: std.StringHashMapUnmanaged(void) = .{},
+    /// Names of divert-target params in the current function.  Same treatment as var_names.
+    divert_param_names: std.StringHashMapUnmanaged(void) = .{},
 
     fn newContainer(self: *Gen, name: ?[]const u8) !*CContainer {
         const c = try self.alloc.create(CContainer);
@@ -74,18 +93,35 @@ const Gen = struct {
         for (story.constants) |c| {
             try self.const_map.put(self.alloc, c.name, c.value);
         }
-        // 1. Root content sub-container (position 0 inside root).
-        var root_flow = std.ArrayList(CObject).empty;
-        for (story.root_content) |item| {
-            try self.genFlowItem(&root_flow, item);
+        // Populate knot_names so expressions can emit CNT? for knot references.
+        for (story.knots) |knot| {
+            try self.knot_names.put(self.alloc, knot.name, {});
+            for (knot.stitches) |stitch| {
+                try self.knot_names.put(self.alloc, stitch.name, {});
+            }
         }
-        // Always append the g-0 implicit-done named container.
-        const g0 = try self.newContainer("g-0");
-        g0.content = try self.alloc.dupe(CObject, &.{.done});
-        try root_flow.append(self.alloc, .{ .container = g0 });
+        // Populate var_names so diverts to variable names become divert_via_var.
+        for (story.global_decls) |decl| {
+            try self.var_names.put(self.alloc, decl.name, {});
+        }
 
+        // 1. Root content sub-container (position 0 inside root).
         const root_content_sub = try self.newContainer(null);
-        root_content_sub.content = try root_flow.toOwnedSlice(self.alloc);
+
+        if (itemsHaveChoices(story.root_content)) {
+            // Weave mode: root_content_sub is the weave holder.
+            try self.genWeave(story.root_content, root_content_sub, "0", true);
+        } else {
+            var root_flow = std.ArrayList(CObject).empty;
+            for (story.root_content) |item| {
+                try self.genFlowItem(&root_flow, item, "0");
+            }
+            // Always append the g-0 implicit-done named container.
+            const g0 = try self.newContainer("g-0");
+            g0.content = try self.alloc.dupe(CObject, &.{.done});
+            try root_flow.append(self.alloc, .{ .container = g0 });
+            root_content_sub.content = try root_flow.toOwnedSlice(self.alloc);
+        }
 
         // 2. Global-decl container (VAR initializers), if any.
         //    Format: ["ev", 0, {VAR=:"name"}, ... , "/ev", "end", null]
@@ -126,34 +162,80 @@ const Gen = struct {
     }
 
     fn genKnot(self: *Gen, knot: Parsed.Knot) !*CContainer {
-        var items = std.ArrayList(CObject).empty;
-        for (knot.content) |item| {
-            try self.genFlowItem(&items, item);
-        }
-
         if (knot.stitches.len > 0) {
+            // Knot with stitches — no weave support for stitches yet.
+            var items = std.ArrayList(CObject).empty;
+            // Emit param bindings at function start (reverse order).
+            if (knot.is_function and knot.params.len > 0) {
+                var i = knot.params.len;
+                while (i > 0) {
+                    i -= 1;
+                    const p = knot.params[i];
+                    try items.append(self.alloc, .{ .temp_assign = .{ .name = p.name, .is_new = true } });
+                }
+            }
+            for (knot.content) |item| {
+                try self.genFlowItem(&items, item, knot.name);
+            }
             var stitch_named = std.ArrayList(NamedChild).empty;
             for (knot.stitches) |stitch| {
-                var stitch_items = std.ArrayList(CObject).empty;
-                for (stitch.content) |item| {
-                    try self.genFlowItem(&stitch_items, item);
-                }
-                const sc = try self.newContainer(null);
-                sc.content = try stitch_items.toOwnedSlice(self.alloc);
+                const stitch_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ knot.name, stitch.name });
+                const sc = try self.genKnotContent(stitch.content, stitch_path, &.{}, false);
                 try stitch_named.append(self.alloc, .{ .name = stitch.name, .container = sc });
             }
             const kc = try self.newContainer(null);
             kc.content = try items.toOwnedSlice(self.alloc);
             kc.named_children = try stitch_named.toOwnedSlice(self.alloc);
             return kc;
-        } else {
-            const kc = try self.newContainer(null);
-            kc.content = try items.toOwnedSlice(self.alloc);
-            return kc;
         }
+
+        // Track divert-target params for the duration of genKnotContent.
+        self.divert_param_names.clearRetainingCapacity();
+        for (knot.params) |p| {
+            if (p.is_divert) {
+                try self.divert_param_names.put(self.alloc, p.name, {});
+            }
+        }
+        defer self.divert_param_names.clearRetainingCapacity();
+        return self.genKnotContent(knot.content, knot.name, knot.params, knot.is_function);
     }
 
-    fn genFlowItem(self: *Gen, out: *std.ArrayList(CObject), item: Parsed.FlowItem) !void {
+    /// Generate a knot or stitch body.  If the content has choices we wrap it
+    /// in an inner_wrapper container at index 0 (producing the `knot.0` weave
+    /// holder pattern Inklecate uses).
+    fn genKnotContent(self: *Gen, content: []const Parsed.FlowItem, knot_name: []const u8, params: []const Parsed.Param, is_function: bool) !*CContainer {
+        if (itemsHaveChoices(content)) {
+            // Create inner_wrapper: the weave holder lives at knot.0.
+            const inner_wrapper = try self.newContainer(null);
+            const holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.0", .{knot_name});
+            try self.genWeave(content, inner_wrapper, holder_abs, false);
+
+            // The knot container wraps inner_wrapper as its sole content item.
+            const kc = try self.newContainer(null);
+            kc.content = try self.alloc.dupe(CObject, &.{.{ .container = inner_wrapper }});
+            return kc;
+        }
+
+        // No choices: emit items directly.
+        var items = std.ArrayList(CObject).empty;
+        // Emit param bindings at function start (reverse order, last param first).
+        if (is_function and params.len > 0) {
+            var i = params.len;
+            while (i > 0) {
+                i -= 1;
+                const p = params[i];
+                try items.append(self.alloc, .{ .temp_assign = .{ .name = p.name, .is_new = true } });
+            }
+        }
+        for (content) |item| {
+            try self.genFlowItem(&items, item, knot_name);
+        }
+        const kc = try self.newContainer(null);
+        kc.content = try items.toOwnedSlice(self.alloc);
+        return kc;
+    }
+
+    fn genFlowItem(self: *Gen, out: *std.ArrayList(CObject), item: Parsed.FlowItem, parent_path: []const u8) error{OutOfMemory}!void {
         switch (item) {
             .text => |tl| {
                 for (tl.elements) |elem| {
@@ -162,11 +244,17 @@ const Gen = struct {
                 try out.append(self.alloc, .newline);
             },
             .divert => |d| try self.genDivert(out, d),
-            .tag => {}, // TASK-82
+            .tag => |tag_text| {
+                try out.append(self.alloc, .{ .string = "#" });
+                try out.append(self.alloc, .{ .text = tag_text });
+                try out.append(self.alloc, .{ .string = "/#" });
+            },
             .logic => |ll| try self.genLogicLine(out, ll),
-            .conditional => {}, // TASK-78
-            .choice => {}, // TASK-79
-            .gather => {}, // TASK-79
+            .conditional => |c| try self.genConditional(out, c, parent_path),
+            // Choices and gathers are handled by genWeave; they should not
+            // appear here in isolation, but if they do we silently skip them.
+            .choice => {},
+            .gather => {},
             .sequence => {}, // TASK-81
             .thread_start => {}, // TASK-84
         }
@@ -179,10 +267,27 @@ const Gen = struct {
             try out.append(self.alloc, .done);
         } else if (std.mem.eql(u8, d.target, "->->")) {
             try out.append(self.alloc, .tunnel_return);
-        } else if (d.is_tunnel) {
-            try out.append(self.alloc, .{ .tunnel_divert = d.target });
         } else {
-            try out.append(self.alloc, .{ .divert = d.target });
+            // Emit args if any (for parameterized knot calls).
+            if (d.args.len > 0) {
+                try out.append(self.alloc, .eval_start);
+                for (d.args) |arg| {
+                    try self.genExpr(out, arg.*);
+                }
+                try out.append(self.alloc, .eval_end);
+            }
+            if (d.is_tunnel) {
+                if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
+                    try out.append(self.alloc, .{ .divert_via_var = d.target }); // TODO: tunnel+var
+                } else {
+                    try out.append(self.alloc, .{ .tunnel_divert = d.target });
+                }
+            } else if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
+                // Divert to a variable containing a divert target.
+                try out.append(self.alloc, .{ .divert_via_var = d.target });
+            } else {
+                try out.append(self.alloc, .{ .divert = d.target });
+            }
         }
     }
 
@@ -204,7 +309,23 @@ const Gen = struct {
                     try out.append(self.alloc, .{ .var_assign = .{ .name = a.name, .is_new = false } });
                 }
             },
-            .return_stmt => {}, // TASK-80
+            .expr_stmt => |expr| {
+                // Standalone expression statement — evaluate and pop return value.
+                try out.append(self.alloc, .eval_start);
+                try self.genExpr(out, expr.*);
+                try out.append(self.alloc, .pop);
+                try out.append(self.alloc, .eval_end);
+            },
+            .return_stmt => |expr_opt| {
+                try out.append(self.alloc, .eval_start);
+                if (expr_opt) |expr| {
+                    try self.genExpr(out, expr.*);
+                } else {
+                    try out.append(self.alloc, .void_);
+                }
+                try out.append(self.alloc, .eval_end);
+                try out.append(self.alloc, .func_return);
+            },
             .var_decl => {}, // handled via global_decls
             .include => {}, // TASK-84
         }
@@ -213,8 +334,22 @@ const Gen = struct {
     fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement) !void {
         switch (elem) {
             .text => |t| {
-                const trimmed = std.mem.trim(u8, t, " \t");
-                if (trimmed.len > 0) try out.append(self.alloc, .{ .text = trimmed });
+                // Trim only leading whitespace; trailing spaces before {expr}
+                // are prose and must be preserved.
+                var start: usize = 0;
+                while (start < t.len and (t[start] == ' ' or t[start] == '\t')) start += 1;
+                var remaining = t[start..];
+                // Split on <> glue markers.
+                while (remaining.len > 0) {
+                    if (std.mem.indexOf(u8, remaining, "<>")) |idx| {
+                        if (idx > 0) try out.append(self.alloc, .{ .text = remaining[0..idx] });
+                        try out.append(self.alloc, .glue);
+                        remaining = remaining[idx + 2 ..];
+                    } else {
+                        if (remaining.len > 0) try out.append(self.alloc, .{ .text = remaining });
+                        break;
+                    }
+                }
             },
             .glue => try out.append(self.alloc, .glue),
             .divert => |d| try self.genDivert(out, d),
@@ -225,8 +360,362 @@ const Gen = struct {
                 try out.append(self.alloc, .eval_end);
             },
             .sequence => {}, // TASK-81
-            .tag => {}, // TASK-82
+            .tag => |tag_text| {
+                try out.append(self.alloc, .{ .string = "#" });
+                try out.append(self.alloc, .{ .text = tag_text });
+                try out.append(self.alloc, .{ .string = "/#" });
+            },
         }
+    }
+
+    // ── Weave codegen (choices & gathers) ────────────────────────────────────
+
+    /// Process a flat list of FlowItems that contains at least one .choice or
+    /// .gather, building the weave_holder container in-place.
+    ///
+    /// `holder_abs_path`: absolute path to `holder` from the JSON root.
+    ///   • "0"          for the root_content_sub
+    ///   • "knot.0"     for a knot's inner_wrapper
+    /// `is_root`:  true = use absolute JSON paths; false = relative paths.
+    fn genWeave(
+        self: *Gen,
+        items: []const Parsed.FlowItem,
+        holder: *CContainer,
+        holder_abs_path: []const u8,
+        is_root: bool,
+    ) error{OutOfMemory}!void {
+        var main_content = std.ArrayList(CObject).empty; // holder's content list
+        var named = std.ArrayList(NamedChild).empty; // holder's named_children
+
+        var choice_idx: u32 = 0;
+        var gather_idx: u32 = 0;
+
+        // List of gather body content lists (one per gather encountered).
+        var gather_bodies = std.ArrayList(std.ArrayList(CObject)).empty;
+
+        for (items) |item| {
+            switch (item) {
+                .choice => |ch| {
+                    if (ch.nesting != 1) continue; // skip nested choices for now
+                    try self.genChoiceInWeave(
+                        &main_content,
+                        &named,
+                        ch,
+                        choice_idx,
+                        holder_abs_path,
+                        is_root,
+                    );
+                    choice_idx += 1;
+                },
+                .gather => |g| {
+                    if (g.nesting != 1) continue;
+                    // Start a new gather body.
+                    try gather_bodies.append(self.alloc, std.ArrayList(CObject).empty);
+                    gather_idx += 1;
+                },
+                else => {
+                    // Emit into the current gather body (if in one) or main content.
+                    const in_gather = gather_bodies.items.len > 0;
+                    const target = if (in_gather)
+                        &gather_bodies.items[gather_bodies.items.len - 1]
+                    else
+                        &main_content;
+                    try self.genFlowItem(target, item, holder_abs_path);
+                },
+            }
+        }
+
+        // Finalize gather containers and add them to named_children.
+        for (gather_bodies.items, 0..) |*body, gi| {
+            const g_name = try std.fmt.allocPrint(self.alloc, "g-{}", .{gi});
+            const gc = try self.newContainer(null);
+            gc.content = try body.toOwnedSlice(self.alloc);
+            try named.append(self.alloc, .{ .name = g_name, .container = gc });
+        }
+        gather_bodies.deinit(self.alloc);
+
+        // If we had choices but no gathers, add an implicit g-0 = ["done"].
+        if (choice_idx > 0 and gather_idx == 0) {
+            const g0 = try self.newContainer(null);
+            g0.content = try self.alloc.dupe(CObject, &.{.done});
+            try named.append(self.alloc, .{ .name = "g-0", .container = g0 });
+        }
+
+        holder.content = try main_content.toOwnedSlice(self.alloc);
+        holder.named_children = try named.toOwnedSlice(self.alloc);
+    }
+
+    /// Emit one choice into the weave holder's main_content and named lists.
+    fn genChoiceInWeave(
+        self: *Gen,
+        main_content: *std.ArrayList(CObject),
+        named: *std.ArrayList(NamedChild),
+        ch: Parsed.Choice,
+        choice_idx: u32,
+        holder_abs_path: []const u8,
+        is_root: bool,
+    ) error{OutOfMemory}!void {
+        const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{choice_idx});
+        // Absolute path to c-N for divert target values.
+        const c_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, c_name });
+
+        // Compute flags.
+        const is_fallback = isFallbackChoice(ch);
+        const has_start = ch.start_content.len > 0;
+        const has_choice_only = ch.choice_only_content.len > 0;
+        var flg: u32 = 0;
+        if (ch.condition != null) flg |= 0x01;
+        if (has_start) flg |= 0x02;
+        if (has_choice_only) flg |= 0x04;
+        if (is_fallback) flg |= 0x08;
+        if (!ch.is_sticky) flg |= 0x10;
+
+        // c-N container flags: 5 for once-only, 0 for sticky.
+        const c_flags: u32 = if (!ch.is_sticky) 5 else 0;
+
+        // Gather convergence path (always g-0 for now).
+        const gather_path = if (is_root)
+            try std.fmt.allocPrint(self.alloc, "{s}.g-0", .{holder_abs_path})
+        else
+            ".^.^.g-0";
+
+        if (is_fallback) {
+            // ── Fallback choice: just a choice_point in main_content ──────────
+            const cp_path = if (is_root)
+                try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, c_name })
+            else
+                try std.fmt.allocPrint(self.alloc, ".^.{s}", .{c_name});
+            try main_content.append(self.alloc, .{ .choice_point = .{ .path = cp_path, .flags = flg } });
+
+            var c_body = std.ArrayList(CObject).empty;
+            try c_body.append(self.alloc, .newline);
+            try c_body.append(self.alloc, .{ .divert = gather_path });
+            const cc = try self.newContainer(null);
+            cc.flags = c_flags;
+            cc.content = try c_body.toOwnedSlice(self.alloc);
+            try named.append(self.alloc, .{ .name = c_name, .container = cc });
+        } else if (!has_start) {
+            // ── Brackets-only (or condition-only): eval block in main_content ──
+            try main_content.append(self.alloc, .eval_start);
+            try main_content.append(self.alloc, .{ .string = "str" });
+            for (ch.choice_only_content) |elem| {
+                try self.genInlineElement(main_content, elem);
+            }
+            try main_content.append(self.alloc, .{ .string = "/str" });
+            // Condition expressions go between /str and /ev.
+            if (ch.condition) |cond| try self.genExpr(main_content, cond.*);
+            try main_content.append(self.alloc, .eval_end);
+
+            const cp_path = if (is_root)
+                try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, c_name })
+            else
+                try std.fmt.allocPrint(self.alloc, ".^.{s}", .{c_name});
+            try main_content.append(self.alloc, .{ .choice_point = .{ .path = cp_path, .flags = flg } });
+
+            // c-N body.
+            var c_body = std.ArrayList(CObject).empty;
+            try c_body.append(self.alloc, .newline);
+            for (ch.inner_content) |inner| {
+                try self.genFlowItem(&c_body, inner, c_abs);
+            }
+            try c_body.append(self.alloc, .{ .divert = gather_path });
+            const cc = try self.newContainer(null);
+            cc.flags = c_flags;
+            cc.content = try c_body.toOwnedSlice(self.alloc);
+            try named.append(self.alloc, .{ .name = c_name, .container = cc });
+        } else {
+            // ── Start-text choice: sub-inner container ────────────────────────
+            const sub_inner_pos = main_content.items.len;
+            const sub_inner_abs = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ holder_abs_path, sub_inner_pos });
+            const r1_path = try std.fmt.allocPrint(self.alloc, "{s}.$r1", .{sub_inner_abs});
+            const r2_path = try std.fmt.allocPrint(self.alloc, "{s}.$r2", .{c_abs});
+
+            // choice_point path: relative from sub_inner (two ^s) or absolute.
+            const cp_path = if (is_root)
+                try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, c_name })
+            else
+                try std.fmt.allocPrint(self.alloc, ".^.^.{s}", .{c_name});
+
+            // Path from c-N to sub_inner.s.
+            const s_path = if (is_root)
+                try std.fmt.allocPrint(self.alloc, "{s}.{}.s", .{ holder_abs_path, sub_inner_pos })
+            else
+                try std.fmt.allocPrint(self.alloc, ".^.^.{}.s", .{sub_inner_pos});
+
+            // Build sub-inner container.
+            var si_body = std.ArrayList(CObject).empty;
+            try si_body.append(self.alloc, .eval_start);
+            try si_body.append(self.alloc, .{ .divert_target_val = r1_path });
+            try si_body.append(self.alloc, .{ .temp_assign = .{ .name = "$r", .is_new = true } });
+            try si_body.append(self.alloc, .{ .string = "str" });
+            try si_body.append(self.alloc, .{ .divert = ".^.s" });
+            // $r1 label: empty named container inline.
+            const r1_label = try self.newContainer("$r1");
+            r1_label.content = &.{};
+            try si_body.append(self.alloc, .{ .container = r1_label });
+            try si_body.append(self.alloc, .{ .string = "/str" });
+            // Optional choice-only block.
+            if (has_choice_only) {
+                try si_body.append(self.alloc, .{ .string = "str" });
+                for (ch.choice_only_content) |elem| {
+                    try self.genInlineElement(&si_body, elem);
+                }
+                try si_body.append(self.alloc, .{ .string = "/str" });
+            }
+            // Condition expressions go between /str (or choice-only /str) and /ev.
+            if (ch.condition) |cond| try self.genExpr(&si_body, cond.*);
+            try si_body.append(self.alloc, .eval_end);
+            try si_body.append(self.alloc, .{ .choice_point = .{ .path = cp_path, .flags = flg } });
+
+            // "s" named child: start_content + divert_via_var "$r".
+            var s_body = std.ArrayList(CObject).empty;
+            for (ch.start_content) |elem| {
+                try self.genInlineElement(&s_body, elem);
+            }
+            try s_body.append(self.alloc, .{ .divert_via_var = "$r" });
+            const s_c = try self.newContainer(null);
+            s_c.content = try s_body.toOwnedSlice(self.alloc);
+
+            const sub_inner = try self.newContainer(null);
+            sub_inner.content = try si_body.toOwnedSlice(self.alloc);
+            sub_inner.named_children = try self.alloc.dupe(NamedChild, &.{
+                .{ .name = "s", .container = s_c },
+            });
+            try main_content.append(self.alloc, .{ .container = sub_inner });
+
+            // Build c-N body.
+            var c_body = std.ArrayList(CObject).empty;
+            try c_body.append(self.alloc, .eval_start);
+            try c_body.append(self.alloc, .{ .divert_target_val = r2_path });
+            try c_body.append(self.alloc, .eval_end);
+            try c_body.append(self.alloc, .{ .temp_assign = .{ .name = "$r", .is_new = true } });
+            try c_body.append(self.alloc, .{ .divert = s_path });
+            // $r2 label.
+            const r2_label = try self.newContainer("$r2");
+            r2_label.content = &.{};
+            try c_body.append(self.alloc, .{ .container = r2_label });
+            // Following content (inline elements on the choice line after brackets).
+            for (ch.following_content) |elem| {
+                try self.genInlineElement(&c_body, elem);
+            }
+            // Newline separator between following content and body.
+            try c_body.append(self.alloc, .newline);
+            // Inner content (body lines after the choice line).
+            for (ch.inner_content) |inner| {
+                try self.genFlowItem(&c_body, inner, c_abs);
+            }
+            try c_body.append(self.alloc, .{ .divert = gather_path });
+            const cc = try self.newContainer(null);
+            cc.flags = c_flags;
+            cc.content = try c_body.toOwnedSlice(self.alloc);
+            try named.append(self.alloc, .{ .name = c_name, .container = cc });
+        }
+    }
+
+    // ── Conditional codegen ──────────────────────────────────────────────────
+
+    fn genConditional(self: *Gen, out: *std.ArrayList(CObject), cond: Parsed.Conditional, parent_path: []const u8) error{OutOfMemory}!void {
+        const initial_len = out.items.len;
+
+        // --- 1. Compute outer eval items (if any) ---
+        // For outer_condition forms (is_inline or block with outer cond),
+        // the eval goes directly into the parent container.
+        var eval_count: usize = 0;
+        if (cond.outer_condition) |oc| {
+            const start = out.items.len;
+            try out.append(self.alloc, .eval_start);
+            try self.genExpr(out, oc.*);
+            try out.append(self.alloc, .eval_end);
+            eval_count = out.items.len - start;
+        }
+
+        // --- 2. Compute nop index ---
+        const pop_count: usize = if (cond.is_switch) 1 else 0;
+        const nop_idx = initial_len + eval_count + cond.branches.len + pop_count;
+        const nop_path = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ parent_path, nop_idx });
+
+        // --- 3. Emit branch wrappers ---
+        for (cond.branches, 0..) |branch, i| {
+            const wrapper_idx = initial_len + eval_count + i;
+            const body_path = try std.fmt.allocPrint(self.alloc, "{s}.{}.b", .{ parent_path, wrapper_idx });
+
+            // Build the body container content.
+            var body = std.ArrayList(CObject).empty;
+
+            if (cond.is_switch) {
+                // Switch body starts with "pop" (consume the duplicated value).
+                try body.append(self.alloc, .pop);
+            }
+            if (!cond.is_inline) {
+                // Block form: leading newline before content.
+                try body.append(self.alloc, .newline);
+            }
+            if (cond.is_inline) {
+                for (branch.inline_elems) |elem| {
+                    try self.genInlineElement(&body, elem);
+                }
+            } else {
+                for (branch.content) |item| {
+                    try self.genFlowItem(&body, item, body_path);
+                }
+            }
+            // Convergence divert — jumps to the nop.
+            try body.append(self.alloc, .{ .divert = nop_path });
+
+            const body_c = try self.newContainer(null);
+            body_c.content = try body.toOwnedSlice(self.alloc);
+
+            // Build the branch wrapper container content.
+            var wrapper_content = std.ArrayList(CObject).empty;
+
+            if (cond.is_switch) {
+                // Switch: dup, ev, case_expr, "==", /ev, branch_divert_true
+                try wrapper_content.append(self.alloc, .dup);
+                try wrapper_content.append(self.alloc, .eval_start);
+                if (branch.condition) |case_expr| {
+                    try self.genExpr(&wrapper_content, case_expr.*);
+                }
+                try wrapper_content.append(self.alloc, .{ .string = "==" });
+                try wrapper_content.append(self.alloc, .eval_end);
+                try wrapper_content.append(self.alloc, .branch_divert_true);
+            } else if (cond.outer_condition != null) {
+                // Outer-condition (boolean or inline): first branch → conditional jump,
+                // subsequent branches → unconditional jump.
+                if (i == 0) {
+                    try wrapper_content.append(self.alloc, .branch_divert_true);
+                } else {
+                    try wrapper_content.append(self.alloc, .{ .divert = ".^.b" });
+                }
+            } else {
+                // Multi-branch: each branch has its own eval + conditional jump,
+                // except the else branch (no condition) which is unconditional.
+                if (branch.condition) |cond_expr| {
+                    try wrapper_content.append(self.alloc, .eval_start);
+                    try self.genExpr(&wrapper_content, cond_expr.*);
+                    try wrapper_content.append(self.alloc, .eval_end);
+                    try wrapper_content.append(self.alloc, .branch_divert_true);
+                } else {
+                    try wrapper_content.append(self.alloc, .{ .divert = ".^.b" });
+                }
+            }
+
+            const wrapper = try self.newContainer(null);
+            wrapper.content = try wrapper_content.toOwnedSlice(self.alloc);
+            wrapper.named_children = try self.alloc.dupe(NamedChild, &.{
+                .{ .name = "b", .container = body_c },
+            });
+
+            try out.append(self.alloc, .{ .container = wrapper });
+        }
+
+        // --- 4. Switch pop ---
+        if (cond.is_switch) {
+            try out.append(self.alloc, .pop);
+        }
+
+        // --- 5. Nop + trailing newline ---
+        try out.append(self.alloc, .nop);
+        try out.append(self.alloc, .newline);
     }
 
     fn genExpr(self: *Gen, out: *std.ArrayList(CObject), expr: Parsed.Expression) !void {
@@ -243,9 +732,22 @@ const Gen = struct {
                 // Substitute CONST values at codegen time.
                 if (self.const_map.get(name)) |const_expr| {
                     try self.genExpr(out, const_expr.*);
+                } else if (self.knot_names.contains(name)) {
+                    // Bare knot/stitch name in an expression → visit-count check.
+                    try out.append(self.alloc, .{ .read_count = name });
                 } else {
                     try out.append(self.alloc, .{ .var_ref = name });
                 }
+            },
+            .read_count => |path| try out.append(self.alloc, .{ .read_count = path }),
+            .divert_target => |path| try out.append(self.alloc, .{ .divert_target_val = path }),
+            .call => |c| {
+                // Push arguments left-to-right, then emit the call.
+                for (c.args) |arg| try self.genExpr(out, arg.*);
+                try out.append(self.alloc, .{ .function_call = .{
+                    .name = c.name,
+                    .arg_count = @intCast(c.args.len),
+                } });
             },
             .binary => |b| {
                 try self.genExpr(out, b.lhs.*);
@@ -261,6 +763,29 @@ const Gen = struct {
         }
     }
 };
+
+/// True when any item in `items` is a choice or gather.
+fn itemsHaveChoices(items: []const Parsed.FlowItem) bool {
+    for (items) |item| {
+        if (item == .choice or item == .gather) return true;
+    }
+    return false;
+}
+
+/// True when `ch` is a fallback (invisible-default) choice:
+/// no start content, no choice-only content, no condition,
+/// and the following content is empty or a bare `->` with no target.
+fn isFallbackChoice(ch: Parsed.Choice) bool {
+    if (ch.start_content.len > 0) return false;
+    if (ch.choice_only_content.len > 0) return false;
+    if (ch.condition != null) return false;
+    if (ch.following_content.len == 0) return true;
+    if (ch.following_content.len == 1) {
+        const fc = ch.following_content[0];
+        if (fc == .divert and fc.divert.target.len == 0) return true;
+    }
+    return false;
+}
 
 fn opStr(op: Parsed.BinaryOp) []const u8 {
     return switch (op) {

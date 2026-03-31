@@ -1,9 +1,10 @@
 ---
 id: TASK-78
 title: 'Compiler parser + codegen: conditionals'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:47'
+updated_date: '2026-03-31 18:13'
 labels:
   - compiler
   - parser
@@ -41,3 +42,9 @@ Reference: `test/fixture/original/runtime/conditions/` and compiled JSON counter
 - [ ] #2 compileAndRun passes for logic/ fixtures
 - [ ] #3 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Inline conditionals, block if/else, switch (dup-based), nested conditionals. All conditions/ fixtures pass. Branch containers named 'b', convergence via nop.
+<!-- SECTION:FINAL_SUMMARY:END -->

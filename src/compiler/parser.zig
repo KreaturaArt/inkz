@@ -127,6 +127,7 @@ pub const Parser = struct {
         var global_decls = std.ArrayList(Parsed.VarDecl).empty;
         var constants = std.ArrayList(Parsed.Constant).empty;
         var includes = std.ArrayList([]const u8).empty;
+        var list_defs = std.ArrayList(Parsed.ListDef).empty;
 
         // Root content: everything before the first knot marker.
         try self.parseContent(
@@ -134,17 +135,18 @@ pub const Parser = struct {
             &global_decls,
             &constants,
             &includes,
+            &list_defs,
             false, // don't stop at stitch_marker in root
         );
 
         // Knots.
         while (self.cur().tag == .knot_marker) {
-            const knot = try self.parseKnot(&global_decls, &constants, &includes);
+            const knot = try self.parseKnot(&global_decls, &constants, &includes, &list_defs);
             try knots.append(self.alloc, knot);
         }
 
         return Parsed.Story{
-            .list_defs = &.{},
+            .list_defs = try list_defs.toOwnedSlice(self.alloc),
             .global_decls = try global_decls.toOwnedSlice(self.alloc),
             .constants = try constants.toOwnedSlice(self.alloc),
             .external_fns = &.{},
@@ -153,6 +155,7 @@ pub const Parser = struct {
             .root_content = try root_content.toOwnedSlice(self.alloc),
             .errors = try self.errors.toOwnedSlice(self.alloc),
         };
+
     }
 
     // -- Content block --------------------------------------------------------
@@ -169,6 +172,7 @@ pub const Parser = struct {
         global_decls: *std.ArrayList(Parsed.VarDecl),
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
+        list_defs: *std.ArrayList(Parsed.ListDef),
         stop_at_stitch: bool,
     ) error{OutOfMemory}!void {
         parse: switch (self.cur().tag) {
@@ -194,6 +198,11 @@ pub const Parser = struct {
                 } else if (startsWithKeyword(text, "CONST")) {
                     if (try self.parseConstLine()) |c|
                         try constants.append(self.alloc, c)
+                    else
+                        self.skipToEol();
+                } else if (startsWithKeyword(text, "LIST")) {
+                    if (try self.parseListLine()) |ld|
+                        try list_defs.append(self.alloc, ld)
                     else
                         self.skipToEol();
                 } else if (startsWithKeyword(text, "INCLUDE")) {
@@ -222,18 +231,43 @@ pub const Parser = struct {
                 continue :parse self.cur().tag;
             },
 
-            // These are handled in later tasks; skip for now.
-            .choice_once, .choice_sticky, .gather,
-            .thread_start, .hash => {
+            .choice_once, .choice_sticky => {
+                if (try self.parseChoiceItem()) |item|
+                    try items.append(self.alloc, item);
+                continue :parse self.cur().tag;
+            },
+
+            .gather => {
+                if (try self.parseGatherItem()) |item|
+                    try items.append(self.alloc, item);
+                continue :parse self.cur().tag;
+            },
+
+            .hash => {
+                _ = self.eat(); // consume #
+                const tag_text = if (self.cur().tag == .text)
+                    std.mem.trim(u8, self.eat().loc.slice(self.src), " \t")
+                else
+                    "";
+                self.skipToEol();
+                if (tag_text.len > 0)
+                    try items.append(self.alloc, .{ .tag = tag_text });
+                continue :parse self.cur().tag;
+            },
+
+            .thread_start => {
                 self.skipToEol();
                 continue :parse self.cur().tag;
             },
 
             .left_brace => {
-                // Delegate to parseTextLine which handles multi-brace lines like {x}{y}
-                // and falls back to skipBraceBlock for non-expression braces.
-                if (try self.parseTextLine()) |item|
+                // First try to parse as a conditional block.
+                if (try self.parseBraceConditional()) |cond| {
+                    try items.append(self.alloc, .{ .conditional = cond });
+                } else if (try self.parseTextLine()) |item| {
+                    // Handles inline expressions {x}{y} and falls back to skipBraceBlock.
                     try items.append(self.alloc, item);
+                }
                 continue :parse self.cur().tag;
             },
 
@@ -251,31 +285,50 @@ pub const Parser = struct {
         global_decls: *std.ArrayList(Parsed.VarDecl),
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
+        list_defs: *std.ArrayList(Parsed.ListDef),
     ) error{OutOfMemory}!Parsed.Knot {
         _ = self.eat(); // knot_marker
 
-        // The rest of the header line is a text token like " knot_name ===".
-        const name = if (self.cur().tag == .text)
-            extractFirstIdentifier(self.eat().loc.slice(self.src))
-        else
-            "";
+        // The rest of the header line is a text token like " knot_name ===" or
+        // " function knot_name ===" (with optional "function" modifier keyword).
+        var is_function = false;
+        var knot_params: []Parsed.Param = &.{};
+        const name = if (self.cur().tag == .text) blk: {
+            const raw = self.eat().loc.slice(self.src);
+            const t = trimLeft(raw);
+            // Check for "function" keyword modifier (e.g. "== function name ==").
+            const name_part: []const u8 = if (std.mem.startsWith(u8, t, "function") and
+                (t.len <= 8 or t[8] == ' ' or t[8] == '\t' or t[8] == '('))
+            blk2: {
+                is_function = true;
+                const rest = trimLeft(t[8..]);
+                break :blk2 rest;
+            } else t;
+            const name_end = identEnd(name_part);
+            // Parse optional parameter list "(x, y, ref z)" after the name.
+            const after_name = trimLeft(name_part[name_end..]);
+            if (after_name.len > 0 and after_name[0] == '(') {
+                knot_params = try parseParamList(self.alloc, after_name);
+            }
+            break :blk name_part[0..name_end];
+        } else "";
         self.skipToEol();
 
         // Parse knot-level content (before first stitch).
         var content = std.ArrayList(Parsed.FlowItem).empty;
-        try self.parseContent(&content, global_decls, constants, includes, true);
+        try self.parseContent(&content, global_decls, constants, includes, list_defs, true);
 
         // Parse stitches.
         var stitches = std.ArrayList(Parsed.Stitch).empty;
         while (self.cur().tag == .stitch_marker) {
-            const stitch = try self.parseStitch(global_decls, constants, includes);
+            const stitch = try self.parseStitch(global_decls, constants, includes, list_defs);
             try stitches.append(self.alloc, stitch);
         }
 
         return Parsed.Knot{
             .name = name,
-            .params = &.{},
-            .is_function = false,
+            .params = knot_params,
+            .is_function = is_function,
             .stitches = try stitches.toOwnedSlice(self.alloc),
             .content = try content.toOwnedSlice(self.alloc),
         };
@@ -286,6 +339,7 @@ pub const Parser = struct {
         global_decls: *std.ArrayList(Parsed.VarDecl),
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
+        list_defs: *std.ArrayList(Parsed.ListDef),
     ) error{OutOfMemory}!Parsed.Stitch {
         _ = self.eat(); // stitch_marker
 
@@ -296,7 +350,7 @@ pub const Parser = struct {
         self.skipToEol();
 
         var content = std.ArrayList(Parsed.FlowItem).empty;
-        try self.parseContent(&content, global_decls, constants, includes, true);
+        try self.parseContent(&content, global_decls, constants, includes, list_defs, true);
 
         return Parsed.Stitch{
             .name = name,
@@ -388,14 +442,71 @@ pub const Parser = struct {
             .divert_arrow => {
                 _ = self.eat();
                 // Target name is in the next text token.
-                const target = if (self.cur().tag == .text)
-                    extractFirstIdentifier(self.eat().loc.slice(self.src))
-                else
-                    "";
+                var target: []const u8 = "";
+                var args: []*Parsed.Expression = &.{};
+                if (self.cur().tag == .text) {
+                    const raw = self.eat().loc.slice(self.src);
+                    const t = trimLeft(raw);
+                    const name_end = identEnd(t);
+                    target = t[0..name_end];
+                    // Check for args: "(arg1, ...)" possibly spanning multiple tokens.
+                    const after_name = trimLeft(t[name_end..]);
+                    if (after_name.len > 0 and after_name[0] == '(') {
+                        // Collect the args text across multiple tokens until ')'.
+                        // Start with whatever is after '(' in the current token.
+                        var arg_buf = std.ArrayList(u8).empty;
+                        defer arg_buf.deinit(self.alloc);
+                        var close_found = false;
+                        const initial = after_name[1..]; // after '('
+                        if (std.mem.indexOfScalar(u8, initial, ')')) |end| {
+                            try arg_buf.appendSlice(self.alloc, initial[0..end]);
+                            close_found = true;
+                        } else {
+                            try arg_buf.appendSlice(self.alloc, initial);
+                            // Collect more tokens until ')'.
+                            while (!close_found) {
+                                switch (self.cur().tag) {
+                                    .newline, .eof => break,
+                                    .divert_arrow => {
+                                        _ = self.eat();
+                                        try arg_buf.appendSlice(self.alloc, "->");
+                                    },
+                                    .text => {
+                                        const more = self.eat().loc.slice(self.src);
+                                        if (std.mem.indexOfScalar(u8, more, ')')) |end| {
+                                            try arg_buf.appendSlice(self.alloc, more[0..end]);
+                                            close_found = true;
+                                        } else {
+                                            try arg_buf.appendSlice(self.alloc, more);
+                                        }
+                                    },
+                                    else => _ = self.eat(),
+                                }
+                            }
+                        }
+                        if (close_found) {
+                            var arg_list = std.ArrayList(*Parsed.Expression).empty;
+                            var it = std.mem.splitScalar(u8, arg_buf.items, ',');
+                            while (it.next()) |raw_arg| {
+                                const arg_s = std.mem.trim(u8, raw_arg, " \t");
+                                if (arg_s.len == 0) continue;
+                                var ep = ExprParser.init(self.alloc, arg_s);
+                                if (try ep.parseExpr()) |e| {
+                                    try arg_list.append(self.alloc, e);
+                                }
+                            }
+                            args = try arg_list.toOwnedSlice(self.alloc);
+                        }
+                    }
+                } else if (self.cur().tag == .divert_arrow) {
+                    // -> -> means tunnel return
+                    _ = self.eat();
+                    return .{ .target = "->->", .is_tunnel = false, .is_thread = false, .args = &.{} };
+                }
                 // Trailing -> means tunnel call (e.g. "-> knot ->").
                 const is_tunnel = self.cur().tag == .divert_arrow;
                 if (is_tunnel) _ = self.eat();
-                return .{ .target = target, .is_tunnel = is_tunnel, .is_thread = false, .args = &.{} };
+                return .{ .target = target, .is_tunnel = is_tunnel, .is_thread = false, .args = args };
             },
             else => return null,
         }
@@ -404,15 +515,15 @@ pub const Parser = struct {
     // -- Declarations ---------------------------------------------------------
 
     fn parseVarLine(self: *Parser) error{OutOfMemory}!?Parsed.VarDecl {
-        const tok = self.eat(); // "VAR name = value ..."
+        const tok = self.eat(); // "VAR name = value ..." (stops before ->)
         const line_text = tok.loc.slice(self.src);
         const tok_line = tok.line;
-        self.skipToEol(); // consume any trailing tokens (shouldn't be any for simple literals)
 
         var rest = trimLeft(line_text[3..]); // skip "VAR"
 
         const name_end = identEnd(rest);
         if (name_end == 0) {
+            self.skipToEol();
             try self.addError(.malformed_var_decl, tok_line);
             return null;
         }
@@ -420,11 +531,29 @@ pub const Parser = struct {
         rest = trimLeft(rest[name_end..]);
 
         if (rest.len == 0 or rest[0] != '=') {
+            self.skipToEol();
             try self.addError(.malformed_var_decl, tok_line);
             return null;
         }
         rest = trimLeft(rest[1..]);
 
+        // Check if after `=` we have a divert_arrow token (VAR x = -> knot).
+        if (rest.len == 0) {
+            // The `=` used up the text token; look ahead for -> target.
+            if (self.cur().tag == .divert_arrow) {
+                _ = self.eat(); // ->
+                const target = if (self.cur().tag == .text)
+                    extractFirstIdentifier(self.eat().loc.slice(self.src))
+                else
+                    "";
+                self.skipToEol();
+                const e = try self.alloc.create(Parsed.Expression);
+                e.* = .{ .divert_target = target };
+                return .{ .name = name, .initial = e };
+            }
+        }
+
+        self.skipToEol(); // consume any trailing tokens
         var ep = ExprParser.init(self.alloc, rest);
         const expr = (try ep.parseExpr()) orelse return null;
         return .{ .name = name, .initial = expr };
@@ -455,6 +584,55 @@ pub const Parser = struct {
         var ep = ExprParser.init(self.alloc, rest);
         const expr = (try ep.parseExpr()) orelse return null;
         return .{ .name = name, .value = expr };
+    }
+
+    fn parseListLine(self: *Parser) error{OutOfMemory}!?Parsed.ListDef {
+        const tok = self.eat(); // "LIST name = a, (b), c"
+        const line_text = tok.loc.slice(self.src);
+        self.skipToEol();
+
+        var rest = trimLeft(line_text[4..]); // skip "LIST"
+
+        const name_end = identEnd(rest);
+        if (name_end == 0) return null;
+        const list_name = rest[0..name_end];
+        rest = trimLeft(rest[name_end..]);
+
+        if (rest.len == 0 or rest[0] != '=') return null;
+        rest = trimLeft(rest[1..]);
+
+        var items = std.ArrayList(Parsed.ListItem).empty;
+        var auto_val: i32 = 1;
+        var it = std.mem.splitScalar(u8, rest, ',');
+        while (it.next()) |raw_item| {
+            const item_str = std.mem.trim(u8, raw_item, " \t");
+            if (item_str.len == 0) continue;
+            // Check for selected value: "(name)" means value is pre-selected (starts at 1+).
+            // Also handle "name = value" explicit numbering.
+            var item_name = item_str;
+            var item_val: ?i32 = null;
+            // Strip parens: (name) means the item is "on" by default.
+            if (item_str.len >= 2 and item_str[0] == '(' and item_str[item_str.len - 1] == ')') {
+                item_name = item_str[1 .. item_str.len - 1];
+            }
+            // Check for explicit value: "name = N"
+            if (std.mem.indexOf(u8, item_name, "=")) |eq_idx| {
+                const val_str = std.mem.trim(u8, item_name[eq_idx + 1 ..], " \t");
+                item_name = std.mem.trim(u8, item_name[0..eq_idx], " \t");
+                item_val = std.fmt.parseInt(i32, val_str, 10) catch null;
+                if (item_val) |v| auto_val = v + 1;
+            } else {
+                item_val = auto_val;
+                auto_val += 1;
+            }
+            const clean_name = std.mem.trim(u8, item_name, " \t");
+            if (clean_name.len > 0)
+                try items.append(self.alloc, .{ .name = clean_name, .value = item_val });
+        }
+        return Parsed.ListDef{
+            .name = list_name,
+            .items = try items.toOwnedSlice(self.alloc),
+        };
     }
 
     fn parseIncludeLine(self: *Parser) ?[]const u8 {
@@ -512,6 +690,37 @@ pub const Parser = struct {
         if (name_end == 0) return null;
         const name = text[0..name_end];
         var rest = trimLeft(text[name_end..]);
+
+        // ~ name++  →  name = name + 1
+        if (std.mem.startsWith(u8, rest, "++")) {
+            const lhs = try self.alloc.create(Parsed.Expression);
+            lhs.* = .{ .var_ref = name };
+            const one = try self.alloc.create(Parsed.Expression);
+            one.* = .{ .int_lit = 1 };
+            const rhs = try self.alloc.create(Parsed.Expression);
+            rhs.* = .{ .binary = .{ .op = .add, .lhs = lhs, .rhs = one } };
+            const is_temp = self.isTempVar(name);
+            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp } } };
+        }
+        // ~ name--  →  name = name - 1
+        if (std.mem.startsWith(u8, rest, "--")) {
+            const lhs = try self.alloc.create(Parsed.Expression);
+            lhs.* = .{ .var_ref = name };
+            const one = try self.alloc.create(Parsed.Expression);
+            one.* = .{ .int_lit = 1 };
+            const rhs = try self.alloc.create(Parsed.Expression);
+            rhs.* = .{ .binary = .{ .op = .sub, .lhs = lhs, .rhs = one } };
+            const is_temp = self.isTempVar(name);
+            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp } } };
+        }
+
+        if (rest.len > 0 and rest[0] == '(') {
+            // ~ func(args) — standalone function call (expr_stmt)
+            var ep = ExprParser.init(self.alloc, text);
+            const expr = (try ep.parseExpr()) orelse return null;
+            return .{ .logic = .{ .expr_stmt = expr } };
+        }
+
         if (rest.len == 0 or rest[0] != '=') return null;
         if (rest.len > 1 and rest[1] == '=') return null; // equality, not assignment
         rest = trimLeft(rest[1..]);
@@ -551,6 +760,509 @@ pub const Parser = struct {
         self.restore(saved);
         return null;
     }
+
+    // -- Conditionals ---------------------------------------------------------
+    //
+    // NOTE on tokenizer behaviour: the `:` character is a structural delimiter
+    // only when the tokenizer is in its `.start` state (i.e., when it is the
+    // FIRST character of a new token).  When `:` appears in the middle of a
+    // run of text it is consumed by `scanText` and bundled into the text token.
+    // Consequently patterns like `{false:not true|true}` tokenise as:
+    //   left_brace, text("false:not true"), pipe, text("true"), right_brace
+    // and `{- 4 > 5: not true\n}` tokenises as:
+    //   left_brace, newline, gather, text("4 > 5: not true"), newline, right_brace
+    //
+    // All conditional parsing therefore splits text tokens at the first `:`.
+
+    /// Try to parse `{...}` as a Parsed.Conditional.
+    /// Returns null (restoring position) if the brace block is not a conditional.
+    fn parseBraceConditional(self: *Parser) error{OutOfMemory}!?Parsed.Conditional {
+        if (self.cur().tag != .left_brace) return null;
+        const saved = self.save();
+        _ = self.eat(); // {
+        self.skipNewlines();
+
+        // CASE A: multi-branch block { \n - branches }  (no outer condition)
+        if (self.cur().tag == .gather) {
+            const branches = try self.parseGatherBranches();
+            self.skipNewlines();
+            if (self.cur().tag == .right_brace) {
+                _ = self.eat(); // }
+                if (self.cur().tag == .newline) _ = self.eat();
+                return Parsed.Conditional{
+                    .outer_condition = null,
+                    .is_inline = false,
+                    .branches = branches,
+                };
+            }
+            self.restore(saved);
+            return null;
+        }
+
+        // CASE B & C: starts with a text token (outer condition or inline).
+        if (self.cur().tag != .text) {
+            self.restore(saved);
+            return null;
+        }
+        const text_tok = self.eat();
+        const text_raw = text_tok.loc.slice(self.src);
+
+        // The colon separating condition from content is embedded in the text token.
+        const colon_pos = std.mem.indexOfScalar(u8, text_raw, ':') orelse {
+            // No colon → not a conditional (e.g. plain expression {x}).
+            self.restore(saved);
+            return null;
+        };
+        const expr_text = std.mem.trim(u8, text_raw[0..colon_pos], " \t");
+        const after_colon = std.mem.trim(u8, text_raw[colon_pos + 1 ..], " \t");
+
+        // Parse the outer condition expression.
+        var ep = ExprParser.init(self.alloc, expr_text);
+        const outer_cond = (try ep.parseExpr()) orelse {
+            self.restore(saved);
+            return null;
+        };
+
+        // Determine form by what comes after the colon.
+        if (after_colon.len == 0 and self.cur().tag == .newline) {
+            // CASE B: block outer-condition form { cond:\n ... }
+            _ = self.eat(); // newline
+            self.skipNewlines();
+
+            if (self.cur().tag == .gather) {
+                // { cond:\n - branch\n ... }
+                const branches = try self.parseGatherBranches();
+                self.skipNewlines();
+                if (self.cur().tag != .right_brace) {
+                    self.restore(saved);
+                    return null;
+                }
+                _ = self.eat(); // }
+                if (self.cur().tag == .newline) _ = self.eat();
+                // Detect switch: outer_cond + any branch has its own condition.
+                var is_switch = false;
+                for (branches) |b| {
+                    if (b.condition != null) { is_switch = true; break; }
+                }
+                return Parsed.Conditional{
+                    .outer_condition = outer_cond,
+                    .is_switch = is_switch,
+                    .is_inline = false,
+                    .branches = branches,
+                };
+            }
+
+            // { cond:\n content lines\n [- else: ...] }
+            const content = try self.parseBranchContent();
+            var branch_list = std.ArrayList(Parsed.Branch).empty;
+            try branch_list.append(self.alloc, .{ .condition = null, .content = content });
+            if (self.cur().tag == .gather) {
+                if (try self.parseElseGatherBranch()) |b|
+                    try branch_list.append(self.alloc, b);
+            }
+            self.skipNewlines();
+            if (self.cur().tag != .right_brace) {
+                self.restore(saved);
+                return null;
+            }
+            _ = self.eat(); // }
+            if (self.cur().tag == .newline) _ = self.eat();
+            return Parsed.Conditional{
+                .outer_condition = outer_cond,
+                .is_switch = false,
+                .is_inline = false,
+                .branches = try branch_list.toOwnedSlice(self.alloc),
+            };
+        }
+
+        // CASE C: inline form { cond: true_text | false_text }
+        // after_colon holds the true-branch text from the same token.
+        var branch_list = std.ArrayList(Parsed.Branch).empty;
+        {
+            var true_elems = std.ArrayList(Parsed.InlineElement).empty;
+            if (after_colon.len > 0)
+                try true_elems.append(self.alloc, .{ .text = after_colon });
+            // Collect any additional text tokens before `|` or `}`.
+            const more = try self.parseInlineBranchElems();
+            for (more) |e| try true_elems.append(self.alloc, e);
+            try branch_list.append(self.alloc, .{
+                .condition = null,
+                .content = &.{},
+                .inline_elems = try true_elems.toOwnedSlice(self.alloc),
+            });
+        }
+        if (self.cur().tag == .pipe) {
+            _ = self.eat(); // |
+            const false_elems = try self.parseInlineBranchElems();
+            try branch_list.append(self.alloc, .{
+                .condition = null,
+                .content = &.{},
+                .inline_elems = false_elems,
+            });
+        }
+        // Skip any trailing newlines before `}`.
+        self.skipNewlines();
+        if (self.cur().tag != .right_brace) {
+            self.restore(saved);
+            return null;
+        }
+        _ = self.eat(); // }
+        if (self.cur().tag == .newline) _ = self.eat();
+        return Parsed.Conditional{
+            .outer_condition = outer_cond,
+            .is_switch = false,
+            .is_inline = true,
+            .branches = try branch_list.toOwnedSlice(self.alloc),
+        };
+    }
+
+    /// Parse inline elements (text/etc.) until `|`, `}`, newline, or eof.
+    fn parseInlineBranchElems(self: *Parser) error{OutOfMemory}![]Parsed.InlineElement {
+        var elems = std.ArrayList(Parsed.InlineElement).empty;
+        while (true) {
+            switch (self.cur().tag) {
+                .pipe, .right_brace, .newline, .eof => break,
+                .text => {
+                    const t = self.eat();
+                    const s = std.mem.trim(u8, t.loc.slice(self.src), " \t");
+                    if (s.len > 0) try elems.append(self.alloc, .{ .text = s });
+                },
+                else => _ = self.eat(),
+            }
+        }
+        return elems.toOwnedSlice(self.alloc);
+    }
+
+    /// Parse gather-based branches: one or more `- [cond:] content` blocks.
+    /// The colon separator (if any) is embedded inside the text token after `-`.
+    fn parseGatherBranches(self: *Parser) error{OutOfMemory}![]Parsed.Branch {
+        var branches = std.ArrayList(Parsed.Branch).empty;
+        while (self.cur().tag == .gather) {
+            _ = self.eat(); // -
+
+            if (self.cur().tag == .text) {
+                const text_tok = self.eat();
+                const text_raw = text_tok.loc.slice(self.src);
+                const text_val = std.mem.trim(u8, text_raw, " \t");
+
+                if (std.mem.indexOfScalar(u8, text_val, ':')) |cp| {
+                    const before = std.mem.trim(u8, text_val[0..cp], " \t");
+                    const after  = std.mem.trim(u8, text_val[cp + 1 ..], " \t");
+
+                    if (isElseKeyword(before)) {
+                        // - else: content  (else/fallthrough branch)
+                        const branch_content = try self.parseGatherBranchBody(after);
+                        try branches.append(self.alloc, .{ .condition = null, .content = branch_content });
+                    } else {
+                        // - expr: content  (condition branch for switch or multi-branch)
+                        var ep2 = ExprParser.init(self.alloc, before);
+                        const cond_expr = try ep2.parseExpr();
+                        const branch_content = try self.parseGatherBranchBody(after);
+                        try branches.append(self.alloc, .{ .condition = cond_expr, .content = branch_content });
+                    }
+                } else {
+                    // - content  (no colon → no-condition content branch)
+                    const branch_content = try self.parseGatherBranchBody(text_val);
+                    try branches.append(self.alloc, .{ .condition = null, .content = branch_content });
+                }
+            } else {
+                // No text token at all after `-` (empty branch or starts with `{`).
+                if (self.cur().tag == .newline) _ = self.eat();
+                const content = try self.parseBranchContent();
+                try branches.append(self.alloc, .{ .condition = null, .content = content });
+            }
+            self.skipNewlines();
+        }
+        return branches.toOwnedSlice(self.alloc);
+    }
+
+    /// Build the FlowItem list for a gather branch body.
+    /// `same_line_text` is the text from the SAME line as the `-` (after `:` if any).
+    /// Additional lines are parsed via parseBranchContent.
+    fn parseGatherBranchBody(self: *Parser, same_line_text: []const u8) error{OutOfMemory}![]Parsed.FlowItem {
+        var items = std.ArrayList(Parsed.FlowItem).empty;
+        if (same_line_text.len > 0) {
+            // Create a one-element text line from the inline text.
+            const elem_slice = try self.alloc.dupe(Parsed.InlineElement, &.{.{ .text = same_line_text }});
+            try items.append(self.alloc, .{ .text = .{ .elements = elem_slice } });
+        }
+        if (self.cur().tag == .newline) _ = self.eat();
+        const more = try self.parseBranchContent();
+        for (more) |item| try items.append(self.alloc, item);
+        return items.toOwnedSlice(self.alloc);
+    }
+
+    /// Parse a `- else: content` block that follows direct content lines.
+    fn parseElseGatherBranch(self: *Parser) error{OutOfMemory}!?Parsed.Branch {
+        if (self.cur().tag != .gather) return null;
+        _ = self.eat(); // -
+        if (self.cur().tag != .text) return null;
+        const text_tok = self.eat();
+        const text_val = std.mem.trim(u8, text_tok.loc.slice(self.src), " \t");
+
+        // Accept "else: content" or just "else".
+        const before: []const u8 = if (std.mem.indexOfScalar(u8, text_val, ':')) |cp|
+            std.mem.trim(u8, text_val[0..cp], " \t")
+        else
+            text_val;
+        if (!isElseKeyword(before)) return null;
+
+        const after: []const u8 = if (std.mem.indexOfScalar(u8, text_val, ':')) |cp|
+            std.mem.trim(u8, text_val[cp + 1 ..], " \t")
+        else
+            "";
+        const content = try self.parseGatherBranchBody(after);
+        return Parsed.Branch{ .condition = null, .content = content };
+    }
+
+    // -- Choices & gathers ----------------------------------------------------
+
+    /// Parse one choice item: counts `*`/`+` nesting, parses choice text, then
+    /// collects the body lines (inner_content) until the next same-nesting choice
+    /// or gather.  Returns null only if the current token is not a choice marker.
+    fn parseChoiceItem(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
+        if (self.cur().tag != .choice_once and self.cur().tag != .choice_sticky)
+            return null;
+
+        // Count nesting level and whether sticky.
+        var nesting: u8 = 0;
+        var is_sticky = false;
+        while (self.cur().tag == .choice_once or self.cur().tag == .choice_sticky) {
+            is_sticky = self.cur().tag == .choice_sticky;
+            nesting += 1;
+            _ = self.eat();
+        }
+
+        // Optional label `(name)` — skip the text token that contains it so it
+        // doesn't end up in start_content.  Labels look like `(ident)` as a text
+        // token immediately after the `*` / `+` markers.
+        if (self.cur().tag == .text) {
+            const tok_text = self.cur().loc.slice(self.src);
+            const trimmed = std.mem.trim(u8, tok_text, " \t");
+            if (trimmed.len >= 2 and trimmed[0] == '(' and trimmed[trimmed.len - 1] == ')') {
+                _ = self.eat(); // consume and discard the label token
+            }
+        }
+
+        // Conditions: zero or more consecutive `{expr}` blocks before any visible
+        // text.  Multiple conditions are ANDed together.
+        var condition: ?*Parsed.Expression = null;
+        while (self.cur().tag == .left_brace) {
+            const saved = self.save();
+            const next_cond = try self.parseBraceExpr();
+            if (next_cond == null) {
+                // Not a simple expression — restore and treat as inline text later.
+                self.restore(saved);
+                break;
+            }
+            const cond_expr = next_cond.?;
+            if (condition) |existing| {
+                const combined = try self.alloc.create(Parsed.Expression);
+                combined.* = .{ .binary = .{ .op = .and_, .lhs = existing, .rhs = cond_expr } };
+                condition = combined;
+            } else {
+                condition = cond_expr;
+            }
+        }
+
+        // Parse the choice text: start [ choice_only ] following
+        var start_content = std.ArrayList(Parsed.InlineElement).empty;
+        var choice_only_content = std.ArrayList(Parsed.InlineElement).empty;
+        var following_content = std.ArrayList(Parsed.InlineElement).empty;
+        var phase: enum { start, in_bracket, after_bracket } = .start;
+
+        scan: while (true) {
+            switch (self.cur().tag) {
+                .text => {
+                    // Only trim leading whitespace — trailing spaces before {expr}
+                    // are part of the prose and must be preserved in the output.
+                    const t = trimLeft(self.eat().loc.slice(self.src));
+                    if (t.len == 0) continue :scan;
+                    switch (phase) {
+                        .start => try start_content.append(self.alloc, .{ .text = t }),
+                        .in_bracket => try choice_only_content.append(self.alloc, .{ .text = t }),
+                        .after_bracket => try following_content.append(self.alloc, .{ .text = t }),
+                    }
+                },
+                .left_bracket => {
+                    _ = self.eat();
+                    phase = .in_bracket;
+                },
+                .right_bracket => {
+                    _ = self.eat();
+                    phase = .after_bracket;
+                },
+                .left_brace => {
+                    if (try self.parseBraceExpr()) |expr| {
+                        switch (phase) {
+                            .start => try start_content.append(self.alloc, .{ .inline_expr = expr }),
+                            .in_bracket => try choice_only_content.append(self.alloc, .{ .inline_expr = expr }),
+                            .after_bracket => try following_content.append(self.alloc, .{ .inline_expr = expr }),
+                        }
+                    } else self.skipBraceBlock();
+                },
+                .divert_arrow => {
+                    if (try self.parseDivertInline()) |d|
+                        try following_content.append(self.alloc, .{ .divert = d });
+                    break :scan;
+                },
+                .divert_return => {
+                    _ = self.eat();
+                    try following_content.append(self.alloc, .{ .divert = .{
+                        .target = "->->",
+                        .is_tunnel = false,
+                        .is_thread = false,
+                        .args = &.{},
+                    } });
+                    break :scan;
+                },
+                .newline, .eof => break :scan,
+                else => _ = self.eat(),
+            }
+        }
+
+        if (self.cur().tag == .newline) _ = self.eat();
+
+        // Collect body content until next same-nesting choice/gather.
+        const inner_content = try self.parseChoiceBodyContent(nesting);
+
+        return .{ .choice = .{
+            .nesting = nesting,
+            .is_sticky = is_sticky,
+            .condition = condition,
+            .start_content = try start_content.toOwnedSlice(self.alloc),
+            .choice_only_content = try choice_only_content.toOwnedSlice(self.alloc),
+            .following_content = try following_content.toOwnedSlice(self.alloc),
+            .label = null,
+            .inner_content = inner_content,
+        } };
+    }
+
+    /// Parse a gather marker (`-` or `- -`) into a Parsed.Gather.
+    /// The gather's same-line text is left in the token stream so that
+    /// subsequent iterations of parseContent will pick it up as a text item.
+    fn parseGatherItem(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
+        if (self.cur().tag != .gather) return null;
+
+        var nesting: u8 = 0;
+        while (self.cur().tag == .gather) {
+            nesting += 1;
+            _ = self.eat();
+        }
+
+        // If the gather has a `(label)` — for now we skip it.
+        // (Labels appear as text tokens starting with "(" — ignore.)
+        return .{ .gather = .{ .nesting = nesting, .label = null } };
+    }
+
+    /// Parse items for the body of a choice, stopping before the next
+    /// choice/gather at nesting level ≤ `parent_nesting`.
+    fn parseChoiceBodyContent(self: *Parser, parent_nesting: u8) error{OutOfMemory}![]Parsed.FlowItem {
+        var items = std.ArrayList(Parsed.FlowItem).empty;
+        while (true) {
+            switch (self.cur().tag) {
+                .eof, .knot_marker, .stitch_marker => break,
+
+                .newline => _ = self.eat(),
+
+                .text => {
+                    if (try self.parseTextLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .divert_arrow, .divert_return => {
+                    if (try self.parseDivertLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .logic_line => {
+                    if (try self.parseLogicLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .left_brace => {
+                    if (try self.parseBraceConditional()) |cond| {
+                        try items.append(self.alloc, .{ .conditional = cond });
+                    } else if (try self.parseTextLine()) |item| {
+                        try items.append(self.alloc, item);
+                    }
+                },
+
+                .choice_once, .choice_sticky => {
+                    // Peek nesting level.
+                    var cnt: u8 = 0;
+                    const sv = self.save();
+                    while (self.cur().tag == .choice_once or self.cur().tag == .choice_sticky) {
+                        cnt += 1;
+                        _ = self.eat();
+                    }
+                    self.restore(sv);
+                    if (cnt <= parent_nesting) break; // same or parent level → stop
+                    // Deeper nested choice — include in body.
+                    if (try self.parseChoiceItem()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .gather => {
+                    // Peek nesting.
+                    var cnt: u8 = 0;
+                    const sv = self.save();
+                    while (self.cur().tag == .gather) {
+                        cnt += 1;
+                        _ = self.eat();
+                    }
+                    self.restore(sv);
+                    if (cnt <= parent_nesting) break; // same or parent level → stop
+                    // Deeper gather — skip for now.
+                    self.skipToEol();
+                },
+
+                .hash, .thread_start => self.skipToEol(),
+
+                else => _ = self.eat(),
+            }
+        }
+        return items.toOwnedSlice(self.alloc);
+    }
+
+    /// Parse flow items inside a branch body, stopping before:
+    ///   gather (`-`), `}`, `knot_marker`, `eof`.
+    fn parseBranchContent(self: *Parser) error{OutOfMemory}![]Parsed.FlowItem {
+        var items = std.ArrayList(Parsed.FlowItem).empty;
+        loop: while (true) {
+            switch (self.cur().tag) {
+                .eof, .knot_marker, .right_brace, .gather => break :loop,
+
+                .newline => _ = self.eat(),
+
+                .text => {
+                    if (try self.parseTextLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .divert_arrow, .divert_return => {
+                    if (try self.parseDivertLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .logic_line => {
+                    if (try self.parseLogicLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .left_brace => {
+                    if (try self.parseBraceConditional()) |cond| {
+                        try items.append(self.alloc, .{ .conditional = cond });
+                    } else if (try self.parseTextLine()) |item| {
+                        try items.append(self.alloc, item);
+                    }
+                },
+
+                else => _ = self.eat(),
+            }
+        }
+        return items.toOwnedSlice(self.alloc);
+    }
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -559,6 +1271,11 @@ fn trimLeft(s: []const u8) []const u8 {
     var i: usize = 0;
     while (i < s.len and (s[i] == ' ' or s[i] == '\t')) i += 1;
     return s[i..];
+}
+
+/// True when `s` (already trimmed) equals "else" (case-sensitive exact match).
+fn isElseKeyword(s: []const u8) bool {
+    return std.mem.eql(u8, s, "else");
 }
 
 /// True if `text` (trimmed of leading whitespace) starts with `kw` followed
@@ -586,6 +1303,39 @@ fn identEnd(s: []const u8) usize {
 fn extractFirstIdentifier(text: []const u8) []const u8 {
     const trimmed = trimLeft(text);
     return trimmed[0..identEnd(trimmed)];
+}
+
+/// Parse a parameter list like "(x, ref y, -> z)" from a string starting with '('.
+fn parseParamList(alloc: std.mem.Allocator, s: []const u8) error{OutOfMemory}![]Parsed.Param {
+    var params = std.ArrayList(Parsed.Param).empty;
+    // Find matching paren.
+    if (s.len == 0 or s[0] != '(') return params.toOwnedSlice(alloc);
+    const end_paren = std.mem.indexOfScalar(u8, s, ')') orelse s.len;
+    const inner = s[1..end_paren];
+    var it = std.mem.splitScalar(u8, inner, ',');
+    while (it.next()) |raw_param| {
+        const p = std.mem.trim(u8, raw_param, " \t");
+        if (p.len == 0) continue;
+        var is_ref = false;
+        var is_divert = false;
+        var param_name = p;
+        if (std.mem.startsWith(u8, p, "ref ") or std.mem.startsWith(u8, p, "ref\t")) {
+            is_ref = true;
+            param_name = std.mem.trim(u8, p[4..], " \t");
+        } else if (std.mem.startsWith(u8, p, "->")) {
+            is_divert = true;
+            param_name = std.mem.trim(u8, p[2..], " \t");
+        }
+        // Strip trailing junk (e.g. "==")
+        const name_end = identEnd(param_name);
+        if (name_end == 0) continue;
+        try params.append(alloc, .{
+            .name = param_name[0..name_end],
+            .is_ref = is_ref,
+            .is_divert = is_divert,
+        });
+    }
+    return params.toOwnedSlice(alloc);
 }
 
 /// Parse a literal expression from a trimmed string value.
@@ -720,6 +1470,22 @@ const ExprParser = struct {
         self.skipWs();
         const s = self.rest();
         if (s.len == 0) return null;
+
+        // Divert target value: -> target
+        if (s.len >= 2 and s[0] == '-' and s[1] == '>') {
+            self.pos += 2;
+            self.skipWs();
+            const start = self.pos;
+            while (self.pos < self.src.len) {
+                const c = self.src[self.pos];
+                if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.') break;
+                self.pos += 1;
+            }
+            const target = self.src[start..self.pos];
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .divert_target = target };
+            return node;
+        }
 
         if (s[0] == '(') {
             self.pos += 1;

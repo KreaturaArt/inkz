@@ -13,15 +13,43 @@ const CObject = cg.CObject;
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
+const Parsed = @import("parsed.zig");
+
 /// Serialize the root CContainer to a complete ink.json string.
 /// The returned slice is allocated with `alloc` (caller owns it).
 pub fn serialize(alloc: std.mem.Allocator, root: *const CContainer) ![]u8 {
+    return serializeWithListDefs(alloc, root, &.{});
+}
+
+/// Serialize the root CContainer + list defs to a complete ink.json string.
+pub fn serializeWithListDefs(alloc: std.mem.Allocator, root: *const CContainer, list_defs: []const Parsed.ListDef) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(alloc);
 
     try buf.appendSlice(alloc, "{\"inkVersion\":21,\"root\":");
     try serContainer(alloc, &buf, root);
-    try buf.appendSlice(alloc, ",\"listDefs\":{}}");
+    try buf.appendSlice(alloc, ",\"listDefs\":{");
+    for (list_defs, 0..) |ld, li| {
+        if (li > 0) try buf.append(alloc, ',');
+        try buf.append(alloc, '"');
+        try writeJsonStr(alloc, &buf, ld.name);
+        try buf.appendSlice(alloc, "\":{");
+        for (ld.items, 0..) |item, ii| {
+            if (ii > 0) try buf.append(alloc, ',');
+            try buf.append(alloc, '"');
+            // Item key is "listName.itemName".
+            try writeJsonStr(alloc, &buf, ld.name);
+            try buf.append(alloc, '.');
+            try writeJsonStr(alloc, &buf, item.name);
+            try buf.appendSlice(alloc, "\":");
+            var tmp: [32]u8 = undefined;
+            const val = item.value orelse 0;
+            const s = std.fmt.bufPrint(&tmp, "{}", .{val}) catch unreachable;
+            try buf.appendSlice(alloc, s);
+        }
+        try buf.append(alloc, '}');
+    }
+    try buf.appendSlice(alloc, "}}");
 
     return buf.toOwnedSlice(alloc);
 }
@@ -153,6 +181,48 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
                 try buf.appendSlice(alloc, "\",\"re\":true}");
             }
         },
+        .branch_divert_true => try buf.appendSlice(alloc, "{\"->\":\".^.b\",\"c\":true}"),
+        .dup => try buf.appendSlice(alloc, "\"du\""),
+        .choice_point => |cp| {
+            try buf.appendSlice(alloc, "{\"*\":\"");
+            try writeJsonStr(alloc, buf, cp.path);
+            try buf.appendSlice(alloc, "\",\"flg\":");
+            var tmp: [24]u8 = undefined;
+            const s = std.fmt.bufPrint(&tmp, "{}", .{cp.flags}) catch unreachable;
+            try buf.appendSlice(alloc, s);
+            try buf.append(alloc, '}');
+        },
+        .divert_target_val => |path| {
+            try buf.appendSlice(alloc, "{\"^->\":\"");
+            try writeJsonStr(alloc, buf, path);
+            try buf.appendSlice(alloc, "\"}");
+        },
+        .divert_via_var => |name| {
+            try buf.appendSlice(alloc, "{\"->\":\"");
+            try writeJsonStr(alloc, buf, name);
+            try buf.appendSlice(alloc, "\",\"var\":true}");
+        },
+        .read_count => |path| {
+            try buf.appendSlice(alloc, "{\"CNT?\":\"");
+            try writeJsonStr(alloc, buf, path);
+            try buf.appendSlice(alloc, "\"}");
+        },
+        .func_return => try buf.appendSlice(alloc, "\"~ret\""),
+        .function_call => |fc| {
+            // {"f()":"name"} for 0 args, {"f(N)":"name"} for N args.
+            var tmp: [32]u8 = undefined;
+            const key = if (fc.arg_count == 0)
+                "\"f()\":"
+            else blk: {
+                const s = std.fmt.bufPrint(&tmp, "\"f({})\":", .{fc.arg_count}) catch unreachable;
+                break :blk s;
+            };
+            try buf.append(alloc, '{');
+            try buf.appendSlice(alloc, key);
+            try buf.append(alloc, '"');
+            try writeJsonStr(alloc, buf, fc.name);
+            try buf.appendSlice(alloc, "\"}");
+        },
     }
 }
 
@@ -178,7 +248,6 @@ test "Compiler serializer: empty story" {
     defer arena.deinit();
     const aa = arena.allocator();
 
-    const Parsed = @import("parsed.zig");
     const codegen = @import("codegen.zig");
 
     const story = Parsed.Story{
