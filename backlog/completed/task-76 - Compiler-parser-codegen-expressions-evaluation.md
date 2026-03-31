@@ -1,9 +1,10 @@
 ---
 id: TASK-76
 title: 'Compiler parser + codegen: expressions & evaluation'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:46'
+updated_date: '2026-03-31 18:12'
 labels:
   - compiler
   - parser
@@ -42,3 +43,9 @@ Add expression parsing and postfix codegen for inline `{expr}` blocks.
 - [ ] #2 compileAndRun passes for all test/fixture/original/runtime/booleans/ fixtures
 - [ ] #3 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Precedence-climbing expression parser. Binary/unary operators, function calls (no-arg and with-arg), variable references, read counts, divert targets. All evaluation/ and booleans/ fixtures pass. Implemented together with TASK-77.
+<!-- SECTION:FINAL_SUMMARY:END -->

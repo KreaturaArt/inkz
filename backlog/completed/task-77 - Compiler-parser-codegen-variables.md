@@ -1,9 +1,10 @@
 ---
 id: TASK-77
 title: 'Compiler parser + codegen: variables'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:46'
+updated_date: '2026-03-31 18:12'
 labels:
   - compiler
   - parser
@@ -41,3 +42,9 @@ Add full variable support: declarations, assignments, references, constants, and
 - [ ] #2 CONST values are folded at compile time (no VAR? in emitted JSON for constants)
 - [ ] #3 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Global VAR declarations (global decl container), temp vars, assignments, CONST folding, variable references. All variables/ fixtures pass. Implemented together with TASK-76.
+<!-- SECTION:FINAL_SUMMARY:END -->

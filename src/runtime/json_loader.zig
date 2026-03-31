@@ -230,6 +230,25 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
             .external_args = 0,
         } };
     }
+    // f(N) for N > 0 — function call with N arguments.
+    {
+        var it = obj.iterator();
+        while (it.next()) |entry| {
+            const key = entry.key_ptr.*;
+            if (key.len > 3 and std.mem.startsWith(u8, key, "f(") and key[key.len - 1] == ')') {
+                const n_str = key[2 .. key.len - 1];
+                if (std.fmt.parseInt(u32, n_str, 10)) |_| {
+                    return .{ .divert = .{
+                        .target = try arena.dupe(u8, entry.value_ptr.string),
+                        .is_conditional = obj.get("c") != null,
+                        .is_variable = obj.get("var") != null,
+                        .push_pop_type = .function,
+                        .external_args = 0,
+                    } };
+                } else |_| {}
+            }
+        }
+    }
     if (obj.get("x()")) |t| {
         const args: u32 = if (obj.get("exArgs")) |a| @intCast(a.integer) else 0;
         return .{ .divert = .{

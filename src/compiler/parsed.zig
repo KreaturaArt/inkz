@@ -109,6 +109,7 @@ pub const LogicLine = union(enum) {
     assignment: Assignment,
     return_stmt: ?*Expression, // null = bare `~ return`
     include: []const u8,
+    expr_stmt: *Expression, // standalone expression statement (e.g. ~ func(args))
 };
 
 pub const VarDecl = struct {
@@ -130,12 +131,24 @@ pub const Assignment = struct {
 // ── Conditionals ──────────────────────────────────────────────────────────────
 
 pub const Conditional = struct {
+    /// Expression evaluated in the parent container before branch wrappers.
+    /// null = multi-branch form (each branch wrapper has its own eval).
+    outer_condition: ?*Expression = null,
+    /// true = outer_condition is a value for comparison (switch), not a boolean.
+    /// Each branch wrapper gets: du, ev, case, "==", /ev, branch_divert.
+    is_switch: bool = false,
+    /// true = {cond: text | text} inline form — branch bodies have no newlines.
+    is_inline: bool = false,
     branches: []Branch,
 };
 
 pub const Branch = struct {
-    condition: ?*Expression, // null = else branch
+    /// null = unconditional (else) branch, or a no-condition content branch.
+    condition: ?*Expression,
+    /// Block-form branch content ([]FlowItem).
     content: []FlowItem,
+    /// Inline-form branch content ([]InlineElement, used when parent.is_inline).
+    inline_elems: []InlineElement = &.{},
 };
 
 // ── Sequences / alternatives ──────────────────────────────────────────────────
