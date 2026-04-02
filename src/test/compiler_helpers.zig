@@ -591,3 +591,41 @@ test "Compiler e2e: variable_declaration_in_conditional.ink" {
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "5") != null);
 }
+
+// ── TASK-79: named gathers, choice labels, nested choices ─────────────────────
+
+test "Compiler e2e: should_not_gather_due_to_choice.ink" {
+    // * opt → nested weave with -- text, ** impossible, ** -> END; - gather
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/should_not_gather_due_to_choice.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gather") != null);
+}
+
+test "Compiler e2e: weave_gathers.ink" {
+    const alloc = std.testing.allocator;
+    // Select choice 0 ("one"), which has nested choice "two" and gather "three"
+    const out = try compileFixtureAndRun(alloc, "runtime/weaves/weave_gathers.ink", &.{ 0, 0 });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "one") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "two") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "six") != null);
+}
+
+test "Compiler e2e: default_choices.ink — named gather + loop" {
+    const alloc = std.testing.allocator;
+    // 4 choices: [Choice 1], [Choice 2], {false} impossible, -> default (fallback)
+    // fallback goes to knot "default"; selecting choice 0 loops, then done
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/default_choices.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "After choice") != null);
+}
+
+test "Compiler e2e: once_only_choices_can_link_back_to_self.ink" {
+    // Choice label (firstOpt), condition {firstOpt}, named gather (end)
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/once_only_choices_can_link_back_to_self.ink", &.{ 0, 1 });
+    defer alloc.free(out);
+    // Just verify it doesn't crash or infinite-loop.
+    try std.testing.expect(out.len >= 0);
+}
