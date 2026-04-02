@@ -129,18 +129,18 @@ pub const Parser = struct {
         var includes = std.ArrayList([]const u8).empty;
         var list_defs = std.ArrayList(Parsed.ListDef).empty;
 
-        // Root content: everything before the first knot marker.
+        // Root content: stop at knot_marker or stitch_marker.
         try self.parseContent(
             &root_content,
             &global_decls,
             &constants,
             &includes,
             &list_defs,
-            false, // don't stop at stitch_marker in root
+            true, // stop at stitch_marker so outer loop handles top-level stitches
         );
 
-        // Knots.
-        while (self.cur().tag == .knot_marker) {
+        // Knots (and top-level stitches, which behave like knots).
+        while (self.cur().tag == .knot_marker or self.cur().tag == .stitch_marker) {
             const knot = try self.parseKnot(&global_decls, &constants, &includes, &list_defs);
             try knots.append(self.alloc, knot);
         }
@@ -287,7 +287,7 @@ pub const Parser = struct {
         includes: *std.ArrayList([]const u8),
         list_defs: *std.ArrayList(Parsed.ListDef),
     ) error{OutOfMemory}!Parsed.Knot {
-        _ = self.eat(); // knot_marker
+        _ = self.eat(); // knot_marker or stitch_marker
 
         // The rest of the header line is a text token like " knot_name ===" or
         // " function knot_name ===" (with optional "function" modifier keyword).
@@ -1036,11 +1036,13 @@ pub const Parser = struct {
         // Optional label `(name)` — skip the text token that contains it so it
         // doesn't end up in start_content.  Labels look like `(ident)` as a text
         // token immediately after the `*` / `+` markers.
+        var label: ?[]const u8 = null;
         if (self.cur().tag == .text) {
             const tok_text = self.cur().loc.slice(self.src);
             const trimmed = std.mem.trim(u8, tok_text, " \t");
             if (trimmed.len >= 2 and trimmed[0] == '(' and trimmed[trimmed.len - 1] == ')') {
-                _ = self.eat(); // consume and discard the label token
+                label = trimmed[1 .. trimmed.len - 1];
+                _ = self.eat(); // consume the label token
             }
         }
 
@@ -1133,7 +1135,7 @@ pub const Parser = struct {
             .start_content = try start_content.toOwnedSlice(self.alloc),
             .choice_only_content = try choice_only_content.toOwnedSlice(self.alloc),
             .following_content = try following_content.toOwnedSlice(self.alloc),
-            .label = null,
+            .label = label,
             .inner_content = inner_content,
         } };
     }
@@ -1150,9 +1152,17 @@ pub const Parser = struct {
             _ = self.eat();
         }
 
-        // If the gather has a `(label)` — for now we skip it.
-        // (Labels appear as text tokens starting with "(" — ignore.)
-        return .{ .gather = .{ .nesting = nesting, .label = null } };
+        // Optional label `(name)` — extract if present.
+        var label: ?[]const u8 = null;
+        if (self.cur().tag == .text) {
+            const tok_text = self.cur().loc.slice(self.src);
+            const trimmed = std.mem.trim(u8, tok_text, " \t");
+            if (trimmed.len >= 2 and trimmed[0] == '(' and trimmed[trimmed.len - 1] == ')') {
+                label = trimmed[1 .. trimmed.len - 1];
+                _ = self.eat();
+            }
+        }
+        return .{ .gather = .{ .nesting = nesting, .label = label } };
     }
 
     /// Parse items for the body of a choice, stopping before the next
@@ -1213,8 +1223,9 @@ pub const Parser = struct {
                     }
                     self.restore(sv);
                     if (cnt <= parent_nesting) break; // same or parent level → stop
-                    // Deeper gather — skip for now.
-                    self.skipToEol();
+                    // Deeper gather — include as FlowItem.gather.
+                    if (try self.parseGatherItem()) |gitem|
+                        try items.append(self.alloc, gitem);
                 },
 
                 .hash, .thread_start => self.skipToEol(),

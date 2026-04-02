@@ -81,6 +81,10 @@ const Gen = struct {
     var_names: std.StringHashMapUnmanaged(void) = .{},
     /// Names of divert-target params in the current function.  Same treatment as var_names.
     divert_param_names: std.StringHashMapUnmanaged(void) = .{},
+    /// Choice labels → absolute path to the c-N container for read-count references.
+    choice_labels: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// Gather labels → absolute path to the gather section container.
+    gather_label_paths: std.StringHashMapUnmanaged([]const u8) = .{},
 
     fn newContainer(self: *Gen, name: ?[]const u8) !*CContainer {
         const c = try self.alloc.create(CContainer);
@@ -110,7 +114,7 @@ const Gen = struct {
 
         if (itemsHaveChoices(story.root_content)) {
             // Weave mode: root_content_sub is the weave holder.
-            try self.genWeave(story.root_content, root_content_sub, "0", true);
+            try self.genWeave(story.root_content, root_content_sub, "0", true, 1, null);
         } else {
             var root_flow = std.ArrayList(CObject).empty;
             for (story.root_content) |item| {
@@ -208,7 +212,7 @@ const Gen = struct {
             // Create inner_wrapper: the weave holder lives at knot.0.
             const inner_wrapper = try self.newContainer(null);
             const holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.0", .{knot_name});
-            try self.genWeave(content, inner_wrapper, holder_abs, false);
+            try self.genWeave(content, inner_wrapper, holder_abs, false, 1, null);
 
             // The knot container wraps inner_wrapper as its sole content item.
             const kc = try self.newContainer(null);
@@ -276,7 +280,10 @@ const Gen = struct {
                 }
                 try out.append(self.alloc, .eval_end);
             }
-            if (d.is_tunnel) {
+            // Check gather_label_paths first so labeled gathers resolve to abs paths.
+            if (self.gather_label_paths.get(d.target)) |abs_path| {
+                try out.append(self.alloc, .{ .divert = abs_path });
+            } else if (d.is_tunnel) {
                 if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
                     try out.append(self.alloc, .{ .divert_via_var = d.target }); // TODO: tunnel+var
                 } else {
@@ -374,78 +381,276 @@ const Gen = struct {
     /// .gather, building the weave_holder container in-place.
     ///
     /// `holder_abs_path`: absolute path to `holder` from the JSON root.
-    ///   • "0"          for the root_content_sub
-    ///   • "knot.0"     for a knot's inner_wrapper
-    /// `is_root`:  true = use absolute JSON paths; false = relative paths.
+    /// `is_root`:  true = pre-gather choices use absolute gather paths.
+    /// `min_nesting`: the nesting level to treat as "level 1" (1 for root weave,
+    ///   ch.nesting+1 when called recursively for a choice's inner_content).
+    /// `outer_gather_path`: where to divert when the last gather section ends;
+    ///   null at the top level (story just terminates naturally).
     fn genWeave(
         self: *Gen,
         items: []const Parsed.FlowItem,
         holder: *CContainer,
         holder_abs_path: []const u8,
         is_root: bool,
+        min_nesting: u8,
+        outer_gather_path: ?[]const u8,
     ) error{OutOfMemory}!void {
-        var main_content = std.ArrayList(CObject).empty; // holder's content list
-        var named = std.ArrayList(NamedChild).empty; // holder's named_children
-
-        var choice_idx: u32 = 0;
-        var gather_idx: u32 = 0;
-
-        // List of gather body content lists (one per gather encountered).
-        var gather_bodies = std.ArrayList(std.ArrayList(CObject)).empty;
-
-        for (items) |item| {
-            switch (item) {
-                .choice => |ch| {
-                    if (ch.nesting != 1) continue; // skip nested choices for now
-                    try self.genChoiceInWeave(
-                        &main_content,
-                        &named,
-                        ch,
-                        choice_idx,
-                        holder_abs_path,
-                        is_root,
-                    );
-                    choice_idx += 1;
-                },
-                .gather => |g| {
-                    if (g.nesting != 1) continue;
-                    // Start a new gather body.
-                    try gather_bodies.append(self.alloc, std.ArrayList(CObject).empty);
-                    gather_idx += 1;
-                },
-                else => {
-                    // Emit into the current gather body (if in one) or main content.
-                    const in_gather = gather_bodies.items.len > 0;
-                    const target = if (in_gather)
-                        &gather_bodies.items[gather_bodies.items.len - 1]
-                    else
-                        &main_content;
-                    try self.genFlowItem(target, item, holder_abs_path);
-                },
+        // ── Phase 1: pre-scan gather names at min_nesting level ──────────────
+        var gather_names = std.ArrayList([]const u8).empty;
+        defer gather_names.deinit(self.alloc);
+        {
+            var gi: u32 = 0;
+            for (items) |item| {
+                switch (item) {
+                    .gather => |g| if (g.nesting == min_nesting) {
+                        const gname = g.label orelse
+                            try std.fmt.allocPrint(self.alloc, "g-{}", .{gi});
+                        try gather_names.append(self.alloc, gname);
+                        gi += 1;
+                    },
+                    else => {},
+                }
+            }
+        }
+        // Register gather_label_paths for named gathers.
+        {
+            var gi: usize = 0;
+            for (items) |item| {
+                switch (item) {
+                    .gather => |g| if (g.nesting == min_nesting) {
+                        if (g.label) |lbl| {
+                            const abs_path = try std.fmt.allocPrint(
+                                self.alloc, "{s}.{s}", .{ holder_abs_path, lbl });
+                            try self.gather_label_paths.put(self.alloc, lbl, abs_path);
+                        }
+                        gi += 1;
+                    },
+                    else => {},
+                }
             }
         }
 
-        // Finalize gather containers and add them to named_children.
-        for (gather_bodies.items, 0..) |*body, gi| {
-            const g_name = try std.fmt.allocPrint(self.alloc, "g-{}", .{gi});
-            const gc = try self.newContainer(null);
-            gc.content = try body.toOwnedSlice(self.alloc);
-            try named.append(self.alloc, .{ .name = g_name, .container = gc });
-        }
-        gather_bodies.deinit(self.alloc);
+        // Determine whether the first min_nesting gather is the very first item.
+        const has_initial_gather: bool = blk: {
+            for (items) |item| {
+                switch (item) {
+                    .gather => |g| break :blk g.nesting == min_nesting,
+                    else => break :blk false,
+                }
+            }
+            break :blk false;
+        };
 
-        // If we had choices but no gathers, add an implicit g-0 = ["done"].
-        if (choice_idx > 0 and gather_idx == 0) {
-            const g0 = try self.newContainer(null);
-            g0.content = try self.alloc.dupe(CObject, &.{.done});
-            try named.append(self.alloc, .{ .name = "g-0", .container = g0 });
+        // ── Phase 2: state-machine pass over items ────────────────────────────
+        //
+        // States:
+        //   pre_gather   – before any min_nesting gather; content goes into main_content.
+        //   in_initial   – inside the initial inline gather section (container at pos 0).
+        //   in_named     – inside a subsequent named gather section.
+        //
+        // For the initial section we build section_content/section_named in-place and
+        // wrap them into an inline CContainer.  For subsequent named sections we also
+        // build content lists and wrap them.
+
+        const State = enum { pre_gather, in_initial, in_named };
+        var state: State = .pre_gather;
+
+        var main_content = std.ArrayList(CObject).empty;
+        var main_named = std.ArrayList(NamedChild).empty;
+
+        // Working buffers for the current section.
+        var cur_content: *std.ArrayList(CObject) = &main_content;
+        var cur_holder_abs: []const u8 = holder_abs_path;
+        var cur_is_root: bool = is_root;
+        var cur_choice_idx: u32 = 0;
+
+        // Inline initial section scratch buffers (used only in .in_initial).
+        var init_sec_content = std.ArrayList(CObject).empty;
+        var init_sec_named = std.ArrayList(NamedChild).empty;
+        var init_sec_container: ?*CContainer = null;
+
+        // Named section scratch buffers (reused for each .in_named section).
+        var named_sec_content = std.ArrayList(CObject).empty;
+        var named_sec_named = std.ArrayList(NamedChild).empty;
+        var named_sec_name: []const u8 = "";
+
+        var gather_processed: u32 = 0; // how many min_nesting gathers we've seen
+
+        for (items) |item| {
+            switch (item) {
+                // ── Gather at min_nesting level ───────────────────────────────
+                .gather => |g| {
+                    if (g.nesting != min_nesting) continue;
+
+                    const gname = gather_names.items[gather_processed];
+
+                    switch (state) {
+                        .pre_gather => {
+                            if (has_initial_gather and gather_processed == 0) {
+                                // Transition to initial inline section.
+                                state = .in_initial;
+                                const sec = try self.newContainer(gname);
+                                init_sec_container = sec;
+                                cur_holder_abs = try std.fmt.allocPrint(
+                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                                cur_is_root = false;
+                                cur_content = &init_sec_content;
+                                cur_choice_idx = 0;
+                            } else {
+                                // First gather but not initial → start named section.
+                                state = .in_named;
+                                named_sec_name = gname;
+                                cur_holder_abs = try std.fmt.allocPrint(
+                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                                cur_is_root = false;
+                                cur_content = &named_sec_content;
+                                cur_choice_idx = 0;
+                            }
+                        },
+                        .in_initial => {
+                            // Close the initial section → push it into main_content.
+                            init_sec_container.?.content =
+                                try init_sec_content.toOwnedSlice(self.alloc);
+                            init_sec_container.?.named_children =
+                                try init_sec_named.toOwnedSlice(self.alloc);
+                            try main_content.append(
+                                self.alloc, .{ .container = init_sec_container.? });
+                            init_sec_container = null;
+                            // Start the next named section.
+                            state = .in_named;
+                            named_sec_name = gname;
+                            cur_holder_abs = try std.fmt.allocPrint(
+                                self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                            cur_is_root = false;
+                            cur_content = &named_sec_content;
+                            cur_choice_idx = 0;
+                        },
+                        .in_named => {
+                            // Close the current named section → push as named_child.
+                            const gc = try self.newContainer(null);
+                            gc.content = try named_sec_content.toOwnedSlice(self.alloc);
+                            gc.named_children =
+                                try named_sec_named.toOwnedSlice(self.alloc);
+                            try main_named.append(
+                                self.alloc, .{ .name = named_sec_name, .container = gc });
+                            // Start fresh named section.
+                            named_sec_name = gname;
+                            cur_holder_abs = try std.fmt.allocPrint(
+                                self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                            cur_choice_idx = 0;
+                        },
+                    }
+                    gather_processed += 1;
+                },
+
+                // ── Choice at min_nesting level ───────────────────────────────
+                .choice => |ch| {
+                    if (ch.nesting != min_nesting) continue;
+
+                    // Compute gather_path: where should c-N divert after selection?
+                    // (Only needed when inner_content has no nested weave of its own.)
+                    const next_gi = gather_processed; // index of next gather after this choice
+                    const gather_path: []const u8 = gp: {
+                        if (next_gi < gather_names.items.len) {
+                            const next_gname = gather_names.items[next_gi];
+                            // If we're in a section (not directly in holder), the next
+                            // gather is a named_child of the OUTER holder → absolute.
+                            // If we're directly in the holder, use is_root to decide.
+                            if (state == .pre_gather) {
+                                if (cur_is_root) {
+                                    break :gp try std.fmt.allocPrint(
+                                        self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
+                                } else {
+                                    break :gp try std.fmt.allocPrint(
+                                        self.alloc, ".^.^.{s}", .{next_gname});
+                                }
+                            } else {
+                                // Inside a section: the next gather is in the outer holder.
+                                break :gp try std.fmt.allocPrint(
+                                    self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
+                            }
+                        } else if (outer_gather_path) |ogp| {
+                            break :gp ogp;
+                        } else {
+                            // No gathers at all and no outer path: implicit g-0.
+                            break :gp if (cur_is_root)
+                                try std.fmt.allocPrint(
+                                    self.alloc, "{s}.g-0", .{holder_abs_path})
+                            else
+                                ".^.^.g-0";
+                        }
+                    };
+
+                    // For choices inside a section, the cur_named must point to the
+                    // section's named list, not main_named.
+                    const cur_named_ptr = switch (state) {
+                        .pre_gather => &main_named,
+                        .in_initial => &init_sec_named,
+                        .in_named => &named_sec_named,
+                    };
+
+                    try self.genChoiceInWeave(
+                        cur_content,
+                        cur_named_ptr,
+                        ch,
+                        cur_choice_idx,
+                        cur_holder_abs,
+                        cur_is_root,
+                        gather_path,
+                        min_nesting,
+                    );
+                    cur_choice_idx += 1;
+                },
+
+                // ── Other items ───────────────────────────────────────────────
+                else => try self.genFlowItem(cur_content, item, cur_holder_abs),
+            }
+        }
+
+        // ── Finalize any open section ─────────────────────────────────────────
+        switch (state) {
+            .pre_gather => {
+                // No gathers encountered.  If we had choices, add implicit g-0 done.
+                if (cur_choice_idx > 0 and gather_names.items.len == 0) {
+                    const g0 = try self.newContainer(null);
+                    g0.content = try self.alloc.dupe(CObject, &.{.done});
+                    try main_named.append(self.alloc, .{ .name = "g-0", .container = g0 });
+                }
+            },
+            .in_initial => {
+                // Only initial section (no subsequent gathers).
+                // Append outer_gather_path divert if provided.
+                if (outer_gather_path) |ogp| {
+                    try init_sec_content.append(self.alloc, .{ .divert = ogp });
+                }
+                init_sec_container.?.content =
+                    try init_sec_content.toOwnedSlice(self.alloc);
+                init_sec_container.?.named_children =
+                    try init_sec_named.toOwnedSlice(self.alloc);
+                try main_content.append(self.alloc, .{ .container = init_sec_container.? });
+            },
+            .in_named => {
+                // Append outer_gather_path divert to last named section if provided.
+                if (outer_gather_path) |ogp| {
+                    try named_sec_content.append(self.alloc, .{ .divert = ogp });
+                }
+                const gc = try self.newContainer(null);
+                gc.content = try named_sec_content.toOwnedSlice(self.alloc);
+                gc.named_children = try named_sec_named.toOwnedSlice(self.alloc);
+                try main_named.append(self.alloc, .{ .name = named_sec_name, .container = gc });
+            },
         }
 
         holder.content = try main_content.toOwnedSlice(self.alloc);
-        holder.named_children = try named.toOwnedSlice(self.alloc);
+        holder.named_children = try main_named.toOwnedSlice(self.alloc);
     }
 
     /// Emit one choice into the weave holder's main_content and named lists.
+    ///
+    /// `gather_path`: where c-N should divert after the choice is taken (the
+    ///   next gather container).  Computed by the caller (genWeave).
+    /// `min_nesting`: the nesting level of the current weave; nested choices
+    ///   at nesting > min_nesting in inner_content trigger a recursive call.
     fn genChoiceInWeave(
         self: *Gen,
         main_content: *std.ArrayList(CObject),
@@ -454,10 +659,17 @@ const Gen = struct {
         choice_idx: u32,
         holder_abs_path: []const u8,
         is_root: bool,
+        gather_path: []const u8,
+        min_nesting: u8,
     ) error{OutOfMemory}!void {
         const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{choice_idx});
         // Absolute path to c-N for divert target values.
         const c_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, c_name });
+
+        // Register choice label if present.
+        if (ch.label) |lbl| {
+            try self.choice_labels.put(self.alloc, lbl, c_abs);
+        }
 
         // Compute flags.
         const is_fallback = isFallbackChoice(ch);
@@ -473,11 +685,9 @@ const Gen = struct {
         // c-N container flags: 5 for once-only, 0 for sticky.
         const c_flags: u32 = if (!ch.is_sticky) 5 else 0;
 
-        // Gather convergence path (always g-0 for now).
-        const gather_path = if (is_root)
-            try std.fmt.allocPrint(self.alloc, "{s}.g-0", .{holder_abs_path})
-        else
-            ".^.^.g-0";
+        // Detect whether inner_content has a nested weave (choices/gathers at
+        // nesting > min_nesting).
+        const has_nested_weave = itemsHaveChoicesAtNesting(ch.inner_content, min_nesting + 1);
 
         if (is_fallback) {
             // ── Fallback choice: just a choice_point in main_content ──────────
@@ -512,13 +722,20 @@ const Gen = struct {
                 try std.fmt.allocPrint(self.alloc, ".^.{s}", .{c_name});
             try main_content.append(self.alloc, .{ .choice_point = .{ .path = cp_path, .flags = flg } });
 
-            // c-N body.
+            // c-N body: following_content (if any) then "\n" then inner.
             var c_body = std.ArrayList(CObject).empty;
-            try c_body.append(self.alloc, .newline);
-            for (ch.inner_content) |inner| {
-                try self.genFlowItem(&c_body, inner, c_abs);
+            for (ch.following_content) |elem| {
+                try self.genInlineElement(&c_body, elem);
             }
-            try c_body.append(self.alloc, .{ .divert = gather_path });
+            try c_body.append(self.alloc, .newline);
+            if (has_nested_weave) {
+                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
+            } else {
+                for (ch.inner_content) |inner| {
+                    try self.genFlowItem(&c_body, inner, c_abs);
+                }
+                try c_body.append(self.alloc, .{ .divert = gather_path });
+            }
             const cc = try self.newContainer(null);
             cc.flags = c_flags;
             cc.content = try c_body.toOwnedSlice(self.alloc);
@@ -601,15 +818,41 @@ const Gen = struct {
             // Newline separator between following content and body.
             try c_body.append(self.alloc, .newline);
             // Inner content (body lines after the choice line).
-            for (ch.inner_content) |inner| {
-                try self.genFlowItem(&c_body, inner, c_abs);
+            if (has_nested_weave) {
+                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
+            } else {
+                for (ch.inner_content) |inner| {
+                    try self.genFlowItem(&c_body, inner, c_abs);
+                }
+                try c_body.append(self.alloc, .{ .divert = gather_path });
             }
-            try c_body.append(self.alloc, .{ .divert = gather_path });
             const cc = try self.newContainer(null);
             cc.flags = c_flags;
             cc.content = try c_body.toOwnedSlice(self.alloc);
             try named.append(self.alloc, .{ .name = c_name, .container = cc });
         }
+    }
+
+    /// Generate a nested weave (inner_content of a choice that has deeper
+    /// choices/gathers) into `out` as an inline wrapper container.
+    ///
+    /// The wrapper is placed at the current end of `out`.  `outer_gather_path`
+    /// is what the innermost choices/gathers should divert to when done.
+    fn genNestedWeave(
+        self: *Gen,
+        out: *std.ArrayList(CObject),
+        items: []const Parsed.FlowItem,
+        parent_abs: []const u8,
+        new_min_nesting: u8,
+        outer_gather_path: []const u8,
+    ) error{OutOfMemory}!void {
+        const wrapper_pos = out.items.len;
+        const wrapper_abs = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ parent_abs, wrapper_pos });
+
+        const wrapper = try self.newContainer(null);
+        try self.genWeave(items, wrapper, wrapper_abs, false, new_min_nesting, outer_gather_path);
+
+        try out.append(self.alloc, .{ .container = wrapper });
     }
 
     // ── Conditional codegen ──────────────────────────────────────────────────
@@ -732,6 +975,9 @@ const Gen = struct {
                 // Substitute CONST values at codegen time.
                 if (self.const_map.get(name)) |const_expr| {
                     try self.genExpr(out, const_expr.*);
+                } else if (self.choice_labels.get(name)) |c_path| {
+                    // Choice label in an expression → read-count of that choice.
+                    try out.append(self.alloc, .{ .read_count = c_path });
                 } else if (self.knot_names.contains(name)) {
                     // Bare knot/stitch name in an expression → visit-count check.
                     try out.append(self.alloc, .{ .read_count = name });
@@ -768,6 +1014,18 @@ const Gen = struct {
 fn itemsHaveChoices(items: []const Parsed.FlowItem) bool {
     for (items) |item| {
         if (item == .choice or item == .gather) return true;
+    }
+    return false;
+}
+
+/// True when any item has .choice or .gather at exactly `nesting`.
+fn itemsHaveChoicesAtNesting(items: []const Parsed.FlowItem, nesting: u8) bool {
+    for (items) |item| {
+        switch (item) {
+            .choice => |ch| if (ch.nesting == nesting) return true,
+            .gather => |g| if (g.nesting == nesting) return true,
+            else => {},
+        }
     }
     return false;
 }
