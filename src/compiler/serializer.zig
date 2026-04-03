@@ -223,6 +223,23 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try writeJsonStr(alloc, buf, fc.name);
             try buf.appendSlice(alloc, "\"}");
         },
+        .external_call => |ec| {
+            // {"x()":"name","exArgs":N}
+            var tmp: [32]u8 = undefined;
+            const key = if (ec.arg_count == 0)
+                "\"x()\":"
+            else blk: {
+                const s = std.fmt.bufPrint(&tmp, "\"x({})\":", .{ec.arg_count}) catch unreachable;
+                break :blk s;
+            };
+            try buf.append(alloc, '{');
+            try buf.appendSlice(alloc, key);
+            try buf.append(alloc, '"');
+            try writeJsonStr(alloc, buf, ec.name);
+            var tmp2: [32]u8 = undefined;
+            const args_s = std.fmt.bufPrint(&tmp2, "\",\"exArgs\":{}}}", .{ec.arg_count}) catch unreachable;
+            try buf.appendSlice(alloc, args_s);
+        },
     }
 }
 

@@ -42,6 +42,7 @@ pub const CObject = union(enum) {
     // Read-count and function-call objects
     read_count: []const u8, // {"CNT?":"path"}  visit count of a knot/stitch
     function_call: struct { name: []const u8, arg_count: u32 }, // {"f()":"name"} or {"f(N)":"name"}
+    external_call: struct { name: []const u8, arg_count: u32 }, // {"x()":"name","exArgs":N}
     func_return, // "~ret"
 };
 
@@ -85,6 +86,8 @@ const Gen = struct {
     choice_labels: std.StringHashMapUnmanaged([]const u8) = .{},
     /// Gather labels → absolute path to the gather section container.
     gather_label_paths: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// Names of EXTERNAL function declarations — calls to these use external_call.
+    external_fn_names: std.StringHashMapUnmanaged(u32) = .{}, // name → param_count
 
     fn newContainer(self: *Gen, name: ?[]const u8) !*CContainer {
         const c = try self.alloc.create(CContainer);
@@ -107,6 +110,10 @@ const Gen = struct {
         // Populate var_names so diverts to variable names become divert_via_var.
         for (story.global_decls) |decl| {
             try self.var_names.put(self.alloc, decl.name, {});
+        }
+        // Populate external_fn_names so calls to external functions use external_call.
+        for (story.external_fns) |ef| {
+            try self.external_fn_names.put(self.alloc, ef.name, ef.param_count);
         }
 
         // 1. Root content sub-container (position 0 inside root).
@@ -270,6 +277,10 @@ const Gen = struct {
         } else if (std.mem.eql(u8, d.target, "DONE")) {
             try out.append(self.alloc, .done);
         } else if (std.mem.eql(u8, d.target, "->->")) {
+            // Tunnel/function return: push void then return.
+            try out.append(self.alloc, .eval_start);
+            try out.append(self.alloc, .void_);
+            try out.append(self.alloc, .eval_end);
             try out.append(self.alloc, .tunnel_return);
         } else {
             // Emit args if any (for parameterized knot calls).
@@ -288,6 +299,13 @@ const Gen = struct {
                     try out.append(self.alloc, .{ .divert_via_var = d.target }); // TODO: tunnel+var
                 } else {
                     try out.append(self.alloc, .{ .tunnel_divert = d.target });
+                }
+                // Tunnel-onwards: after the tunnel call, also return from here.
+                if (d.is_tunnel_onwards) {
+                    try out.append(self.alloc, .eval_start);
+                    try out.append(self.alloc, .void_);
+                    try out.append(self.alloc, .eval_end);
+                    try out.append(self.alloc, .tunnel_return);
                 }
             } else if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
                 // Divert to a variable containing a divert target.
@@ -990,10 +1008,17 @@ const Gen = struct {
             .call => |c| {
                 // Push arguments left-to-right, then emit the call.
                 for (c.args) |arg| try self.genExpr(out, arg.*);
-                try out.append(self.alloc, .{ .function_call = .{
-                    .name = c.name,
-                    .arg_count = @intCast(c.args.len),
-                } });
+                if (self.external_fn_names.contains(c.name)) {
+                    try out.append(self.alloc, .{ .external_call = .{
+                        .name = c.name,
+                        .arg_count = @intCast(c.args.len),
+                    } });
+                } else {
+                    try out.append(self.alloc, .{ .function_call = .{
+                        .name = c.name,
+                        .arg_count = @intCast(c.args.len),
+                    } });
+                }
             },
             .binary => |b| {
                 try self.genExpr(out, b.lhs.*);

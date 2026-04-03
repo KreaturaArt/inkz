@@ -128,6 +128,7 @@ pub const Parser = struct {
         var constants = std.ArrayList(Parsed.Constant).empty;
         var includes = std.ArrayList([]const u8).empty;
         var list_defs = std.ArrayList(Parsed.ListDef).empty;
+        var external_fns = std.ArrayList(Parsed.ExternalFn).empty;
 
         // Root content: stop at knot_marker or stitch_marker.
         try self.parseContent(
@@ -136,12 +137,13 @@ pub const Parser = struct {
             &constants,
             &includes,
             &list_defs,
+            &external_fns,
             true, // stop at stitch_marker so outer loop handles top-level stitches
         );
 
         // Knots (and top-level stitches, which behave like knots).
         while (self.cur().tag == .knot_marker or self.cur().tag == .stitch_marker) {
-            const knot = try self.parseKnot(&global_decls, &constants, &includes, &list_defs);
+            const knot = try self.parseKnot(&global_decls, &constants, &includes, &list_defs, &external_fns);
             try knots.append(self.alloc, knot);
         }
 
@@ -149,7 +151,7 @@ pub const Parser = struct {
             .list_defs = try list_defs.toOwnedSlice(self.alloc),
             .global_decls = try global_decls.toOwnedSlice(self.alloc),
             .constants = try constants.toOwnedSlice(self.alloc),
-            .external_fns = &.{},
+            .external_fns = try external_fns.toOwnedSlice(self.alloc),
             .includes = try includes.toOwnedSlice(self.alloc),
             .knots = try knots.toOwnedSlice(self.alloc),
             .root_content = try root_content.toOwnedSlice(self.alloc),
@@ -173,6 +175,7 @@ pub const Parser = struct {
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
         list_defs: *std.ArrayList(Parsed.ListDef),
+        external_fns: *std.ArrayList(Parsed.ExternalFn),
         stop_at_stitch: bool,
     ) error{OutOfMemory}!void {
         parse: switch (self.cur().tag) {
@@ -211,7 +214,10 @@ pub const Parser = struct {
                     else
                         self.skipToEol();
                 } else if (startsWithKeyword(text, "EXTERNAL")) {
-                    self.skipToEol(); // handled in a later task
+                    if (self.parseExternalLine()) |ef|
+                        try external_fns.append(self.alloc, ef)
+                    else
+                        self.skipToEol();
                 } else {
                     if (try self.parseTextLine()) |item|
                         try items.append(self.alloc, item);
@@ -286,6 +292,7 @@ pub const Parser = struct {
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
         list_defs: *std.ArrayList(Parsed.ListDef),
+        external_fns: *std.ArrayList(Parsed.ExternalFn),
     ) error{OutOfMemory}!Parsed.Knot {
         _ = self.eat(); // knot_marker or stitch_marker
 
@@ -316,12 +323,12 @@ pub const Parser = struct {
 
         // Parse knot-level content (before first stitch).
         var content = std.ArrayList(Parsed.FlowItem).empty;
-        try self.parseContent(&content, global_decls, constants, includes, list_defs, true);
+        try self.parseContent(&content, global_decls, constants, includes, list_defs, external_fns, true);
 
         // Parse stitches.
         var stitches = std.ArrayList(Parsed.Stitch).empty;
         while (self.cur().tag == .stitch_marker) {
-            const stitch = try self.parseStitch(global_decls, constants, includes, list_defs);
+            const stitch = try self.parseStitch(global_decls, constants, includes, list_defs, external_fns);
             try stitches.append(self.alloc, stitch);
         }
 
@@ -340,6 +347,7 @@ pub const Parser = struct {
         constants: *std.ArrayList(Parsed.Constant),
         includes: *std.ArrayList([]const u8),
         list_defs: *std.ArrayList(Parsed.ListDef),
+        external_fns: *std.ArrayList(Parsed.ExternalFn),
     ) error{OutOfMemory}!Parsed.Stitch {
         _ = self.eat(); // stitch_marker
 
@@ -350,7 +358,7 @@ pub const Parser = struct {
         self.skipToEol();
 
         var content = std.ArrayList(Parsed.FlowItem).empty;
-        try self.parseContent(&content, global_decls, constants, includes, list_defs, true);
+        try self.parseContent(&content, global_decls, constants, includes, list_defs, external_fns, true);
 
         return Parsed.Stitch{
             .name = name,
@@ -504,9 +512,18 @@ pub const Parser = struct {
                     return .{ .target = "->->", .is_tunnel = false, .is_thread = false, .args = &.{} };
                 }
                 // Trailing -> means tunnel call (e.g. "-> knot ->").
-                const is_tunnel = self.cur().tag == .divert_arrow;
-                if (is_tunnel) _ = self.eat();
-                return .{ .target = target, .is_tunnel = is_tunnel, .is_thread = false, .args = args };
+                // Trailing ->-> means tunnel-onwards (e.g. "-> knot ->->").
+                var is_tunnel = self.cur().tag == .divert_arrow;
+                var is_tunnel_onwards = false;
+                if (is_tunnel) {
+                    _ = self.eat();
+                } else if (self.cur().tag == .divert_return) {
+                    // -> target ->->  (tunnel onwards: tunnel then immediately return)
+                    is_tunnel = true;
+                    is_tunnel_onwards = true;
+                    _ = self.eat();
+                }
+                return .{ .target = target, .is_tunnel = is_tunnel, .is_thread = false, .is_tunnel_onwards = is_tunnel_onwards, .args = args };
             },
             else => return null,
         }
@@ -642,6 +659,27 @@ pub const Parser = struct {
         const rest = std.mem.trim(u8, line_text[7..], " \t"); // skip "INCLUDE"
         if (rest.len == 0) return null;
         return rest;
+    }
+
+    /// Parse `EXTERNAL name(param, param, ...)` → ExternalFn.
+    /// The param count is what matters at runtime (not names).
+    fn parseExternalLine(self: *Parser) ?Parsed.ExternalFn {
+        const line_text = self.eat().loc.slice(self.src); // "EXTERNAL name(params)"
+        self.skipToEol();
+
+        const rest = std.mem.trim(u8, line_text[8..], " \t"); // skip "EXTERNAL"
+        // Find opening paren — everything before it is the function name.
+        const paren_pos = std.mem.indexOfScalar(u8, rest, '(') orelse return null;
+        const name = std.mem.trim(u8, rest[0..paren_pos], " \t");
+        if (name.len == 0) return null;
+        // Count commas in the param list to determine arity.
+        const close_pos = std.mem.indexOfScalar(u8, rest[paren_pos..], ')') orelse return null;
+        const params_str = std.mem.trim(u8, rest[paren_pos + 1 .. paren_pos + close_pos], " \t");
+        const param_count: u32 = if (params_str.len == 0)
+            0
+        else
+            @intCast(std.mem.count(u8, params_str, ",") + 1);
+        return .{ .name = name, .param_count = param_count };
     }
 
     // -- Logic lines ----------------------------------------------------------

@@ -629,3 +629,26 @@ test "Compiler e2e: once_only_choices_can_link_back_to_self.ink" {
     // Just verify it doesn't crash or infinite-loop.
     try std.testing.expect(out.len >= 0);
 }
+
+// ── TASK-80: tunnels, functions, external fns ─────────────────────────────────
+
+test "Compiler e2e: basic_tunnel.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/basic_tunnel.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello world\n", out);
+}
+
+test "Compiler e2e: callstack_evaluation.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/callstack/callstack_evaluation.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("8\n", out);
+}
+
+test "Compiler e2e: tunnel_onwards_after_tunnel.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_onwards_after_tunnel.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello...\n...world.\nThe End.\n", out);
+}
