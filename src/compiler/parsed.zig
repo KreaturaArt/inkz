@@ -98,6 +98,7 @@ pub const Divert = struct {
     target: []const u8,
     is_tunnel: bool,
     is_thread: bool,
+    is_tunnel_onwards: bool = false, // -> target ->->
     args: []*Expression,
 };
 
@@ -155,6 +156,9 @@ pub const Branch = struct {
 
 pub const Sequence = struct {
     kind: SequenceKind,
+    /// true = `{a|b}` inline form — branches have no leading/trailing newlines in codegen.
+    /// false = `{stopping:\n - a\n - b\n}` block form — branches get surrounding newlines.
+    is_inline: bool = false,
     branches: [][]FlowItem,
 };
 

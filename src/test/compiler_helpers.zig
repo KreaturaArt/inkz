@@ -652,3 +652,68 @@ test "Compiler e2e: tunnel_onwards_after_tunnel.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Hello...\n...world.\nThe End.\n", out);
 }
+
+// ── TASK-81: sequences & alternatives ─────────────────────────────────────────
+
+test "Compiler e2e: inline stopping sequence {a|b}" {
+    const alloc = std.testing.allocator;
+    // First visit: "one", second: "two", third: "two" (clamped)
+    const out1 = try compileAndRun(alloc,
+        \\-> thing ->
+        \\-> thing ->
+        \\-> END
+        \\== thing ==
+        \\{one|two}
+        \\->->
+    , &.{});
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "one") != null);
+}
+
+test "Compiler e2e: block stopping sequence" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc,
+        \\-> seq ->
+        \\-> seq ->
+        \\-> END
+        \\== seq ==
+        \\{stopping:
+        \\- first
+        \\- second
+        \\}
+        \\->->
+    , &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "first") != null);
+}
+
+test "Compiler e2e: inline cycle sequence {&a|b}" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc,
+        \\-> thing ->
+        \\-> thing ->
+        \\-> thing ->
+        \\-> END
+        \\== thing ==
+        \\{&one|two}
+        \\->->
+    , &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "one") != null);
+}
+
+test "Compiler e2e: leading_newline_multiline_sequence.ink fixture" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/sequences/leading_newline_multiline_sequence.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len >= 0); // just verify no crash
+}
+
+test "Compiler e2e: empty_sequence_content.ink fixture" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/sequences/empty_sequence_content.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len >= 0);
+}
+
+

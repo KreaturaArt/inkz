@@ -33,7 +33,7 @@ pub const CObject = union(enum) {
     var_ref: []const u8, // {"VAR?":"name"}
     temp_assign: struct { name: []const u8, is_new: bool }, // {"temp=":"name"} or with "re":true
     // Conditional objects
-    branch_divert_true, // {"->":".^.b","c":true}  — conditional branch jump
+    cond_divert: []const u8, // {"->":"path","c":true} — conditional branch jump
     dup, // "du"  — duplicate top of stack (used in switch comparisons)
     // Choice objects
     choice_point: struct { path: []const u8, flags: u32 }, // {"*":"path","flg":N}
@@ -266,7 +266,7 @@ const Gen = struct {
             // appear here in isolation, but if they do we silently skip them.
             .choice => {},
             .gather => {},
-            .sequence => {}, // TASK-81
+            .sequence => |seq| try self.genSequence(out, seq),
             .thread_start => {}, // TASK-84
         }
     }
@@ -356,7 +356,7 @@ const Gen = struct {
         }
     }
 
-    fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement) !void {
+    fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement) error{OutOfMemory}!void {
         switch (elem) {
             .text => |t| {
                 // Trim only leading whitespace; trailing spaces before {expr}
@@ -384,13 +384,116 @@ const Gen = struct {
                 try out.append(self.alloc, .eval_output);
                 try out.append(self.alloc, .eval_end);
             },
-            .sequence => {}, // TASK-81
+            .sequence => |seq| try self.genSequence(out, seq),
             .tag => |tag_text| {
                 try out.append(self.alloc, .{ .string = "#" });
                 try out.append(self.alloc, .{ .text = tag_text });
                 try out.append(self.alloc, .{ .string = "/#" });
             },
         }
+    }
+
+    // ── Sequence (alternative) codegen ───────────────────────────────────────
+
+    /// Generate a sequence (alternative) as a dispatch container + branch containers.
+    /// Pattern: ev, visit, CLAMP, OP, /ev, (ev, du, i, ==, /ev, {->si,c})*N, nop
+    ///          named children s0..s(total-1): each = [pop, ...content..., {->.^.^.N}]
+    fn genSequence(self: *Gen, out: *std.ArrayList(CObject), seq: Parsed.Sequence) error{OutOfMemory}!void {
+        const n_source = seq.branches.len;
+        const total: usize = switch (seq.kind) {
+            .once_only => n_source + 1, // extra empty branch
+            else => n_source,
+        };
+        if (total == 0) return; // degenerate — no branches
+
+        // Index of `nop` inside dispatch content: 5 items preamble + 6 items per branch
+        const nop_index: usize = 5 + 6 * total;
+        // End divert path from inside branch si (named child of dispatch):
+        //   .^ → si → dispatch, .^ → dispatch (parent of si), .N → dispatch[N] = nop
+        const end_path = try std.fmt.allocPrint(self.alloc, ".^.^.{}", .{nop_index});
+
+        // Create dispatch container (visits counted for sequence index computation)
+        const dispatch = try self.newContainer(null);
+        dispatch.flags = 5; // VISITS_SHOULD_BE_COUNTED | TURN_INDEX_SHOULD_BE_COUNTED
+
+        var dc = std.ArrayList(CObject).empty;
+        // Preamble: ev, visit, CLAMP_or_COUNT, OP, /ev
+        try dc.append(self.alloc, .eval_start);
+        try dc.append(self.alloc, .{ .string = "visit" });
+        switch (seq.kind) {
+            .stopping => {
+                try dc.append(self.alloc, .{ .int = @intCast(total - 1) });
+                try dc.append(self.alloc, .{ .string = "MIN" });
+            },
+            .cycle => {
+                try dc.append(self.alloc, .{ .int = @intCast(total) });
+                try dc.append(self.alloc, .{ .string = "%" });
+            },
+            .once_only => {
+                // Clamp to n_source (the extra empty branch is at index n_source)
+                try dc.append(self.alloc, .{ .int = @intCast(n_source) });
+                try dc.append(self.alloc, .{ .string = "MIN" });
+            },
+            .shuffle => {
+                try dc.append(self.alloc, .{ .int = @intCast(total) });
+                try dc.append(self.alloc, .{ .string = "seq" });
+            },
+        }
+        try dc.append(self.alloc, .eval_end);
+
+        // Branch dispatch: for each i, ev, du, i, ==, /ev, {->".^.si",c:true}
+        for (0..total) |i| {
+            const si_name = try std.fmt.allocPrint(self.alloc, "s{}", .{i});
+            const si_path = try std.fmt.allocPrint(self.alloc, ".^.{s}", .{si_name});
+            try dc.append(self.alloc, .eval_start);
+            try dc.append(self.alloc, .dup);
+            try dc.append(self.alloc, .{ .int = @intCast(i) });
+            try dc.append(self.alloc, .{ .string = "==" });
+            try dc.append(self.alloc, .eval_end);
+            try dc.append(self.alloc, .{ .cond_divert = si_path });
+        }
+
+        // nop at index nop_index
+        try dc.append(self.alloc, .nop);
+
+        dispatch.content = try dc.toOwnedSlice(self.alloc);
+
+        // Create branch containers si as named children of dispatch
+        var named = std.ArrayList(NamedChild).empty;
+        for (0..total) |i| {
+            const si = try self.newContainer(null);
+            var bc = std.ArrayList(CObject).empty;
+            try bc.append(self.alloc, .pop);
+
+            if (i < n_source) {
+                if (!seq.is_inline) {
+                    // Block form: leading newline + full flow items (each adds trailing \n)
+                    try bc.append(self.alloc, .newline);
+                    for (seq.branches[i]) |item| {
+                        try self.genFlowItem(&bc, item, "");
+                    }
+                } else {
+                    // Inline form: emit inline elements without surrounding newlines
+                    for (seq.branches[i]) |item| {
+                        switch (item) {
+                            .text => |tl| for (tl.elements) |elem| try self.genInlineElement(&bc, elem),
+                            else => try self.genFlowItem(&bc, item, ""),
+                        }
+                    }
+                }
+            }
+            // (else: empty branch for once_only — just pop + end_divert)
+
+            // End divert back to nop in dispatch
+            try bc.append(self.alloc, .{ .divert = end_path });
+
+            si.content = try bc.toOwnedSlice(self.alloc);
+            const si_name = try std.fmt.allocPrint(self.alloc, "s{}", .{i});
+            try named.append(self.alloc, .{ .name = si_name, .container = si });
+        }
+        dispatch.named_children = try named.toOwnedSlice(self.alloc);
+
+        try out.append(self.alloc, .{ .container = dispatch });
     }
 
     // ── Weave codegen (choices & gathers) ────────────────────────────────────
@@ -938,12 +1041,12 @@ const Gen = struct {
                 }
                 try wrapper_content.append(self.alloc, .{ .string = "==" });
                 try wrapper_content.append(self.alloc, .eval_end);
-                try wrapper_content.append(self.alloc, .branch_divert_true);
+                try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
             } else if (cond.outer_condition != null) {
                 // Outer-condition (boolean or inline): first branch → conditional jump,
                 // subsequent branches → unconditional jump.
                 if (i == 0) {
-                    try wrapper_content.append(self.alloc, .branch_divert_true);
+                    try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
                 } else {
                     try wrapper_content.append(self.alloc, .{ .divert = ".^.b" });
                 }
@@ -954,7 +1057,7 @@ const Gen = struct {
                     try wrapper_content.append(self.alloc, .eval_start);
                     try self.genExpr(&wrapper_content, cond_expr.*);
                     try wrapper_content.append(self.alloc, .eval_end);
-                    try wrapper_content.append(self.alloc, .branch_divert_true);
+                    try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
                 } else {
                     try wrapper_content.append(self.alloc, .{ .divert = ".^.b" });
                 }

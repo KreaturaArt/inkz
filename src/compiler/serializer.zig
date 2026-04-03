@@ -181,7 +181,11 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
                 try buf.appendSlice(alloc, "\",\"re\":true}");
             }
         },
-        .branch_divert_true => try buf.appendSlice(alloc, "{\"->\":\".^.b\",\"c\":true}"),
+        .cond_divert => |path| {
+            try buf.appendSlice(alloc, "{\"->\":\"");
+            try writeJsonStr(alloc, buf, path);
+            try buf.appendSlice(alloc, "\",\"c\":true}");
+        },
         .dup => try buf.appendSlice(alloc, "\"du\""),
         .choice_point => |cp| {
             try buf.appendSlice(alloc, "{\"*\":\"");
