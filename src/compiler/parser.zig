@@ -267,8 +267,10 @@ pub const Parser = struct {
             },
 
             .left_brace => {
-                // First try to parse as a conditional block.
-                if (try self.parseBraceConditional()) |cond| {
+                // Try block sequence first (e.g. {stopping:\n - a\n}).
+                if (try self.parseBraceSequenceBlock()) |seq| {
+                    try items.append(self.alloc, .{ .sequence = seq });
+                } else if (try self.parseBraceConditional()) |cond| {
                     try items.append(self.alloc, .{ .conditional = cond });
                 } else if (try self.parseTextLine()) |item| {
                     // Handles inline expressions {x}{y} and falls back to skipBraceBlock.
@@ -386,7 +388,9 @@ pub const Parser = struct {
                 },
 
                 .left_brace => {
-                    if (try self.parseBraceExpr()) |expr| {
+                    if (try self.parseBraceSequenceInline()) |seq| {
+                        try elements.append(self.alloc, .{ .sequence = seq });
+                    } else if (try self.parseBraceExpr()) |expr| {
                         try elements.append(self.alloc, .{ .inline_expr = expr });
                     } else {
                         self.skipBraceBlock();
@@ -811,6 +815,167 @@ pub const Parser = struct {
     //   left_brace, newline, gather, text("4 > 5: not true"), newline, right_brace
     //
     // All conditional parsing therefore splits text tokens at the first `:`.
+
+    // ── Sequence (alternative) parsing ───────────────────────────────────────
+
+    /// Try to parse `{keyword:\n - branch\n ...}` as a block Sequence.
+    /// Returns null (restoring position) if this is not a block sequence.
+    fn parseBraceSequenceBlock(self: *Parser) error{OutOfMemory}!?Parsed.Sequence {
+        if (self.cur().tag != .left_brace) return null;
+        const saved = self.save();
+        _ = self.eat(); // {
+        if (self.cur().tag != .text) { self.restore(saved); return null; }
+        const tok_text = self.eat().loc.slice(self.src);
+        const trimmed = std.mem.trim(u8, tok_text, " \t");
+        // Detect keyword (text ends with ':' and keyword before ':' is a sequence keyword).
+        const kind: Parsed.SequenceKind = blk: {
+            if (sequenceKeywordKind(trimmed)) |k| break :blk k;
+            self.restore(saved);
+            return null;
+        };
+        // Must be followed by newline (block form only).
+        if (self.cur().tag != .newline) { self.restore(saved); return null; }
+        _ = self.eat(); // newline after keyword line
+        self.skipNewlines();
+        // Parse gather-delimited branches.
+        var branches = std.ArrayList([]Parsed.FlowItem).empty;
+        while (self.cur().tag == .gather) {
+            _ = self.eat(); // -
+            const content = try self.parseBranchContent();
+            try branches.append(self.alloc, content);
+        }
+        self.skipNewlines();
+        if (self.cur().tag != .right_brace) { self.restore(saved); return null; }
+        _ = self.eat(); // }
+        if (self.cur().tag == .newline) _ = self.eat();
+        return Parsed.Sequence{
+            .kind = kind,
+            .is_inline = false,
+            .branches = try branches.toOwnedSlice(self.alloc),
+        };
+    }
+
+    /// Returns the SequenceKind if `text` is a sequence keyword like "stopping:".
+    /// The text must end with ':'.
+    fn sequenceKeywordKind(text: []const u8) ?Parsed.SequenceKind {
+        // Strip trailing whitespace and colon to get the keyword
+        var end = text.len;
+        while (end > 0 and (text[end - 1] == ':' or text[end - 1] == ' ' or text[end - 1] == '\t')) end -= 1;
+        const kw = text[0..end];
+        if (std.mem.eql(u8, kw, "stopping")) return .stopping;
+        if (std.mem.eql(u8, kw, "once")) return .once_only;
+        if (std.mem.eql(u8, kw, "cycle")) return .cycle;
+        if (std.mem.eql(u8, kw, "shuffle")) return .shuffle;
+        // Combined forms: treat as shuffle (simplified)
+        if (std.mem.eql(u8, kw, "shuffle stopping") or
+            std.mem.eql(u8, kw, "stopping shuffle") or
+            std.mem.eql(u8, kw, "shuffle once") or
+            std.mem.eql(u8, kw, "once shuffle")) return .shuffle;
+        return null;
+    }
+
+    /// Try to parse `{a|b}`, `{&a|b}`, `{!a|b}`, `{~a|b}` as an inline Sequence.
+    /// Returns null (restoring position) if not an inline sequence.
+    fn parseBraceSequenceInline(self: *Parser) error{OutOfMemory}!?Parsed.Sequence {
+        if (self.cur().tag != .left_brace) return null;
+        const saved = self.save();
+        _ = self.eat(); // {
+
+        var kind = Parsed.SequenceKind.stopping;
+        var prefix_stripped: ?[]const u8 = null; // first branch text after stripping kind prefix
+
+        if (self.cur().tag == .pipe) {
+            // {|...} → stopping, empty first branch
+            kind = .stopping;
+            prefix_stripped = ""; // empty first branch
+        } else if (self.cur().tag == .text) {
+            const tok = self.cur().loc.slice(self.src);
+            const t = std.mem.trim(u8, tok, " \t");
+            if (t.len > 0 and t[0] == '&') {
+                kind = .cycle;
+                _ = self.eat();
+                var skip: usize = 1;
+                while (skip < t.len and (t[skip] == ' ' or t[skip] == '\t')) skip += 1;
+                prefix_stripped = t[skip..];
+            } else if (t.len > 0 and t[0] == '!') {
+                kind = .once_only;
+                _ = self.eat();
+                var skip: usize = 1;
+                while (skip < t.len and (t[skip] == ' ' or t[skip] == '\t')) skip += 1;
+                prefix_stripped = t[skip..];
+            } else if (t.len > 0 and t[0] == '~') {
+                kind = .shuffle;
+                _ = self.eat();
+                var skip: usize = 1;
+                while (skip < t.len and (t[skip] == ' ' or t[skip] == '\t')) skip += 1;
+                prefix_stripped = t[skip..];
+            } else if (std.mem.indexOfScalar(u8, t, ':') != null) {
+                // Has colon → not an inline sequence (could be conditional or block seq)
+                self.restore(saved);
+                return null;
+            } else {
+                // Check if followed by pipe → stopping inline sequence
+                // Peek: don't eat the text token yet (we'll parse it as first branch)
+                const peek_saved = self.save();
+                _ = self.eat(); // eat text token
+                const next_is_pipe = self.cur().tag == .pipe;
+                self.restore(peek_saved);
+                if (!next_is_pipe) {
+                    self.restore(saved);
+                    return null;
+                }
+                // Stopping sequence — first branch starts with this text token
+                kind = .stopping;
+                // Don't pre-strip; let first branch parsing handle it
+            }
+        } else {
+            self.restore(saved);
+            return null;
+        }
+
+        // Parse branches
+        var branches = std.ArrayList([]Parsed.FlowItem).empty;
+
+        // First branch (might have prefix_stripped content)
+        if (prefix_stripped) |ps| {
+            // Build first branch from prefix text + remaining inline elements
+            var elems = std.ArrayList(Parsed.InlineElement).empty;
+            if (ps.len > 0) try elems.append(self.alloc, .{ .text = ps });
+            const more = try self.parseInlineBranchElems();
+            for (more) |e| try elems.append(self.alloc, e);
+            const branch = try self.inlineElemsToFlowItems(try elems.toOwnedSlice(self.alloc));
+            try branches.append(self.alloc, branch);
+        } else {
+            // No prefix stripping — parse first branch normally
+            const elems = try self.parseInlineBranchElems();
+            const branch = try self.inlineElemsToFlowItems(elems);
+            try branches.append(self.alloc, branch);
+        }
+
+        // Remaining branches separated by |
+        while (self.cur().tag == .pipe) {
+            _ = self.eat(); // |
+            const elems = try self.parseInlineBranchElems();
+            const branch = try self.inlineElemsToFlowItems(elems);
+            try branches.append(self.alloc, branch);
+        }
+
+        self.skipNewlines();
+        if (self.cur().tag != .right_brace) { self.restore(saved); return null; }
+        _ = self.eat(); // }
+        return Parsed.Sequence{
+            .kind = kind,
+            .is_inline = true,
+            .branches = try branches.toOwnedSlice(self.alloc),
+        };
+    }
+
+    /// Wrap a list of InlineElement into a single-item []FlowItem (a TextLine).
+    fn inlineElemsToFlowItems(self: *Parser, elems: []Parsed.InlineElement) ![]Parsed.FlowItem {
+        const text_item = Parsed.FlowItem{ .text = .{ .elements = elems } };
+        const items = try self.alloc.dupe(Parsed.FlowItem, &.{text_item});
+        return items;
+    }
 
     /// Try to parse `{...}` as a Parsed.Conditional.
     /// Returns null (restoring position) if the brace block is not a conditional.
@@ -1300,7 +1465,9 @@ pub const Parser = struct {
                 },
 
                 .left_brace => {
-                    if (try self.parseBraceConditional()) |cond| {
+                    if (try self.parseBraceSequenceBlock()) |seq| {
+                        try items.append(self.alloc, .{ .sequence = seq });
+                    } else if (try self.parseBraceConditional()) |cond| {
                         try items.append(self.alloc, .{ .conditional = cond });
                     } else if (try self.parseTextLine()) |item| {
                         try items.append(self.alloc, item);
