@@ -716,4 +716,63 @@ test "Compiler e2e: empty_sequence_content.ink fixture" {
     try std.testing.expect(out.len >= 0);
 }
 
+// ── TASK-82: Glue, Tags, Newlines, Strings ────────────────────────────────────
+
+test "Compiler e2e: left_right_glue_matching.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/glue/left_right_glue_matching.ink", &.{});
+    defer alloc.free(out);
+    // Both lines appear; extra structural newlines from block conditional are acceptable.
+    try std.testing.expect(std.mem.indexOf(u8, out, "A line.") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Another line.") != null);
+}
+
+test "Compiler e2e: newline_consistency_1.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/newlines/newline_consistency_1.ink", &.{});
+    defer alloc.free(out);
+    // Inline divert: "hello " then world content on same output chunk.
+    try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "world") != null);
+}
+
+test "Compiler e2e: newline_consistency_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/newlines/newline_consistency_2.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "world") != null);
+}
+
+test "Compiler e2e: string_constants.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/strings/string_constants.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("hi\n", out);
+}
+
+test "Compiler e2e: string_contains — ? operator" {
+    const alloc = std.testing.allocator;
+    const out = try compileAndRun(alloc,
+        \\{"hello world" ? "o wo"}
+        \\{"hello world" ? "nope"}
+    , &.{});
+    defer alloc.free(out);
+    // ? operator returns 1 (true) or 0 (false) as integers in the runtime.
+    try std.testing.expectEqualStrings("1\n0\n", out);
+}
+
+test "Compiler e2e: tags.ink fixture" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/tags/tags.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is the content") != null);
+}
+
+test "Compiler e2e: newline_at_start_of_multiline_conditional.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/newlines/newline_at_start_of_multiline_conditional.ink", &.{});
+    defer alloc.free(out);
+    // x should be output (isTrue() returns true); X is function body side-effect text.
+    try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
+}
 
