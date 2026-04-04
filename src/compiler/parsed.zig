@@ -127,6 +127,8 @@ pub const Assignment = struct {
     name: []const u8,
     value: *Expression,
     is_temp: bool,
+    /// true = was += or -= (not a plain = assignment)
+    is_compound: bool = false,
 };
 
 // ── Conditionals ──────────────────────────────────────────────────────────────
@@ -202,6 +204,7 @@ pub const BinaryOp = enum {
     or_,
     has, // ?  (list/string contains)
     hasnt, // !?  (list/string not-contains)
+    intersect, // ^  (list intersection)
 };
 
 pub const UnaryOp = enum {
@@ -229,7 +232,8 @@ pub const ListDef = struct {
 
 pub const ListItem = struct {
     name: []const u8,
-    value: ?i32, // null = auto-assigned
+    value: ?i32, // null = auto-assigned at codegen time
+    is_selected: bool = false, // true = item was in parens (initially "on")
 };
 
 pub const ExternalFn = struct {

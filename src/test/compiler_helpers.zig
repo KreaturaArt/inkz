@@ -548,8 +548,21 @@ test "Compiler e2e: LIST basic" {
     const out = try compileFixtureAndRun(alloc, "runtime/lists/list_basic_operations.ink", &.{});
     defer alloc.free(out);
     // LIST list = a, (b), c, (d), e  → currently selected: b, d
-    // {list} should show "b, d" (or at least not crash)
-    try std.testing.expect(out.len > 0);
+    try std.testing.expectEqualStrings("b, d\na, b, c, e\nb, c\n0\n1\n1\n", out);
+}
+
+test "Compiler e2e: LIST empty_list_origin" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/empty_list_origin.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("a, b\n", out);
+}
+
+test "Compiler e2e: LIST more_list_operations" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/more_list_operations.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\nl\n\nn\n\nl, m\n\nn\n", out);
 }
 
 // ── Divert target variable tests ──────────────────────────────────────────────
@@ -776,3 +789,23 @@ test "Compiler e2e: newline_at_start_of_multiline_conditional.ink" {
     try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
 }
 
+
+test "DEBUG: more_list_ops json" {
+    const alloc = std.testing.allocator;
+    const src =
+        \\LIST list = l, m = 5, n
+        \\{LIST_VALUE(l)}
+        \\{list(1)}
+        \\~ temp t = list()
+        \\~ t += n
+        \\{t}
+        \\~ t = LIST_ALL(t)
+        \\~ t -= n
+        \\{t}
+        \\~ t = LIST_INVERT(t)
+        \\{t}
+    ;
+    const out = try compileAndRun(alloc, src, &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\nl\n\nn\n\nl, m\n\nn\n", out);
+}

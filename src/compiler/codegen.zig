@@ -44,7 +44,11 @@ pub const CObject = union(enum) {
     function_call: struct { name: []const u8, arg_count: u32 }, // {"f()":"name"} or {"f(N)":"name"}
     external_call: struct { name: []const u8, arg_count: u32 }, // {"x()":"name","exArgs":N}
     func_return, // "~ret"
+    // List value: {"list":{"origin.item":value,...},"origins":["origin",...]}
+    list_val: struct { entries: []const ListValEntry, origins: []const []const u8 },
 };
+
+pub const ListValEntry = struct { key: []const u8, value: i32 };
 
 pub const NamedChild = struct {
     name: []const u8,
@@ -88,6 +92,11 @@ const Gen = struct {
     gather_label_paths: std.StringHashMapUnmanaged([]const u8) = .{},
     /// Names of EXTERNAL function declarations — calls to these use external_call.
     external_fn_names: std.StringHashMapUnmanaged(u32) = .{}, // name → param_count
+    /// List definitions for resolving list item names in expressions.
+    list_defs: []const Parsed.ListDef = &.{},
+    /// True after emitting a content flow item (text, expr output) at the current level.
+    /// Used to decide whether to emit a trailing "\n" after a simple logic line.
+    last_was_content: bool = false,
 
     fn newContainer(self: *Gen, name: ?[]const u8) !*CContainer {
         const c = try self.alloc.create(CContainer);
@@ -115,6 +124,8 @@ const Gen = struct {
         for (story.external_fns) |ef| {
             try self.external_fn_names.put(self.alloc, ef.name, ef.param_count);
         }
+        // Store list defs for list literal resolution.
+        self.list_defs = story.list_defs;
 
         // 1. Root content sub-container (position 0 inside root).
         const root_content_sub = try self.newContainer(null);
@@ -134,11 +145,30 @@ const Gen = struct {
             root_content_sub.content = try root_flow.toOwnedSlice(self.alloc);
         }
 
-        // 2. Global-decl container (VAR initializers), if any.
-        //    Format: ["ev", 0, {VAR=:"name"}, ... , "/ev", "end", null]
+        // 2. Global-decl container (LIST declarations + VAR initializers).
+        //    Format: ["ev", {list_val}, {VAR=:"name"}, ... , "/ev", "end", null]
         var global_decl_items = std.ArrayList(CObject).empty;
-        if (story.global_decls.len > 0) {
+        if (story.global_decls.len > 0 or story.list_defs.len > 0) {
             try global_decl_items.append(self.alloc, .eval_start);
+            // Emit LIST variable initial values (only items in parens are initially selected).
+            for (story.list_defs) |ld| {
+                var selected = std.ArrayList(ListValEntry).empty;
+                for (ld.items) |item| {
+                    if (item.is_selected) {
+                        const key = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ ld.name, item.name });
+                        try selected.append(self.alloc, .{ .key = key, .value = item.value orelse 0 });
+                    }
+                }
+                const origins = try self.alloc.dupe([]const u8, &.{ld.name});
+                try global_decl_items.append(self.alloc, .{ .list_val = .{
+                    .entries = try selected.toOwnedSlice(self.alloc),
+                    .origins = origins,
+                } });
+                try global_decl_items.append(self.alloc, .{ .var_assign = .{
+                    .name = ld.name,
+                    .is_new = true,
+                } });
+            }
             for (story.global_decls) |decl| {
                 try self.genExpr(&global_decl_items, decl.initial.*);
                 try global_decl_items.append(self.alloc, .{ .var_assign = .{
@@ -253,20 +283,31 @@ const Gen = struct {
                     try self.genInlineElement(out, elem);
                 }
                 try out.append(self.alloc, .newline);
+                self.last_was_content = true;
             },
-            .divert => |d| try self.genDivert(out, d),
+            .divert => |d| {
+                try self.genDivert(out, d);
+                self.last_was_content = false;
+            },
             .tag => |tag_text| {
                 try out.append(self.alloc, .{ .string = "#" });
                 try out.append(self.alloc, .{ .text = tag_text });
                 try out.append(self.alloc, .{ .string = "/#" });
+                self.last_was_content = true;
             },
             .logic => |ll| try self.genLogicLine(out, ll),
-            .conditional => |c| try self.genConditional(out, c, parent_path),
+            .conditional => |c| {
+                try self.genConditional(out, c, parent_path);
+                self.last_was_content = true;
+            },
             // Choices and gathers are handled by genWeave; they should not
             // appear here in isolation, but if they do we silently skip them.
             .choice => {},
             .gather => {},
-            .sequence => |seq| try self.genSequence(out, seq),
+            .sequence => |seq| {
+                try self.genSequence(out, seq);
+                self.last_was_content = true;
+            },
             .thread_start => {}, // TASK-84
         }
     }
@@ -319,19 +360,32 @@ const Gen = struct {
     fn genLogicLine(self: *Gen, out: *std.ArrayList(CObject), ll: Parsed.LogicLine) !void {
         switch (ll) {
             .temp_decl => |td| {
+                const emit_newline = self.last_was_content;
+                self.last_was_content = false;
                 try out.append(self.alloc, .eval_start);
                 try self.genExpr(out, td.initial.*);
                 try out.append(self.alloc, .eval_end);
                 try out.append(self.alloc, .{ .temp_assign = .{ .name = td.name, .is_new = true } });
+                if (emit_newline) try out.append(self.alloc, .newline);
             },
             .assignment => |a| {
-                try out.append(self.alloc, .eval_start);
-                try self.genExpr(out, a.value.*);
-                try out.append(self.alloc, .eval_end);
-                if (a.is_temp) {
-                    try out.append(self.alloc, .{ .temp_assign = .{ .name = a.name, .is_new = false } });
-                } else {
+                if (a.is_compound) {
+                    // Compound (++, --, +=, -=): assignment inside eval block, no trailing newline.
+                    self.last_was_content = false;
+                    try out.append(self.alloc, .eval_start);
+                    try self.genExpr(out, a.value.*);
                     try out.append(self.alloc, .{ .var_assign = .{ .name = a.name, .is_new = false } });
+                    try out.append(self.alloc, .eval_end);
+                } else {
+                    // Simple assignment: assignment outside eval block; trailing "\n" only if
+                    // preceded by content (not at start of section or after another logic line).
+                    const emit_newline = self.last_was_content;
+                    self.last_was_content = false;
+                    try out.append(self.alloc, .eval_start);
+                    try self.genExpr(out, a.value.*);
+                    try out.append(self.alloc, .eval_end);
+                    try out.append(self.alloc, .{ .var_assign = .{ .name = a.name, .is_new = false } });
+                    if (emit_newline) try out.append(self.alloc, .newline);
                 }
             },
             .expr_stmt => |expr| {
@@ -1108,6 +1162,25 @@ const Gen = struct {
             .read_count => |path| try out.append(self.alloc, .{ .read_count = path }),
             .divert_target => |path| try out.append(self.alloc, .{ .divert_target_val = path }),
             .call => |c| {
+                // List built-in functions: emit args then native function string.
+                if (listBuiltinFn(c.name)) |native| {
+                    for (c.args) |arg| try self.genExpr(out, arg.*);
+                    try out.append(self.alloc, .{ .string = native });
+                    return;
+                }
+                // listName() with no args → empty list literal with that origin.
+                if (c.args.len == 0 and self.isListOrigin(c.name)) {
+                    const origins = try self.alloc.dupe([]const u8, &.{c.name});
+                    try out.append(self.alloc, .{ .list_val = .{ .entries = &.{}, .origins = origins } });
+                    return;
+                }
+                // listName(n) with one int arg → text(listName), n, "listInt".
+                if (c.args.len == 1 and self.isListOrigin(c.name)) {
+                    try out.append(self.alloc, .{ .text = c.name });
+                    try self.genExpr(out, c.args[0].*);
+                    try out.append(self.alloc, .{ .string = "listInt" });
+                    return;
+                }
                 // Push arguments left-to-right, then emit the call.
                 for (c.args) |arg| try self.genExpr(out, arg.*);
                 if (self.external_fn_names.contains(c.name)) {
@@ -1132,10 +1205,87 @@ const Gen = struct {
                 const s: []const u8 = if (u.op == .not) "!" else "_";
                 try out.append(self.alloc, .{ .string = s });
             },
-            else => {}, // remaining expression types in later tasks
+            .list_lit => |lit| {
+                var entries = std.ArrayList(ListValEntry).empty;
+                var origins = std.ArrayList([]const u8).empty;
+                for (lit.items) |item_name| {
+                    if (self.resolveListItem(item_name)) |resolved| {
+                        try entries.append(self.alloc, .{ .key = resolved.key, .value = resolved.value });
+                        // Track origin for empty-list cases.
+                        var has_origin = false;
+                        for (origins.items) |o| {
+                            if (std.mem.eql(u8, o, resolved.origin)) { has_origin = true; break; }
+                        }
+                        if (!has_origin) try origins.append(self.alloc, resolved.origin);
+                    }
+                }
+                const use_origins: []const []const u8 = if (entries.items.len == 0)
+                    try origins.toOwnedSlice(self.alloc)
+                else blk: {
+                    origins.deinit(self.alloc);
+                    break :blk &.{};
+                };
+                try out.append(self.alloc, .{ .list_val = .{
+                    .entries = try entries.toOwnedSlice(self.alloc),
+                    .origins = use_origins,
+                } });
+            },
+            .var_pointer => |vp| {
+                // Reference parameter: {"^var":"name","ci":context_idx}
+                // For now emit a var_ref (simplified; ref params handled via temp vars)
+                try out.append(self.alloc, .{ .var_ref = vp.name });
+            },
         }
     }
+
+    fn isListOrigin(self: *const Gen, name: []const u8) bool {
+        for (self.list_defs) |ld| {
+            if (std.mem.eql(u8, ld.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// Resolve a list item name to its origin, qualified key, and integer value.
+    fn resolveListItem(self: *Gen, name: []const u8) ?struct { origin: []const u8, key: []const u8, value: i32 } {
+        // Fully qualified: "origin.item"
+        if (std.mem.indexOf(u8, name, ".")) |dot| {
+            const origin = name[0..dot];
+            const item_name = name[dot + 1 ..];
+            for (self.list_defs) |ld| {
+                if (!std.mem.eql(u8, ld.name, origin)) continue;
+                for (ld.items) |li| {
+                    if (std.mem.eql(u8, li.name, item_name)) {
+                        return .{ .origin = origin, .key = name, .value = li.value orelse 0 };
+                    }
+                }
+            }
+            return null;
+        }
+        // Unqualified: search all list defs.
+        for (self.list_defs) |ld| {
+            for (ld.items) |li| {
+                if (!std.mem.eql(u8, li.name, name)) continue;
+                const key = std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ ld.name, name }) catch return null;
+                return .{ .origin = ld.name, .key = key, .value = li.value orelse 0 };
+            }
+        }
+        return null;
+    }
 };
+
+/// Map a list built-in function name to the native function string emitted in JSON.
+/// Returns null if the name is not a list built-in.
+fn listBuiltinFn(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "LIST_ALL")) return "LIST_ALL";
+    if (std.mem.eql(u8, name, "LIST_VALUE")) return "LIST_VALUE";
+    if (std.mem.eql(u8, name, "LIST_COUNT")) return "LIST_COUNT";
+    if (std.mem.eql(u8, name, "LIST_MIN")) return "LIST_MIN";
+    if (std.mem.eql(u8, name, "LIST_MAX")) return "LIST_MAX";
+    if (std.mem.eql(u8, name, "LIST_INVERT")) return "LIST_INVERT";
+    if (std.mem.eql(u8, name, "LIST_RANDOM")) return "lrnd";
+    if (std.mem.eql(u8, name, "LIST_RANGE")) return "range";
+    return null;
+}
 
 /// True when any item in `items` is a choice or gather.
 fn itemsHaveChoices(items: []const Parsed.FlowItem) bool {
@@ -1189,6 +1339,7 @@ fn opStr(op: Parsed.BinaryOp) []const u8 {
         .or_ => "||",
         .has => "?",
         .hasnt => "!?",
+        .intersect => "L^",
     };
 }
 
