@@ -632,9 +632,11 @@ pub const Parser = struct {
             // Also handle "name = value" explicit numbering.
             var item_name = item_str;
             var item_val: ?i32 = null;
+            var is_selected = false;
             // Strip parens: (name) means the item is "on" by default.
             if (item_str.len >= 2 and item_str[0] == '(' and item_str[item_str.len - 1] == ')') {
                 item_name = item_str[1 .. item_str.len - 1];
+                is_selected = true;
             }
             // Check for explicit value: "name = N"
             if (std.mem.indexOf(u8, item_name, "=")) |eq_idx| {
@@ -648,7 +650,7 @@ pub const Parser = struct {
             }
             const clean_name = std.mem.trim(u8, item_name, " \t");
             if (clean_name.len > 0)
-                try items.append(self.alloc, .{ .name = clean_name, .value = item_val });
+                try items.append(self.alloc, .{ .name = clean_name, .value = item_val, .is_selected = is_selected });
         }
         return Parsed.ListDef{
             .name = list_name,
@@ -733,7 +735,7 @@ pub const Parser = struct {
         const name = text[0..name_end];
         var rest = trimLeft(text[name_end..]);
 
-        // ~ name++  →  name = name + 1
+        // ~ name++  →  name = name + 1  (compound)
         if (std.mem.startsWith(u8, rest, "++")) {
             const lhs = try self.alloc.create(Parsed.Expression);
             lhs.* = .{ .var_ref = name };
@@ -742,9 +744,9 @@ pub const Parser = struct {
             const rhs = try self.alloc.create(Parsed.Expression);
             rhs.* = .{ .binary = .{ .op = .add, .lhs = lhs, .rhs = one } };
             const is_temp = self.isTempVar(name);
-            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp } } };
+            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp, .is_compound = true } } };
         }
-        // ~ name--  →  name = name - 1
+        // ~ name--  →  name = name - 1  (compound)
         if (std.mem.startsWith(u8, rest, "--")) {
             const lhs = try self.alloc.create(Parsed.Expression);
             lhs.* = .{ .var_ref = name };
@@ -753,7 +755,31 @@ pub const Parser = struct {
             const rhs = try self.alloc.create(Parsed.Expression);
             rhs.* = .{ .binary = .{ .op = .sub, .lhs = lhs, .rhs = one } };
             const is_temp = self.isTempVar(name);
-            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp } } };
+            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp, .is_compound = true } } };
+        }
+        // ~ name += expr  →  name = name + expr
+        if (std.mem.startsWith(u8, rest, "+=")) {
+            const operand_str = trimLeft(rest[2..]);
+            var ep = ExprParser.init(self.alloc, operand_str);
+            const operand = (try ep.parseExpr()) orelse return null;
+            const lhs = try self.alloc.create(Parsed.Expression);
+            lhs.* = .{ .var_ref = name };
+            const rhs = try self.alloc.create(Parsed.Expression);
+            rhs.* = .{ .binary = .{ .op = .add, .lhs = lhs, .rhs = operand } };
+            const is_temp = self.isTempVar(name);
+            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp, .is_compound = true } } };
+        }
+        // ~ name -= expr  →  name = name - expr
+        if (std.mem.startsWith(u8, rest, "-=")) {
+            const operand_str = trimLeft(rest[2..]);
+            var ep = ExprParser.init(self.alloc, operand_str);
+            const operand = (try ep.parseExpr()) orelse return null;
+            const lhs = try self.alloc.create(Parsed.Expression);
+            lhs.* = .{ .var_ref = name };
+            const rhs = try self.alloc.create(Parsed.Expression);
+            rhs.* = .{ .binary = .{ .op = .sub, .lhs = lhs, .rhs = operand } };
+            const is_temp = self.isTempVar(name);
+            return .{ .logic = .{ .assignment = .{ .name = name, .value = rhs, .is_temp = is_temp, .is_compound = true } } };
         }
 
         if (rest.len > 0 and rest[0] == '(') {
@@ -1704,6 +1730,9 @@ const ExprParser = struct {
         }
 
         if (s[0] == '(') {
+            // Try list literal first: () or (ident, ident, ...).
+            if (try self.tryParseListLit()) |node| return node;
+            // Fallback: grouped expression.
             self.pos += 1;
             const inner = (try self.parseBinary(0)) orelse return null;
             self.skipWs();
@@ -1797,6 +1826,56 @@ const ExprParser = struct {
         node.* = .{ .var_ref = name };
         return node;
     }
+
+    /// Try to parse `()` or `(ident, ident, ...)` as an InkListLiteral expression.
+    /// Returns null and restores position if not a valid list literal.
+    fn tryParseListLit(self: *ExprParser) error{OutOfMemory}!?*Parsed.Expression {
+        const saved = self.pos;
+        if (self.pos >= self.src.len or self.src[self.pos] != '(') return null;
+        self.pos += 1;
+        self.skipWs();
+
+        // Empty list: ()
+        if (self.pos < self.src.len and self.src[self.pos] == ')') {
+            self.pos += 1;
+            const node = try self.alloc.create(Parsed.Expression);
+            node.* = .{ .list_lit = .{ .items = &.{} } };
+            return node;
+        }
+
+        // Attempt to parse comma-separated identifiers (possibly "origin.item").
+        var items = std.ArrayList([]const u8).empty;
+        while (true) {
+            self.skipWs();
+            const start = self.pos;
+            while (self.pos < self.src.len) {
+                const c = self.src[self.pos];
+                if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.') break;
+                self.pos += 1;
+            }
+            if (self.pos == start) {
+                self.pos = saved;
+                return null;
+            }
+            try items.append(self.alloc, self.src[start..self.pos]);
+            self.skipWs();
+            if (self.pos < self.src.len and self.src[self.pos] == ',') {
+                self.pos += 1;
+                continue;
+            }
+            break;
+        }
+        self.skipWs();
+        if (self.pos >= self.src.len or self.src[self.pos] != ')') {
+            // Has non-ident content — it's a grouped expression.
+            self.pos = saved;
+            return null;
+        }
+        self.pos += 1;
+        const node = try self.alloc.create(Parsed.Expression);
+        node.* = .{ .list_lit = .{ .items = try items.toOwnedSlice(self.alloc) } };
+        return node;
+    }
 };
 
 /// True if `s` starts with keyword `kw` followed by a non-ident char (or end).
@@ -1813,7 +1892,7 @@ fn binOpPrec(op: Parsed.BinaryOp) u8 {
         .or_ => 1,
         .and_ => 2,
         .eq, .ne => 3,
-        .has, .hasnt => 3,
+        .has, .hasnt, .intersect => 3,
         .gt, .lt, .ge, .le => 4,
         .add, .sub => 5,
         .mul, .div, .mod => 6,
@@ -1827,6 +1906,7 @@ fn epPeekBinaryOp(s: []const u8, out_len: *usize) ?Parsed.BinaryOp {
     if (std.mem.startsWith(u8, s, "!?")) { out_len.* = 2; return .hasnt; }
     if (std.mem.startsWith(u8, s, "!=")) { out_len.* = 2; return .ne; }
     if (s[0] == '?') { out_len.* = 1; return .has; }
+    if (s[0] == '^') { out_len.* = 1; return .intersect; }
     if (std.mem.startsWith(u8, s, ">=")) { out_len.* = 2; return .ge; }
     if (std.mem.startsWith(u8, s, "<=")) { out_len.* = 2; return .le; }
     if (std.mem.startsWith(u8, s, "&&")) { out_len.* = 2; return .and_; }

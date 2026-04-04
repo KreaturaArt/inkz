@@ -37,9 +37,7 @@ pub fn serializeWithListDefs(alloc: std.mem.Allocator, root: *const CContainer, 
         for (ld.items, 0..) |item, ii| {
             if (ii > 0) try buf.append(alloc, ',');
             try buf.append(alloc, '"');
-            // Item key is "listName.itemName".
-            try writeJsonStr(alloc, &buf, ld.name);
-            try buf.append(alloc, '.');
+            // listDefs item keys are unqualified (just "itemName", not "listName.itemName").
             try writeJsonStr(alloc, &buf, item.name);
             try buf.appendSlice(alloc, "\":");
             var tmp: [32]u8 = undefined;
@@ -243,6 +241,31 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             var tmp2: [32]u8 = undefined;
             const args_s = std.fmt.bufPrint(&tmp2, "\",\"exArgs\":{}}}", .{ec.arg_count}) catch unreachable;
             try buf.appendSlice(alloc, args_s);
+        },
+        .list_val => |lv| {
+            // Non-empty: {"list":{"origin.item":value,...}}
+            // Empty with origin: {"list":{},"origins":["origin",...]}
+            try buf.appendSlice(alloc, "{\"list\":{");
+            for (lv.entries, 0..) |e, i| {
+                if (i > 0) try buf.append(alloc, ',');
+                try buf.append(alloc, '"');
+                try writeJsonStr(alloc, buf, e.key);
+                var tmp: [32]u8 = undefined;
+                const s = std.fmt.bufPrint(&tmp, "\":{}", .{e.value}) catch unreachable;
+                try buf.appendSlice(alloc, s);
+            }
+            try buf.append(alloc, '}');
+            if (lv.entries.len == 0 and lv.origins.len > 0) {
+                try buf.appendSlice(alloc, ",\"origins\":[");
+                for (lv.origins, 0..) |o, i| {
+                    if (i > 0) try buf.append(alloc, ',');
+                    try buf.append(alloc, '"');
+                    try writeJsonStr(alloc, buf, o);
+                    try buf.append(alloc, '"');
+                }
+                try buf.append(alloc, ']');
+            }
+            try buf.append(alloc, '}');
         },
     }
 }
