@@ -1813,6 +1813,7 @@ fn binOpPrec(op: Parsed.BinaryOp) u8 {
         .or_ => 1,
         .and_ => 2,
         .eq, .ne => 3,
+        .has, .hasnt => 3,
         .gt, .lt, .ge, .le => 4,
         .add, .sub => 5,
         .mul, .div, .mod => 6,
@@ -1823,7 +1824,9 @@ fn binOpPrec(op: Parsed.BinaryOp) u8 {
 fn epPeekBinaryOp(s: []const u8, out_len: *usize) ?Parsed.BinaryOp {
     if (s.len == 0) return null;
     if (std.mem.startsWith(u8, s, "==")) { out_len.* = 2; return .eq; }
+    if (std.mem.startsWith(u8, s, "!?")) { out_len.* = 2; return .hasnt; }
     if (std.mem.startsWith(u8, s, "!=")) { out_len.* = 2; return .ne; }
+    if (s[0] == '?') { out_len.* = 1; return .has; }
     if (std.mem.startsWith(u8, s, ">=")) { out_len.* = 2; return .ge; }
     if (std.mem.startsWith(u8, s, "<=")) { out_len.* = 2; return .le; }
     if (std.mem.startsWith(u8, s, "&&")) { out_len.* = 2; return .and_; }

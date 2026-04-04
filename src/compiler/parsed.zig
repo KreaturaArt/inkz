@@ -200,6 +200,8 @@ pub const BinaryOp = enum {
     le,
     and_,
     or_,
+    has, // ?  (list/string contains)
+    hasnt, // !?  (list/string not-contains)
 };
 
 pub const UnaryOp = enum {

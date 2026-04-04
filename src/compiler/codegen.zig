@@ -936,7 +936,6 @@ const Gen = struct {
             for (ch.following_content) |elem| {
                 try self.genInlineElement(&c_body, elem);
             }
-            // Newline separator between following content and body.
             try c_body.append(self.alloc, .newline);
             // Inner content (body lines after the choice line).
             if (has_nested_weave) {
@@ -1188,6 +1187,8 @@ fn opStr(op: Parsed.BinaryOp) []const u8 {
         .le => "<=",
         .and_ => "&&",
         .or_ => "||",
+        .has => "?",
+        .hasnt => "!?",
     };
 }
 
