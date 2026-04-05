@@ -1,3 +1,204 @@
+## ## Original fixtures
+
+### 26 directories, 169 files
+
+test/fixture/original/
+├── player
+│   ├── error_and_exceptions.ink
+│   ├── flow.ink
+│   ├── functions.ink
+│   ├── ink_error.ink
+│   ├── ink_list_roundtrip.ink
+│   ├── variable_observation.ink
+│   └── variables.ink
+└── runtime
+ ├── bindings
+ │   ├── external_binding.ink
+ │   ├── game_ink_back_and_forth.ink
+ │   ├── lookup_safe_or_not_with_post_glue.ink
+ │   ├── lookup_safe_or_not.ink
+ │   └── variable_observer.ink
+ ├── booleans
+ │   ├── false_plus_false.ink
+ │   ├── list_hasnt.ink
+ │   ├── not_one.ink
+ │   ├── not_true.ink
+ │   ├── three_greater_than_one.ink
+ │   ├── true_equals_one.ink
+ │   ├── true_plus_one.ink
+ │   ├── true_plus_true.ink
+ │   ├── true.ink
+ │   └── two_plus_true.ink
+ ├── builtins
+ │   ├── floor_ceiling_and_casts.ink
+ │   ├── read_count_across_callstack.ink
+ │   ├── read_count_across_threads.ink
+ │   ├── read_count_dot_separated_path.ink
+ │   ├── read_count_variable_target.ink
+ │   ├── turns_since_nested.ink
+ │   ├── turns_since_with_variable_target.ink
+ │   ├── turns_since.ink
+ │   ├── turns.ink
+ │   ├── visit_count_bug_due_to_nested_containers.ink
+ │   └── visit_counts_when_choosing.ink
+ ├── callstack
+ │   ├── callstack_evaluation.ink
+ │   └── clean_callstack_reset_on_path_choice.ink
+ ├── choices
+ │   ├── choice_count.ink
+ │   ├── choice_diverts_to_done.ink
+ │   ├── choice_thread_forking.ink
+ │   ├── choice_with_brackets_only.ink
+ │   ├── conditional_choices.ink
+ │   ├── default_choices.ink
+ │   ├── default_simple_gather.ink
+ │   ├── fallback_choice_on_thread.ink
+ │   ├── gather_choice_same_line.ink
+ │   ├── has_read_on_choice.ink
+ │   ├── logic_in_choices.ink
+ │   ├── non_text_in_choice_inner_content.ink
+ │   ├── once_only_choices_can_link_back_to_self.ink
+ │   ├── once_only_choices_with_own_content.ink
+ │   ├── should_not_gather_due_to_choice.ink
+ │   ├── state_rollback_over_default_choice.ink
+ │   ├── sticky_choices_stay_sticky.ink
+ │   └── various_default_choices.ink
+ ├── conditions
+ │   ├── all_switch_branches_fail_is_clean.ink
+ │   ├── conditionals.ink
+ │   ├── else_branches.ink
+ │   ├── empty_multiline_conditional_branch.ink
+ │   └── trivial_condition.ink
+ ├── diverts
+ │   ├── basic_tunnel.ink
+ │   ├── compare_divert_targets.ink
+ │   ├── complex_tunnels.ink
+ │   ├── divert_in_conditional.ink
+ │   ├── divert_targets_with_parameters.ink
+ │   ├── divert_to_weave_points.ink
+ │   ├── done_stops_thread.ink
+ │   ├── path_to_self.ink
+ │   ├── same_line_divert_is_inline.ink
+ │   ├── tunnel_onwards_after_tunnel.ink
+ │   ├── tunnel_onwards_divert_after_with_arg.ink
+ │   ├── tunnel_onwards_divert_override.ink
+ │   ├── tunnel_onwards_to_variable_divert_target.ink
+ │   ├── tunnel_onwards_with_param_default_choice.ink
+ │   └── tunnel_vs_thread_behaviour.ink
+ ├── evaluation
+ │   ├── arithmetic.ink
+ │   ├── basic_string_literals.ink
+ │   ├── evaluating_function_variable_state_bug.ink
+ │   ├── evaluating_ink_functions_from_game_2.ink
+ │   ├── evaluating_ink_functions_from_game.ink
+ │   ├── evaluation_stack_leaks.ink
+ │   ├── factorial_by_reference.ink
+ │   ├── factorial_recursive.ink
+ │   ├── increment.ink
+ │   └── literal_unary.ink
+ ├── extra
+ │   ├── arithmetic_2.ink
+ │   └── list_comparison.ink
+ ├── glue
+ │   ├── implicit_inline_glue_b.ink
+ │   ├── implicit_inline_glue_c.ink
+ │   ├── implicit_inline_glue.ink
+ │   ├── left_right_glue_matching.ink
+ │   └── simple_glue.ink
+ ├── knots
+ │   ├── knot_do_not_gather.ink
+ │   ├── knot_stitch_gather_counts.ink
+ │   ├── knot_thread_interaction_2.ink
+ │   └── knot_thread_interaction.ink
+ ├── lists
+ │   ├── contains_empty_list_always_false.ink
+ │   ├── empty_list_origin_after_assignment.ink
+ │   ├── empty_list_origin.ink
+ │   ├── list_basic_operations.ink
+ │   ├── list_mixed_items.ink
+ │   ├── list_random.ink
+ │   ├── list_range.ink
+ │   ├── list_save_load.ink
+ │   └── more_list_operations.ink
+ ├── logic
+ │   ├── logic_lines_with_newlines.ink
+ │   ├── multiline_logic_with_glue.ink
+ │   ├── nested_pass_by_reference.ink
+ │   └── print_num.ink
+ ├── misc
+ │   ├── empty.ink
+ │   ├── end_of_content.ink
+ │   ├── end.ink
+ │   ├── end2.ink
+ │   ├── escape_character.ink
+ │   ├── hello_world.ink
+ │   ├── identifiers_can_start_with_number.ink
+ │   ├── include.ink
+ │   ├── includes
+ │   │   ├── included_file_2.ink
+ │   │   ├── included_file_3.ink
+ │   │   ├── included_file_4.ink
+ │   │   └── included_file.ink
+ │   ├── nested_include.ink
+ │   ├── quote_character_significance.ink
+ │   └── whitespace.ink
+ ├── multiflow
+ │   ├── multi_flow_basics.ink
+ │   └── multi_flow_save_load_threads.ink
+ ├── newlines
+ │   ├── newline_at_start_of_multiline_conditional.ink
+ │   ├── newline_consistency_1.ink
+ │   ├── newline_consistency_2.ink
+ │   ├── newline_consistency_3.ink
+ │   ├── newlines_trimming_with_func_external_fallback.ink
+ │   └── newlines_with_string_eval.ink
+ ├── sequences
+ │   ├── all_sequence_types.ink
+ │   ├── blanks_in_inline_sequences.ink
+ │   ├── empty_sequence_content.ink
+
+│   ├── gather_read_count_with_initial_sequence.ink
+ │   ├── leading_newline_multiline_sequence.ink
+ │   └── shuffle_stack_muddying.ink
+ ├── strings
+ │   ├── string_constants.ink
+ │   ├── string_contains.ink
+ │   ├── string_type_coercion.ink
+ │   └── strings_in_choices.ink
+ ├── tags
+ │   ├── tags_dynamic_content.ink
+ │   ├── tags_in_choice.ink
+ │   ├── tags_in_seq.ink
+ │   └── tags.ink
+ ├── threads
+ │   ├── multi_thread.ink
+ │   ├── thread_done.ink
+ │   ├── thread_in_logic.ink
+ │   └── top_flow_terminator_should_not_kill_thread_choices.ink
+ ├── variables
+ │   ├── const.ink
+ │   ├── multiple_constant_references.ink
+ │   ├── set_non_existant_variable.ink
+ │   ├── temp_global_conflict.ink
+ │   ├── temp_not_found.ink
+ │   ├── temp_usage_in_options.ink
+ │   ├── temporaries_at_global_scope.ink
+ │   ├── variable_declaration_in_conditional.ink
+ │   ├── variable_divert_target.ink
+ │   ├── variable_get_set_api.ink
+ │   ├── variable_pointer_ref_from_knot.ink
+ │   ├── variable_swap_recurse.ink
+ │   ├── variable_tunnel.ink
+ │   ├── warn_variable_not_found_1.ink
+ │   └── warn_variable_not_found_2.ink
+ └── weaves
+ ├── conditional_choice_in_weave_2.ink
+ ├── conditional_choice_in_weave.ink
+ ├── unbalanced_weave_indentation.ink
+ ├── weave_gathers.ink
+ ├── weave_options.ink
+ └── weave_within_sequence.ink
+
 ## Compiled fixtures
 
 ### 26 directories, 177 files
