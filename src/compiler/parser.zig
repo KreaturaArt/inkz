@@ -262,7 +262,15 @@ pub const Parser = struct {
             },
 
             .thread_start => {
+                _ = self.eat(); // <-
+                const target = if (self.cur().tag == .text) blk: {
+                    const t = self.eat();
+                    break :blk std.mem.trim(u8, t.loc.slice(self.src), " \t");
+                } else "";
                 self.skipToEol();
+                if (target.len > 0) {
+                    try items.append(self.alloc, .{ .thread_start = target });
+                }
                 continue :parse self.cur().tag;
             },
 
@@ -296,6 +304,7 @@ pub const Parser = struct {
         list_defs: *std.ArrayList(Parsed.ListDef),
         external_fns: *std.ArrayList(Parsed.ExternalFn),
     ) error{OutOfMemory}!Parsed.Knot {
+        const is_stitch = self.cur().tag == .stitch_marker;
         _ = self.eat(); // knot_marker or stitch_marker
 
         // The rest of the header line is a text token like " knot_name ===" or
@@ -327,11 +336,13 @@ pub const Parser = struct {
         var content = std.ArrayList(Parsed.FlowItem).empty;
         try self.parseContent(&content, global_decls, constants, includes, list_defs, external_fns, true);
 
-        // Parse stitches.
+        // Parse stitches (knots only — stitches cannot have sub-stitches).
         var stitches = std.ArrayList(Parsed.Stitch).empty;
-        while (self.cur().tag == .stitch_marker) {
-            const stitch = try self.parseStitch(global_decls, constants, includes, list_defs, external_fns);
-            try stitches.append(self.alloc, stitch);
+        if (!is_stitch) {
+            while (self.cur().tag == .stitch_marker) {
+                const stitch = try self.parseStitch(global_decls, constants, includes, list_defs, external_fns);
+                try stitches.append(self.alloc, stitch);
+            }
         }
 
         return Parsed.Knot{
@@ -954,6 +965,9 @@ pub const Parser = struct {
                 kind = .stopping;
                 // Don't pre-strip; let first branch parsing handle it
             }
+        } else if (self.cur().tag == .thread_start) {
+            // {<- knot | ...} → stopping sequence with thread first branch
+            kind = .stopping;
         } else {
             self.restore(saved);
             return null;
@@ -973,16 +987,14 @@ pub const Parser = struct {
             try branches.append(self.alloc, branch);
         } else {
             // No prefix stripping — parse first branch normally
-            const elems = try self.parseInlineBranchElems();
-            const branch = try self.inlineElemsToFlowItems(elems);
+            const branch = try self.parseInlineSequenceBranch();
             try branches.append(self.alloc, branch);
         }
 
         // Remaining branches separated by |
         while (self.cur().tag == .pipe) {
             _ = self.eat(); // |
-            const elems = try self.parseInlineBranchElems();
-            const branch = try self.inlineElemsToFlowItems(elems);
+            const branch = try self.parseInlineSequenceBranch();
             try branches.append(self.alloc, branch);
         }
 
@@ -1146,6 +1158,33 @@ pub const Parser = struct {
     }
 
     /// Parse inline elements (text/etc.) until `|`, `}`, newline, or eof.
+    /// Parse a single branch of an inline sequence.
+    /// Handles thread_start (<- knot) as a FlowItem.thread_start.
+    /// Normal inline text/exprs are wrapped as a single FlowItem.text.
+    fn parseInlineSequenceBranch(self: *Parser) error{OutOfMemory}![]Parsed.FlowItem {
+        // Check for thread_start at the beginning of the branch.
+        if (self.cur().tag == .thread_start) {
+            _ = self.eat(); // <-
+            const target = if (self.cur().tag == .text) blk: {
+                const t = self.eat();
+                break :blk std.mem.trim(u8, t.loc.slice(self.src), " \t");
+            } else "";
+            // Eat any remaining content before | or }
+            while (self.cur().tag != .pipe and self.cur().tag != .right_brace and
+                self.cur().tag != .newline and self.cur().tag != .eof)
+            {
+                _ = self.eat();
+            }
+            if (target.len > 0) {
+                return self.alloc.dupe(Parsed.FlowItem, &.{.{ .thread_start = target }});
+            }
+            return &.{};
+        }
+        // Normal inline branch: parse inline elements.
+        const elems = try self.parseInlineBranchElems();
+        return self.inlineElemsToFlowItems(elems);
+    }
+
     fn parseInlineBranchElems(self: *Parser) error{OutOfMemory}![]Parsed.InlineElement {
         var elems = std.ArrayList(Parsed.InlineElement).empty;
         while (true) {
