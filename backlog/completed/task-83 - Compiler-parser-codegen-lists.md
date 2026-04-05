@@ -1,9 +1,10 @@
 ---
 id: TASK-83
 title: 'Compiler parser + codegen: lists'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:48'
+updated_date: '2026-04-05 08:09'
 labels:
   - compiler
   - parser
@@ -36,7 +37,13 @@ Reference: Read `test/fixture/original/runtime/lists/` + compiled JSON. Check `d
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 compileAndRun passes for all test/fixture/original/runtime/lists/ fixtures
-- [ ] #2 listDefs section in emitted JSON is correct (runtime can look up list definitions)
-- [ ] #3 zig build test passes
+- [x] #1 compileAndRun passes for all test/fixture/original/runtime/lists/ fixtures
+- [x] #2 listDefs section in emitted JSON is correct (runtime can look up list definitions)
+- [x] #3 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented in the same session as TASK-79/80/82 (git: "(complete) TASK-79/80/82/83"). LIST declarations, list literals, list operators, listDefs JSON section, and inline list operations all working. 414/414 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

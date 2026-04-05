@@ -1,9 +1,10 @@
 ---
 id: TASK-82
 title: 'Compiler parser + codegen: glue, tags, newlines, strings'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:47'
+updated_date: '2026-04-05 08:09'
 labels:
   - compiler
   - parser
@@ -45,9 +46,15 @@ Reference: Read `test/fixture/original/runtime/glue/`, `tags/`, `newlines/`, `st
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 compileAndRun passes for all test/fixture/original/runtime/glue/ fixtures
-- [ ] #2 compileAndRun passes for all test/fixture/original/runtime/tags/ fixtures
-- [ ] #3 compileAndRun passes for all test/fixture/original/runtime/newlines/ fixtures
-- [ ] #4 compileAndRun passes for all test/fixture/original/runtime/strings/ fixtures
-- [ ] #5 zig build test passes
+- [x] #1 compileAndRun passes for all test/fixture/original/runtime/glue/ fixtures
+- [x] #2 compileAndRun passes for all test/fixture/original/runtime/tags/ fixtures
+- [x] #3 compileAndRun passes for all test/fixture/original/runtime/newlines/ fixtures
+- [x] #4 compileAndRun passes for all test/fixture/original/runtime/strings/ fixtures
+- [x] #5 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented in the same session as TASK-79/80/83 (git: "(complete) TASK-79/80/82/83"). Glue, tags, newline consistency, string constants, string contains operator all working. 414/414 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

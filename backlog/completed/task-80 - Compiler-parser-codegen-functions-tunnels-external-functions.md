@@ -1,9 +1,10 @@
 ---
 id: TASK-80
 title: 'Compiler parser + codegen: functions, tunnels, external functions'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:47'
+updated_date: '2026-04-05 08:09'
 labels:
   - compiler
   - parser
@@ -42,8 +43,14 @@ Reference: Read `test/fixture/original/runtime/diverts/basic_tunnel.ink` and `te
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 compileAndRun passes for all test/fixture/original/runtime/diverts/ fixtures
-- [ ] #2 compileAndRun passes for all test/fixture/original/runtime/callstack/ fixtures
-- [ ] #3 compileAndRun passes for all test/fixture/original/runtime/bindings/ fixtures
-- [ ] #4 zig build test passes
+- [x] #1 compileAndRun passes for all test/fixture/original/runtime/diverts/ fixtures
+- [x] #2 compileAndRun passes for all test/fixture/original/runtime/callstack/ fixtures
+- [x] #3 compileAndRun passes for all test/fixture/original/runtime/bindings/ fixtures
+- [x] #4 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented in the same session as TASK-79/82/83 (git: "(complete) TASK-79/80/82/83"). Function knots with params, tunnels, tunnel-onwards, external function declarations, function calls, reference params, and x++/x-- increment/decrement all working. 414/414 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

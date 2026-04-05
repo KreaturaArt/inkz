@@ -1,9 +1,10 @@
 ---
 id: TASK-81
 title: 'Compiler parser + codegen: sequences & alternatives'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:47'
+updated_date: '2026-04-05 08:09'
 labels:
   - compiler
   - parser
@@ -39,6 +40,12 @@ Reference: Read `test/fixture/original/runtime/sequences/` fixtures + compiled J
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 compileAndRun passes for all test/fixture/original/runtime/sequences/ fixtures
-- [ ] #2 zig build test passes
+- [x] #1 compileAndRun passes for all test/fixture/original/runtime/sequences/ fixtures
+- [x] #2 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Inline and block sequences (stopping, cycle, once-only, shuffle) implemented. Tests for inline stopping/cycle sequences, block sequences, leading-newline sequences, and empty sequence content all pass. 414/414 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
