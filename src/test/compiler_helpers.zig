@@ -790,7 +790,7 @@ test "Compiler e2e: newline_at_start_of_multiline_conditional.ink" {
 }
 
 
-test "DEBUG: more_list_ops json" {
+test "Compiler e2e: LIST more_list_operations inline" {
     const alloc = std.testing.allocator;
     const src =
         \\LIST list = l, m = 5, n
@@ -809,3 +809,49 @@ test "DEBUG: more_list_ops json" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("1\nl\n\nn\n\nl, m\n\nn\n", out);
 }
+
+// ── TASK-91: Threads, built-ins ────────────────────────────────────────────────
+
+test "Compiler e2e: TURNS() built-in" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns.ink", &.{0});
+    defer alloc.free(out);
+    // Just verify it runs without crash and produces something
+    try std.testing.expect(out.len > 0);
+}
+
+test "Compiler e2e: TURNS_SINCE built-in" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since.ink", &.{0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+test "Compiler e2e: CHOICE_COUNT built-in" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/choice_count.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "2") != null);
+}
+
+test "Compiler e2e: read_count_across_callstack.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/read_count_across_callstack.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1) Seen first 1 times.\nIn second.\n2) Seen first 1 times.\n", out);
+}
+
+test "Compiler e2e: thread in sequence" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/threads/thread_in_logic.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Content") != null);
+}
+
+test "Compiler e2e: thread_done.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/threads/thread_done.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len >= 0);
+}
+

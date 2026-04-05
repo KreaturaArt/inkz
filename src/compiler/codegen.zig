@@ -225,6 +225,7 @@ const Gen = struct {
                 try stitch_named.append(self.alloc, .{ .name = stitch.name, .container = sc });
             }
             const kc = try self.newContainer(null);
+            kc.flags = 1; // VISITS_SHOULD_BE_COUNTED
             kc.content = try items.toOwnedSlice(self.alloc);
             kc.named_children = try stitch_named.toOwnedSlice(self.alloc);
             return kc;
@@ -253,6 +254,7 @@ const Gen = struct {
 
             // The knot container wraps inner_wrapper as its sole content item.
             const kc = try self.newContainer(null);
+            kc.flags = 1; // VISITS_SHOULD_BE_COUNTED — enables {knot_name} visit counts
             kc.content = try self.alloc.dupe(CObject, &.{.{ .container = inner_wrapper }});
             return kc;
         }
@@ -272,6 +274,7 @@ const Gen = struct {
             try self.genFlowItem(&items, item, knot_name);
         }
         const kc = try self.newContainer(null);
+        kc.flags = 1; // VISITS_SHOULD_BE_COUNTED — enables {knot_name} visit counts
         kc.content = try items.toOwnedSlice(self.alloc);
         return kc;
     }
@@ -308,7 +311,10 @@ const Gen = struct {
                 try self.genSequence(out, seq);
                 self.last_was_content = true;
             },
-            .thread_start => {}, // TASK-84
+            .thread_start => |knot_name| {
+                try out.append(self.alloc, .{ .string = "thread" });
+                try out.append(self.alloc, .{ .divert = knot_name });
+            },
         }
     }
 
@@ -332,8 +338,10 @@ const Gen = struct {
                 }
                 try out.append(self.alloc, .eval_end);
             }
-            // Check gather_label_paths first so labeled gathers resolve to abs paths.
+            // Check gather/choice label paths first so labels resolve to abs paths.
             if (self.gather_label_paths.get(d.target)) |abs_path| {
+                try out.append(self.alloc, .{ .divert = abs_path });
+            } else if (self.choice_labels.get(d.target)) |abs_path| {
                 try out.append(self.alloc, .{ .divert = abs_path });
             } else if (d.is_tunnel) {
                 if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
@@ -413,11 +421,7 @@ const Gen = struct {
     fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement) error{OutOfMemory}!void {
         switch (elem) {
             .text => |t| {
-                // Trim only leading whitespace; trailing spaces before {expr}
-                // are prose and must be preserved.
-                var start: usize = 0;
-                while (start < t.len and (t[start] == ' ' or t[start] == '\t')) start += 1;
-                var remaining = t[start..];
+                var remaining = t;
                 // Split on <> glue markers.
                 while (remaining.len > 0) {
                     if (std.mem.indexOf(u8, remaining, "<>")) |idx| {
@@ -587,18 +591,36 @@ const Gen = struct {
                 }
             }
         }
-        // Register gather_label_paths for named gathers.
+        // Register gather_label_paths for named gathers AND choice_labels for labeled choices.
+        // Both need to be registered BEFORE the main pass so forward-references resolve.
         {
             var gi: usize = 0;
+            // cur_section_abs tracks the absolute path of the current section
+            // (holder_abs_path when pre-gather, "{holder_abs_path}.{section}" when in-section)
+            var cur_section_abs = holder_abs_path;
+            var ci: usize = 0; // choice index within current section
             for (items) |item| {
                 switch (item) {
                     .gather => |g| if (g.nesting == min_nesting) {
+                        const gname = gather_names.items[gi];
                         if (g.label) |lbl| {
                             const abs_path = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, lbl });
                             try self.gather_label_paths.put(self.alloc, lbl, abs_path);
                         }
+                        cur_section_abs = try std.fmt.allocPrint(
+                            self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                        ci = 0;
                         gi += 1;
+                    },
+                    .choice => |ch| if (ch.nesting == min_nesting) {
+                        if (ch.label) |lbl| {
+                            const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{ci});
+                            const abs_path = try std.fmt.allocPrint(
+                                self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
+                            try self.choice_labels.put(self.alloc, lbl, abs_path);
+                        }
+                        ci += 1;
                     },
                     else => {},
                 }
@@ -1162,6 +1184,12 @@ const Gen = struct {
             .read_count => |path| try out.append(self.alloc, .{ .read_count = path }),
             .divert_target => |path| try out.append(self.alloc, .{ .divert_target_val = path }),
             .call => |c| {
+                // Story built-in control commands.
+                if (storyBuiltinCmd(c.name)) |cmd| {
+                    for (c.args) |arg| try self.genExpr(out, arg.*);
+                    try out.append(self.alloc, .{ .string = cmd });
+                    return;
+                }
                 // List built-in functions: emit args then native function string.
                 if (listBuiltinFn(c.name)) |native| {
                     for (c.args) |arg| try self.genExpr(out, arg.*);
@@ -1275,6 +1303,18 @@ const Gen = struct {
 
 /// Map a list built-in function name to the native function string emitted in JSON.
 /// Returns null if the name is not a list built-in.
+/// Maps story built-in function names to their control command strings.
+/// These are emitted as string objects (control commands) in the output.
+fn storyBuiltinCmd(name: []const u8) ?[]const u8 {
+    if (std.mem.eql(u8, name, "TURNS")) return "turn";
+    if (std.mem.eql(u8, name, "TURNS_SINCE")) return "turns";
+    if (std.mem.eql(u8, name, "TURN_SINCE")) return "turns";
+    if (std.mem.eql(u8, name, "READ_COUNT")) return "readc";
+    if (std.mem.eql(u8, name, "CHOICE_COUNT")) return "choiceCnt";
+    if (std.mem.eql(u8, name, "SEED_RANDOM")) return "srnd";
+    return null;
+}
+
 fn listBuiltinFn(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "LIST_ALL")) return "LIST_ALL";
     if (std.mem.eql(u8, name, "LIST_VALUE")) return "LIST_VALUE";
