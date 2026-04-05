@@ -1,9 +1,10 @@
 ---
 id: TASK-79
 title: 'Compiler parser + codegen: choices & gathers'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-03-08 15:47'
+updated_date: '2026-04-05 08:09'
 labels:
   - compiler
   - parser
@@ -40,7 +41,13 @@ Reference: Read `test/fixture/original/runtime/choices/basic_choice.ink` + compi
 
 ## Acceptance Criteria
 <!-- AC:BEGIN -->
-- [ ] #1 compileAndRun passes for all test/fixture/original/runtime/choices/ fixtures
-- [ ] #2 compileAndRun passes for all test/fixture/original/runtime/weaves/ fixtures
-- [ ] #3 zig build test passes
+- [x] #1 compileAndRun passes for all test/fixture/original/runtime/choices/ fixtures
+- [x] #2 compileAndRun passes for all test/fixture/original/runtime/weaves/ fixtures
+- [x] #3 zig build test passes
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Implemented in the same session as TASK-80/82/83 (git: "(complete) TASK-79/80/82/83"). Choices, gathers, nested weaves, fallback choices, conditional choices, sticky choices, and choice labels all working. 414/414 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->
