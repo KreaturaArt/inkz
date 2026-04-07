@@ -934,13 +934,33 @@ pub const Story = struct {
                             }
                         }
                     }
-                    // Skip any "\n" strings and chained glue that follow
+                    // Skip any "\n" strings and chained glue that follow.
+                    // If glue is followed by whitespace-only strings and then a newline,
+                    // collapse that structural boundary down to a single space.
                     while (i + 1 < self.state.output_stream.items.len) {
                         const next = self.state.output_stream.items[i + 1];
                         if (next == .glue) {
                             i += 1;
                         } else if (next == .string and std.mem.eql(u8, next.string, "\n")) {
                             i += 1;
+                        } else if (next == .string and isInlineWhitespace(next.string)) {
+                            var lookahead = i + 2;
+                            while (lookahead < self.state.output_stream.items.len and
+                                self.state.output_stream.items[lookahead] == .string and
+                                isInlineWhitespace(self.state.output_stream.items[lookahead].string))
+                            {
+                                lookahead += 1;
+                            }
+                            if (lookahead < self.state.output_stream.items.len) {
+                                const after_ws = self.state.output_stream.items[lookahead];
+                                if (after_ws == .string and std.mem.eql(u8, after_ws.string, "\n"))
+                                {
+                                    try buf.append(self.allocator, ' ');
+                                    i = lookahead;
+                                    continue;
+                                }
+                            }
+                            break;
                         } else {
                             break;
                         }
@@ -1007,6 +1027,14 @@ pub const Story = struct {
         } else {
             try buf.appendSlice(allocator, s);
         }
+    }
+
+    fn isInlineWhitespace(s: []const u8) bool {
+        if (s.len == 0) return false;
+        for (s) |c| {
+            if (c != ' ' and c != '\t') return false;
+        }
+        return true;
     }
 
     /// Execute one step. Returns .ok to continue or .stopped to halt.
