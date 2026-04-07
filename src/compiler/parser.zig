@@ -118,6 +118,60 @@ pub const Parser = struct {
         return buf.toOwnedSlice(self.alloc);
     }
 
+    fn collectBraceHeaderUntilColon(self: *Parser) !?struct { expr_text: []const u8, after_colon: []const u8 } {
+        var expr_buf = std.ArrayList(u8).empty;
+        var after_buf = std.ArrayList(u8).empty;
+        var found_colon = false;
+
+        while (true) {
+            switch (self.cur().tag) {
+                .newline, .right_brace, .eof => break,
+                .pipe => {
+                    const tok = self.eat();
+                    if (found_colon) {
+                        try after_buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                    } else {
+                        try expr_buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                    }
+                },
+                .colon => {
+                    _ = self.eat();
+                    found_colon = true;
+                    break;
+                },
+                .text => {
+                    const tok = self.eat();
+                    const slice = tok.loc.slice(self.src);
+                    if (found_colon) {
+                        try after_buf.appendSlice(self.alloc, slice);
+                    } else if (std.mem.indexOfScalar(u8, slice, ':')) |cp| {
+                        try expr_buf.appendSlice(self.alloc, slice[0..cp]);
+                        try after_buf.appendSlice(self.alloc, slice[cp + 1 ..]);
+                        found_colon = true;
+                        break;
+                    } else {
+                        try expr_buf.appendSlice(self.alloc, slice);
+                    }
+                },
+                else => {
+                    const tok = self.eat();
+                    const slice = tok.loc.slice(self.src);
+                    if (found_colon) {
+                        try after_buf.appendSlice(self.alloc, slice);
+                    } else {
+                        try expr_buf.appendSlice(self.alloc, slice);
+                    }
+                },
+            }
+        }
+
+        if (!found_colon) return null;
+        return .{
+            .expr_text = std.mem.trim(u8, try expr_buf.toOwnedSlice(self.alloc), " \t"),
+            .after_colon = trimLeft(try after_buf.toOwnedSlice(self.alloc)),
+        };
+    }
+
     /// Consume a matching pair of { } and everything inside, including nesting.
     /// Peek: returns true if the current `{` block contains a newline before its matching `}`.
     /// Does not consume any tokens.
@@ -447,6 +501,7 @@ pub const Parser = struct {
     /// Handles inline diverts (->), tags (#), and ignores {expr} blocks.
     fn parseTextLine(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
         var elements = std.ArrayList(Parsed.InlineElement).empty;
+        var trailing_newline = true;
 
         line: while (true) {
             switch (self.cur().tag) {
@@ -465,11 +520,12 @@ pub const Parser = struct {
                         try elements.append(self.alloc, .{ .sequence = seq });
                     } else if (try self.parseBraceExpr()) |expr| {
                         try elements.append(self.alloc, .{ .inline_expr = expr });
-                    } else if (self.braceContainsNewline()) {
-                        // Block-form brace — stop line here, let main loop handle it.
-                        break :line;
                     } else {
-                        self.skipBraceBlock();
+                        // Non-expression brace content should be handled by the outer
+                        // content parser as its own FlowItem (for example inline and
+                        // block conditionals that appear after earlier text on a line).
+                        trailing_newline = false;
+                        break :line;
                     }
                 },
 
@@ -513,7 +569,10 @@ pub const Parser = struct {
         if (self.cur().tag == .newline) _ = self.eat();
         if (elements.items.len == 0) return null;
 
-        return .{ .text = .{ .elements = try elements.toOwnedSlice(self.alloc) } };
+        return .{ .text = .{
+            .elements = try elements.toOwnedSlice(self.alloc),
+            .trailing_newline = trailing_newline,
+        } };
     }
 
     // -- Diverts --------------------------------------------------------------
@@ -1224,21 +1283,16 @@ pub const Parser = struct {
         }
 
         // CASE B & C: starts with a text token (outer condition or inline).
-        if (self.cur().tag != .text) {
+        if (self.cur().tag != .text and self.cur().tag != .pipe) {
             self.restore(saved);
             return null;
         }
-        const text_tok = self.eat();
-        const text_raw = text_tok.loc.slice(self.src);
-
-        // The colon separating condition from content is embedded in the text token.
-        const colon_pos = std.mem.indexOfScalar(u8, text_raw, ':') orelse {
-            // No colon → not a conditional (e.g. plain expression {x}).
+        const header = (try self.collectBraceHeaderUntilColon()) orelse {
             self.restore(saved);
             return null;
         };
-        const expr_text = std.mem.trim(u8, text_raw[0..colon_pos], " \t");
-        const after_colon = std.mem.trim(u8, text_raw[colon_pos + 1 ..], " \t");
+        const expr_text = header.expr_text;
+        const after_colon = header.after_colon;
 
         // Parse the outer condition expression.
         var ep = ExprParser.init(self.alloc, expr_text);
@@ -1535,16 +1589,27 @@ pub const Parser = struct {
             _ = self.eat();
         }
 
-        // Optional label `(name)` — skip the text token that contains it so it
-        // doesn't end up in start_content.  Labels look like `(ident)` as a text
-        // token immediately after the `*` / `+` markers.
+        // Optional label `(name)` at the start of the choice text.
+        // Handles both `* (label)` and `* (label) rest of choice`.
         var label: ?[]const u8 = null;
         if (self.cur().tag == .text) {
-            const tok_text = self.cur().loc.slice(self.src);
-            const trimmed = std.mem.trim(u8, tok_text, " \t");
-            if (trimmed.len >= 2 and trimmed[0] == '(' and trimmed[trimmed.len - 1] == ')') {
-                label = trimmed[1 .. trimmed.len - 1];
-                _ = self.eat(); // consume the label token
+            const orig_tok = self.cur();
+            const tok_text = orig_tok.loc.slice(self.src);
+            const trimmed = trimLeft(tok_text);
+            if (trimmed.len >= 2 and trimmed[0] == '(') {
+                if (std.mem.indexOfScalar(u8, trimmed, ')')) |close| {
+                    label = trimmed[1..close];
+                    _ = self.eat();
+                    const rest = trimLeft(trimmed[close + 1 ..]);
+                    if (rest.len > 0) {
+                        const rest_start = @intFromPtr(rest.ptr) - @intFromPtr(self.src.ptr);
+                        self.overhang_tok = .{
+                            .tag = .text,
+                            .loc = .{ .start = @intCast(rest_start), .end = orig_tok.loc.end },
+                            .line = orig_tok.line,
+                        };
+                    }
+                }
             }
         }
 
@@ -1611,13 +1676,8 @@ pub const Parser = struct {
                     break :scan;
                 },
                 .divert_return => {
-                    _ = self.eat();
-                    try following_content.append(self.alloc, .{ .divert = .{
-                        .target = "->->",
-                        .is_tunnel = false,
-                        .is_thread = false,
-                        .args = &.{},
-                    } });
+                    if (try self.parseDivertInline()) |d|
+                        try following_content.append(self.alloc, .{ .divert = d });
                     break :scan;
                 },
                 .newline, .eof => break :scan,
