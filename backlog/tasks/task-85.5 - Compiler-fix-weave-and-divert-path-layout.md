@@ -1,9 +1,10 @@
 ---
 id: TASK-85.5
 title: 'Compiler: fix weave and divert path layout'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-07 09:02'
+updated_date: '2026-04-07 18:30'
 labels:
   - compiler
   - integration
@@ -24,3 +25,9 @@ Fix nested weave container layout and divert path generation. Current failing fi
 - [ ] #2 Nested weave choices and gathers resolve to valid runtime paths
 - [ ] #3 No DivertTargetNotFound errors in this fixture cluster
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Fixed weave and divert path layout in parser/codegen. Conditional branch bodies now converge via correct relative nop paths, gather sections fall through to the next gather when needed, brace-scoped choice parsing stops correctly at right braces, and variable function calls serialize with var=true. Verified with turns_since_nested, divert_to_weave_points, conditional_choice_in_weave, conditional_choice_in_weave_2, unbalanced_weave_indentation, and list_comparison fixtures.
+<!-- SECTION:FINAL_SUMMARY:END -->

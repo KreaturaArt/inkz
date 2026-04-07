@@ -329,7 +329,6 @@ const Gen = struct {
 
             // The knot container wraps inner_wrapper as its sole content item.
             const kc = try self.newContainer(null);
-            if (!is_function) kc.flags = 1; // VISITS_SHOULD_BE_COUNTED
             kc.content = try self.alloc.dupe(CObject, &.{.{ .container = inner_wrapper }});
             return kc;
         }
@@ -446,10 +445,25 @@ const Gen = struct {
                     try out.append(self.alloc, .{ .tunnel_divert = d.target });
                 }
                 if (d.onward_target) |onward_target| {
-                    try self.appendResolvedPlainDivert(out, onward_target);
+                    if (d.onward_args.len > 0) {
+                        try out.append(self.alloc, .eval_start);
+                        for (d.onward_args) |arg| {
+                            try self.genExpr(out, arg.*);
+                        }
+                        try out.append(self.alloc, .eval_end);
+                    }
+                    if (d.onward_is_tunnel) {
+                        if (self.var_names.contains(onward_target) or self.divert_param_names.contains(onward_target)) {
+                            try out.append(self.alloc, .{ .tunnel_divert_via_var = onward_target });
+                        } else {
+                            try out.append(self.alloc, .{ .tunnel_divert = onward_target });
+                        }
+                    } else {
+                        try self.appendResolvedPlainDivert(out, onward_target);
+                    }
                 }
                 // Tunnel-onwards: after the tunnel call, also return from here.
-                if (d.is_tunnel_onwards) {
+                if (d.is_tunnel_onwards and d.onward_target == null) {
                     try out.append(self.alloc, .eval_start);
                     try out.append(self.alloc, .void_);
                     try out.append(self.alloc, .eval_end);
@@ -969,6 +983,11 @@ const Gen = struct {
                 // Append outer_gather_path divert to last named section if provided.
                 if (outer_gather_path) |ogp| {
                     try named_sec_content.append(self.alloc, .{ .divert = ogp });
+                } else if (is_root and cur_choice_idx > 0) {
+                    const tail_name = try std.fmt.allocPrint(self.alloc, "g-{}", .{gather_processed});
+                    const tail = try self.newContainer(tail_name);
+                    tail.content = try self.alloc.dupe(CObject, &.{.done});
+                    try named_sec_content.append(self.alloc, .{ .container = tail });
                 }
                 const gc = try self.newContainer(null);
                 if (named_sec_has_user_label) gc.flags = 5; // VISITS+COUNT_AT_START
