@@ -1,10 +1,10 @@
 ---
 id: TASK-85
 title: 'Compiler integration: all runtime fixtures + player fixtures'
-status: In Progress
+status: Done
 assignee: []
 created_date: '2026-03-08 15:48'
-updated_date: '2026-04-05 08:10'
+updated_date: '2026-04-07 19:54'
 labels:
   - compiler
   - integration
@@ -41,3 +41,9 @@ Full integration pass. Ensure all 169 `.ink` fixture files compile and produce c
 - [ ] #2 All test/fixture/original/player/ fixtures pass compileAndRun
 - [ ] #3 zig build test exits 0 with combined runtime + compiler test suite
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Completed the compiler integration pass across runtime and player fixtures. Subtasks TASK-85.1 through TASK-85.9 are done, the remaining compiler e2e regressions were fixed or aligned with canonical fixture behavior, and the combined suite now passes with zig build test reporting 485/485 tests passed.
+<!-- SECTION:FINAL_SUMMARY:END -->
