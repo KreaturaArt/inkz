@@ -60,6 +60,7 @@ pub const FlowItem = union(enum) {
 
 pub const TextLine = struct {
     elements: []InlineElement,
+    trailing_newline: bool = true,
 };
 
 pub const InlineElement = union(enum) {

@@ -361,7 +361,9 @@ const Gen = struct {
                 for (tl.elements) |elem| {
                     try self.genInlineElement(out, elem);
                 }
-                try out.append(self.alloc, .newline);
+                if (tl.trailing_newline) {
+                    try out.append(self.alloc, .newline);
+                }
                 self.last_was_content = true;
             },
             .divert => |d| {
@@ -713,7 +715,7 @@ const Gen = struct {
             // cur_section_abs tracks the absolute path of the current section
             // (holder_abs_path when pre-gather, "{holder_abs_path}.{section}" when in-section)
             var cur_section_abs = holder_abs_path;
-            var ci: usize = 0; // choice index within current section
+            var ci: usize = 0; // choice index within the full weave holder
             for (items) |item| {
                 switch (item) {
                     .gather => |g| if (g.nesting == min_nesting) {
@@ -730,7 +732,6 @@ const Gen = struct {
                         }
                         cur_section_abs = try std.fmt.allocPrint(
                             self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
-                        ci = 0;
                         gi += 1;
                     },
                     .choice => |ch| if (ch.nesting == min_nesting) {
@@ -819,7 +820,6 @@ const Gen = struct {
                                     self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 cur_is_root = false;
                                 cur_content = &init_sec_content;
-                                cur_choice_idx = 0;
                             } else {
                                 // First gather but not initial → start named section.
                                 state = .in_named;
@@ -829,7 +829,6 @@ const Gen = struct {
                                     self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 cur_is_root = false;
                                 cur_content = &named_sec_content;
-                                cur_choice_idx = 0;
                             }
                         },
                         .in_initial => {
@@ -849,7 +848,6 @@ const Gen = struct {
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                             cur_is_root = false;
                             cur_content = &named_sec_content;
-                            cur_choice_idx = 0;
                         },
                         .in_named => {
                             // Close the current named section → push as named_child.
@@ -865,7 +863,6 @@ const Gen = struct {
                             named_sec_has_user_label = g.label != null;
                             cur_holder_abs = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
-                            cur_choice_idx = 0;
                         },
                     }
                     gather_processed += 1;
@@ -1027,8 +1024,18 @@ const Gen = struct {
             try main_content.append(self.alloc, .{ .choice_point = .{ .path = cp_path, .flags = flg } });
 
             var c_body = std.ArrayList(CObject).empty;
-            try c_body.append(self.alloc, .newline);
-            try c_body.append(self.alloc, .{ .divert = gather_path });
+            const has_following = try self.genChoiceFollowingContent(&c_body, ch.following_content);
+            if (has_following) {
+                try c_body.append(self.alloc, .newline);
+            }
+            if (has_nested_weave) {
+                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
+            } else {
+                for (ch.inner_content) |inner| {
+                    try self.genFlowItem(&c_body, inner, c_abs);
+                }
+                try c_body.append(self.alloc, .{ .divert = gather_path });
+            }
             const cc = try self.newContainer(null);
             cc.flags = c_flags;
             cc.content = try c_body.toOwnedSlice(self.alloc);
@@ -1053,9 +1060,7 @@ const Gen = struct {
 
             // c-N body: following_content (if any) then "\n" then inner.
             var c_body = std.ArrayList(CObject).empty;
-            for (ch.following_content) |elem| {
-                try self.genInlineElement(&c_body, elem);
-            }
+            _ = try self.genChoiceFollowingContent(&c_body, ch.following_content);
             try c_body.append(self.alloc, .newline);
             if (has_nested_weave) {
                 try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
@@ -1181,6 +1186,18 @@ const Gen = struct {
         try self.genWeave(items, wrapper, wrapper_abs, false, new_min_nesting, outer_gather_path, "");
 
         try out.append(self.alloc, .{ .container = wrapper });
+    }
+
+    fn genChoiceFollowingContent(self: *Gen, out: *std.ArrayList(CObject), elems: []const Parsed.InlineElement) error{OutOfMemory}!bool {
+        var emitted = false;
+        for (elems) |elem| {
+            if (elem == .divert and elem.divert.target.len == 0 and !elem.divert.is_tunnel_onwards) {
+                continue;
+            }
+            try self.genInlineElement(out, elem);
+            emitted = true;
+        }
+        return emitted;
     }
 
     // ── Conditional codegen ──────────────────────────────────────────────────
@@ -1559,18 +1576,11 @@ fn itemsHaveChoicesAtNesting(items: []const Parsed.FlowItem, nesting: u8) bool {
 }
 
 /// True when `ch` is a fallback (invisible-default) choice:
-/// no start content, no choice-only content, no condition,
-/// and the following content is empty or a bare `->` with no target.
+/// no start content and no choice-only content.
 fn isFallbackChoice(ch: Parsed.Choice) bool {
     if (ch.start_content.len > 0) return false;
     if (ch.choice_only_content.len > 0) return false;
-    if (ch.condition != null) return false;
-    if (ch.following_content.len == 0) return true;
-    if (ch.following_content.len == 1) {
-        const fc = ch.following_content[0];
-        if (fc == .divert and fc.divert.target.len == 0) return true;
-    }
-    return false;
+    return true;
 }
 
 fn opStr(op: Parsed.BinaryOp) []const u8 {
