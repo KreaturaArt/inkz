@@ -104,6 +104,20 @@ pub const Parser = struct {
         }
     }
 
+    fn collectLineSource(self: *Parser) ![]const u8 {
+        var buf = std.ArrayList(u8).empty;
+        while (true) {
+            switch (self.cur().tag) {
+                .newline, .eof => break,
+                else => {
+                    const tok = self.eat();
+                    try buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                },
+            }
+        }
+        return buf.toOwnedSlice(self.alloc);
+    }
+
     /// Consume a matching pair of { } and everything inside, including nesting.
     /// Peek: returns true if the current `{` block contains a newline before its matching `}`.
     /// Does not consume any tokens.
@@ -837,13 +851,13 @@ pub const Parser = struct {
     /// Returns null (and skips the line) for unsupported or malformed forms.
     fn parseLogicLine(self: *Parser) error{OutOfMemory}!?Parsed.FlowItem {
         _ = self.eat(); // logic_line (~)
-        // Grab the rest of the line as a single text token.
-        const line_tok = if (self.cur().tag == .text) self.eat() else {
+        const line_source = self.collectLineSource() catch return error.OutOfMemory;
+        if (line_source.len == 0) {
             self.skipToEol();
             return null;
-        };
+        }
         self.skipToEol();
-        const text = std.mem.trim(u8, line_tok.loc.slice(self.src), " \t");
+        const text = std.mem.trim(u8, line_source, " \t");
 
         // ~ return [expr]
         if (startsWithKeyword(text, "return")) {
@@ -958,14 +972,38 @@ pub const Parser = struct {
         if (self.cur().tag != .left_brace) return null;
         const saved = self.save();
         _ = self.eat(); // {
-        // A simple expression: one text token followed immediately by }.
-        if (self.cur().tag == .text) {
-            const text_tok = self.eat();
-            if (self.cur().tag == .right_brace) {
-                _ = self.eat(); // }
-                var ep = ExprParser.init(self.alloc, text_tok.loc.slice(self.src));
-                if (try ep.parseExpr()) |expr| return expr;
+        var depth: u32 = 1;
+        var buf = std.ArrayList(u8).empty;
+        while (depth > 0) {
+            switch (self.cur().tag) {
+                .eof => {
+                    self.restore(saved);
+                    return null;
+                },
+                .left_brace => {
+                    depth += 1;
+                    const tok = self.eat();
+                    try buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                },
+                .right_brace => {
+                    depth -= 1;
+                    if (depth == 0) {
+                        _ = self.eat();
+                        break;
+                    }
+                    const tok = self.eat();
+                    try buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                },
+                else => {
+                    const tok = self.eat();
+                    try buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                },
             }
+        }
+        var ep = ExprParser.init(self.alloc, buf.items);
+        if (try ep.parseExpr()) |expr| {
+            ep.skipWs();
+            if (ep.pos == ep.src.len) return expr;
         }
         self.restore(saved);
         return null;
@@ -1851,8 +1889,16 @@ fn parseLiteralExpr(alloc: std.mem.Allocator, raw: []const u8) error{OutOfMemory
         return e;
     }
 
-    // Double-quoted string literal.
+    // Double-quoted string literal, potentially with interpolation.
     if (s.len >= 2 and s[0] == '"' and s[s.len - 1] == '"') {
+        var ep = ExprParser.init(alloc, s);
+        if (try ep.parseExpr()) |expr| {
+            ep.skipWs();
+            if (ep.pos == ep.src.len) {
+                alloc.destroy(e);
+                return expr;
+            }
+        }
         e.* = .{ .string_lit = s[1 .. s.len - 1] };
         return e;
     }
@@ -1995,12 +2041,57 @@ const ExprParser = struct {
         if (s[0] == '"') {
             self.pos += 1;
             const start = self.pos;
-            while (self.pos < self.src.len and self.src[self.pos] != '"') self.pos += 1;
-            const content = self.src[start..self.pos];
-            if (self.pos < self.src.len) self.pos += 1;
-            const node = try self.alloc.create(Parsed.Expression);
-            node.* = .{ .string_lit = content };
-            return node;
+            var seg_start = self.pos;
+            var parts = std.ArrayList(Parsed.StringPart).empty;
+            while (self.pos < self.src.len) {
+                switch (self.src[self.pos]) {
+                    '"' => {
+                        if (parts.items.len == 0) {
+                            const content = self.src[start..self.pos];
+                            self.pos += 1;
+                            const node = try self.alloc.create(Parsed.Expression);
+                            node.* = .{ .string_lit = content };
+                            return node;
+                        }
+                        if (self.pos > seg_start) {
+                            try parts.append(self.alloc, .{ .text = self.src[seg_start..self.pos] });
+                        }
+                        self.pos += 1;
+                        const node = try self.alloc.create(Parsed.Expression);
+                        node.* = .{ .interpolated_string = try parts.toOwnedSlice(self.alloc) };
+                        return node;
+                    },
+                    '{' => {
+                        if (self.pos > seg_start) {
+                            try parts.append(self.alloc, .{ .text = self.src[seg_start..self.pos] });
+                        }
+                        self.pos += 1;
+                        const expr_start = self.pos;
+                        var depth: u32 = 1;
+                        while (self.pos < self.src.len and depth > 0) {
+                            switch (self.src[self.pos]) {
+                                '{' => depth += 1,
+                                '}' => {
+                                    depth -= 1;
+                                    if (depth == 0) break;
+                                },
+                                else => {},
+                            }
+                            self.pos += 1;
+                        }
+                        const inner = self.src[expr_start..self.pos];
+                        var inner_ep = ExprParser.init(self.alloc, inner);
+                        const inner_expr = (try inner_ep.parseExpr()) orelse return null;
+                        inner_ep.skipWs();
+                        if (inner_ep.pos != inner_ep.src.len) return null;
+                        try parts.append(self.alloc, .{ .expr = inner_expr });
+                        if (self.pos < self.src.len and self.src[self.pos] == '}') self.pos += 1;
+                        seg_start = self.pos;
+                    },
+                    else => self.pos += 1,
+                }
+            }
+            return null;
         }
         if (epKwStartsWith(s, "true")) {
             self.pos += 4;

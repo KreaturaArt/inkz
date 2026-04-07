@@ -1325,6 +1325,21 @@ const Gen = struct {
                 try out.append(self.alloc, .{ .text = v });
                 try out.append(self.alloc, .{ .string = "/str" });
             },
+            .interpolated_string => |parts| {
+                try out.append(self.alloc, .{ .string = "str" });
+                for (parts) |part| {
+                    switch (part) {
+                        .text => |v| try out.append(self.alloc, .{ .text = v }),
+                        .expr => |e| {
+                            try out.append(self.alloc, .eval_start);
+                            try self.genExpr(out, e.*);
+                            try out.append(self.alloc, .eval_output);
+                            try out.append(self.alloc, .eval_end);
+                        },
+                    }
+                }
+                try out.append(self.alloc, .{ .string = "/str" });
+            },
             .var_ref => |name| {
                 // Substitute CONST values at codegen time.
                 if (self.const_map.get(name)) |const_expr| {

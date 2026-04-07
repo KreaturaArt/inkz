@@ -109,7 +109,7 @@ test "Compiler JSON: tunnel_onwards_divert_after_with_arg" {
     ;
     const json = try c.compile(alloc, src);
     defer alloc.free(json);
-    const expected = "{\"inkVersion\":21,\"root\":[[{\"->t->\":\"a\"},[\"done\",{\"#n\":\"g-0\"}],null],\"done\",{\"a\":[\"ev\",5,3,\"+\",{\"^->\":\"b\"},\"/ev\",\"->->\",null],\"b\":[{\"temp=\":\"x\"},\"ev\",{\"VAR?\":\"x\"},\"out\",\"/ev\",\"\\n\",\"end\",null]}],\"listDefs\":{}}";
+    const expected = "{\"inkVersion\":21,\"root\":[[{\"->t->\":\"a\"},[\"done\",{\"#n\":\"g-0\"}],null],\"done\",{\"a\":[\"ev\",5,3,\"+\",{\"^->\":\"b\"},\"/ev\",\"->->\",{\"#f\":1}],\"b\":[{\"temp=\":\"x\"},\"ev\",{\"VAR?\":\"x\"},\"out\",\"/ev\",\"\\n\",\"end\",{\"#f\":1}]}],\"listDefs\":{}}";
     try std.testing.expectEqualStrings(expected, json);
 }
 
@@ -1451,5 +1451,4 @@ test "Compiler e2e: callstack/clean_callstack_reset_on_path_choice.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("The first line.\nThe second line.\n", out);
 }
-
 
