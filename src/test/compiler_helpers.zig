@@ -693,7 +693,7 @@ test "Compiler e2e: default_choices.ink — named gather + loop" {
 test "Compiler e2e: once_only_choices_can_link_back_to_self.ink" {
     // Choice label (firstOpt), condition {firstOpt}, named gather (end)
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/choices/once_only_choices_can_link_back_to_self.ink", &.{ 0, 1 });
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/once_only_choices_can_link_back_to_self.ink", &.{ 0, 0 });
     defer alloc.free(out);
     // Just verify it doesn't crash or infinite-loop.
     try std.testing.expect(out.len >= 0);
@@ -1383,7 +1383,7 @@ test "Compiler e2e: knots/knot_thread_interaction.ink" {
 
 test "Compiler e2e: knots/knot_thread_interaction_2.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_thread_interaction_2.ink", &.{0});
+    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_thread_interaction_2.ink", &.{});
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "tunnel") != null);
 }
