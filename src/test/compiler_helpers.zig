@@ -1352,7 +1352,7 @@ test "Compiler e2e: diverts/path_to_self.ink" {
 
 test "Compiler e2e: diverts/tunnel_vs_thread_behaviour.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_vs_thread_behaviour.ink", &.{0, 0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_vs_thread_behaviour.ink", &.{ 0, 2 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "Done.") != null);
 }

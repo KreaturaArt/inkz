@@ -732,15 +732,70 @@ pub const Parser = struct {
                 var is_tunnel = self.cur().tag == .divert_arrow;
                 var is_tunnel_onwards = false;
                 var onward_target: ?[]const u8 = null;
+                var onward_is_tunnel = false;
+                var onward_args: []*Parsed.Expression = &.{};
                 if (is_tunnel) {
                     _ = self.eat();
                     if (self.cur().tag == .text) {
-                        const raw = self.cur().loc.slice(self.src);
+                        const raw = self.eat().loc.slice(self.src);
                         const t = trimLeft(raw);
                         const onward_end = identEnd(t);
                         if (onward_end > 0) {
-                            _ = self.eat();
                             onward_target = t[0..onward_end];
+                            const after_onward = trimLeft(t[onward_end..]);
+                            if (after_onward.len > 0 and after_onward[0] == '(') {
+                                var arg_buf = std.ArrayList(u8).empty;
+                                var close_found = false;
+                                const initial = after_onward[1..];
+                                if (std.mem.indexOfScalar(u8, initial, ')')) |end| {
+                                    try arg_buf.appendSlice(self.alloc, initial[0..end]);
+                                    close_found = true;
+                                } else {
+                                    try arg_buf.appendSlice(self.alloc, initial);
+                                    while (!close_found) {
+                                        switch (self.cur().tag) {
+                                            .newline, .eof => break,
+                                            .divert_arrow => {
+                                                _ = self.eat();
+                                                try arg_buf.appendSlice(self.alloc, "->");
+                                            },
+                                            .text => {
+                                                const more = self.eat().loc.slice(self.src);
+                                                if (std.mem.indexOfScalar(u8, more, ')')) |end| {
+                                                    try arg_buf.appendSlice(self.alloc, more[0..end]);
+                                                    close_found = true;
+                                                } else {
+                                                    try arg_buf.appendSlice(self.alloc, more);
+                                                }
+                                            },
+                                            else => _ = self.eat(),
+                                        }
+                                    }
+                                }
+                                if (close_found) {
+                                    var arg_list = std.ArrayList(*Parsed.Expression).empty;
+                                    var it = std.mem.splitScalar(u8, arg_buf.items, ',');
+                                    while (it.next()) |raw_arg| {
+                                        const arg_s = std.mem.trim(u8, raw_arg, " \t");
+                                        if (arg_s.len == 0) continue;
+                                        var ep = ExprParser.init(self.alloc, arg_s);
+                                        if (try ep.parseExpr()) |e| {
+                                            try arg_list.append(self.alloc, e);
+                                        } else if (std.mem.startsWith(u8, arg_s, "->")) {
+                                            const divert_target = std.mem.trim(u8, arg_s[2..], " \t");
+                                            const node = try self.alloc.create(Parsed.Expression);
+                                            node.* = .{ .divert_target = divert_target };
+                                            try arg_list.append(self.alloc, node);
+                                        }
+                                    }
+                                    onward_args = try arg_list.toOwnedSlice(self.alloc);
+                                }
+                            }
+                            if (self.cur().tag == .divert_arrow) {
+                                _ = self.eat();
+                                is_tunnel_onwards = true;
+                                onward_is_tunnel = true;
+                            }
                         }
                     }
                 } else if (self.cur().tag == .divert_return) {
@@ -755,6 +810,8 @@ pub const Parser = struct {
                     .is_thread = false,
                     .is_tunnel_onwards = is_tunnel_onwards,
                     .onward_target = onward_target,
+                    .onward_is_tunnel = onward_is_tunnel,
+                    .onward_args = onward_args,
                     .args = args,
                 };
             },

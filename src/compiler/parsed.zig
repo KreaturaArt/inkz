@@ -101,6 +101,8 @@ pub const Divert = struct {
     is_thread: bool,
     is_tunnel_onwards: bool = false, // -> target ->->
     onward_target: ?[]const u8 = null, // -> target -> onward
+    onward_is_tunnel: bool = false,
+    onward_args: []*Expression = &.{},
     args: []*Expression,
 };
 
