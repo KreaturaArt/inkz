@@ -1261,7 +1261,7 @@ pub const Story = struct {
                 return .ok;
             },
             .end_string => {
-                // Find begin_string marker and collect strings after it into string_eval_buf.
+                // Find begin_string marker and collect all visible output after it into string_eval_buf.
                 var start: usize = self.state.output_stream.items.len;
                 for (self.state.output_stream.items, 0..) |it, ki| {
                     if (it == .control_command and it.control_command == .begin_string) {
@@ -1271,9 +1271,19 @@ pub const Story = struct {
                 if (start >= self.state.output_stream.items.len) return error.MissingBeginString;
                 var len: usize = 0;
                 for (self.state.output_stream.items[start + 1 ..]) |it| {
-                    if (it == .string) {
-                        @memcpy(self.string_eval_buf[len..][0..it.string.len], it.string);
-                        len += it.string.len;
+                    switch (it) {
+                        .string => {
+                            @memcpy(self.string_eval_buf[len..][0..it.string.len], it.string);
+                            len += it.string.len;
+                        },
+                        .int, .float, .bool, .list => {
+                            var tmp = std.ArrayList(u8).empty;
+                            defer tmp.deinit(self.allocator);
+                            try appendObjectText(self.allocator, &tmp, it);
+                            @memcpy(self.string_eval_buf[len..][0..tmp.items.len], tmp.items);
+                            len += tmp.items.len;
+                        },
+                        else => {},
                     }
                 }
                 self.state.output_stream.shrinkRetainingCapacity(start);

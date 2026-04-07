@@ -182,6 +182,7 @@ pub const Expression = union(enum) {
     float_lit: f64,
     bool_lit: bool,
     string_lit: []const u8,
+    interpolated_string: []StringPart,
     var_ref: []const u8,
     read_count: []const u8, // {-> knot} visit count
     divert_target: []const u8, // ^-> path
@@ -190,6 +191,11 @@ pub const Expression = union(enum) {
     unary: struct { op: UnaryOp, operand: *Expression },
     call: struct { name: []const u8, args: []*Expression },
     list_lit: InkListLiteral,
+};
+
+pub const StringPart = union(enum) {
+    text: []const u8,
+    expr: *Expression,
 };
 
 pub const BinaryOp = enum {
