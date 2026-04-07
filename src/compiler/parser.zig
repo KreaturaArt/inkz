@@ -172,6 +172,20 @@ pub const Parser = struct {
         };
     }
 
+    fn collectLineRemainder(self: *Parser) ![]const u8 {
+        var buf = std.ArrayList(u8).empty;
+        while (true) {
+            switch (self.cur().tag) {
+                .newline, .eof, .right_brace => break,
+                else => {
+                    const tok = self.eat();
+                    try buf.appendSlice(self.alloc, tok.loc.slice(self.src));
+                },
+            }
+        }
+        return trimLeft(try buf.toOwnedSlice(self.alloc));
+    }
+
     /// Consume a matching pair of { } and everything inside, including nesting.
     /// Peek: returns true if the current `{` block contains a newline before its matching `}`.
     /// Does not consume any tokens.
@@ -1503,7 +1517,14 @@ pub const Parser = struct {
 
                 if (std.mem.indexOfScalar(u8, text_val, ':')) |cp| {
                     const before = std.mem.trim(u8, text_val[0..cp], " \t");
-                    const after  = std.mem.trim(u8, text_val[cp + 1 ..], " \t");
+                    const after_head = std.mem.trim(u8, text_val[cp + 1 ..], " \t");
+                    const after_tail = try self.collectLineRemainder();
+                    const after = if (after_head.len == 0)
+                        after_tail
+                    else if (after_tail.len == 0)
+                        after_head
+                    else
+                        try std.fmt.allocPrint(self.alloc, "{s} {s}", .{ after_head, after_tail });
 
                     if (isElseKeyword(before)) {
                         // - else: content  (else/fallthrough branch)
@@ -1518,7 +1539,12 @@ pub const Parser = struct {
                     }
                 } else {
                     // - content  (no colon → no-condition content branch)
-                    const branch_content = try self.parseGatherBranchBody(text_val);
+                    const tail = try self.collectLineRemainder();
+                    const same_line = if (tail.len == 0)
+                        text_val
+                    else
+                        try std.fmt.allocPrint(self.alloc, "{s} {s}", .{ text_val, tail });
+                    const branch_content = try self.parseGatherBranchBody(same_line);
                     try branches.append(self.alloc, .{ .condition = null, .content = branch_content });
                 }
             } else {
@@ -1538,13 +1564,65 @@ pub const Parser = struct {
     fn parseGatherBranchBody(self: *Parser, same_line_text: []const u8) error{OutOfMemory}![]Parsed.FlowItem {
         var items = std.ArrayList(Parsed.FlowItem).empty;
         if (same_line_text.len > 0) {
-            // Create a one-element text line from the inline text.
-            const elem_slice = try self.alloc.dupe(Parsed.InlineElement, &.{.{ .text = same_line_text }});
-            try items.append(self.alloc, .{ .text = .{ .elements = elem_slice } });
+            const inline_items = try self.parseStandaloneFlowItems(same_line_text);
+            for (inline_items) |item| try items.append(self.alloc, item);
         }
         if (self.cur().tag == .newline) _ = self.eat();
         const more = try self.parseBranchContent();
         for (more) |item| try items.append(self.alloc, item);
+        return items.toOwnedSlice(self.alloc);
+    }
+
+    fn parseStandaloneFlowItems(self: *Parser, text: []const u8) error{OutOfMemory}![]Parsed.FlowItem {
+        const owned = try self.alloc.dupeZ(u8, text);
+        var tokens = std.ArrayList(Token).empty;
+        var t = Tokenizer.init(owned);
+        while (true) {
+            const tk = t.next();
+            try tokens.append(self.alloc, tk);
+            if (tk.tag == .eof) break;
+        }
+
+        var sub = Parser.init(self.alloc, owned, try tokens.toOwnedSlice(self.alloc));
+        var items = std.ArrayList(Parsed.FlowItem).empty;
+        while (true) {
+            switch (sub.cur().tag) {
+                .eof => break,
+                .newline => _ = sub.eat(),
+                .text => {
+                    if (try sub.parseTextLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+                .divert_arrow, .divert_return => {
+                    if (try sub.parseDivertLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+                .logic_line => {
+                    if (try sub.parseLogicLine()) |item|
+                        try items.append(self.alloc, item);
+                },
+                .choice_once, .choice_sticky => {
+                    if (try sub.parseChoiceItem()) |item|
+                        try items.append(self.alloc, item);
+                },
+                .gather => {
+                    if (try sub.parseGatherItem()) |item|
+                        try items.append(self.alloc, item);
+                },
+                .left_brace => {
+                    if (try sub.parseBraceSequenceBlock()) |seq| {
+                        try items.append(self.alloc, .{ .sequence = seq });
+                    } else if (try sub.parseBraceConditional()) |cond| {
+                        try items.append(self.alloc, .{ .conditional = cond });
+                    } else if (try sub.parseTextLine()) |item| {
+                        try items.append(self.alloc, item);
+                    } else {
+                        sub.skipBraceBlock();
+                    }
+                },
+                else => _ = sub.eat(),
+            }
+        }
         return items.toOwnedSlice(self.alloc);
     }
 
@@ -1563,10 +1641,16 @@ pub const Parser = struct {
             text_val;
         if (!isElseKeyword(before)) return null;
 
-        const after: []const u8 = if (std.mem.indexOfScalar(u8, text_val, ':')) |cp|
-            std.mem.trim(u8, text_val[cp + 1 ..], " \t")
-        else
-            "";
+        const after: []const u8 = if (std.mem.indexOfScalar(u8, text_val, ':')) |cp| blk: {
+            const head = std.mem.trim(u8, text_val[cp + 1 ..], " \t");
+            const tail = try self.collectLineRemainder();
+            break :blk if (head.len == 0)
+                tail
+            else if (tail.len == 0)
+                head
+            else
+                try std.fmt.allocPrint(self.alloc, "{s} {s}", .{ head, tail });
+        } else "";
         const content = try self.parseGatherBranchBody(after);
         return Parsed.Branch{ .condition = null, .is_else = true, .content = content };
     }
@@ -1819,7 +1903,7 @@ pub const Parser = struct {
         var items = std.ArrayList(Parsed.FlowItem).empty;
         loop: while (true) {
             switch (self.cur().tag) {
-                .eof, .knot_marker, .right_brace, .gather => break :loop,
+                .eof, .knot_marker, .right_brace => break :loop,
 
                 .newline => _ = self.eat(),
 
@@ -1849,6 +1933,16 @@ pub const Parser = struct {
                         // All block parsers failed — skip to prevent infinite loop.
                         self.skipBraceBlock();
                     }
+                },
+
+                .choice_once, .choice_sticky => {
+                    if (try self.parseChoiceItem()) |item|
+                        try items.append(self.alloc, item);
+                },
+
+                .gather => {
+                    if (try self.parseGatherItem()) |item|
+                        try items.append(self.alloc, item);
                 },
 
                 else => _ = self.eat(),
@@ -2056,7 +2150,7 @@ const ExprParser = struct {
         }
         // Unary `-` only when NOT immediately followed by a digit
         // (negative numeric literals are handled in parsePrimary).
-        if (s[0] == '-' and (s.len < 2 or !std.ascii.isDigit(s[1]))) {
+        if (s[0] == '-' and (s.len < 2 or (!std.ascii.isDigit(s[1]) and s[1] != '>'))) {
             self.pos += 1;
             self.skipWs();
             const operand = (try self.parseUnary()) orelse return null;

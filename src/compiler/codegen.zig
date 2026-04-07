@@ -691,6 +691,7 @@ const Gen = struct {
         outer_gather_path: ?[]const u8,
         context_name: []const u8,
     ) error{OutOfMemory}!void {
+        const weave_base_nesting = firstWeaveNesting(items);
         // ── Phase 1: pre-scan gather names at min_nesting level ──────────────
         var gather_names = std.ArrayList([]const u8).empty;
         defer gather_names.deinit(self.alloc);
@@ -698,7 +699,7 @@ const Gen = struct {
             var gi: u32 = 0;
             for (items) |item| {
                 switch (item) {
-                    .gather => |g| if (g.nesting == min_nesting) {
+                    .gather => |g| if (logicalWeaveNesting(g.nesting, weave_base_nesting) == min_nesting) {
                         const gname = g.label orelse
                             try std.fmt.allocPrint(self.alloc, "g-{}", .{gi});
                         try gather_names.append(self.alloc, gname);
@@ -718,7 +719,7 @@ const Gen = struct {
             var ci: usize = 0; // choice index within the full weave holder
             for (items) |item| {
                 switch (item) {
-                    .gather => |g| if (g.nesting == min_nesting) {
+                    .gather => |g| if (logicalWeaveNesting(g.nesting, weave_base_nesting) == min_nesting) {
                         const gname = gather_names.items[gi];
                         if (g.label) |lbl| {
                             const abs_path = try std.fmt.allocPrint(
@@ -734,7 +735,7 @@ const Gen = struct {
                             self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                         gi += 1;
                     },
-                    .choice => |ch| if (ch.nesting == min_nesting) {
+                    .choice => |ch| if (logicalWeaveNesting(ch.nesting, weave_base_nesting) == min_nesting) {
                         if (ch.label) |lbl| {
                             const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{ci});
                             const abs_path = try std.fmt.allocPrint(
@@ -757,7 +758,7 @@ const Gen = struct {
         const has_initial_gather: bool = blk: {
             for (items) |item| {
                 switch (item) {
-                    .gather => |g| break :blk g.nesting == min_nesting,
+                    .gather => |g| break :blk logicalWeaveNesting(g.nesting, weave_base_nesting) == min_nesting,
                     else => break :blk false,
                 }
             }
@@ -804,7 +805,7 @@ const Gen = struct {
             switch (item) {
                 // ── Gather at min_nesting level ───────────────────────────────
                 .gather => |g| {
-                    if (g.nesting != min_nesting) continue;
+                    if (logicalWeaveNesting(g.nesting, weave_base_nesting) != min_nesting) continue;
 
                     const gname = gather_names.items[gather_processed];
 
@@ -870,7 +871,7 @@ const Gen = struct {
 
                 // ── Choice at min_nesting level ───────────────────────────────
                 .choice => |ch| {
-                    if (ch.nesting != min_nesting) continue;
+                    if (logicalWeaveNesting(ch.nesting, weave_base_nesting) != min_nesting) continue;
 
                     // Compute gather_path: where should c-N divert after selection?
                     // (Only needed when inner_content has no nested weave of its own.)
@@ -986,7 +987,7 @@ const Gen = struct {
         holder_abs_path: []const u8,
         is_root: bool,
         gather_path: []const u8,
-        min_nesting: u8,
+        _: u8,
     ) error{OutOfMemory}!void {
         const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{choice_idx});
         // Absolute path to c-N for divert target values.
@@ -1013,7 +1014,7 @@ const Gen = struct {
 
         // Detect whether inner_content has a nested weave (choices/gathers at
         // nesting > min_nesting).
-        const has_nested_weave = itemsHaveChoicesAtNesting(ch.inner_content, min_nesting + 1);
+        const has_nested_weave = itemsHaveChoices(ch.inner_content);
 
         if (is_fallback) {
             // ── Fallback choice: just a choice_point in main_content ──────────
@@ -1029,7 +1030,7 @@ const Gen = struct {
                 try c_body.append(self.alloc, .newline);
             }
             if (has_nested_weave) {
-                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
+                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, 1, gather_path);
             } else {
                 for (ch.inner_content) |inner| {
                     try self.genFlowItem(&c_body, inner, c_abs);
@@ -1063,7 +1064,7 @@ const Gen = struct {
             _ = try self.genChoiceFollowingContent(&c_body, ch.following_content);
             try c_body.append(self.alloc, .newline);
             if (has_nested_weave) {
-                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
+                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, 1, gather_path);
             } else {
                 for (ch.inner_content) |inner| {
                     try self.genFlowItem(&c_body, inner, c_abs);
@@ -1152,7 +1153,7 @@ const Gen = struct {
             try c_body.append(self.alloc, .newline);
             // Inner content (body lines after the choice line).
             if (has_nested_weave) {
-                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, min_nesting + 1, gather_path);
+                try self.genNestedWeave(&c_body, ch.inner_content, c_abs, 1, gather_path);
             } else {
                 for (ch.inner_content) |inner| {
                     try self.genFlowItem(&c_body, inner, c_abs);
@@ -1269,12 +1270,29 @@ const Gen = struct {
                     try self.genInlineElement(&body, elem);
                 }
             } else {
-                for (branch.content) |item| {
-                    try self.genFlowItem(&body, item, body_path);
+                if (itemsHaveChoices(branch.content)) {
+                    const wrapper = try self.newContainer(null);
+                    const wrapper_abs = try std.fmt.allocPrint(self.alloc, "{s}.0", .{body_path});
+                    try self.genWeave(
+                        branch.content,
+                        wrapper,
+                        wrapper_abs,
+                        false,
+                        1,
+                        nop_path,
+                        "",
+                    );
+                    try body.append(self.alloc, .{ .container = wrapper });
+                } else {
+                    for (branch.content) |item| {
+                        try self.genFlowItem(&body, item, body_path);
+                    }
                 }
             }
             // Convergence divert — jumps to the nop.
-            try body.append(self.alloc, .{ .divert = nop_path });
+            if (!itemsHaveChoices(branch.content)) {
+                try body.append(self.alloc, .{ .divert = nop_path });
+            }
 
             const body_c = try self.newContainer(null);
             body_c.content = try body.toOwnedSlice(self.alloc);
@@ -1573,6 +1591,22 @@ fn itemsHaveChoicesAtNesting(items: []const Parsed.FlowItem, nesting: u8) bool {
         }
     }
     return false;
+}
+
+fn firstWeaveNesting(items: []const Parsed.FlowItem) u8 {
+    for (items) |item| {
+        switch (item) {
+            .choice => |ch| return ch.nesting,
+            .gather => |g| return g.nesting,
+            else => {},
+        }
+    }
+    return 1;
+}
+
+fn logicalWeaveNesting(raw_nesting: u8, base_nesting: u8) u8 {
+    if (raw_nesting <= base_nesting) return 1;
+    return raw_nesting - base_nesting + 1;
 }
 
 /// True when `ch` is a fallback (invisible-default) choice:
