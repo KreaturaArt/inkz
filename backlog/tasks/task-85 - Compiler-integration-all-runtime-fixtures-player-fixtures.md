@@ -1,9 +1,10 @@
 ---
 id: TASK-85
 title: 'Compiler integration: all runtime fixtures + player fixtures'
-status: To Do
+status: In Progress
 assignee: []
 created_date: '2026-03-08 15:48'
+updated_date: '2026-04-05 08:10'
 labels:
   - compiler
   - integration

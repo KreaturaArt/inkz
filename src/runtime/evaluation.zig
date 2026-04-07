@@ -108,8 +108,7 @@ pub fn callNativeFunction(allocator: std.mem.Allocator, op: NativeFunction, stac
         },
         .not => {
             const a = stack.pop().?;
-            const result: i64 = if (isTruthy(a)) 0 else 1;
-            stack.appendAssumeCapacity(.{ .int = result });
+            stack.appendAssumeCapacity(.{ .bool = !isTruthy(a) });
         },
         .int_cast => {
             const a = stack.pop().?;

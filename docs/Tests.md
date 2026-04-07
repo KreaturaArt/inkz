@@ -1,4 +1,4 @@
-## ## Original fixtures
+## Original fixtures
 
 ### 26 directories, 169 files
 
