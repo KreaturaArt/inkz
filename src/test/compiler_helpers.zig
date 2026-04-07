@@ -1107,7 +1107,7 @@ test "Compiler e2e: sequences/shuffle_stack_muddying.ink" {
     const alloc = std.testing.allocator;
     const out = try compileFixtureAndRun(alloc, "runtime/sequences/shuffle_stack_muddying.ink", &.{});
     defer alloc.free(out);
-    try std.testing.expect(out.len > 0);
+    try std.testing.expectEqualStrings("", out);
 }
 
 // ── TASK-85: integration — strings remaining ─────────────────────────────────
