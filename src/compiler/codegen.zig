@@ -32,6 +32,7 @@ pub const CObject = union(enum) {
     string: []const u8, // string literal (not ^-prefixed)
     var_assign: struct { name: []const u8, is_new: bool }, // {"VAR=":"name"} or with "re":true
     var_ref: []const u8, // {"VAR?":"name"}
+    var_pointer: struct { name: []const u8, context_idx: i32 }, // {"^var":"name","ci":-1}
     temp_assign: struct { name: []const u8, is_new: bool }, // {"temp=":"name"} or with "re":true
     // Conditional objects
     cond_divert: []const u8, // {"->":"path","c":true} — conditional branch jump
@@ -95,6 +96,8 @@ const Gen = struct {
     stitch_paths: std.StringHashMapUnmanaged([]const u8) = .{},
     /// Names of EXTERNAL function declarations — calls to these use external_call.
     external_fn_names: std.StringHashMapUnmanaged(u32) = .{}, // name → param_count
+    /// Function signatures used for ref-parameter call lowering.
+    function_params: std.StringHashMapUnmanaged([]const Parsed.Param) = .{},
     /// List definitions for resolving list item names in expressions.
     list_defs: []const Parsed.ListDef = &.{},
     /// True after emitting a content flow item (text, expr output) at the current level.
@@ -157,6 +160,9 @@ const Gen = struct {
         }
         // Populate knot_names so expressions can emit CNT? for knot references.
         for (story.knots) |knot| {
+            if (knot.is_function) {
+                try self.function_params.put(self.alloc, knot.name, knot.params);
+            }
             try self.knot_names.put(self.alloc, knot.name, {});
             for (knot.stitches) |stitch| {
                 try self.knot_names.put(self.alloc, stitch.name, {});
@@ -1353,6 +1359,13 @@ const Gen = struct {
                 } else if (self.stitch_paths.get(name)) |full_path| {
                     // Bare stitch name in an expression → read-count using full path.
                     try out.append(self.alloc, .{ .read_count = full_path });
+                } else if (std.mem.indexOfScalar(u8, name, '.')) |dot| {
+                    const head = name[0..dot];
+                    if (self.knot_names.contains(head) or std.mem.eql(u8, head, "0")) {
+                        try out.append(self.alloc, .{ .read_count = name });
+                    } else {
+                        try out.append(self.alloc, .{ .var_ref = name });
+                    }
                 } else if (self.knot_names.contains(name)) {
                     // Bare knot name in an expression → visit-count check.
                     try out.append(self.alloc, .{ .read_count = name });
@@ -1388,8 +1401,20 @@ const Gen = struct {
                     try out.append(self.alloc, .{ .string = "listInt" });
                     return;
                 }
-                // Push arguments left-to-right, then emit the call.
-                for (c.args) |arg| try self.genExpr(out, arg.*);
+                // Push arguments left-to-right, lowering ref params to variable pointers.
+                const params = self.function_params.get(c.name);
+                for (c.args, 0..) |arg, idx| {
+                    if (params) |fn_params| {
+                        if (idx < fn_params.len and fn_params[idx].is_ref and arg.* == .var_ref) {
+                            try out.append(self.alloc, .{ .var_pointer = .{
+                                .name = arg.var_ref,
+                                .context_idx = -1,
+                            } });
+                            continue;
+                        }
+                    }
+                    try self.genExpr(out, arg.*);
+                }
                 if (self.external_fn_names.contains(c.name)) {
                     try out.append(self.alloc, .{ .external_call = .{
                         .name = c.name,
@@ -1438,9 +1463,10 @@ const Gen = struct {
                 } });
             },
             .var_pointer => |vp| {
-                // Reference parameter: {"^var":"name","ci":context_idx}
-                // For now emit a var_ref (simplified; ref params handled via temp vars)
-                try out.append(self.alloc, .{ .var_ref = vp.name });
+                try out.append(self.alloc, .{ .var_pointer = .{
+                    .name = vp.name,
+                    .context_idx = vp.context_idx,
+                } });
             },
         }
     }

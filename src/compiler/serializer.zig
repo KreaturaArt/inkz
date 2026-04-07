@@ -175,6 +175,15 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try writeJsonStr(alloc, buf, name);
             try buf.appendSlice(alloc, "\"}");
         },
+        .var_pointer => |vp| {
+            try buf.appendSlice(alloc, "{\"^var\":\"");
+            try writeJsonStr(alloc, buf, vp.name);
+            try buf.appendSlice(alloc, "\",\"ci\":");
+            var tmp: [24]u8 = undefined;
+            const s = std.fmt.bufPrint(&tmp, "{}", .{vp.context_idx}) catch unreachable;
+            try buf.appendSlice(alloc, s);
+            try buf.append(alloc, '}');
+        },
         .temp_assign => |ta| {
             try buf.appendSlice(alloc, "{\"temp=\":\"");
             try writeJsonStr(alloc, buf, ta.name);
