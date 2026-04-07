@@ -43,7 +43,7 @@ pub const CObject = union(enum) {
     divert_via_var: []const u8, // {"->":"name","var":true}  follow a var's stored path
     // Read-count and function-call objects
     read_count: []const u8, // {"CNT?":"path"}  visit count of a knot/stitch
-    function_call: struct { name: []const u8, arg_count: u32 }, // {"f()":"name"} or {"f(N)":"name"}
+    function_call: struct { name: []const u8, arg_count: u32, is_var: bool }, // {"f()":"name"} or {"f(N)":"name"} with optional "var":true
     external_call: struct { name: []const u8, arg_count: u32 }, // {"x()":"name","exArgs":N}
     func_return, // "~ret"
     // List value: {"list":{"origin.item":value,...},"origins":["origin",...]}
@@ -787,6 +787,7 @@ const Gen = struct {
         var cur_holder_abs: []const u8 = holder_abs_path;
         var cur_is_root: bool = is_root;
         var cur_choice_idx: u32 = 0;
+        var section_choice_count: u32 = 0;
 
         // Inline initial section scratch buffers (used only in .in_initial).
         var init_sec_content = std.ArrayList(CObject).empty;
@@ -821,6 +822,7 @@ const Gen = struct {
                                     self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 cur_is_root = false;
                                 cur_content = &init_sec_content;
+                                section_choice_count = 0;
                             } else {
                                 // First gather but not initial → start named section.
                                 state = .in_named;
@@ -830,6 +832,7 @@ const Gen = struct {
                                     self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 cur_is_root = false;
                                 cur_content = &named_sec_content;
+                                section_choice_count = 0;
                             }
                         },
                         .in_initial => {
@@ -849,11 +852,16 @@ const Gen = struct {
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                             cur_is_root = false;
                             cur_content = &named_sec_content;
+                            section_choice_count = 0;
                         },
                         .in_named => {
                             // Close the current named section → push as named_child.
                             const gc = try self.newContainer(null);
                             if (named_sec_has_user_label) gc.flags = 5; // VISITS+COUNT_AT_START
+                            if (section_choice_count == 0) {
+                                try named_sec_content.append(self.alloc, .{ .divert = try std.fmt.allocPrint(
+                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname }) });
+                            }
                             gc.content = try named_sec_content.toOwnedSlice(self.alloc);
                             gc.named_children =
                                 try named_sec_named.toOwnedSlice(self.alloc);
@@ -864,6 +872,7 @@ const Gen = struct {
                             named_sec_has_user_label = g.label != null;
                             cur_holder_abs = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                            section_choice_count = 0;
                         },
                     }
                     gather_processed += 1;
@@ -926,6 +935,7 @@ const Gen = struct {
                         min_nesting,
                     );
                     cur_choice_idx += 1;
+                    section_choice_count += 1;
                 },
 
                 // ── Other items ───────────────────────────────────────────────
@@ -1231,14 +1241,16 @@ const Gen = struct {
             cond.branches[cond.branches.len - 1].condition == null;
         const pop_count: usize = if (cond.is_switch and !switch_has_else_branch) 1 else 0;
         const nop_idx = initial_len + eval_count + branch_count + pop_count;
-        const nop_path = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ parent_path, nop_idx });
-
         // --- 3. Emit empty true branch when needed ---
         if (needs_empty_true_branch) {
             const wrapper_idx = initial_len + eval_count + 0;
             const body_path = try std.fmt.allocPrint(self.alloc, "{s}.{}.b", .{ parent_path, wrapper_idx });
             var body = std.ArrayList(CObject).empty;
-            try body.append(self.alloc, .{ .divert = nop_path });
+            try body.append(self.alloc, .{ .divert = try std.fmt.allocPrint(
+                self.alloc,
+                ".^.^.^.{}",
+                .{nop_idx},
+            ) });
             const body_c = try self.newContainer(null);
             body_c.content = try body.toOwnedSlice(self.alloc);
             _ = body_path;
@@ -1257,6 +1269,7 @@ const Gen = struct {
             const branch_offset: usize = if (needs_empty_true_branch) 1 else 0;
             const wrapper_idx = initial_len + eval_count + i + branch_offset;
             const body_path = try std.fmt.allocPrint(self.alloc, "{s}.{}.b", .{ parent_path, wrapper_idx });
+            const body_nop_path = try std.fmt.allocPrint(self.alloc, ".^.^.^.{}", .{nop_idx});
 
             // Build the body container content.
             var body = std.ArrayList(CObject).empty;
@@ -1279,10 +1292,13 @@ const Gen = struct {
                         wrapper_abs,
                         false,
                         1,
-                        nop_path,
+                        body_nop_path,
                         "",
                     );
                     try body.append(self.alloc, .{ .container = wrapper });
+                    // If the nested weave produces no available choices, control falls
+                    // through here and must still converge to the conditional's nop.
+                    try body.append(self.alloc, .{ .divert = body_nop_path });
                 } else {
                     for (branch.content) |item| {
                         try self.genFlowItem(&body, item, body_path);
@@ -1291,7 +1307,7 @@ const Gen = struct {
             }
             // Convergence divert — jumps to the nop.
             if (!itemsHaveChoices(branch.content)) {
-                try body.append(self.alloc, .{ .divert = nop_path });
+                try body.append(self.alloc, .{ .divert = body_nop_path });
             }
 
             const body_c = try self.newContainer(null);
@@ -1459,6 +1475,7 @@ const Gen = struct {
                     try out.append(self.alloc, .{ .function_call = .{
                         .name = c.name,
                         .arg_count = @intCast(c.args.len),
+                        .is_var = self.var_names.contains(c.name) or self.divert_param_names.contains(c.name),
                     } });
                 }
             },

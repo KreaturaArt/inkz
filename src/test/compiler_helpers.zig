@@ -1304,8 +1304,8 @@ test "Compiler e2e: diverts/divert_to_weave_points.ink" {
     const alloc = std.testing.allocator;
     const out = try compileFixtureAndRun(alloc, "runtime/diverts/divert_to_weave_points.ink", &.{});
     defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "gather") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "second time round") != null);
 }
 
 test "Compiler e2e: diverts/done_stops_thread.ink" {

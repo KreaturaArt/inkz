@@ -237,7 +237,9 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try buf.appendSlice(alloc, key);
             try buf.append(alloc, '"');
             try writeJsonStr(alloc, buf, fc.name);
-            try buf.appendSlice(alloc, "\"}");
+            try buf.append(alloc, '"');
+            if (fc.is_var) try buf.appendSlice(alloc, ",\"var\":true");
+            try buf.append(alloc, '}');
         },
         .external_call => |ec| {
             // {"x()":"name","exArgs":N}
