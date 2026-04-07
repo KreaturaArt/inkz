@@ -74,7 +74,6 @@ test "Compiler JSON: divert_to_weave_points" {
     ;
     const json = try c.compile(alloc, src);
     defer alloc.free(json);
-    std.debug.print("\nJSON: {s}\n", .{json});
     try std.testing.expect(true);
 }
 
@@ -91,7 +90,6 @@ test "Compiler JSON: knot_do_not_gather" {
     ;
     const json = try c.compile(alloc, src);
     defer alloc.free(json);
-    std.debug.print("\nJSON: {s}\n", .{json});
     try std.testing.expect(true);
 }
 
