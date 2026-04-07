@@ -57,6 +57,62 @@ pub fn compileFixtureAndRun(
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
+test "Compiler JSON: divert_to_weave_points" {
+    const alloc = std.testing.allocator;
+    const c = @import("../compiler/compiler.zig");
+    const src =
+        \\-> knot.stitch.gather
+        \\== knot ==
+        \\= stitch
+        \\- hello
+        \\    * (choice) test
+        \\        choice content
+        \\- (gather)
+        \\  gather
+        \\-> END
+        \\
+    ;
+    const json = try c.compile(alloc, src);
+    defer alloc.free(json);
+    std.debug.print("\nJSON: {s}\n", .{json});
+    try std.testing.expect(true);
+}
+
+test "Compiler JSON: knot_do_not_gather" {
+    const alloc = std.testing.allocator;
+    const c = @import("../compiler/compiler.zig");
+    const src =
+        \\-> knot
+        \\=== knot
+        \\-> knot.gather
+        \\- (gather) g
+        \\-> DONE
+        \\
+    ;
+    const json = try c.compile(alloc, src);
+    defer alloc.free(json);
+    std.debug.print("\nJSON: {s}\n", .{json});
+    try std.testing.expect(true);
+}
+
+test "Compiler JSON: tunnel_onwards_divert_after_with_arg" {
+    const alloc = std.testing.allocator;
+    const c = @import("../compiler/compiler.zig");
+    const src =
+        \\-> a ->
+        \\=== a ===
+        \\->-> b (5 + 3)
+        \\=== b (x) ===
+        \\{x}
+        \\-> END
+        \\
+    ;
+    const json = try c.compile(alloc, src);
+    defer alloc.free(json);
+    const expected = "{\"inkVersion\":21,\"root\":[[{\"->t->\":\"a\"},[\"done\",{\"#n\":\"g-0\"}],null],\"done\",{\"a\":[\"ev\",5,3,\"+\",{\"^->\":\"b\"},\"/ev\",\"->->\",null],\"b\":[{\"temp=\":\"x\"},\"ev\",{\"VAR?\":\"x\"},\"out\",\"/ev\",\"\\n\",\"end\",null]}],\"listDefs\":{}}";
+    try std.testing.expectEqualStrings(expected, json);
+}
+
 test "Compiler e2e: empty story" {
     const alloc = std.testing.allocator;
     const out = try compileAndRun(alloc, "", &.{});
@@ -854,4 +910,546 @@ test "Compiler e2e: thread_done.ink" {
     defer alloc.free(out);
     try std.testing.expect(out.len >= 0);
 }
+
+// ── TASK-85: integration — evaluation ─────────────────────────────────────────
+
+test "Compiler e2e: evaluation/factorial_recursive.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/factorial_recursive.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("120\n", out);
+}
+
+test "Compiler e2e: evaluation/literal_unary.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/literal_unary.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("-1\n0\n1\n", out);
+}
+
+test "Compiler e2e: evaluation/basic_string_literals.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/basic_string_literals.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello world 1\nHello world 2.\n", out);
+}
+
+test "Compiler e2e: evaluation/increment.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/increment.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("6\n5\n", out);
+}
+
+test "Compiler e2e: evaluation/evaluation_stack_leaks.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/evaluation_stack_leaks.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("else\nelse\nhi\n", out);
+}
+
+test "Compiler e2e: evaluation/evaluating_function_variable_state_bug.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/evaluating_function_variable_state_bug.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Start\nIn tunnel.\nEnd\n", out);
+}
+
+test "Compiler e2e: evaluation/factorial_by_reference.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/factorial_by_reference.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("120\n", out);
+}
+
+// ── TASK-85: integration — logic ──────────────────────────────────────────────
+
+test "Compiler e2e: logic/logic_lines_with_newlines.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/logic/logic_lines_with_newlines.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("text1\ntext 2\ntext1\ntext 2\n", out);
+}
+
+test "Compiler e2e: logic/multiline_logic_with_glue.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/logic/multiline_logic_with_glue.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("a b\na b\n", out);
+}
+
+test "Compiler e2e: logic/nested_pass_by_reference.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/logic/nested_pass_by_reference.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "5") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "625") != null);
+}
+
+test "Compiler e2e: logic/print_num.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/logic/print_num.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "four") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "fifteen") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "thirty-seven") != null);
+}
+
+// ── TASK-85: integration — extra ──────────────────────────────────────────────
+
+test "Compiler e2e: extra/arithmetic_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/extra/arithmetic_2.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("2\n2.333333\n2.333333\n2.333333\n2.333333\n2.333333\n", out);
+}
+
+test "Compiler e2e: extra/list_comparison.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/extra/list_comparison.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Philippe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Andre") != null);
+}
+
+// ── TASK-85: integration — glue remaining ────────────────────────────────────
+
+test "Compiler e2e: glue/implicit_inline_glue.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/glue/implicit_inline_glue.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("I have five eggs.\n", out);
+}
+
+test "Compiler e2e: glue/implicit_inline_glue_b.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/glue/implicit_inline_glue_b.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "X") != null);
+}
+
+test "Compiler e2e: glue/implicit_inline_glue_c.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/glue/implicit_inline_glue_c.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "C") != null);
+}
+
+// ── TASK-85: integration — misc remaining ────────────────────────────────────
+
+test "Compiler e2e: misc/escape_character.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/escape_character.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("this is a '|' character\n", out);
+}
+
+test "Compiler e2e: misc/identifiers_can_start_with_number.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/identifiers_can_start_with_number.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("512x2 = 1024\n512x2p2 = 1026\n", out);
+}
+
+test "Compiler e2e: misc/quote_character_significance.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/quote_character_significance.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Joe") != null);
+}
+
+// ── TASK-85: integration — newlines remaining ────────────────────────────────
+
+test "Compiler e2e: newlines/newline_consistency_3.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/newlines/newline_consistency_3.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("hello\nworld\n", out);
+}
+
+test "Compiler e2e: newlines/newlines_with_string_eval.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/newlines/newlines_with_string_eval.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "3") != null);
+}
+
+// ── TASK-85: integration — sequences remaining ───────────────────────────────
+
+test "Compiler e2e: sequences/all_sequence_types.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/sequences/all_sequence_types.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Once:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Stopping:") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Cycle:") != null);
+}
+
+test "Compiler e2e: sequences/blanks_in_inline_sequences.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/sequences/blanks_in_inline_sequences.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1. a") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "3. b") != null);
+}
+
+test "Compiler e2e: sequences/gather_read_count_with_initial_sequence.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/sequences/gather_read_count_with_initial_sequence.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("seen test\n", out);
+}
+
+test "Compiler e2e: sequences/shuffle_stack_muddying.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/sequences/shuffle_stack_muddying.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+// ── TASK-85: integration — strings remaining ─────────────────────────────────
+
+test "Compiler e2e: strings/string_type_coercion.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/strings/string_type_coercion.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("different\ndifferent\n", out);
+}
+
+test "Compiler e2e: strings/strings_in_choices.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/strings/strings_in_choices.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+// ── TASK-85: integration — tags remaining ────────────────────────────────────
+
+test "Compiler e2e: tags/tags_dynamic_content.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/tags/tags_dynamic_content.ink", &.{});
+    defer alloc.free(out);
+    // tags produce no visible text output — just verify no crash
+    try std.testing.expect(out.len >= 0);
+}
+
+test "Compiler e2e: tags/tags_in_choice.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/tags/tags_in_choice.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+test "Compiler e2e: tags/tags_in_seq.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/tags/tags_in_seq.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len >= 0);
+}
+
+// ── TASK-85: integration — variables remaining ───────────────────────────────
+
+test "Compiler e2e: variables/variable_pointer_ref_from_knot.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/variable_pointer_ref_from_knot.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("6\n", out);
+}
+
+test "Compiler e2e: variables/variable_tunnel.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/variable_tunnel.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("STUFF\n", out);
+}
+
+test "Compiler e2e: variables/temp_usage_in_options.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/temp_usage_in_options.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "End of choice") != null);
+}
+
+test "Compiler e2e: variables/set_non_existant_variable.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/set_non_existant_variable.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello world.\n", out);
+}
+
+test "Compiler e2e: variables/temp_global_conflict.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/temp_global_conflict.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
+
+test "Compiler e2e: variables/temp_not_found.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/temp_not_found.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
+}
+
+test "Compiler e2e: variables/warn_variable_not_found_1.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/warn_variable_not_found_1.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello world!\n0\n", out);
+}
+
+test "Compiler e2e: variables/warn_variable_not_found_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/variables/warn_variable_not_found_2.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello world!\n0\n", out);
+}
+
+// ── TASK-85: integration — weaves remaining ──────────────────────────────────
+
+test "Compiler e2e: weaves/conditional_choice_in_weave.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/weaves/conditional_choice_in_weave.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("start\nresult\n", out);
+}
+
+test "Compiler e2e: weaves/conditional_choice_in_weave_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/weaves/conditional_choice_in_weave_2.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "first gather") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bottom gather") != null);
+}
+
+test "Compiler e2e: weaves/weave_within_sequence.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/weaves/weave_within_sequence.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "nextline") != null);
+}
+
+test "Compiler e2e: weaves/unbalanced_weave_indentation.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/weaves/unbalanced_weave_indentation.ink", &.{0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "First") != null);
+}
+
+// ── TASK-85: integration — choices remaining ─────────────────────────────────
+
+test "Compiler e2e: choices/once_only_choices_with_own_content.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/once_only_choices_with_own_content.ink", &.{0, 0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "first time") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "finished eating") != null);
+}
+
+test "Compiler e2e: choices/various_default_choices.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/various_default_choices.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\n2\n3\n", out);
+}
+
+test "Compiler e2e: choices/state_rollback_over_default_choice.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/state_rollback_over_default_choice.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Text.\n5\n", out);
+}
+
+// ── TASK-85: integration — diverts remaining ─────────────────────────────────
+
+test "Compiler e2e: diverts/same_line_divert_is_inline.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/same_line_divert_is_inline.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("We hurried home to Savile Row as fast as we could.\n", out);
+}
+
+test "Compiler e2e: diverts/compare_divert_targets.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/compare_divert_targets.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("different knot\nsame knot\nsame knot\ndifferent knot\nsame knot\nsame knot\n", out);
+}
+
+test "Compiler e2e: diverts/complex_tunnels.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/complex_tunnels.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("one (1)\none and a half (1.5)\ntwo (2)\nthree (3)\n", out);
+}
+
+test "Compiler e2e: diverts/divert_in_conditional.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/divert_in_conditional.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("", out);
+}
+
+test "Compiler e2e: diverts/divert_targets_with_parameters.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/divert_targets_with_parameters.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("5\n", out);
+}
+
+test "Compiler e2e: diverts/divert_to_weave_points.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/divert_to_weave_points.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "hello") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gather") != null);
+}
+
+test "Compiler e2e: diverts/done_stops_thread.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/done_stops_thread.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("", out);
+}
+
+test "Compiler e2e: diverts/tunnel_onwards_divert_after_with_arg.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_onwards_divert_after_with_arg.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("8\n", out);
+}
+
+test "Compiler e2e: diverts/tunnel_onwards_divert_override.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_onwards_divert_override.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is A\nNow in B.\n", out);
+}
+
+test "Compiler e2e: diverts/tunnel_onwards_to_variable_divert_target.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_onwards_to_variable_divert_target.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is outer\nThis is the_esc\n", out);
+}
+
+test "Compiler e2e: diverts/tunnel_onwards_with_param_default_choice.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_onwards_with_param_default_choice.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("8\n", out);
+}
+
+test "Compiler e2e: diverts/path_to_self.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/path_to_self.ink", &.{0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
+}
+
+test "Compiler e2e: diverts/tunnel_vs_thread_behaviour.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/tunnel_vs_thread_behaviour.ink", &.{0, 0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Done.") != null);
+}
+
+// ── TASK-85: integration — knots ─────────────────────────────────────────────
+
+test "Compiler e2e: knots/knot_do_not_gather.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_do_not_gather.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("g\n", out);
+}
+
+test "Compiler e2e: knots/knot_stitch_gather_counts.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_stitch_gather_counts.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "3") != null);
+}
+
+test "Compiler e2e: knots/knot_thread_interaction.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_thread_interaction.ink", &.{0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "blah blah") != null);
+}
+
+test "Compiler e2e: knots/knot_thread_interaction_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_thread_interaction_2.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "tunnel") != null);
+}
+
+// ── TASK-85: integration — threads remaining ─────────────────────────────────
+
+test "Compiler e2e: threads/multi_thread.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/threads/multi_thread.ink", &.{0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "place 1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "The end") != null);
+}
+
+test "Compiler e2e: threads/top_flow_terminator_should_not_kill_thread_choices.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/threads/top_flow_terminator_should_not_kill_thread_choices.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+// ── TASK-85: integration — builtins remaining ────────────────────────────────
+
+test "Compiler e2e: builtins/floor_ceiling_and_casts.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/floor_ceiling_and_casts.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1") != null);
+}
+
+test "Compiler e2e: builtins/visit_count_bug_due_to_nested_containers.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/visit_count_bug_due_to_nested_containers.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "2") != null);
+}
+
+test "Compiler e2e: builtins/read_count_dot_separated_path.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/read_count_dot_separated_path.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("3\n", out);
+}
+
+test "Compiler e2e: builtins/turns_since_nested.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since_nested.ink", &.{0, 0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+test "Compiler e2e: builtins/read_count_across_threads.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/read_count_across_threads.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+
+// ── TASK-85: integration — callstack remaining ───────────────────────────────
+
+test "Compiler e2e: callstack/clean_callstack_reset_on_path_choice.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/callstack/clean_callstack_reset_on_path_choice.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("The first line.\nThe second line.\n", out);
+}
+
 

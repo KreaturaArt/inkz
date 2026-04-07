@@ -99,6 +99,7 @@ pub const Divert = struct {
     is_tunnel: bool,
     is_thread: bool,
     is_tunnel_onwards: bool = false, // -> target ->->
+    onward_target: ?[]const u8 = null, // -> target -> onward
     args: []*Expression,
 };
 
@@ -152,6 +153,9 @@ pub const Branch = struct {
     content: []FlowItem,
     /// Inline-form branch content ([]InlineElement, used when parent.is_inline).
     inline_elems: []InlineElement = &.{},
+    /// True when explicitly marked `- else:` — used to emit the correct
+    /// conditional vs unconditional divert in the branch wrapper.
+    is_else: bool = false,
 };
 
 // ── Sequences / alternatives ──────────────────────────────────────────────────

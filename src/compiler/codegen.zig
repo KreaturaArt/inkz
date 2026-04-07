@@ -17,6 +17,7 @@ pub const CObject = union(enum) {
     glue, // "<>"
     divert: []const u8, // {"->":"target"}
     tunnel_divert: []const u8, // {"->t->":"target"}
+    tunnel_divert_via_var: []const u8, // {"->t->":"name","var":true}
     container: *CContainer, // recursive sub-container
     // Eval-mode objects (used for VAR initializers and expressions)
     eval_start, // "ev"
@@ -90,6 +91,8 @@ const Gen = struct {
     choice_labels: std.StringHashMapUnmanaged([]const u8) = .{},
     /// Gather labels → absolute path to the gather section container.
     gather_label_paths: std.StringHashMapUnmanaged([]const u8) = .{},
+    /// Stitch bare names → full path (e.g. "stitch" → "knot.stitch").
+    stitch_paths: std.StringHashMapUnmanaged([]const u8) = .{},
     /// Names of EXTERNAL function declarations — calls to these use external_call.
     external_fn_names: std.StringHashMapUnmanaged(u32) = .{}, // name → param_count
     /// List definitions for resolving list item names in expressions.
@@ -104,6 +107,49 @@ const Gen = struct {
         return c;
     }
 
+    /// Pre-scan `items` for labeled gathers and labeled choices at `min_nesting`,
+    /// registering them in gather_label_paths / choice_labels so that forward
+    /// references from root content (or earlier knots) resolve correctly.
+    fn preScanLabels(self: *Gen, items: []const Parsed.FlowItem, holder_abs: []const u8, context_name: []const u8, min_nesting: u8) !void {
+        var gi: u32 = 0;
+        var ci: u32 = 0;
+        var cur_section_abs = holder_abs;
+        for (items) |item| {
+            switch (item) {
+                .gather => |g| if (g.nesting == min_nesting) {
+                    const gname = g.label orelse blk: {
+                        const n = try std.fmt.allocPrint(self.alloc, "g-{}", .{gi});
+                        break :blk n;
+                    };
+                    if (g.label) |lbl| {
+                        const abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs, lbl });
+                        try self.gather_label_paths.put(self.alloc, lbl, abs);
+                        if (context_name.len > 0) {
+                            const qual = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
+                            try self.gather_label_paths.put(self.alloc, qual, abs);
+                        }
+                    }
+                    cur_section_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs, gname });
+                    gi += 1;
+                    ci = 0;
+                },
+                .choice => |ch| if (ch.nesting == min_nesting) {
+                    if (ch.label) |lbl| {
+                        const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{ci});
+                        const abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
+                        try self.choice_labels.put(self.alloc, lbl, abs);
+                        if (context_name.len > 0) {
+                            const qual = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
+                            try self.choice_labels.put(self.alloc, qual, abs);
+                        }
+                    }
+                    ci += 1;
+                },
+                else => {},
+            }
+        }
+    }
+
     fn generateRoot(self: *Gen, story: Parsed.Story) !*CContainer {
         // Populate CONST map so value substitution works during genExpr.
         for (story.constants) |c| {
@@ -114,6 +160,22 @@ const Gen = struct {
             try self.knot_names.put(self.alloc, knot.name, {});
             for (knot.stitches) |stitch| {
                 try self.knot_names.put(self.alloc, stitch.name, {});
+                // Register full path so `-> stitch` resolves to `knot.stitch`.
+                const full_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ knot.name, stitch.name });
+                try self.stitch_paths.put(self.alloc, stitch.name, full_path);
+            }
+        }
+        // Pre-scan ALL knot/stitch content to register gather and choice labels globally
+        // BEFORE generating any content (forward references from root → knot labels).
+        for (story.knots) |knot| {
+            if (knot.stitches.len > 0) {
+                for (knot.stitches) |stitch| {
+                    const sp = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ knot.name, stitch.name });
+                    if (itemsHaveChoices(stitch.content))
+                        try self.preScanLabels(stitch.content, try std.fmt.allocPrint(self.alloc, "{s}.0", .{sp}), sp, 1);
+                }
+            } else if (itemsHaveChoices(knot.content)) {
+                try self.preScanLabels(knot.content, try std.fmt.allocPrint(self.alloc, "{s}.0", .{knot.name}), knot.name, 1);
             }
         }
         // Populate var_names so diverts to variable names become divert_via_var.
@@ -132,7 +194,7 @@ const Gen = struct {
 
         if (itemsHaveChoices(story.root_content)) {
             // Weave mode: root_content_sub is the weave holder.
-            try self.genWeave(story.root_content, root_content_sub, "0", true, 1, null);
+            try self.genWeave(story.root_content, root_content_sub, "0", true, 1, null, "");
         } else {
             var root_flow = std.ArrayList(CObject).empty;
             for (story.root_content) |item| {
@@ -204,10 +266,9 @@ const Gen = struct {
 
     fn genKnot(self: *Gen, knot: Parsed.Knot) !*CContainer {
         if (knot.stitches.len > 0) {
-            // Knot with stitches — no weave support for stitches yet.
             var items = std.ArrayList(CObject).empty;
             // Emit param bindings at function start (reverse order).
-            if (knot.is_function and knot.params.len > 0) {
+            if (knot.params.len > 0) {
                 var i = knot.params.len;
                 while (i > 0) {
                     i -= 1;
@@ -218,6 +279,14 @@ const Gen = struct {
             for (knot.content) |item| {
                 try self.genFlowItem(&items, item, knot.name);
             }
+            // When a knot has no explicit content before its first stitch,
+            // Inklecate emits an auto-divert to the first stitch so that
+            // `-> knot` naturally falls through to `knot.first_stitch`.
+            if (knot.content.len == 0) {
+                const first_stitch_path = try std.fmt.allocPrint(
+                    self.alloc, "{s}.{s}", .{ knot.name, knot.stitches[0].name });
+                try items.append(self.alloc, .{ .divert = first_stitch_path });
+            }
             var stitch_named = std.ArrayList(NamedChild).empty;
             for (knot.stitches) |stitch| {
                 const stitch_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ knot.name, stitch.name });
@@ -225,7 +294,7 @@ const Gen = struct {
                 try stitch_named.append(self.alloc, .{ .name = stitch.name, .container = sc });
             }
             const kc = try self.newContainer(null);
-            kc.flags = 1; // VISITS_SHOULD_BE_COUNTED
+            if (!knot.is_function) kc.flags = 1; // VISITS_SHOULD_BE_COUNTED
             kc.content = try items.toOwnedSlice(self.alloc);
             kc.named_children = try stitch_named.toOwnedSlice(self.alloc);
             return kc;
@@ -250,19 +319,19 @@ const Gen = struct {
             // Create inner_wrapper: the weave holder lives at knot.0.
             const inner_wrapper = try self.newContainer(null);
             const holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.0", .{knot_name});
-            try self.genWeave(content, inner_wrapper, holder_abs, false, 1, null);
+            try self.genWeave(content, inner_wrapper, holder_abs, false, 1, null, knot_name);
 
             // The knot container wraps inner_wrapper as its sole content item.
             const kc = try self.newContainer(null);
-            kc.flags = 1; // VISITS_SHOULD_BE_COUNTED — enables {knot_name} visit counts
+            if (!is_function) kc.flags = 1; // VISITS_SHOULD_BE_COUNTED
             kc.content = try self.alloc.dupe(CObject, &.{.{ .container = inner_wrapper }});
             return kc;
         }
 
         // No choices: emit items directly.
         var items = std.ArrayList(CObject).empty;
-        // Emit param bindings at function start (reverse order, last param first).
-        if (is_function and params.len > 0) {
+        // Emit param bindings at start (reverse order — runtime pushes left-to-right so last is on top).
+        if (params.len > 0) {
             var i = params.len;
             while (i > 0) {
                 i -= 1;
@@ -274,7 +343,8 @@ const Gen = struct {
             try self.genFlowItem(&items, item, knot_name);
         }
         const kc = try self.newContainer(null);
-        kc.flags = 1; // VISITS_SHOULD_BE_COUNTED — enables {knot_name} visit counts
+        // Only count visits for non-function knots (function knots aren't diverted to by name).
+        if (!is_function) kc.flags = 1; // VISITS_SHOULD_BE_COUNTED
         kc.content = try items.toOwnedSlice(self.alloc);
         return kc;
     }
@@ -324,9 +394,20 @@ const Gen = struct {
         } else if (std.mem.eql(u8, d.target, "DONE")) {
             try out.append(self.alloc, .done);
         } else if (std.mem.eql(u8, d.target, "->->")) {
-            // Tunnel/function return: push void then return.
+            // Bare tunnel/function return: push void then return.
             try out.append(self.alloc, .eval_start);
             try out.append(self.alloc, .void_);
+            try out.append(self.alloc, .eval_end);
+            try out.append(self.alloc, .tunnel_return);
+        } else if (d.is_tunnel_onwards and !d.is_tunnel) {
+            // Tunnel-onwards: ->-> target (args) — push args + divert-target-val, then ->->.
+            try out.append(self.alloc, .eval_start);
+            for (d.args) |arg| try self.genExpr(out, arg.*);
+            if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
+                try out.append(self.alloc, .{ .var_ref = d.target });
+            } else {
+                try out.append(self.alloc, .{ .divert_target_val = d.target });
+            }
             try out.append(self.alloc, .eval_end);
             try out.append(self.alloc, .tunnel_return);
         } else {
@@ -343,11 +424,21 @@ const Gen = struct {
                 try out.append(self.alloc, .{ .divert = abs_path });
             } else if (self.choice_labels.get(d.target)) |abs_path| {
                 try out.append(self.alloc, .{ .divert = abs_path });
+            } else if (self.stitch_paths.get(d.target)) |full_path| {
+                // Bare stitch name → resolve to full "knot.stitch" path.
+                if (d.is_tunnel) {
+                    try out.append(self.alloc, .{ .tunnel_divert = full_path });
+                } else {
+                    try out.append(self.alloc, .{ .divert = full_path });
+                }
             } else if (d.is_tunnel) {
                 if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
-                    try out.append(self.alloc, .{ .divert_via_var = d.target }); // TODO: tunnel+var
+                    try out.append(self.alloc, .{ .tunnel_divert_via_var = d.target });
                 } else {
                     try out.append(self.alloc, .{ .tunnel_divert = d.target });
+                }
+                if (d.onward_target) |onward_target| {
+                    try self.appendResolvedPlainDivert(out, onward_target);
                 }
                 // Tunnel-onwards: after the tunnel call, also return from here.
                 if (d.is_tunnel_onwards) {
@@ -362,6 +453,20 @@ const Gen = struct {
             } else {
                 try out.append(self.alloc, .{ .divert = d.target });
             }
+        }
+    }
+
+    fn appendResolvedPlainDivert(self: *Gen, out: *std.ArrayList(CObject), target: []const u8) !void {
+        if (self.gather_label_paths.get(target)) |abs_path| {
+            try out.append(self.alloc, .{ .divert = abs_path });
+        } else if (self.choice_labels.get(target)) |abs_path| {
+            try out.append(self.alloc, .{ .divert = abs_path });
+        } else if (self.stitch_paths.get(target)) |full_path| {
+            try out.append(self.alloc, .{ .divert = full_path });
+        } else if (self.var_names.contains(target) or self.divert_param_names.contains(target)) {
+            try out.append(self.alloc, .{ .divert_via_var = target });
+        } else {
+            try out.append(self.alloc, .{ .divert = target });
         }
     }
 
@@ -398,6 +503,7 @@ const Gen = struct {
             },
             .expr_stmt => |expr| {
                 // Standalone expression statement — evaluate and pop return value.
+                self.last_was_content = false;
                 try out.append(self.alloc, .eval_start);
                 try self.genExpr(out, expr.*);
                 try out.append(self.alloc, .pop);
@@ -525,8 +631,7 @@ const Gen = struct {
 
             if (i < n_source) {
                 if (!seq.is_inline) {
-                    // Block form: leading newline + full flow items (each adds trailing \n)
-                    try bc.append(self.alloc, .newline);
+                    // Block form: full flow items (each adds its own trailing \n).
                     for (seq.branches[i]) |item| {
                         try self.genFlowItem(&bc, item, "");
                     }
@@ -565,6 +670,9 @@ const Gen = struct {
     ///   ch.nesting+1 when called recursively for a choice's inner_content).
     /// `outer_gather_path`: where to divert when the last gather section ends;
     ///   null at the top level (story just terminates naturally).
+    /// `context_name`: user-visible knot/stitch path (e.g. "knot" or "knot.stitch").
+    ///   When non-empty, gather/choice labels are also registered as "context.label"
+    ///   so that external diverts like `-> knot.gather` resolve correctly.
     fn genWeave(
         self: *Gen,
         items: []const Parsed.FlowItem,
@@ -573,6 +681,7 @@ const Gen = struct {
         is_root: bool,
         min_nesting: u8,
         outer_gather_path: ?[]const u8,
+        context_name: []const u8,
     ) error{OutOfMemory}!void {
         // ── Phase 1: pre-scan gather names at min_nesting level ──────────────
         var gather_names = std.ArrayList([]const u8).empty;
@@ -607,6 +716,11 @@ const Gen = struct {
                             const abs_path = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, lbl });
                             try self.gather_label_paths.put(self.alloc, lbl, abs_path);
+                            // Also register "context.label" for external diverts like `-> knot.gather`.
+                            if (context_name.len > 0) {
+                                const qual_key = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
+                                try self.gather_label_paths.put(self.alloc, qual_key, abs_path);
+                            }
                         }
                         cur_section_abs = try std.fmt.allocPrint(
                             self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
@@ -619,6 +733,11 @@ const Gen = struct {
                             const abs_path = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
                             try self.choice_labels.put(self.alloc, lbl, abs_path);
+                            // Also register "context.label" for external diverts.
+                            if (context_name.len > 0) {
+                                const qual_key = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
+                                try self.choice_labels.put(self.alloc, qual_key, abs_path);
+                            }
                         }
                         ci += 1;
                     },
@@ -670,6 +789,7 @@ const Gen = struct {
         var named_sec_content = std.ArrayList(CObject).empty;
         var named_sec_named = std.ArrayList(NamedChild).empty;
         var named_sec_name: []const u8 = "";
+        var named_sec_has_user_label: bool = false; // true = user-defined label (not auto g-N)
 
         var gather_processed: u32 = 0; // how many min_nesting gathers we've seen
 
@@ -687,6 +807,7 @@ const Gen = struct {
                                 // Transition to initial inline section.
                                 state = .in_initial;
                                 const sec = try self.newContainer(gname);
+                                if (g.label != null) sec.flags = 5; // VISITS+COUNT_AT_START
                                 init_sec_container = sec;
                                 cur_holder_abs = try std.fmt.allocPrint(
                                     self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
@@ -697,6 +818,7 @@ const Gen = struct {
                                 // First gather but not initial → start named section.
                                 state = .in_named;
                                 named_sec_name = gname;
+                                named_sec_has_user_label = g.label != null;
                                 cur_holder_abs = try std.fmt.allocPrint(
                                     self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 cur_is_root = false;
@@ -716,6 +838,7 @@ const Gen = struct {
                             // Start the next named section.
                             state = .in_named;
                             named_sec_name = gname;
+                            named_sec_has_user_label = g.label != null;
                             cur_holder_abs = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                             cur_is_root = false;
@@ -725,6 +848,7 @@ const Gen = struct {
                         .in_named => {
                             // Close the current named section → push as named_child.
                             const gc = try self.newContainer(null);
+                            if (named_sec_has_user_label) gc.flags = 5; // VISITS+COUNT_AT_START
                             gc.content = try named_sec_content.toOwnedSlice(self.alloc);
                             gc.named_children =
                                 try named_sec_named.toOwnedSlice(self.alloc);
@@ -732,6 +856,7 @@ const Gen = struct {
                                 self.alloc, .{ .name = named_sec_name, .container = gc });
                             // Start fresh named section.
                             named_sec_name = gname;
+                            named_sec_has_user_label = g.label != null;
                             cur_holder_abs = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                             cur_choice_idx = 0;
@@ -832,6 +957,7 @@ const Gen = struct {
                     try named_sec_content.append(self.alloc, .{ .divert = ogp });
                 }
                 const gc = try self.newContainer(null);
+                if (named_sec_has_user_label) gc.flags = 5; // VISITS+COUNT_AT_START
                 gc.content = try named_sec_content.toOwnedSlice(self.alloc);
                 gc.named_children = try named_sec_named.toOwnedSlice(self.alloc);
                 try main_named.append(self.alloc, .{ .name = named_sec_name, .container = gc });
@@ -1046,7 +1172,7 @@ const Gen = struct {
         const wrapper_abs = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ parent_abs, wrapper_pos });
 
         const wrapper = try self.newContainer(null);
-        try self.genWeave(items, wrapper, wrapper_abs, false, new_min_nesting, outer_gather_path);
+        try self.genWeave(items, wrapper, wrapper_abs, false, new_min_nesting, outer_gather_path, "");
 
         try out.append(self.alloc, .{ .container = wrapper });
     }
@@ -1069,13 +1195,43 @@ const Gen = struct {
         }
 
         // --- 2. Compute nop index ---
-        const pop_count: usize = if (cond.is_switch) 1 else 0;
-        const nop_idx = initial_len + eval_count + cond.branches.len + pop_count;
+        // When outer_condition is set (non-switch) and the first branch is an else branch,
+        // we need an extra empty "true" branch before it so the runtime can correctly pop
+        // the outer_condition value via cond_divert.
+        const needs_empty_true_branch = cond.outer_condition != null and !cond.is_switch and
+            cond.branches.len > 0 and cond.branches[0].is_else;
+        const branch_count = cond.branches.len + (if (needs_empty_true_branch) @as(usize, 1) else 0);
+        // Switch pop: needed only when the last branch is a case branch (has condition).
+        // When the last branch is else (no condition), the else body already pops the value.
+        const switch_has_else_branch = cond.is_switch and cond.branches.len > 0 and
+            cond.branches[cond.branches.len - 1].condition == null;
+        const pop_count: usize = if (cond.is_switch and !switch_has_else_branch) 1 else 0;
+        const nop_idx = initial_len + eval_count + branch_count + pop_count;
         const nop_path = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ parent_path, nop_idx });
 
-        // --- 3. Emit branch wrappers ---
+        // --- 3. Emit empty true branch when needed ---
+        if (needs_empty_true_branch) {
+            const wrapper_idx = initial_len + eval_count + 0;
+            const body_path = try std.fmt.allocPrint(self.alloc, "{s}.{}.b", .{ parent_path, wrapper_idx });
+            var body = std.ArrayList(CObject).empty;
+            try body.append(self.alloc, .{ .divert = nop_path });
+            const body_c = try self.newContainer(null);
+            body_c.content = try body.toOwnedSlice(self.alloc);
+            _ = body_path;
+            var wrapper_content = std.ArrayList(CObject).empty;
+            try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
+            const wrapper = try self.newContainer(null);
+            wrapper.content = try wrapper_content.toOwnedSlice(self.alloc);
+            wrapper.named_children = try self.alloc.dupe(NamedChild, &.{
+                .{ .name = "b", .container = body_c },
+            });
+            try out.append(self.alloc, .{ .container = wrapper });
+        }
+
+        // --- 4. Emit branch wrappers ---
         for (cond.branches, 0..) |branch, i| {
-            const wrapper_idx = initial_len + eval_count + i;
+            const branch_offset: usize = if (needs_empty_true_branch) 1 else 0;
+            const wrapper_idx = initial_len + eval_count + i + branch_offset;
             const body_path = try std.fmt.allocPrint(self.alloc, "{s}.{}.b", .{ parent_path, wrapper_idx });
 
             // Build the body container content.
@@ -1084,10 +1240,6 @@ const Gen = struct {
             if (cond.is_switch) {
                 // Switch body starts with "pop" (consume the duplicated value).
                 try body.append(self.alloc, .pop);
-            }
-            if (!cond.is_inline) {
-                // Block form: leading newline before content.
-                try body.append(self.alloc, .newline);
             }
             if (cond.is_inline) {
                 for (branch.inline_elems) |elem| {
@@ -1109,18 +1261,22 @@ const Gen = struct {
 
             if (cond.is_switch) {
                 // Switch: dup, ev, case_expr, "==", /ev, branch_divert_true
-                try wrapper_content.append(self.alloc, .dup);
-                try wrapper_content.append(self.alloc, .eval_start);
+                // For else branch (null condition): just unconditional divert.
                 if (branch.condition) |case_expr| {
+                    try wrapper_content.append(self.alloc, .dup);
+                    try wrapper_content.append(self.alloc, .eval_start);
                     try self.genExpr(&wrapper_content, case_expr.*);
+                    try wrapper_content.append(self.alloc, .{ .string = "==" });
+                    try wrapper_content.append(self.alloc, .eval_end);
+                    try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
+                } else {
+                    // Else branch in switch: unconditional.
+                    try wrapper_content.append(self.alloc, .{ .divert = ".^.b" });
                 }
-                try wrapper_content.append(self.alloc, .{ .string = "==" });
-                try wrapper_content.append(self.alloc, .eval_end);
-                try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
             } else if (cond.outer_condition != null) {
-                // Outer-condition (boolean or inline): first branch → conditional jump,
-                // subsequent branches → unconditional jump.
-                if (i == 0) {
+                // Outer-condition (boolean or inline): first non-else branch → conditional jump,
+                // else branches (and subsequent branches) → unconditional jump.
+                if (i == 0 and !branch.is_else) {
                     try wrapper_content.append(self.alloc, .{ .cond_divert = ".^.b" });
                 } else {
                     try wrapper_content.append(self.alloc, .{ .divert = ".^.b" });
@@ -1148,13 +1304,15 @@ const Gen = struct {
         }
 
         // --- 4. Switch pop ---
-        if (cond.is_switch) {
+        // Only emit the outer pop when there's no else branch (else branch body already pops).
+        if (cond.is_switch and !switch_has_else_branch) {
             try out.append(self.alloc, .pop);
         }
 
-        // --- 5. Nop + trailing newline ---
+        // --- 5. Nop + trailing newline (inline conditionals only) ---
+        // Block-form branches end with a "\n" from the content's genFlowItem; no extra needed.
         try out.append(self.alloc, .nop);
-        try out.append(self.alloc, .newline);
+        if (cond.is_inline) try out.append(self.alloc, .newline);
     }
 
     fn genExpr(self: *Gen, out: *std.ArrayList(CObject), expr: Parsed.Expression) !void {
@@ -1174,8 +1332,14 @@ const Gen = struct {
                 } else if (self.choice_labels.get(name)) |c_path| {
                     // Choice label in an expression → read-count of that choice.
                     try out.append(self.alloc, .{ .read_count = c_path });
+                } else if (self.gather_label_paths.get(name)) |g_path| {
+                    // Gather label in an expression → read-count of that gather section.
+                    try out.append(self.alloc, .{ .read_count = g_path });
+                } else if (self.stitch_paths.get(name)) |full_path| {
+                    // Bare stitch name in an expression → read-count using full path.
+                    try out.append(self.alloc, .{ .read_count = full_path });
                 } else if (self.knot_names.contains(name)) {
-                    // Bare knot/stitch name in an expression → visit-count check.
+                    // Bare knot name in an expression → visit-count check.
                     try out.append(self.alloc, .{ .read_count = name });
                 } else {
                     try out.append(self.alloc, .{ .var_ref = name });
@@ -1324,6 +1488,12 @@ fn listBuiltinFn(name: []const u8) ?[]const u8 {
     if (std.mem.eql(u8, name, "LIST_INVERT")) return "LIST_INVERT";
     if (std.mem.eql(u8, name, "LIST_RANDOM")) return "lrnd";
     if (std.mem.eql(u8, name, "LIST_RANGE")) return "range";
+    // Cast/math built-ins.
+    if (std.mem.eql(u8, name, "FLOOR")) return "FLOOR";
+    if (std.mem.eql(u8, name, "CEILING")) return "CEILING";
+    if (std.mem.eql(u8, name, "INT")) return "INT";
+    if (std.mem.eql(u8, name, "FLOAT")) return "FLOAT";
+    if (std.mem.eql(u8, name, "RANDOM")) return "rnd";
     return null;
 }
 

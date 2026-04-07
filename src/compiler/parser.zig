@@ -46,6 +46,10 @@ pub const Parser = struct {
     /// Names declared with `~ temp` in the current scope, used to determine
     /// whether `~ name = expr` is a temp reassignment or a global assignment.
     temp_names: std.ArrayList([]const u8),
+    /// When a gather label `(name)` is extracted from a text token that also has
+    /// trailing content, this holds a synthetic token for the trailing text so
+    /// subsequent parsing sees it.  Cleared by eat().
+    overhang_tok: ?Token = null,
 
     pub fn init(alloc: std.mem.Allocator, src: [:0]const u8, tokens: []const Token) Parser {
         return .{
@@ -61,12 +65,17 @@ pub const Parser = struct {
     // -- Cursor helpers -------------------------------------------------------
 
     fn cur(self: *const Parser) Token {
+        if (self.overhang_tok) |ot| return ot;
         if (self.pos >= self.tokens.len)
             return .{ .tag = .eof, .loc = .{ .start = 0, .end = 0 }, .line = 0 };
         return self.tokens[self.pos];
     }
 
     fn eat(self: *Parser) Token {
+        if (self.overhang_tok) |ot| {
+            self.overhang_tok = null;
+            return ot;
+        }
         const t = self.cur();
         if (self.pos < self.tokens.len) self.pos += 1;
         return t;
@@ -78,6 +87,7 @@ pub const Parser = struct {
 
     fn restore(self: *Parser, s: usize) void {
         self.pos = s;
+        self.overhang_tok = null;
     }
 
     fn skipNewlines(self: *Parser) void {
@@ -95,6 +105,26 @@ pub const Parser = struct {
     }
 
     /// Consume a matching pair of { } and everything inside, including nesting.
+    /// Peek: returns true if the current `{` block contains a newline before its matching `}`.
+    /// Does not consume any tokens.
+    fn braceContainsNewline(self: *Parser) bool {
+        if (self.cur().tag != .left_brace) return false;
+        const saved = self.save();
+        defer self.restore(saved);
+        _ = self.eat(); // {
+        var depth: u32 = 1;
+        while (depth > 0) {
+            switch (self.cur().tag) {
+                .eof => return false,
+                .newline => return true,
+                .left_brace => { _ = self.eat(); depth += 1; },
+                .right_brace => { _ = self.eat(); depth -= 1; },
+                else => _ = self.eat(),
+            }
+        }
+        return false;
+    }
+
     fn skipBraceBlock(self: *Parser) void {
         if (self.cur().tag != .left_brace) return;
         _ = self.eat();
@@ -281,8 +311,11 @@ pub const Parser = struct {
                 } else if (try self.parseBraceConditional()) |cond| {
                     try items.append(self.alloc, .{ .conditional = cond });
                 } else if (try self.parseTextLine()) |item| {
-                    // Handles inline expressions {x}{y} and falls back to skipBraceBlock.
+                    // Handles inline expressions {x}{y}.
                     try items.append(self.alloc, item);
+                } else {
+                    // All block parsers failed — skip to prevent infinite loop.
+                    self.skipBraceBlock();
                 }
                 continue :parse self.cur().tag;
             },
@@ -311,9 +344,24 @@ pub const Parser = struct {
         // " function knot_name ===" (with optional "function" modifier keyword).
         var is_function = false;
         var knot_params: []Parsed.Param = &.{};
-        const name = if (self.cur().tag == .text) blk: {
-            const raw = self.eat().loc.slice(self.src);
-            const t = trimLeft(raw);
+        var header_buf = std.ArrayList(u8).empty;
+        while (self.cur().tag != .newline and self.cur().tag != .eof) {
+            switch (self.cur().tag) {
+                .text => try header_buf.appendSlice(self.alloc, self.eat().loc.slice(self.src)),
+                .divert_arrow => {
+                    _ = self.eat();
+                    try header_buf.appendSlice(self.alloc, "->");
+                },
+                .divert_return => {
+                    _ = self.eat();
+                    try header_buf.appendSlice(self.alloc, "->->");
+                },
+                else => _ = self.eat(),
+            }
+        }
+
+        const name = if (header_buf.items.len > 0) blk: {
+            const t = trimLeft(header_buf.items);
             // Check for "function" keyword modifier (e.g. "== function name ==").
             const name_part: []const u8 = if (std.mem.startsWith(u8, t, "function") and
                 (t.len <= 8 or t[8] == ' ' or t[8] == '\t' or t[8] == '('))
@@ -403,6 +451,9 @@ pub const Parser = struct {
                         try elements.append(self.alloc, .{ .sequence = seq });
                     } else if (try self.parseBraceExpr()) |expr| {
                         try elements.append(self.alloc, .{ .inline_expr = expr });
+                    } else if (self.braceContainsNewline()) {
+                        // Block-form brace — stop line here, let main loop handle it.
+                        break :line;
                     } else {
                         self.skipBraceBlock();
                     }
@@ -437,6 +488,9 @@ pub const Parser = struct {
                         try elements.append(self.alloc, .{ .tag = tag_text });
                 },
 
+                // Block terminators — stop the line, don't consume.
+                .right_brace, .gather, .knot_marker, .stitch_marker => break :line,
+
                 // Pipe / other structural chars that can appear in text context.
                 else => _ = self.eat(),
             }
@@ -460,6 +514,62 @@ pub const Parser = struct {
         switch (self.cur().tag) {
             .divert_return => {
                 _ = self.eat();
+                // Check for "->-> target (args)" — tunnel-onwards with explicit target.
+                if (self.cur().tag == .text) {
+                    const raw = self.cur().loc.slice(self.src);
+                    const t = trimLeft(raw);
+                    const name_end = identEnd(t);
+                    if (name_end > 0 and t[0] != '=') {
+                        _ = self.eat(); // consume the text token
+                        const target = t[0..name_end];
+                        var args: []*Parsed.Expression = &.{};
+                        const after_name = trimLeft(t[name_end..]);
+                        if (after_name.len > 0 and after_name[0] == '(') {
+                            // Parse arg list inline.
+                            var arg_buf = std.ArrayList(u8).empty;
+                            const initial = after_name[1..];
+                            var close_found = false;
+                            if (std.mem.indexOfScalar(u8, initial, ')')) |end| {
+                                try arg_buf.appendSlice(self.alloc, initial[0..end]);
+                                close_found = true;
+                            } else {
+                                try arg_buf.appendSlice(self.alloc, initial);
+                                while (!close_found) {
+                                    switch (self.cur().tag) {
+                                    .newline, .eof => break,
+                                    .text => {
+                                        const more = self.eat().loc.slice(self.src);
+                                        if (std.mem.indexOfScalar(u8, more, ')')) |end| {
+                                            try arg_buf.appendSlice(self.alloc, more[0..end]);
+                                            close_found = true;
+                                            } else try arg_buf.appendSlice(self.alloc, more);
+                                        },
+                                        else => _ = self.eat(),
+                                    }
+                                }
+                            }
+                            if (close_found) {
+                                var arg_list = std.ArrayList(*Parsed.Expression).empty;
+                                var it = std.mem.splitScalar(u8, arg_buf.items, ',');
+                                while (it.next()) |raw_arg| {
+                                    const arg_s = std.mem.trim(u8, raw_arg, " \t");
+                                    if (arg_s.len == 0) continue;
+                                    var ep = ExprParser.init(self.alloc, arg_s);
+                                    if (try ep.parseExpr()) |e| {
+                                        try arg_list.append(self.alloc, e);
+                                    } else if (std.mem.startsWith(u8, arg_s, "->")) {
+                                        const divert_target = std.mem.trim(u8, arg_s[2..], " \t");
+                                        const node = try self.alloc.create(Parsed.Expression);
+                                        node.* = .{ .divert_target = divert_target };
+                                        try arg_list.append(self.alloc, node);
+                                    }
+                                }
+                                args = try arg_list.toOwnedSlice(self.alloc);
+                            }
+                        }
+                        return .{ .target = target, .is_tunnel = false, .is_thread = false, .is_tunnel_onwards = true, .args = args };
+                    }
+                }
                 return .{ .target = "->->", .is_tunnel = false, .is_thread = false, .args = &.{} };
             },
             .divert_arrow => {
@@ -478,7 +588,6 @@ pub const Parser = struct {
                         // Collect the args text across multiple tokens until ')'.
                         // Start with whatever is after '(' in the current token.
                         var arg_buf = std.ArrayList(u8).empty;
-                        defer arg_buf.deinit(self.alloc);
                         var close_found = false;
                         const initial = after_name[1..]; // after '('
                         if (std.mem.indexOfScalar(u8, initial, ')')) |end| {
@@ -516,6 +625,11 @@ pub const Parser = struct {
                                 var ep = ExprParser.init(self.alloc, arg_s);
                                 if (try ep.parseExpr()) |e| {
                                     try arg_list.append(self.alloc, e);
+                                } else if (std.mem.startsWith(u8, arg_s, "->")) {
+                                    const divert_target = std.mem.trim(u8, arg_s[2..], " \t");
+                                    const node = try self.alloc.create(Parsed.Expression);
+                                    node.* = .{ .divert_target = divert_target };
+                                    try arg_list.append(self.alloc, node);
                                 }
                             }
                             args = try arg_list.toOwnedSlice(self.alloc);
@@ -530,15 +644,32 @@ pub const Parser = struct {
                 // Trailing ->-> means tunnel-onwards (e.g. "-> knot ->->").
                 var is_tunnel = self.cur().tag == .divert_arrow;
                 var is_tunnel_onwards = false;
+                var onward_target: ?[]const u8 = null;
                 if (is_tunnel) {
                     _ = self.eat();
+                    if (self.cur().tag == .text) {
+                        const raw = self.cur().loc.slice(self.src);
+                        const t = trimLeft(raw);
+                        const onward_end = identEnd(t);
+                        if (onward_end > 0) {
+                            _ = self.eat();
+                            onward_target = t[0..onward_end];
+                        }
+                    }
                 } else if (self.cur().tag == .divert_return) {
                     // -> target ->->  (tunnel onwards: tunnel then immediately return)
                     is_tunnel = true;
                     is_tunnel_onwards = true;
                     _ = self.eat();
                 }
-                return .{ .target = target, .is_tunnel = is_tunnel, .is_thread = false, .is_tunnel_onwards = is_tunnel_onwards, .args = args };
+                return .{
+                    .target = target,
+                    .is_tunnel = is_tunnel,
+                    .is_thread = false,
+                    .is_tunnel_onwards = is_tunnel_onwards,
+                    .onward_target = onward_target,
+                    .args = args,
+                };
             },
             else => return null,
         }
@@ -968,6 +1099,20 @@ pub const Parser = struct {
         } else if (self.cur().tag == .thread_start) {
             // {<- knot | ...} → stopping sequence with thread first branch
             kind = .stopping;
+        } else if (self.cur().tag == .divert_arrow or self.cur().tag == .divert_return) {
+            // { -> target | ... } → stopping sequence with divert first branch.
+            // Only treat as sequence if there's a | separator ahead.
+            // Peek: consume -> and target text, check for |.
+            const peek_saved = self.save();
+            _ = self.eat(); // ->
+            if (self.cur().tag == .text) _ = self.eat(); // target name
+            const next_is_pipe = self.cur().tag == .pipe;
+            self.restore(peek_saved);
+            if (!next_is_pipe) {
+                self.restore(saved);
+                return null;
+            }
+            kind = .stopping;
         } else {
             self.restore(saved);
             return null;
@@ -1123,6 +1268,27 @@ pub const Parser = struct {
             var true_elems = std.ArrayList(Parsed.InlineElement).empty;
             if (after_colon.len > 0)
                 try true_elems.append(self.alloc, .{ .text = after_colon });
+            // Handle \| escape at the boundary: if after_colon ends with \ and next is |,
+            // treat that pipe as a literal character.
+            while (true_elems.items.len > 0 and
+                true_elems.items[true_elems.items.len - 1] == .text and
+                blk: {
+                    const t = true_elems.items[true_elems.items.len - 1].text;
+                    break :blk t.len > 0 and t[t.len - 1] == '\\';
+                } and self.cur().tag == .pipe)
+            {
+                _ = self.eat(); // consume escaped |
+                const prev = true_elems.items[true_elems.items.len - 1].text;
+                var buf = std.ArrayList(u8).empty;
+                try buf.appendSlice(self.alloc, prev[0 .. prev.len - 1]);
+                try buf.append(self.alloc, '|');
+                // Consume any following text token.
+                if (self.cur().tag == .text) {
+                    const t2 = self.eat();
+                    try buf.appendSlice(self.alloc, std.mem.trim(u8, t2.loc.slice(self.src), " \t"));
+                }
+                true_elems.items[true_elems.items.len - 1] = .{ .text = try buf.toOwnedSlice(self.alloc) };
+            }
             // Collect any additional text tokens before `|` or `}`.
             const more = try self.parseInlineBranchElems();
             for (more) |e| try true_elems.append(self.alloc, e);
@@ -1189,11 +1355,41 @@ pub const Parser = struct {
         var elems = std.ArrayList(Parsed.InlineElement).empty;
         while (true) {
             switch (self.cur().tag) {
-                .pipe, .right_brace, .newline, .eof => break,
+                .right_brace, .newline, .eof => break,
+                .pipe => {
+                    // Check for \| escape: if the last elem is .text ending with \,
+                    // treat this pipe as a literal '|' character.
+                    if (elems.items.len > 0 and elems.items[elems.items.len - 1] == .text) {
+                        const prev = elems.items[elems.items.len - 1].text;
+                        if (prev.len > 0 and prev[prev.len - 1] == '\\') {
+                            _ = self.eat(); // consume the |
+                            // Replace trailing \ with |.
+                            var buf = std.ArrayList(u8).empty;
+                            try buf.appendSlice(self.alloc, prev[0 .. prev.len - 1]);
+                            try buf.append(self.alloc, '|');
+                            elems.items[elems.items.len - 1] = .{ .text = try buf.toOwnedSlice(self.alloc) };
+                            continue;
+                        }
+                    }
+                    break;
+                },
                 .text => {
                     const t = self.eat();
                     const s = std.mem.trim(u8, t.loc.slice(self.src), " \t");
                     if (s.len > 0) try elems.append(self.alloc, .{ .text = s });
+                },
+                .divert_arrow, .divert_return => {
+                    if (try self.parseDivertInline()) |d|
+                        try elems.append(self.alloc, .{ .divert = d });
+                },
+                .left_brace => {
+                    if (try self.parseBraceSequenceInline()) |seq| {
+                        try elems.append(self.alloc, .{ .sequence = seq });
+                    } else if (try self.parseBraceExpr()) |expr| {
+                        try elems.append(self.alloc, .{ .inline_expr = expr });
+                    } else {
+                        self.skipBraceBlock();
+                    }
                 },
                 else => _ = self.eat(),
             }
@@ -1220,7 +1416,7 @@ pub const Parser = struct {
                     if (isElseKeyword(before)) {
                         // - else: content  (else/fallthrough branch)
                         const branch_content = try self.parseGatherBranchBody(after);
-                        try branches.append(self.alloc, .{ .condition = null, .content = branch_content });
+                        try branches.append(self.alloc, .{ .condition = null, .is_else = true, .content = branch_content });
                     } else {
                         // - expr: content  (condition branch for switch or multi-branch)
                         var ep2 = ExprParser.init(self.alloc, before);
@@ -1280,7 +1476,7 @@ pub const Parser = struct {
         else
             "";
         const content = try self.parseGatherBranchBody(after);
-        return Parsed.Branch{ .condition = null, .content = content };
+        return Parsed.Branch{ .condition = null, .is_else = true, .content = content };
     }
 
     // -- Choices & gathers ----------------------------------------------------
@@ -1421,13 +1617,28 @@ pub const Parser = struct {
         }
 
         // Optional label `(name)` — extract if present.
+        // Handles: `- (name)` (label only), `- (name) text` (label + same-line text).
         var label: ?[]const u8 = null;
         if (self.cur().tag == .text) {
-            const tok_text = self.cur().loc.slice(self.src);
-            const trimmed = std.mem.trim(u8, tok_text, " \t");
-            if (trimmed.len >= 2 and trimmed[0] == '(' and trimmed[trimmed.len - 1] == ')') {
-                label = trimmed[1 .. trimmed.len - 1];
-                _ = self.eat();
+            const orig_tok = self.cur();
+            const tok_text = orig_tok.loc.slice(self.src);
+            const trimmed = trimLeft(tok_text);
+            if (trimmed.len >= 2 and trimmed[0] == '(') {
+                if (std.mem.indexOfScalar(u8, trimmed, ')')) |close| {
+                    label = trimmed[1..close];
+                    _ = self.eat();
+                    // If there's text after the closing `)`, store it as an overhang token
+                    // so the content parser still sees it as a text token.
+                    const rest = trimLeft(trimmed[close + 1 ..]);
+                    if (rest.len > 0) {
+                        const rest_start = @intFromPtr(rest.ptr) - @intFromPtr(self.src.ptr);
+                        self.overhang_tok = .{
+                            .tag = .text,
+                            .loc = .{ .start = @intCast(rest_start), .end = orig_tok.loc.end },
+                            .line = orig_tok.line,
+                        };
+                    }
+                }
             }
         }
         return .{ .gather = .{ .nesting = nesting, .label = label } };
@@ -1536,6 +1747,9 @@ pub const Parser = struct {
                         try items.append(self.alloc, .{ .conditional = cond });
                     } else if (try self.parseTextLine()) |item| {
                         try items.append(self.alloc, item);
+                    } else {
+                        // All block parsers failed — skip to prevent infinite loop.
+                        self.skipBraceBlock();
                     }
                 },
 
@@ -1804,6 +2018,14 @@ const ExprParser = struct {
             return self.parseNumberLiteral();
         }
         if (std.ascii.isDigit(s[0])) {
+            // Check if the leading digits are part of an identifier (e.g. "512x2").
+            // Ink allows identifiers that start with digits. Scan past leading digits;
+            // if the next char is alphabetic or '_', it's an identifier, not a number.
+            var di: usize = 0;
+            while (di < s.len and std.ascii.isDigit(s[di])) di += 1;
+            if (di < s.len and (std.ascii.isAlphabetic(s[di]) or s[di] == '_')) {
+                return self.parseIdentOrCall();
+            }
             return self.parseNumberLiteral();
         }
         if (std.ascii.isAlphabetic(s[0]) or s[0] == '_') {
@@ -1883,10 +2105,18 @@ const ExprParser = struct {
         }
 
         // Attempt to parse comma-separated identifiers (possibly "origin.item").
+        // Items must start with a letter or underscore (not a digit).
         var items = std.ArrayList([]const u8).empty;
         while (true) {
             self.skipWs();
             const start = self.pos;
+            // List item names must start with a letter or underscore, not a digit.
+            if (self.pos >= self.src.len or
+                (!std.ascii.isAlphabetic(self.src[self.pos]) and self.src[self.pos] != '_'))
+            {
+                self.pos = saved;
+                return null;
+            }
             while (self.pos < self.src.len) {
                 const c = self.src[self.pos];
                 if (!std.ascii.isAlphanumeric(c) and c != '_' and c != '.') break;

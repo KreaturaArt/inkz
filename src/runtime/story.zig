@@ -918,9 +918,21 @@ pub const Story = struct {
             const obj = self.state.output_stream.items[i];
             switch (obj) {
                 .glue => {
-                    // Trim trailing newlines from accumulated text
-                    while (buf.items.len > 0 and buf.items[buf.items.len - 1] == '\n') {
-                        buf.items.len -= 1;
+                    // Trim trailing newlines (and any inline whitespace between them and end)
+                    // Scan backwards: skip spaces/tabs, if we hit a '\n' remove from there onward.
+                    {
+                        var j = buf.items.len;
+                        while (j > 0) {
+                            const c = buf.items[j - 1];
+                            if (c == ' ' or c == '\t') {
+                                j -= 1;
+                            } else if (c == '\n') {
+                                buf.items.len = j - 1;
+                                break;
+                            } else {
+                                break;
+                            }
+                        }
                     }
                     // Skip any "\n" strings and chained glue that follow
                     while (i + 1 < self.state.output_stream.items.len) {
@@ -1206,11 +1218,19 @@ pub const Story = struct {
             .pop_function => {
                 const fn_output_start = self.state.call_stack.currentElement().output_stream_index_at_push;
                 try self.state.call_stack.pop(.function);
-                // Trim trailing newlines the function body may have left in the output stream,
-                // but only from fn_output_start onward to preserve output written before the call.
                 trimNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                 trimLeadingNewlinesFromOutputStream(&self.state.output_stream, fn_output_start);
                 self.advancePointer(); // advance past the function call divert
+                // If the next instruction is "pop" (expr_stmt context, not inline "out"),
+                // and the function produced visible text, add back one "\n" so that the
+                // function's output is properly separated from the next text line.
+                const next = self.currentObject();
+                const is_expr_stmt = next != null and
+                    next.?.* == .control_command and
+                    next.?.*.control_command == .pop_eval_stack;
+                if (is_expr_stmt and streamSliceHasVisibleContent(self.state.output_stream.items[fn_output_start..])) {
+                    self.state.output_stream.appendAssumeCapacity(.{ .string = "\n" });
+                }
                 return .ok;
             },
             .pop_tunnel => {
@@ -2018,6 +2038,19 @@ pub const Story = struct {
         }
     }
 
+    /// Returns true if the stream slice contains any visible text content (a non-"\n" string,
+    /// integer, float, bool, or list) that would appear in the output.
+    fn streamSliceHasVisibleContent(items: []const RuntimeObject) bool {
+        for (items) |item| {
+            switch (item) {
+                .string => |s| if (!std.mem.eql(u8, s, "\n")) return true,
+                .int, .float, .bool, .list => return true,
+                else => {},
+            }
+        }
+        return false;
+    }
+
     /// Remove leading "\n" RuntimeObjects from the function's portion of the output stream.
     /// `start` is the index at which the function began writing (saved at call time).
     fn trimLeadingNewlinesFromOutputStream(stream: *std.ArrayList(RuntimeObject), start: usize) void {
@@ -2043,6 +2076,17 @@ pub const Story = struct {
         const elem = self.state.call_stack.currentElement();
         elem.current_pointer.index += 1;
         self.trimContainerEndIfNeeded();
+    }
+
+    /// Return the object at the current execution pointer, or null if pointer is null/OOB.
+    fn currentObject(self: *const Story) ?*const RuntimeObject {
+        const elem = self.currentElementConst();
+        const ptr = elem.current_pointer;
+        if (ptr.isNull()) return null;
+        const container = &self.containers[ptr.container_idx];
+        const idx = ptr.index;
+        if (idx < 0 or idx >= @as(i32, @intCast(container.content.len))) return null;
+        return &container.content[@intCast(idx)];
     }
 
     /// Pop past ended containers, walking up the parent chain.

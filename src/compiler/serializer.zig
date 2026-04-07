@@ -123,6 +123,11 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try writeJsonStr(alloc, buf, t);
             try buf.appendSlice(alloc, "\"}");
         },
+        .tunnel_divert_via_var => |name| {
+            try buf.appendSlice(alloc, "{\"->t->\":\"");
+            try writeJsonStr(alloc, buf, name);
+            try buf.appendSlice(alloc, "\",\"var\":true}");
+        },
         .container => |c| try serContainer(alloc, buf, c),
         .eval_start => try buf.appendSlice(alloc, "\"ev\""),
         .eval_end => try buf.appendSlice(alloc, "\"/ev\""),
