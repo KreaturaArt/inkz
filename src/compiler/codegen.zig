@@ -358,7 +358,7 @@ const Gen = struct {
         switch (item) {
             .text => |tl| {
                 for (tl.elements) |elem| {
-                    try self.genInlineElement(out, elem);
+                    try self.genInlineElement(out, elem, parent_path);
                 }
                 if (tl.trailing_newline) {
                     try out.append(self.alloc, .newline);
@@ -385,7 +385,7 @@ const Gen = struct {
             .choice => {},
             .gather => {},
             .sequence => |seq| {
-                try self.genSequence(out, seq);
+                try self.genSequence(out, seq, parent_path);
                 self.last_was_content = true;
             },
             .thread_start => |knot_name| {
@@ -546,7 +546,7 @@ const Gen = struct {
         }
     }
 
-    fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement) error{OutOfMemory}!void {
+    fn genInlineElement(self: *Gen, out: *std.ArrayList(CObject), elem: Parsed.InlineElement, parent_path: []const u8) error{OutOfMemory}!void {
         switch (elem) {
             .text => |t| {
                 var remaining = t;
@@ -570,7 +570,7 @@ const Gen = struct {
                 try out.append(self.alloc, .eval_output);
                 try out.append(self.alloc, .eval_end);
             },
-            .sequence => |seq| try self.genSequence(out, seq),
+            .sequence => |seq| try self.genSequence(out, seq, parent_path),
             .tag => |tag_text| {
                 try out.append(self.alloc, .{ .string = "#" });
                 try out.append(self.alloc, .{ .text = tag_text });
@@ -584,7 +584,7 @@ const Gen = struct {
     /// Generate a sequence (alternative) as a dispatch container + branch containers.
     /// Pattern: ev, visit, CLAMP, OP, /ev, (ev, du, i, ==, /ev, {->si,c})*N, nop
     ///          named children s0..s(total-1): each = [pop, ...content..., {->.^.^.N}]
-    fn genSequence(self: *Gen, out: *std.ArrayList(CObject), seq: Parsed.Sequence) error{OutOfMemory}!void {
+    fn genSequence(self: *Gen, out: *std.ArrayList(CObject), seq: Parsed.Sequence, parent_path: []const u8) error{OutOfMemory}!void {
         const n_source = seq.branches.len;
         const total: usize = switch (seq.kind) {
             .once_only => n_source + 1, // extra empty branch
@@ -597,6 +597,13 @@ const Gen = struct {
         // End divert path from inside branch si (named child of dispatch):
         //   .^ → si → dispatch, .^ → dispatch (parent of si), .N → dispatch[N] = nop
         const end_path = try std.fmt.allocPrint(self.alloc, ".^.^.{}", .{nop_index});
+
+        const dispatch_pos = out.items.len;
+        const dispatch_abs = if (parent_path.len == 0)
+            try std.fmt.allocPrint(self.alloc, "{}", .{dispatch_pos})
+        else
+            try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ parent_path, dispatch_pos });
+        const dispatch_nop_abs = try std.fmt.allocPrint(self.alloc, "{s}.{}", .{ dispatch_abs, nop_index });
 
         // Create dispatch container (visits counted for sequence index computation)
         const dispatch = try self.newContainer(null);
@@ -654,15 +661,27 @@ const Gen = struct {
             if (i < n_source) {
                 if (!seq.is_inline) {
                     // Block form: full flow items (each adds its own trailing \n).
-                    for (seq.branches[i]) |item| {
-                        try self.genFlowItem(&bc, item, "");
+                    if (itemsHaveChoices(seq.branches[i])) {
+                        try bc.append(self.alloc, .newline);
+                        const wrapper = try self.newContainer(null);
+                        const wrapper_abs = try std.fmt.allocPrint(
+                            self.alloc,
+                            "{s}.s{}.{d}",
+                            .{ dispatch_abs, i, bc.items.len },
+                        );
+                        try self.genWeave(seq.branches[i], wrapper, wrapper_abs, false, 1, dispatch_nop_abs, "");
+                        try bc.append(self.alloc, .{ .container = wrapper });
+                    } else {
+                        for (seq.branches[i]) |item| {
+                            try self.genFlowItem(&bc, item, dispatch_abs);
+                        }
                     }
                 } else {
                     // Inline form: emit inline elements without surrounding newlines
                     for (seq.branches[i]) |item| {
                         switch (item) {
-                            .text => |tl| for (tl.elements) |elem| try self.genInlineElement(&bc, elem),
-                            else => try self.genFlowItem(&bc, item, ""),
+                            .text => |tl| for (tl.elements) |elem| try self.genInlineElement(&bc, elem, dispatch_abs),
+                            else => try self.genFlowItem(&bc, item, dispatch_abs),
                         }
                     }
                 }
@@ -1054,7 +1073,7 @@ const Gen = struct {
             try main_content.append(self.alloc, .{ .choice_point = .{ .path = cp_path, .flags = flg } });
 
             var c_body = std.ArrayList(CObject).empty;
-            const has_following = try self.genChoiceFollowingContent(&c_body, ch.following_content);
+            const has_following = try self.genChoiceFollowingContent(&c_body, ch.following_content, c_abs);
             if (has_following) {
                 try c_body.append(self.alloc, .newline);
             }
@@ -1075,7 +1094,7 @@ const Gen = struct {
             try main_content.append(self.alloc, .eval_start);
             try main_content.append(self.alloc, .{ .string = "str" });
             for (ch.choice_only_content) |elem| {
-                try self.genInlineElement(main_content, elem);
+                try self.genInlineElement(main_content, elem, holder_abs_path);
             }
             try main_content.append(self.alloc, .{ .string = "/str" });
             // Condition expressions go between /str and /ev.
@@ -1090,7 +1109,7 @@ const Gen = struct {
 
             // c-N body: following_content (if any) then "\n" then inner.
             var c_body = std.ArrayList(CObject).empty;
-            _ = try self.genChoiceFollowingContent(&c_body, ch.following_content);
+            _ = try self.genChoiceFollowingContent(&c_body, ch.following_content, c_abs);
             try c_body.append(self.alloc, .newline);
             if (has_nested_weave) {
                 try self.genNestedWeave(&c_body, ch.inner_content, c_abs, 1, gather_path);
@@ -1139,7 +1158,7 @@ const Gen = struct {
             if (has_choice_only) {
                 try si_body.append(self.alloc, .{ .string = "str" });
                 for (ch.choice_only_content) |elem| {
-                    try self.genInlineElement(&si_body, elem);
+                    try self.genInlineElement(&si_body, elem, sub_inner_abs);
                 }
                 try si_body.append(self.alloc, .{ .string = "/str" });
             }
@@ -1150,8 +1169,9 @@ const Gen = struct {
 
             // "s" named child: start_content + divert_via_var "$r".
             var s_body = std.ArrayList(CObject).empty;
+            const s_abs = try std.fmt.allocPrint(self.alloc, "{s}.s", .{sub_inner_abs});
             for (ch.start_content) |elem| {
-                try self.genInlineElement(&s_body, elem);
+                try self.genInlineElement(&s_body, elem, s_abs);
             }
             try s_body.append(self.alloc, .{ .divert_via_var = "$r" });
             const s_c = try self.newContainer(null);
@@ -1177,7 +1197,7 @@ const Gen = struct {
             try c_body.append(self.alloc, .{ .container = r2_label });
             // Following content (inline elements on the choice line after brackets).
             for (ch.following_content) |elem| {
-                try self.genInlineElement(&c_body, elem);
+                try self.genInlineElement(&c_body, elem, c_abs);
             }
             try c_body.append(self.alloc, .newline);
             // Inner content (body lines after the choice line).
@@ -1218,13 +1238,13 @@ const Gen = struct {
         try out.append(self.alloc, .{ .container = wrapper });
     }
 
-    fn genChoiceFollowingContent(self: *Gen, out: *std.ArrayList(CObject), elems: []const Parsed.InlineElement) error{OutOfMemory}!bool {
+    fn genChoiceFollowingContent(self: *Gen, out: *std.ArrayList(CObject), elems: []const Parsed.InlineElement, parent_path: []const u8) error{OutOfMemory}!bool {
         var emitted = false;
         for (elems) |elem| {
             if (elem == .divert and elem.divert.target.len == 0 and !elem.divert.is_tunnel_onwards) {
                 continue;
             }
-            try self.genInlineElement(out, elem);
+            try self.genInlineElement(out, elem, parent_path);
             emitted = true;
         }
         return emitted;
@@ -1299,7 +1319,7 @@ const Gen = struct {
             }
             if (cond.is_inline) {
                 for (branch.inline_elems) |elem| {
-                    try self.genInlineElement(&body, elem);
+                    try self.genInlineElement(&body, elem, body_path);
                 }
             } else {
                 if (itemsHaveChoices(branch.content)) {

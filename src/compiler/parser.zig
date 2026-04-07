@@ -524,8 +524,9 @@ pub const Parser = struct {
                 .text => {
                     const t = self.eat();
                     const ttext = t.loc.slice(self.src);
-                    // Skip empty/whitespace-only text tokens.
-                    if (std.mem.indexOfNone(u8, ttext, " \t") != null)
+                    // Preserve literal intra-line whitespace between visible elements,
+                    // but still drop pure indentation at the start of a line.
+                    if (std.mem.indexOfNone(u8, ttext, " \t") != null or elements.items.len > 0)
                         try elements.append(self.alloc, .{ .text = ttext });
                 },
 
