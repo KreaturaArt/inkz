@@ -1832,7 +1832,7 @@ pub const Parser = struct {
         var items = std.ArrayList(Parsed.FlowItem).empty;
         while (true) {
             switch (self.cur().tag) {
-                .eof, .knot_marker, .stitch_marker => break,
+                .eof, .knot_marker, .stitch_marker, .right_brace => break,
 
                 .newline => _ = self.eat(),
 
@@ -1903,7 +1903,7 @@ pub const Parser = struct {
         var items = std.ArrayList(Parsed.FlowItem).empty;
         loop: while (true) {
             switch (self.cur().tag) {
-                .eof, .knot_marker, .right_brace => break :loop,
+                .eof, .knot_marker, .right_brace, .gather => break :loop,
 
                 .newline => _ = self.eat(),
 
@@ -1937,11 +1937,6 @@ pub const Parser = struct {
 
                 .choice_once, .choice_sticky => {
                     if (try self.parseChoiceItem()) |item|
-                        try items.append(self.alloc, item);
-                },
-
-                .gather => {
-                    if (try self.parseGatherItem()) |item|
                         try items.append(self.alloc, item);
                 },
 
