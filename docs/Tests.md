@@ -8,7 +8,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - Original fixtures: `169` `.ink` files
 - Compiled fixtures: `170` `.ink.json` files
 - Auxiliary compiled files: `7` `.import` files
-- Original fixtures unused in direct unit tests: `28`
+- Original fixtures unused in direct unit tests: `27`
 - Compiled fixtures unused in direct unit tests: `3`
 
 ## Original Fixtures
@@ -54,7 +54,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `not_true.ink`
   - "Compiler e2e: booleans/not_true.ink" — `src/test/compiler_helpers.zig`
 - `three_greater_than_one.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: booleans/three_greater_than_one.ink" — `src/test/compiler_helpers.zig`
 - `true.ink`
   - Unused in direct unit tests
 - `true_equals_one.ink`
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/booleans/three_greater_than_one.ink`
 - `runtime/booleans/true.ink`
 - `runtime/booleans/true_equals_one.ink`
 - `runtime/booleans/true_plus_one.ink`
