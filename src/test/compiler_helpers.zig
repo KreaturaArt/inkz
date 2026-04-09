@@ -1759,3 +1759,9 @@ test "Compiler e2e: booleans/true_plus_one.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("2\n", out);
 }
+test "Compiler e2e: booleans/true_plus_true.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/booleans/true_plus_true.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("2\n", out);
+}
