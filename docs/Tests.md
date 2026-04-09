@@ -8,7 +8,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - Original fixtures: `169` `.ink` files
 - Compiled fixtures: `170` `.ink.json` files
 - Auxiliary compiled files: `7` `.import` files
-- Original fixtures unused in direct unit tests: `38`
+- Original fixtures unused in direct unit tests: `37`
 - Compiled fixtures unused in direct unit tests: `3`
 
 ## Original Fixtures
@@ -28,7 +28,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `variable_observation.ink`
   - "Compiler e2e: player/variable_observation.ink" — `src/test/compiler_helpers.zig`
 - `variables.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: player/variables.ink" — `src/test/compiler_helpers.zig`
 
 #### `runtime/bindings/`
 
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `player/variables.ink`
 - `runtime/bindings/external_binding.ink`
 - `runtime/bindings/game_ink_back_and_forth.ink`
 - `runtime/bindings/lookup_safe_or_not.ink`
