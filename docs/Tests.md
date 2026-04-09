@@ -8,7 +8,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - Original fixtures: `169` `.ink` files
 - Compiled fixtures: `170` `.ink.json` files
 - Auxiliary compiled files: `7` `.import` files
-- Original fixtures unused in direct unit tests: `24`
+- Original fixtures unused in direct unit tests: `23`
 - Compiled fixtures unused in direct unit tests: `3`
 
 ## Original Fixtures
@@ -62,7 +62,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `true_plus_one.ink`
   - "Compiler e2e: booleans/true_plus_one.ink" — `src/test/compiler_helpers.zig`
 - `true_plus_true.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: booleans/true_plus_true.ink" — `src/test/compiler_helpers.zig`
 - `two_plus_true.ink`
   - Unused in direct unit tests
 
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/booleans/true_plus_true.ink`
 - `runtime/booleans/two_plus_true.ink`
 - `runtime/builtins/read_count_variable_target.ink`
 - `runtime/builtins/turns_since_with_variable_target.ink`
