@@ -1536,3 +1536,10 @@ test "Compiler e2e: player/functions.ink" {
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "The count is 7") != null);
 }
+
+test "Compiler e2e: player/ink_error.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "player/ink_error.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("\n", out);
+}
