@@ -1565,3 +1565,17 @@ test "Compiler e2e: player/variable_observation.ink" {
     try std.testing.expect(n != null);
     if (n) |v| try std.testing.expectEqual(RuntimeObject{ .int = 3 }, v);
 }
+
+test "Compiler e2e: player/variables.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "player/variables.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello World") != null);
+    try std.testing.expect(story.currentChoices().len >= 1);
+}
