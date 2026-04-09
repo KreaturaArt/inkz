@@ -3,7 +3,7 @@ id: TASK-98
 title: >-
   Tests: add direct coverage for
   runtime/bindings/lookup_safe_or_not_with_post_glue.ink
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:53'
 labels:

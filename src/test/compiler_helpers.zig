@@ -375,7 +375,6 @@ test "Compiler e2e: const.ink fixture" {
 
 // ── Conditional tests ─────────────────────────────────────────────────────────
 
-
 test "Compiler e2e: inline if/else — false branch taken" {
     const alloc = std.testing.allocator;
     const out = try compileAndRun(alloc, "{false:not true|true}\n", &.{});
@@ -719,7 +718,6 @@ test "Compiler e2e: standalone function call ~ f()" {
     try std.testing.expectEqualStrings("5\n", out);
 }
 
-
 test "Compiler e2e: multiple_constant_references.ink" {
     const alloc = std.testing.allocator;
     const out = try compileFixtureAndRun(alloc, "runtime/variables/multiple_constant_references.ink", &.{});
@@ -918,7 +916,6 @@ test "Compiler e2e: newline_at_start_of_multiline_conditional.ink" {
     try std.testing.expect(std.mem.indexOf(u8, out, "x") != null);
 }
 
-
 test "Compiler e2e: LIST more_list_operations inline" {
     const alloc = std.testing.allocator;
     const src =
@@ -951,7 +948,7 @@ test "Compiler e2e: TURNS() built-in" {
 
 test "Compiler e2e: TURNS_SINCE built-in" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since.ink", &.{0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since.ink", &.{ 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(out.len > 0);
 }
@@ -1307,7 +1304,7 @@ test "Compiler e2e: weaves/weave_within_sequence.ink" {
 
 test "Compiler e2e: weaves/unbalanced_weave_indentation.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/weaves/unbalanced_weave_indentation.ink", &.{0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/weaves/unbalanced_weave_indentation.ink", &.{ 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "First") != null);
 }
@@ -1316,7 +1313,7 @@ test "Compiler e2e: weaves/unbalanced_weave_indentation.ink" {
 
 test "Compiler e2e: choices/once_only_choices_with_own_content.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/choices/once_only_choices_with_own_content.ink", &.{0, 0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/once_only_choices_with_own_content.ink", &.{ 0, 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "first time") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "finished eating") != null);
@@ -1418,7 +1415,7 @@ test "Compiler e2e: diverts/tunnel_onwards_with_param_default_choice.ink" {
 
 test "Compiler e2e: diverts/path_to_self.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/diverts/path_to_self.ink", &.{0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/diverts/path_to_self.ink", &.{ 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "A") != null);
 }
@@ -1449,7 +1446,7 @@ test "Compiler e2e: knots/knot_stitch_gather_counts.ink" {
 
 test "Compiler e2e: knots/knot_thread_interaction.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_thread_interaction.ink", &.{0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/knots/knot_thread_interaction.ink", &.{ 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "blah blah") != null);
 }
@@ -1465,7 +1462,7 @@ test "Compiler e2e: knots/knot_thread_interaction_2.ink" {
 
 test "Compiler e2e: threads/multi_thread.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/threads/multi_thread.ink", &.{0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/threads/multi_thread.ink", &.{ 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "place 1") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "The end") != null);
@@ -1503,7 +1500,7 @@ test "Compiler e2e: builtins/read_count_dot_separated_path.ink" {
 
 test "Compiler e2e: builtins/turns_since_nested.ink" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since_nested.ink", &.{0, 0});
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since_nested.ink", &.{ 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(out.len > 0);
 }
@@ -1651,6 +1648,22 @@ test "Compiler e2e: runtime/bindings/game_ink_back_and_forth.ink" {
 test "Compiler e2e: runtime/bindings/lookup_safe_or_not.ink" {
     const alloc = std.testing.allocator;
     const json = try compileFixture(alloc, "runtime/bindings/lookup_safe_or_not.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.bindExternalFunction("myAction", extNoOp, .{});
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "One") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Two") != null);
+}
+
+test "Compiler e2e: runtime/bindings/lookup_safe_or_not_with_post_glue.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/bindings/lookup_safe_or_not_with_post_glue.ink");
     defer alloc.free(json);
 
     var story = try Story.initFromJson(alloc, json);
