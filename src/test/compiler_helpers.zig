@@ -45,6 +45,10 @@ fn extGameInc(args: []const RuntimeObject) ?RuntimeObject {
     return .{ .int = x + 1 };
 }
 
+fn extNoOp(_: []const RuntimeObject) ?RuntimeObject {
+    return null;
+}
+
 /// Compile `ink_source`, run the story through `choices`, and return all output.
 /// Caller owns the returned slice.
 pub fn compileAndRun(
@@ -1642,4 +1646,20 @@ test "Compiler e2e: runtime/bindings/game_ink_back_and_forth.ink" {
 
     _ = try story.evaluateFunction("topExternal", &.{.{ .int = 5 }}, &text_out);
     try std.testing.expect(std.mem.indexOf(u8, text_out.items, "In top external") != null);
+}
+
+test "Compiler e2e: runtime/bindings/lookup_safe_or_not.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/bindings/lookup_safe_or_not.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.bindExternalFunction("myAction", extNoOp, .{});
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "One") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Two") != null);
 }
