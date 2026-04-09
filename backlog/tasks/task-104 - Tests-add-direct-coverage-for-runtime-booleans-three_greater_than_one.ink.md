@@ -1,7 +1,7 @@
 ---
 id: TASK-104
 title: 'Tests: add direct coverage for runtime/booleans/three_greater_than_one.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:54'
 labels:
