@@ -1,207 +1,438 @@
-## Original fixtures
+## Fixture Test Coverage
 
-### 26 directories, 169 files
+This document is generated from direct fixture references in `src/**/*.zig` test code.
+A fixture is marked unused when no unit test references that file directly; it may still be exercised indirectly via another fixture, for example `INCLUDE` targets.
 
-test/fixture/original/
-├── player
-│   ├── error_and_exceptions.ink
-│   ├── flow.ink
-│   ├── functions.ink
-│   ├── ink_error.ink
-│   ├── ink_list_roundtrip.ink
-│   ├── variable_observation.ink
-│   └── variables.ink
-└── runtime
- ├── bindings
- │   ├── external_binding.ink
- │   ├── game_ink_back_and_forth.ink
- │   ├── lookup_safe_or_not_with_post_glue.ink
- │   ├── lookup_safe_or_not.ink
- │   └── variable_observer.ink
- ├── booleans
- │   ├── false_plus_false.ink
- │   ├── list_hasnt.ink
- │   ├── not_one.ink
- │   ├── not_true.ink
- │   ├── three_greater_than_one.ink
- │   ├── true_equals_one.ink
- │   ├── true_plus_one.ink
- │   ├── true_plus_true.ink
- │   ├── true.ink
- │   └── two_plus_true.ink
- ├── builtins
- │   ├── floor_ceiling_and_casts.ink
- │   ├── read_count_across_callstack.ink
- │   ├── read_count_across_threads.ink
- │   ├── read_count_dot_separated_path.ink
- │   ├── read_count_variable_target.ink
- │   ├── turns_since_nested.ink
- │   ├── turns_since_with_variable_target.ink
- │   ├── turns_since.ink
- │   ├── turns.ink
- │   ├── visit_count_bug_due_to_nested_containers.ink
- │   └── visit_counts_when_choosing.ink
- ├── callstack
- │   ├── callstack_evaluation.ink
- │   └── clean_callstack_reset_on_path_choice.ink
- ├── choices
- │   ├── choice_count.ink
- │   ├── choice_diverts_to_done.ink
- │   ├── choice_thread_forking.ink
- │   ├── choice_with_brackets_only.ink
- │   ├── conditional_choices.ink
- │   ├── default_choices.ink
- │   ├── default_simple_gather.ink
- │   ├── fallback_choice_on_thread.ink
- │   ├── gather_choice_same_line.ink
- │   ├── has_read_on_choice.ink
- │   ├── logic_in_choices.ink
- │   ├── non_text_in_choice_inner_content.ink
- │   ├── once_only_choices_can_link_back_to_self.ink
- │   ├── once_only_choices_with_own_content.ink
- │   ├── should_not_gather_due_to_choice.ink
- │   ├── state_rollback_over_default_choice.ink
- │   ├── sticky_choices_stay_sticky.ink
- │   └── various_default_choices.ink
- ├── conditions
- │   ├── all_switch_branches_fail_is_clean.ink
- │   ├── conditionals.ink
- │   ├── else_branches.ink
- │   ├── empty_multiline_conditional_branch.ink
- │   └── trivial_condition.ink
- ├── diverts
- │   ├── basic_tunnel.ink
- │   ├── compare_divert_targets.ink
- │   ├── complex_tunnels.ink
- │   ├── divert_in_conditional.ink
- │   ├── divert_targets_with_parameters.ink
- │   ├── divert_to_weave_points.ink
- │   ├── done_stops_thread.ink
- │   ├── path_to_self.ink
- │   ├── same_line_divert_is_inline.ink
- │   ├── tunnel_onwards_after_tunnel.ink
- │   ├── tunnel_onwards_divert_after_with_arg.ink
- │   ├── tunnel_onwards_divert_override.ink
- │   ├── tunnel_onwards_to_variable_divert_target.ink
- │   ├── tunnel_onwards_with_param_default_choice.ink
- │   └── tunnel_vs_thread_behaviour.ink
- ├── evaluation
- │   ├── arithmetic.ink
- │   ├── basic_string_literals.ink
- │   ├── evaluating_function_variable_state_bug.ink
- │   ├── evaluating_ink_functions_from_game_2.ink
- │   ├── evaluating_ink_functions_from_game.ink
- │   ├── evaluation_stack_leaks.ink
- │   ├── factorial_by_reference.ink
- │   ├── factorial_recursive.ink
- │   ├── increment.ink
- │   └── literal_unary.ink
- ├── extra
- │   ├── arithmetic_2.ink
- │   └── list_comparison.ink
- ├── glue
- │   ├── implicit_inline_glue_b.ink
- │   ├── implicit_inline_glue_c.ink
- │   ├── implicit_inline_glue.ink
- │   ├── left_right_glue_matching.ink
- │   └── simple_glue.ink
- ├── knots
- │   ├── knot_do_not_gather.ink
- │   ├── knot_stitch_gather_counts.ink
- │   ├── knot_thread_interaction_2.ink
- │   └── knot_thread_interaction.ink
- ├── lists
- │   ├── contains_empty_list_always_false.ink
- │   ├── empty_list_origin_after_assignment.ink
- │   ├── empty_list_origin.ink
- │   ├── list_basic_operations.ink
- │   ├── list_mixed_items.ink
- │   ├── list_random.ink
- │   ├── list_range.ink
- │   ├── list_save_load.ink
- │   └── more_list_operations.ink
- ├── logic
- │   ├── logic_lines_with_newlines.ink
- │   ├── multiline_logic_with_glue.ink
- │   ├── nested_pass_by_reference.ink
- │   └── print_num.ink
- ├── misc
- │   ├── empty.ink
- │   ├── end_of_content.ink
- │   ├── end.ink
- │   ├── end2.ink
- │   ├── escape_character.ink
- │   ├── hello_world.ink
- │   ├── identifiers_can_start_with_number.ink
- │   ├── include.ink
- │   ├── includes
- │   │   ├── included_file_2.ink
- │   │   ├── included_file_3.ink
- │   │   ├── included_file_4.ink
- │   │   └── included_file.ink
- │   ├── nested_include.ink
- │   ├── quote_character_significance.ink
- │   └── whitespace.ink
- ├── multiflow
- │   ├── multi_flow_basics.ink
- │   └── multi_flow_save_load_threads.ink
- ├── newlines
- │   ├── newline_at_start_of_multiline_conditional.ink
- │   ├── newline_consistency_1.ink
- │   ├── newline_consistency_2.ink
- │   ├── newline_consistency_3.ink
- │   ├── newlines_trimming_with_func_external_fallback.ink
- │   └── newlines_with_string_eval.ink
- ├── sequences
- │   ├── all_sequence_types.ink
- │   ├── blanks_in_inline_sequences.ink
- │   ├── empty_sequence_content.ink
+## Summary
 
-│   ├── gather_read_count_with_initial_sequence.ink
- │   ├── leading_newline_multiline_sequence.ink
- │   └── shuffle_stack_muddying.ink
- ├── strings
- │   ├── string_constants.ink
- │   ├── string_contains.ink
- │   ├── string_type_coercion.ink
- │   └── strings_in_choices.ink
- ├── tags
- │   ├── tags_dynamic_content.ink
- │   ├── tags_in_choice.ink
- │   ├── tags_in_seq.ink
- │   └── tags.ink
- ├── threads
- │   ├── multi_thread.ink
- │   ├── thread_done.ink
- │   ├── thread_in_logic.ink
- │   └── top_flow_terminator_should_not_kill_thread_choices.ink
- ├── variables
- │   ├── const.ink
- │   ├── multiple_constant_references.ink
- │   ├── set_non_existant_variable.ink
- │   ├── temp_global_conflict.ink
- │   ├── temp_not_found.ink
- │   ├── temp_usage_in_options.ink
- │   ├── temporaries_at_global_scope.ink
- │   ├── variable_declaration_in_conditional.ink
- │   ├── variable_divert_target.ink
- │   ├── variable_get_set_api.ink
- │   ├── variable_pointer_ref_from_knot.ink
- │   ├── variable_swap_recurse.ink
- │   ├── variable_tunnel.ink
- │   ├── warn_variable_not_found_1.ink
- │   └── warn_variable_not_found_2.ink
- └── weaves
- ├── conditional_choice_in_weave_2.ink
- ├── conditional_choice_in_weave.ink
- ├── unbalanced_weave_indentation.ink
- ├── weave_gathers.ink
- ├── weave_options.ink
- └── weave_within_sequence.ink
+- Original fixtures: `169` `.ink` files
+- Compiled fixtures: `170` `.ink.json` files
+- Auxiliary compiled files: `7` `.import` files
+- Original fixtures unused in direct unit tests: `44`
+- Compiled fixtures unused in direct unit tests: `3`
 
-## Compiled fixtures
+## Original Fixtures
 
-### 26 directories, 177 files
+#### `player/`
+
+- `error_and_exceptions.ink`
+  - Unused in direct unit tests
+- `flow.ink`
+  - Unused in direct unit tests
+- `functions.ink`
+  - Unused in direct unit tests
+- `ink_error.ink`
+  - Unused in direct unit tests
+- `ink_list_roundtrip.ink`
+  - Unused in direct unit tests
+- `variable_observation.ink`
+  - Unused in direct unit tests
+- `variables.ink`
+  - Unused in direct unit tests
+
+#### `runtime/bindings/`
+
+- `external_binding.ink`
+  - Unused in direct unit tests
+- `game_ink_back_and_forth.ink`
+  - Unused in direct unit tests
+- `lookup_safe_or_not.ink`
+  - Unused in direct unit tests
+- `lookup_safe_or_not_with_post_glue.ink`
+  - Unused in direct unit tests
+- `variable_observer.ink`
+  - Unused in direct unit tests
+
+#### `runtime/booleans/`
+
+- `false_plus_false.ink`
+  - Unused in direct unit tests
+- `list_hasnt.ink`
+  - Unused in direct unit tests
+- `not_one.ink`
+  - Unused in direct unit tests
+- `not_true.ink`
+  - Unused in direct unit tests
+- `three_greater_than_one.ink`
+  - Unused in direct unit tests
+- `true.ink`
+  - Unused in direct unit tests
+- `true_equals_one.ink`
+  - Unused in direct unit tests
+- `true_plus_one.ink`
+  - Unused in direct unit tests
+- `true_plus_true.ink`
+  - Unused in direct unit tests
+- `two_plus_true.ink`
+  - Unused in direct unit tests
+
+#### `runtime/builtins/`
+
+- `floor_ceiling_and_casts.ink`
+  - "Compiler e2e: builtins/floor_ceiling_and_casts.ink" — `src/test/compiler_helpers.zig`
+- `read_count_across_callstack.ink`
+  - "Compiler e2e: read_count_across_callstack.ink" — `src/test/compiler_helpers.zig`
+- `read_count_across_threads.ink`
+  - "Compiler e2e: builtins/read_count_across_threads.ink" — `src/test/compiler_helpers.zig`
+- `read_count_dot_separated_path.ink`
+  - "Compiler e2e: builtins/read_count_dot_separated_path.ink" — `src/test/compiler_helpers.zig`
+- `read_count_variable_target.ink`
+  - Unused in direct unit tests
+- `turns.ink`
+  - "Compiler e2e: TURNS() built-in" — `src/test/compiler_helpers.zig`
+- `turns_since.ink`
+  - "Compiler e2e: TURNS_SINCE built-in" — `src/test/compiler_helpers.zig`
+- `turns_since_nested.ink`
+  - "Compiler e2e: builtins/turns_since_nested.ink" — `src/test/compiler_helpers.zig`
+- `turns_since_with_variable_target.ink`
+  - Unused in direct unit tests
+- `visit_count_bug_due_to_nested_containers.ink`
+  - "Compiler e2e: builtins/visit_count_bug_due_to_nested_containers.ink" — `src/test/compiler_helpers.zig`
+- `visit_counts_when_choosing.ink`
+  - Unused in direct unit tests
+
+#### `runtime/callstack/`
+
+- `callstack_evaluation.ink`
+  - "Compiler e2e: callstack_evaluation.ink — return with expr" — `src/test/compiler_helpers.zig`
+  - "Compiler e2e: callstack_evaluation.ink" — `src/test/compiler_helpers.zig`
+- `clean_callstack_reset_on_path_choice.ink`
+  - "Compiler e2e: callstack/clean_callstack_reset_on_path_choice.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/choices/`
+
+- `choice_count.ink`
+  - "Compiler e2e: CHOICE_COUNT built-in" — `src/test/compiler_helpers.zig`
+- `choice_diverts_to_done.ink`
+  - "Compiler e2e: choice_diverts_to_done.ink — start-text choice" — `src/test/compiler_helpers.zig`
+- `choice_thread_forking.ink`
+  - Unused in direct unit tests
+- `choice_with_brackets_only.ink`
+  - "Compiler e2e: choice_with_brackets_only.ink — brackets-only choice" — `src/test/compiler_helpers.zig`
+- `conditional_choices.ink`
+  - "Compiler e2e: conditional_choices.ink — single-condition choices" — `src/test/compiler_helpers.zig`
+- `default_choices.ink`
+  - "Compiler e2e: default_choices.ink — named gather + loop" — `src/test/compiler_helpers.zig`
+- `default_simple_gather.ink`
+  - "Compiler e2e: default_simple_gather.ink — fallback choice + gather" — `src/test/compiler_helpers.zig`
+- `fallback_choice_on_thread.ink`
+  - Unused in direct unit tests
+- `gather_choice_same_line.ink`
+  - "Compiler e2e: gather_choice_same_line.ink" — `src/test/compiler_helpers.zig`
+- `has_read_on_choice.ink`
+  - "Compiler e2e: has_read_on_choice.ink — condition on knot read count" — `src/test/compiler_helpers.zig`
+- `logic_in_choices.ink`
+  - "Compiler e2e: logic_in_choices.ink — function call in choice text" — `src/test/compiler_helpers.zig`
+- `non_text_in_choice_inner_content.ink`
+  - "Compiler e2e: non_text_in_choice_inner_content.ink" — `src/test/compiler_helpers.zig`
+- `once_only_choices_can_link_back_to_self.ink`
+  - "Compiler e2e: once_only_choices_can_link_back_to_self.ink" — `src/test/compiler_helpers.zig`
+- `once_only_choices_with_own_content.ink`
+  - "Compiler e2e: choices/once_only_choices_with_own_content.ink" — `src/test/compiler_helpers.zig`
+- `should_not_gather_due_to_choice.ink`
+  - "Compiler e2e: should_not_gather_due_to_choice.ink" — `src/test/compiler_helpers.zig`
+- `state_rollback_over_default_choice.ink`
+  - "Compiler e2e: choices/state_rollback_over_default_choice.ink" — `src/test/compiler_helpers.zig`
+- `sticky_choices_stay_sticky.ink`
+  - "Compiler e2e: sticky_choices_stay_sticky.ink" — `src/test/compiler_helpers.zig`
+- `various_default_choices.ink`
+  - "Compiler e2e: choices/various_default_choices.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/conditions/`
+
+- `all_switch_branches_fail_is_clean.ink`
+  - "Compiler e2e: all_switch_branches_fail_is_clean.ink fixture" — `src/test/compiler_helpers.zig`
+- `conditionals.ink`
+  - "Compiler e2e: conditionals.ink fixture" — `src/test/compiler_helpers.zig`
+- `else_branches.ink`
+  - "Compiler e2e: else_branches.ink fixture" — `src/test/compiler_helpers.zig`
+- `empty_multiline_conditional_branch.ink`
+  - "Compiler e2e: empty_multiline_conditional_branch.ink fixture" — `src/test/compiler_helpers.zig`
+- `trivial_condition.ink`
+  - "Compiler e2e: trivial_condition.ink fixture" — `src/test/compiler_helpers.zig`
+
+#### `runtime/diverts/`
+
+- `basic_tunnel.ink`
+  - "Compiler e2e: basic_tunnel.ink" — `src/test/compiler_helpers.zig`
+- `compare_divert_targets.ink`
+  - "Compiler e2e: diverts/compare_divert_targets.ink" — `src/test/compiler_helpers.zig`
+- `complex_tunnels.ink`
+  - "Compiler e2e: diverts/complex_tunnels.ink" — `src/test/compiler_helpers.zig`
+- `divert_in_conditional.ink`
+  - "Compiler e2e: diverts/divert_in_conditional.ink" — `src/test/compiler_helpers.zig`
+- `divert_targets_with_parameters.ink`
+  - "Compiler e2e: diverts/divert_targets_with_parameters.ink" — `src/test/compiler_helpers.zig`
+- `divert_to_weave_points.ink`
+  - "Compiler e2e: diverts/divert_to_weave_points.ink" — `src/test/compiler_helpers.zig`
+- `done_stops_thread.ink`
+  - "Compiler e2e: diverts/done_stops_thread.ink" — `src/test/compiler_helpers.zig`
+- `path_to_self.ink`
+  - "Compiler e2e: diverts/path_to_self.ink" — `src/test/compiler_helpers.zig`
+- `same_line_divert_is_inline.ink`
+  - "Compiler e2e: diverts/same_line_divert_is_inline.ink" — `src/test/compiler_helpers.zig`
+- `tunnel_onwards_after_tunnel.ink`
+  - "Compiler e2e: tunnel_onwards_after_tunnel.ink" — `src/test/compiler_helpers.zig`
+- `tunnel_onwards_divert_after_with_arg.ink`
+  - "Compiler e2e: diverts/tunnel_onwards_divert_after_with_arg.ink" — `src/test/compiler_helpers.zig`
+- `tunnel_onwards_divert_override.ink`
+  - "Compiler e2e: diverts/tunnel_onwards_divert_override.ink" — `src/test/compiler_helpers.zig`
+- `tunnel_onwards_to_variable_divert_target.ink`
+  - "Compiler e2e: diverts/tunnel_onwards_to_variable_divert_target.ink" — `src/test/compiler_helpers.zig`
+- `tunnel_onwards_with_param_default_choice.ink`
+  - "Compiler e2e: diverts/tunnel_onwards_with_param_default_choice.ink" — `src/test/compiler_helpers.zig`
+- `tunnel_vs_thread_behaviour.ink`
+  - "Compiler e2e: diverts/tunnel_vs_thread_behaviour.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/evaluation/`
+
+- `arithmetic.ink`
+  - "Compiler e2e: arithmetic.ink fixture" — `src/test/compiler_helpers.zig`
+  - "Compiler tokenizer: arithmetic.ink" — `src/compiler/tokenizer.zig`
+- `basic_string_literals.ink`
+  - "Compiler e2e: evaluation/basic_string_literals.ink" — `src/test/compiler_helpers.zig`
+- `evaluating_function_variable_state_bug.ink`
+  - "Compiler e2e: evaluation/evaluating_function_variable_state_bug.ink" — `src/test/compiler_helpers.zig`
+- `evaluating_ink_functions_from_game.ink`
+  - Unused in direct unit tests
+- `evaluating_ink_functions_from_game_2.ink`
+  - Unused in direct unit tests
+- `evaluation_stack_leaks.ink`
+  - "Compiler e2e: evaluation/evaluation_stack_leaks.ink" — `src/test/compiler_helpers.zig`
+- `factorial_by_reference.ink`
+  - "Compiler e2e: evaluation/factorial_by_reference.ink" — `src/test/compiler_helpers.zig`
+- `factorial_recursive.ink`
+  - "Compiler e2e: evaluation/factorial_recursive.ink" — `src/test/compiler_helpers.zig`
+- `increment.ink`
+  - "Compiler e2e: evaluation/increment.ink" — `src/test/compiler_helpers.zig`
+- `literal_unary.ink`
+  - "Compiler e2e: evaluation/literal_unary.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/extra/`
+
+- `arithmetic_2.ink`
+  - "Compiler e2e: extra/arithmetic_2.ink" — `src/test/compiler_helpers.zig`
+- `list_comparison.ink`
+  - "Compiler e2e: extra/list_comparison.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/glue/`
+
+- `implicit_inline_glue.ink`
+  - "Compiler e2e: glue/implicit_inline_glue.ink" — `src/test/compiler_helpers.zig`
+- `implicit_inline_glue_b.ink`
+  - "Compiler e2e: glue/implicit_inline_glue_b.ink" — `src/test/compiler_helpers.zig`
+- `implicit_inline_glue_c.ink`
+  - "Compiler e2e: glue/implicit_inline_glue_c.ink" — `src/test/compiler_helpers.zig`
+- `left_right_glue_matching.ink`
+  - "Compiler e2e: left_right_glue_matching.ink" — `src/test/compiler_helpers.zig`
+- `simple_glue.ink`
+  - "Compiler e2e: simple_glue.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/knots/`
+
+- `knot_do_not_gather.ink`
+  - "Compiler e2e: knots/knot_do_not_gather.ink" — `src/test/compiler_helpers.zig`
+  - "Compiler parser: knot_do_not_gather.ink knot name" — `src/compiler/parser.zig`
+- `knot_stitch_gather_counts.ink`
+  - "Compiler e2e: knots/knot_stitch_gather_counts.ink" — `src/test/compiler_helpers.zig`
+  - "Compiler parser: stitch_gather_counts VAR in knot" — `src/compiler/parser.zig`
+- `knot_thread_interaction.ink`
+  - "Compiler e2e: knots/knot_thread_interaction.ink" — `src/test/compiler_helpers.zig`
+  - "Compiler parser: knot_thread_interaction knot names" — `src/compiler/parser.zig`
+- `knot_thread_interaction_2.ink`
+  - "Compiler e2e: knots/knot_thread_interaction_2.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/lists/`
+
+- `contains_empty_list_always_false.ink`
+  - Unused in direct unit tests
+- `empty_list_origin.ink`
+  - "Compiler e2e: LIST empty_list_origin" — `src/test/compiler_helpers.zig`
+- `empty_list_origin_after_assignment.ink`
+  - Unused in direct unit tests
+- `list_basic_operations.ink`
+  - "Compiler e2e: LIST basic" — `src/test/compiler_helpers.zig`
+- `list_mixed_items.ink`
+  - Unused in direct unit tests
+- `list_random.ink`
+  - Unused in direct unit tests
+- `list_range.ink`
+  - Unused in direct unit tests
+- `list_save_load.ink`
+  - Unused in direct unit tests
+- `more_list_operations.ink`
+  - "Compiler e2e: LIST more_list_operations" — `src/test/compiler_helpers.zig`
+
+#### `runtime/logic/`
+
+- `logic_lines_with_newlines.ink`
+  - "Compiler e2e: logic/logic_lines_with_newlines.ink" — `src/test/compiler_helpers.zig`
+- `multiline_logic_with_glue.ink`
+  - "Compiler e2e: logic/multiline_logic_with_glue.ink" — `src/test/compiler_helpers.zig`
+- `nested_pass_by_reference.ink`
+  - "Compiler e2e: logic/nested_pass_by_reference.ink" — `src/test/compiler_helpers.zig`
+- `print_num.ink`
+  - "Compiler e2e: logic/print_num.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/misc/`
+
+- `empty.ink`
+  - "Compiler e2e: misc/empty.ink fixture" — `src/test/compiler_helpers.zig`
+- `end.ink`
+  - "Compiler e2e: misc/end.ink fixture" — `src/test/compiler_helpers.zig`
+- `end2.ink`
+  - "Compiler e2e: misc/end2.ink fixture" — `src/test/compiler_helpers.zig`
+- `end_of_content.ink`
+  - "Compiler e2e: misc/end_of_content.ink fixture" — `src/test/compiler_helpers.zig`
+  - "Compiler parser: end_of_content.ink knot name" — `src/compiler/parser.zig`
+- `escape_character.ink`
+  - "Compiler e2e: misc/escape_character.ink" — `src/test/compiler_helpers.zig`
+- `hello_world.ink`
+  - "Compiler e2e: misc/hello_world.ink fixture" — `src/test/compiler_helpers.zig`
+  - "Compiler parser: hello_world.ink root_content" — `src/compiler/parser.zig`
+  - "Compiler tokenizer: hello_world.ink" — `src/compiler/tokenizer.zig`
+- `identifiers_can_start_with_number.ink`
+  - "Compiler e2e: misc/identifiers_can_start_with_number.ink" — `src/test/compiler_helpers.zig`
+- `include.ink`
+  - "Compiler parser: INCLUDE paths" — `src/compiler/parser.zig`
+- `nested_include.ink`
+  - Unused in direct unit tests
+- `quote_character_significance.ink`
+  - "Compiler e2e: misc/quote_character_significance.ink" — `src/test/compiler_helpers.zig`
+- `whitespace.ink`
+  - "Compiler e2e: misc/whitespace.ink fixture" — `src/test/compiler_helpers.zig`
+
+#### `runtime/misc/includes/`
+
+- `included_file.ink`
+  - Unused in direct unit tests
+- `included_file_2.ink`
+  - Unused in direct unit tests
+- `included_file_3.ink`
+  - Unused in direct unit tests
+- `included_file_4.ink`
+  - Unused in direct unit tests
+
+#### `runtime/multiflow/`
+
+- `multi_flow_basics.ink`
+  - Unused in direct unit tests
+- `multi_flow_save_load_threads.ink`
+  - Unused in direct unit tests
+
+#### `runtime/newlines/`
+
+- `newline_at_start_of_multiline_conditional.ink`
+  - "Compiler e2e: newline_at_start_of_multiline_conditional.ink" — `src/test/compiler_helpers.zig`
+- `newline_consistency_1.ink`
+  - "Compiler e2e: newline_consistency_1.ink" — `src/test/compiler_helpers.zig`
+- `newline_consistency_2.ink`
+  - "Compiler e2e: newline_consistency_2.ink" — `src/test/compiler_helpers.zig`
+- `newline_consistency_3.ink`
+  - "Compiler e2e: newlines/newline_consistency_3.ink" — `src/test/compiler_helpers.zig`
+- `newlines_trimming_with_func_external_fallback.ink`
+  - Unused in direct unit tests
+- `newlines_with_string_eval.ink`
+  - "Compiler e2e: newlines/newlines_with_string_eval.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/sequences/`
+
+- `all_sequence_types.ink`
+  - "Compiler e2e: sequences/all_sequence_types.ink" — `src/test/compiler_helpers.zig`
+- `blanks_in_inline_sequences.ink`
+  - "Compiler e2e: sequences/blanks_in_inline_sequences.ink" — `src/test/compiler_helpers.zig`
+- `empty_sequence_content.ink`
+  - "Compiler e2e: empty_sequence_content.ink fixture" — `src/test/compiler_helpers.zig`
+- `gather_read_count_with_initial_sequence.ink`
+  - "Compiler e2e: sequences/gather_read_count_with_initial_sequence.ink" — `src/test/compiler_helpers.zig`
+- `leading_newline_multiline_sequence.ink`
+  - "Compiler e2e: leading_newline_multiline_sequence.ink fixture" — `src/test/compiler_helpers.zig`
+- `shuffle_stack_muddying.ink`
+  - "Compiler e2e: sequences/shuffle_stack_muddying.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/strings/`
+
+- `string_constants.ink`
+  - "Compiler e2e: string_constants.ink" — `src/test/compiler_helpers.zig`
+- `string_contains.ink`
+  - Unused in direct unit tests
+- `string_type_coercion.ink`
+  - "Compiler e2e: strings/string_type_coercion.ink" — `src/test/compiler_helpers.zig`
+- `strings_in_choices.ink`
+  - "Compiler e2e: strings/strings_in_choices.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/tags/`
+
+- `tags.ink`
+  - "Compiler e2e: tags.ink fixture" — `src/test/compiler_helpers.zig`
+- `tags_dynamic_content.ink`
+  - "Compiler e2e: tags/tags_dynamic_content.ink" — `src/test/compiler_helpers.zig`
+- `tags_in_choice.ink`
+  - "Compiler e2e: tags/tags_in_choice.ink" — `src/test/compiler_helpers.zig`
+- `tags_in_seq.ink`
+  - "Compiler e2e: tags/tags_in_seq.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/threads/`
+
+- `multi_thread.ink`
+  - "Compiler e2e: threads/multi_thread.ink" — `src/test/compiler_helpers.zig`
+- `thread_done.ink`
+  - "Compiler e2e: thread_done.ink" — `src/test/compiler_helpers.zig`
+- `thread_in_logic.ink`
+  - "Compiler e2e: thread in sequence" — `src/test/compiler_helpers.zig`
+- `top_flow_terminator_should_not_kill_thread_choices.ink`
+  - "Compiler e2e: threads/top_flow_terminator_should_not_kill_thread_choices.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/variables/`
+
+- `const.ink`
+  - "Compiler e2e: const.ink fixture" — `src/test/compiler_helpers.zig`
+  - "Compiler parser: CONST declarations" — `src/compiler/parser.zig`
+- `multiple_constant_references.ink`
+  - "Compiler e2e: multiple_constant_references.ink" — `src/test/compiler_helpers.zig`
+- `set_non_existant_variable.ink`
+  - "Compiler e2e: variables/set_non_existant_variable.ink" — `src/test/compiler_helpers.zig`
+- `temp_global_conflict.ink`
+  - "Compiler e2e: variables/temp_global_conflict.ink" — `src/test/compiler_helpers.zig`
+- `temp_not_found.ink`
+  - "Compiler e2e: variables/temp_not_found.ink" — `src/test/compiler_helpers.zig`
+- `temp_usage_in_options.ink`
+  - "Compiler e2e: variables/temp_usage_in_options.ink" — `src/test/compiler_helpers.zig`
+- `temporaries_at_global_scope.ink`
+  - "Compiler e2e: temporaries_at_global_scope.ink fixture" — `src/test/compiler_helpers.zig`
+- `variable_declaration_in_conditional.ink`
+  - "Compiler e2e: variable_declaration_in_conditional.ink" — `src/test/compiler_helpers.zig`
+- `variable_divert_target.ink`
+  - "Compiler e2e: variable_divert_target.ink" — `src/test/compiler_helpers.zig`
+- `variable_get_set_api.ink`
+  - "Compiler parser: VAR declarations" — `src/compiler/parser.zig`
+- `variable_pointer_ref_from_knot.ink`
+  - "Compiler e2e: variables/variable_pointer_ref_from_knot.ink" — `src/test/compiler_helpers.zig`
+- `variable_swap_recurse.ink`
+  - "Compiler e2e: variable_swap_recurse.ink — params + recursion" — `src/test/compiler_helpers.zig`
+- `variable_tunnel.ink`
+  - "Compiler e2e: variables/variable_tunnel.ink" — `src/test/compiler_helpers.zig`
+- `warn_variable_not_found_1.ink`
+  - "Compiler e2e: variables/warn_variable_not_found_1.ink" — `src/test/compiler_helpers.zig`
+- `warn_variable_not_found_2.ink`
+  - "Compiler e2e: variables/warn_variable_not_found_2.ink" — `src/test/compiler_helpers.zig`
+
+#### `runtime/weaves/`
+
+- `conditional_choice_in_weave.ink`
+  - "Compiler e2e: weaves/conditional_choice_in_weave.ink" — `src/test/compiler_helpers.zig`
+- `conditional_choice_in_weave_2.ink`
+  - "Compiler e2e: weaves/conditional_choice_in_weave_2.ink" — `src/test/compiler_helpers.zig`
+- `unbalanced_weave_indentation.ink`
+  - "Compiler e2e: weaves/unbalanced_weave_indentation.ink" — `src/test/compiler_helpers.zig`
+- `weave_gathers.ink`
+  - "Compiler e2e: weave_gathers.ink" — `src/test/compiler_helpers.zig`
+- `weave_options.ink`
+  - "Compiler e2e: weave_options.ink — start+choice-only+following in knot" — `src/test/compiler_helpers.zig`
+- `weave_within_sequence.ink`
+  - "Compiler e2e: weaves/weave_within_sequence.ink" — `src/test/compiler_helpers.zig`
+
+## Compiled Fixtures
 
 #### `player/`
 
@@ -268,14 +499,14 @@ test/fixture/original/
   - "Story read_count_dot_separated_path" — `src/runtime/story.zig`
 - `read_count_variable_target.ink.json`
   - "Story read_count_variable_target" — `src/runtime/story.zig`
+- `turns.ink.json`
+  - "Story turns (turn_index cycles)" — `src/runtime/story.zig`
 - `turns_since.ink.json`
   - "Story turns_since" — `src/runtime/story.zig`
 - `turns_since_nested.ink.json`
   - "Story turns_since_nested" — `src/runtime/story.zig`
 - `turns_since_with_variable_target.ink.json`
   - "Story turns_since_with_variable_target" — `src/runtime/story.zig`
-- `turns.ink.json`
-  - "Story turns (turn_index cycles)" — `src/runtime/story.zig`
 - `visit_count_bug_due_to_nested_containers.ink.json`
   - "Story visit_count_bug_due_to_nested_containers" — `src/runtime/story.zig`
 - `visit_counts_when_choosing.ink.json`
@@ -334,11 +565,11 @@ test/fixture/original/
 - `all_switch_branches_fail_is_clean.ink.json`
   - "Story all_switch_branches_fail_is_clean" — `src/runtime/story.zig`
 - `conditionals.ink.json`
-  - "Story conditionals" — `src/runtime/story.zig`
   - "runStory conditionals" — `src/test/helpers.zig`
+  - "Story conditionals" — `src/runtime/story.zig`
 - `else_branches.ink.json`
-  - "Story else_branches" — `src/runtime/story.zig`
   - "runStory else_branches" — `src/test/helpers.zig`
+  - "Story else_branches" — `src/runtime/story.zig`
 - `empty_multiline_conditional_branch.ink.json`
   - "Story empty_multiline_conditional_branch" — `src/runtime/story.zig`
 - `trivial_condition.ink.json`
@@ -347,10 +578,12 @@ test/fixture/original/
 #### `runtime/diverts/`
 
 - `basic_tunnel.ink.json`
-  - "Story basic tunnel" — `src/runtime/story.zig`
-  - "Story basic_tunnel" — `src/runtime/story.zig`
-  - "resolvePath absolute named container" — `src/runtime/story.zig`
   - "runStory basic_tunnel" — `src/test/helpers.zig`
+  - "loadStory basic_tunnel named content" — `src/runtime/json_loader.zig`
+  - "Container paths basic_tunnel" — `src/runtime/json_loader.zig`
+  - "Story basic tunnel" — `src/runtime/story.zig`
+  - "resolvePath absolute named container" — `src/runtime/story.zig`
+  - "Story basic_tunnel" — `src/runtime/story.zig`
 - `compare_divert_targets.ink.json`
   - "Story compare_divert_targets" — `src/runtime/story.zig`
 - `complex_tunnels.ink.json`
@@ -383,8 +616,9 @@ test/fixture/original/
 #### `runtime/evaluation/`
 
 - `arithmetic.ink.json`
-  - "Story arithmetic" — `src/runtime/story.zig`
   - "runStory arithmetic" — `src/test/helpers.zig`
+  - "loadStory arithmetic" — `src/runtime/json_loader.zig`
+  - "Story arithmetic" — `src/runtime/story.zig`
 - `basic_string_literals.ink.json`
   - "Story basic_string_literals" — `src/runtime/story.zig`
 - `evaluating_function_variable_state_bug.ink.json`
@@ -392,18 +626,18 @@ test/fixture/original/
 - `evaluating_ink_functions_from_game.ink.json`
   - "Story evaluating_ink_functions_from_game" — `src/runtime/story.zig`
 - `evaluating_ink_functions_from_game_2.ink.json`
-  - "Story evaluating_ink_functions_from_game_2" — `src/runtime/story.zig`
   - "evaluateFunction: func1 returns int value and captures text" — `src/runtime/story.zig`
   - "evaluateFunction: func2 returns null (void function)" — `src/runtime/story.zig`
   - "evaluateFunction: add(x,y) returns x+y" — `src/runtime/story.zig`
   - "evaluateFunction: story state fully restored after call" — `src/runtime/story.zig`
+  - "Story evaluating_ink_functions_from_game_2" — `src/runtime/story.zig`
 - `evaluation_stack_leaks.ink.json`
   - "Story evaluation_stack_leaks" — `src/runtime/story.zig`
 - `factorial_by_reference.ink.json`
   - "Story factorial_by_reference" — `src/runtime/story.zig`
 - `factorial_recursive.ink.json`
-  - "Story factorial recursive" — `src/runtime/story.zig`
   - "runStory factorial_recursive" — `src/test/helpers.zig`
+  - "Story factorial recursive" — `src/runtime/story.zig`
 - `increment.ink.json`
   - "Story increment" — `src/runtime/story.zig`
 - `literal_unary.ink.json`
@@ -450,9 +684,11 @@ test/fixture/original/
 - `empty_list_origin_after_assignment.ink.json`
   - "Story empty_list_origin_after_assignment" — `src/runtime/story.zig`
 - `list_basic_operations.ink.json`
+  - "runStory list_basic_operations" — `src/test/helpers.zig`
+  - "loadStory list_basic_operations listDefs" — `src/runtime/json_loader.zig`
   - "list_basic_operations: union, intersect, has, hasnt" — `src/runtime/story.zig`
   - "Story list_basic_operations" — `src/runtime/story.zig`
-  - "runStory list_basic_operations" — `src/test/helpers.zig`
+  - "ListDefinitionsOrigin.parse from list_basic_operations" — `src/runtime/lists.zig`
 - `list_mixed_items.ink.json`
   - "list_mixed_items: multi-origin list union" — `src/runtime/story.zig`
   - "Story list_mixed_items" — `src/runtime/story.zig`
@@ -471,8 +707,8 @@ test/fixture/original/
 #### `runtime/logic/`
 
 - `logic_lines_with_newlines.ink.json`
-  - "Story logic_lines_with_newlines" — `src/runtime/story.zig`
   - "runStory logic_lines_with_newlines" — `src/test/helpers.zig`
+  - "Story logic_lines_with_newlines" — `src/runtime/story.zig`
 - `multiline_logic_with_glue.ink.json`
   - "Story multiline_logic_with_glue" — `src/runtime/story.zig`
 - `nested_pass_by_reference.ink.json`
@@ -493,34 +729,42 @@ test/fixture/original/
 - `escape_character.ink.json`
   - "Story escape_character" — `src/runtime/story.zig`
 - `hello_world.ink.json`
+  - "loadFixture returns non-empty slice" — `src/test/helpers.zig`
+  - "runStory hello_world" — `src/test/helpers.zig`
+  - "loadStory hello_world" — `src/runtime/json_loader.zig`
+  - "Container paths hello_world" — `src/runtime/json_loader.zig`
   - "Story hello_world" — `src/runtime/story.zig`
   - "Temp var found in function frame" — `src/runtime/story.zig`
   - "Temp var shadows global; global restored after pop" — `src/runtime/story.zig`
-  - "currentFlowIsDefaultFlow: true initially, false after switchFlow" — `src/runtime/story.zig`
-  - "observeVariable: does not fire for unobserved variable" — `src/runtime/story.zig`
-  - "observeVariable: fires when observed global changes" — `src/runtime/story.zig`
-  - "resolvePath non-existent returns null" — `src/runtime/story.zig`
   - "resolvePath relative with ^ traverses parent" — `src/runtime/story.zig`
-  - "save/load round-trip: hello_world pointer preserved" — `src/runtime/story.zig`
-  - "srnd sets story_seed" — `src/runtime/story.zig`
+  - "resolvePath non-existent returns null" — `src/runtime/story.zig`
   - "str/str collects strings onto eval stack" — `src/runtime/story.zig`
-  - "toJson: fresh state contains required top-level keys" — `src/runtime/story.zig`
   - "turns_since returns -1 for never-visited path" — `src/runtime/story.zig`
-  - "loadFixture returns non-empty slice" — `src/test/helpers.zig`
-  - "runStory hello_world" — `src/test/helpers.zig`
+  - "srnd sets story_seed" — `src/runtime/story.zig`
+  - "toJson: fresh state contains required top-level keys" — `src/runtime/story.zig`
+  - "save/load round-trip: hello_world pointer preserved" — `src/runtime/story.zig`
+  - "observeVariable: fires when observed global changes" — `src/runtime/story.zig`
+  - "observeVariable: does not fire for unobserved variable" — `src/runtime/story.zig`
+  - "currentFlowIsDefaultFlow: true initially, false after switchFlow" — `src/runtime/story.zig`
 - `identifiers_can_start_with_number.ink.json`
   - "Story identifiers_can_start_with_number" — `src/runtime/story.zig`
 - `include.ink.json`
   - "Story include" — `src/runtime/story.zig`
-- `includes/included_file.ink.json` *(loaded transitively by `include.ink.json` and `nested_include.ink.json`)*
-- `includes/included_file_2.ink.json` *(loaded transitively by `nested_include.ink.json`)*
-- `includes/included_file_4.ink.json` *(loaded transitively by `nested_include.ink.json`)*
 - `nested_include.ink.json`
   - "Story nested_include" — `src/runtime/story.zig`
 - `quote_character_significance.ink.json`
   - "Story quote_character_significance" — `src/runtime/story.zig`
 - `whitespace.ink.json`
   - "Story whitespace" — `src/runtime/story.zig`
+
+#### `runtime/misc/includes/`
+
+- `included_file.ink.json`
+  - Unused in direct unit tests
+- `included_file_2.ink.json`
+  - Unused in direct unit tests
+- `included_file_4.ink.json`
+  - Unused in direct unit tests
 
 #### `runtime/multiflow/`
 
@@ -601,6 +845,7 @@ test/fixture/original/
 #### `runtime/variables/`
 
 - `const.ink.json`
+  - "Container paths global decl" — `src/runtime/json_loader.zig`
   - "Story const variable" — `src/runtime/story.zig`
 - `multiple_constant_references.ink.json`
   - "Story multiple_constant_references" — `src/runtime/story.zig`
@@ -641,10 +886,80 @@ test/fixture/original/
 - `unbalanced_weave_indentation.ink.json`
   - "Story unbalanced_weave_indentation" — `src/runtime/story.zig`
 - `weave_gathers.ink.json`
-  - "Story weave_gathers" — `src/runtime/story.zig`
   - "runStory weave_gathers choice path one" — `src/test/helpers.zig`
   - "runStory weave_gathers choice path four" — `src/test/helpers.zig`
+  - "Story weave_gathers" — `src/runtime/story.zig`
 - `weave_options.ink.json`
   - "Story weave_options" — `src/runtime/story.zig`
 - `weave_within_sequence.ink.json`
   - "Story weave_within_sequence" — `src/runtime/story.zig`
+
+## Auxiliary Compiled Files
+
+- `player/error_and_exceptions.ink.json.import`
+  - Unused in direct unit tests
+- `player/flow.ink.json.import`
+  - Unused in direct unit tests
+- `player/functions.ink.json.import`
+  - Unused in direct unit tests
+- `player/ink_error.ink.json.import`
+  - Unused in direct unit tests
+- `player/ink_list_roundtrip.ink.json.import`
+  - Unused in direct unit tests
+- `player/variable_observation.ink.json.import`
+  - Unused in direct unit tests
+- `player/variables.ink.json.import`
+  - Unused in direct unit tests
+
+## Unused Original Fixtures
+
+- `player/error_and_exceptions.ink`
+- `player/flow.ink`
+- `player/functions.ink`
+- `player/ink_error.ink`
+- `player/ink_list_roundtrip.ink`
+- `player/variable_observation.ink`
+- `player/variables.ink`
+- `runtime/bindings/external_binding.ink`
+- `runtime/bindings/game_ink_back_and_forth.ink`
+- `runtime/bindings/lookup_safe_or_not.ink`
+- `runtime/bindings/lookup_safe_or_not_with_post_glue.ink`
+- `runtime/bindings/variable_observer.ink`
+- `runtime/booleans/false_plus_false.ink`
+- `runtime/booleans/list_hasnt.ink`
+- `runtime/booleans/not_one.ink`
+- `runtime/booleans/not_true.ink`
+- `runtime/booleans/three_greater_than_one.ink`
+- `runtime/booleans/true.ink`
+- `runtime/booleans/true_equals_one.ink`
+- `runtime/booleans/true_plus_one.ink`
+- `runtime/booleans/true_plus_true.ink`
+- `runtime/booleans/two_plus_true.ink`
+- `runtime/builtins/read_count_variable_target.ink`
+- `runtime/builtins/turns_since_with_variable_target.ink`
+- `runtime/builtins/visit_counts_when_choosing.ink`
+- `runtime/choices/choice_thread_forking.ink`
+- `runtime/choices/fallback_choice_on_thread.ink`
+- `runtime/evaluation/evaluating_ink_functions_from_game.ink`
+- `runtime/evaluation/evaluating_ink_functions_from_game_2.ink`
+- `runtime/lists/contains_empty_list_always_false.ink`
+- `runtime/lists/empty_list_origin_after_assignment.ink`
+- `runtime/lists/list_mixed_items.ink`
+- `runtime/lists/list_random.ink`
+- `runtime/lists/list_range.ink`
+- `runtime/lists/list_save_load.ink`
+- `runtime/misc/includes/included_file.ink`
+- `runtime/misc/includes/included_file_2.ink`
+- `runtime/misc/includes/included_file_3.ink`
+- `runtime/misc/includes/included_file_4.ink`
+- `runtime/misc/nested_include.ink`
+- `runtime/multiflow/multi_flow_basics.ink`
+- `runtime/multiflow/multi_flow_save_load_threads.ink`
+- `runtime/newlines/newlines_trimming_with_func_external_fallback.ink`
+- `runtime/strings/string_contains.ink`
+
+## Unused Compiled Fixtures
+
+- `runtime/misc/includes/included_file.ink.json`
+- `runtime/misc/includes/included_file_2.ink.json`
+- `runtime/misc/includes/included_file_4.ink.json`
