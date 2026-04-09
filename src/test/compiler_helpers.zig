@@ -1723,3 +1723,9 @@ test "Compiler e2e: booleans/list_hasnt.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("1\n", out);
 }
+test "Compiler e2e: booleans/not_one.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/booleans/not_one.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
