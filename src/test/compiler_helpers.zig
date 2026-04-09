@@ -4,7 +4,16 @@
 /// drives the story through a choice sequence, and returns the output.
 const std = @import("std");
 const Story = @import("../runtime/story.zig").Story;
+const RuntimeObject = @import("../runtime/story.zig").RuntimeObject;
 const compiler = @import("../compiler/compiler.zig");
+
+fn extFunctionCount(args: []const RuntimeObject) ?RuntimeObject {
+    if (args.len == 0) return .{ .int = 3 };
+    return switch (args[0]) {
+        .int => |count| .{ .int = count + 3 },
+        else => .{ .int = 3 },
+    };
+}
 
 /// Compile `ink_source`, run the story through `choices`, and return all output.
 /// Caller owns the returned slice.
@@ -1511,4 +1520,19 @@ test "Compiler e2e: player/flow.ink" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "Hello") != null);
+}
+
+test "Compiler e2e: player/functions.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "player/functions.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.bindExternalFunction("external_function", extFunctionCount, .{});
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "The count is 7") != null);
 }
