@@ -1495,3 +1495,20 @@ test "Compiler e2e: player/error_and_exceptions.ink" {
 
     try std.testing.expect(std.mem.indexOf(u8, out, "This is a knot") != null);
 }
+
+test "Compiler e2e: player/flow.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "player/flow.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const global_tags = try story.globalTags();
+    defer alloc.free(global_tags);
+    try std.testing.expect(global_tags.len >= 2);
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Hello") != null);
+}
