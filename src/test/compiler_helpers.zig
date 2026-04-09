@@ -1711,3 +1711,9 @@ test "Compiler e2e: runtime/bindings/variable_observer.ink" {
     try std.testing.expectEqual(@as(u32, 2), Ctx.result.count);
     try std.testing.expectEqual(@as(i64, 25), Ctx.result.last_int);
 }
+test "Compiler e2e: booleans/false_plus_false.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/booleans/false_plus_false.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("0\n", out);
+}
