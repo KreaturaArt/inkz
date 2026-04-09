@@ -1,7 +1,7 @@
 ---
 id: TASK-99
 title: 'Tests: add direct coverage for runtime/bindings/variable_observer.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:53'
 labels:

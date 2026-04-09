@@ -1676,3 +1676,38 @@ test "Compiler e2e: runtime/bindings/lookup_safe_or_not_with_post_glue.ink" {
     try std.testing.expect(std.mem.indexOf(u8, out, "One") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "Two") != null);
 }
+test "Compiler e2e: runtime/bindings/variable_observer.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/bindings/variable_observer.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const Ctx = struct {
+        count: u32 = 0,
+        last_int: i64 = 0,
+        fn callback(_: []const u8, new_val: RuntimeObject) void {
+            result.count += 1;
+            if (new_val == .int) result.last_int = new_val.int;
+        }
+        var result: @This() = .{};
+    };
+    Ctx.result = .{};
+
+    try story.observeVariable("testVar", Ctx.callback);
+
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "Hello world!") != null);
+
+    try std.testing.expectEqual(@as(u32, 1), Ctx.result.count);
+    try std.testing.expectEqual(@as(i64, 15), Ctx.result.last_int);
+
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+
+    try std.testing.expectEqual(@as(u32, 2), Ctx.result.count);
+    try std.testing.expectEqual(@as(i64, 25), Ctx.result.last_int);
+}
