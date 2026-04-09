@@ -1543,3 +1543,10 @@ test "Compiler e2e: player/ink_error.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("\n", out);
 }
+
+test "Compiler e2e: player/ink_list_roundtrip.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "player/ink_list_roundtrip.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Hello World.\n", out);
+}
