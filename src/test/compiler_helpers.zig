@@ -37,6 +37,14 @@ fn extTimes(_: []const RuntimeObject) ?RuntimeObject {
     return .{ .string = "knock knock knock " };
 }
 
+fn extGameInc(args: []const RuntimeObject) ?RuntimeObject {
+    const x: i64 = switch (args[0]) {
+        .int => |n| n,
+        else => 0,
+    };
+    return .{ .int = x + 1 };
+}
+
 /// Compile `ink_source`, run the story through `choices`, and return all output.
 /// Caller owns the returned slice.
 pub fn compileAndRun(
@@ -1617,4 +1625,21 @@ test "Compiler e2e: runtime/bindings/external_binding.ink" {
     const out = try story.cont();
     defer alloc.free(out);
     try std.testing.expectEqualStrings("15\nknock knock knock \n", out);
+}
+
+test "Compiler e2e: runtime/bindings/game_ink_back_and_forth.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/bindings/game_ink_back_and_forth.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.bindExternalFunction("gameInc", extGameInc, .{});
+
+    var text_out = std.ArrayList(u8).empty;
+    defer text_out.deinit(alloc);
+
+    _ = try story.evaluateFunction("topExternal", &.{.{ .int = 5 }}, &text_out);
+    try std.testing.expect(std.mem.indexOf(u8, text_out.items, "In top external") != null);
 }
