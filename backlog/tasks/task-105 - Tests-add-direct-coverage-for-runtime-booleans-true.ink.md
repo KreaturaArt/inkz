@@ -1,7 +1,7 @@
 ---
 id: TASK-105
 title: 'Tests: add direct coverage for runtime/booleans/true.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:54'
 labels:
