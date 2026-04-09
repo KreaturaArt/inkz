@@ -41,10 +41,9 @@ pub fn compileAndRun(
 
 /// Load an .ink file from test/fixture/original/, compile and run it.
 /// Caller owns the returned slice.
-pub fn compileFixtureAndRun(
+pub fn compileFixture(
     alloc: std.mem.Allocator,
     comptime rel_path: []const u8,
-    choices: []const usize,
 ) ![]u8 {
     const path = "test/fixture/original/" ++ rel_path;
     const io = std.testing.io;
@@ -52,7 +51,40 @@ pub fn compileFixtureAndRun(
     const src = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
 
-    return compileAndRun(alloc, src, choices);
+    return compiler.compile(alloc, src);
+}
+
+/// Load an .ink file from test/fixture/original/, compile and run it.
+/// Caller owns the returned slice.
+pub fn compileFixtureAndRun(
+    alloc: std.mem.Allocator,
+    comptime rel_path: []const u8,
+    choices: []const usize,
+) ![]u8 {
+    const json = try compileFixture(alloc, rel_path);
+    defer alloc.free(json);
+
+    var s = try Story.initFromJson(alloc, json);
+    defer s.deinit();
+
+    var output = std.ArrayList(u8).empty;
+    errdefer output.deinit(alloc);
+
+    var choice_idx: usize = 0;
+    while (true) {
+        if (s.canContinue()) {
+            const out = try s.cont();
+            defer alloc.free(out);
+            try output.appendSlice(alloc, out);
+        } else if (s.currentChoices().len > 0 and choice_idx < choices.len) {
+            try s.chooseChoiceIndex(choices[choice_idx]);
+            choice_idx += 1;
+        } else {
+            break;
+        }
+    }
+
+    return output.toOwnedSlice(alloc);
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────────────
@@ -1447,4 +1479,19 @@ test "Compiler e2e: callstack/clean_callstack_reset_on_path_choice.ink" {
     const out = try compileFixtureAndRun(alloc, "runtime/callstack/clean_callstack_reset_on_path_choice.ink", &.{});
     defer alloc.free(out);
     try std.testing.expectEqualStrings("The first line.\nThe second line.\n", out);
+}
+
+test "Compiler e2e: player/error_and_exceptions.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "player/error_and_exceptions.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.choosePathString("knot");
+    const out = try story.cont();
+    defer alloc.free(out);
+
+    try std.testing.expect(std.mem.indexOf(u8, out, "This is a knot") != null);
 }

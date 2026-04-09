@@ -8,7 +8,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - Original fixtures: `169` `.ink` files
 - Compiled fixtures: `170` `.ink.json` files
 - Auxiliary compiled files: `7` `.import` files
-- Original fixtures unused in direct unit tests: `44`
+- Original fixtures unused in direct unit tests: `43`
 - Compiled fixtures unused in direct unit tests: `3`
 
 ## Original Fixtures
@@ -16,7 +16,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 #### `player/`
 
 - `error_and_exceptions.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: player/error_and_exceptions.ink" — `src/test/compiler_helpers.zig`
 - `flow.ink`
   - Unused in direct unit tests
 - `functions.ink`
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `player/error_and_exceptions.ink`
 - `player/flow.ink`
 - `player/functions.ink`
 - `player/ink_error.ink`
