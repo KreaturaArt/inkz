@@ -15,6 +15,28 @@ fn extFunctionCount(args: []const RuntimeObject) ?RuntimeObject {
     };
 }
 
+fn extMessage(_: []const RuntimeObject) ?RuntimeObject {
+    return null;
+}
+
+fn extMultiply(args: []const RuntimeObject) ?RuntimeObject {
+    const a: f64 = switch (args[0]) {
+        .float => |f| f,
+        .int => |n| @floatFromInt(n),
+        else => return null,
+    };
+    const b: f64 = switch (args[1]) {
+        .float => |f| f,
+        .int => |n| @floatFromInt(n),
+        else => return null,
+    };
+    return .{ .float = a * b };
+}
+
+fn extTimes(_: []const RuntimeObject) ?RuntimeObject {
+    return .{ .string = "knock knock knock " };
+}
+
 /// Compile `ink_source`, run the story through `choices`, and return all output.
 /// Caller owns the returned slice.
 pub fn compileAndRun(
@@ -1578,4 +1600,21 @@ test "Compiler e2e: player/variables.ink" {
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "Hello World") != null);
     try std.testing.expect(story.currentChoices().len >= 1);
+}
+
+test "Compiler e2e: runtime/bindings/external_binding.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/bindings/external_binding.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    try story.bindExternalFunction("message", extMessage, .{});
+    try story.bindExternalFunction("multiply", extMultiply, .{});
+    try story.bindExternalFunction("times", extTimes, .{});
+
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("15\nknock knock knock \n", out);
 }
