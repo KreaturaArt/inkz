@@ -1,7 +1,7 @@
 ---
 id: TASK-102
 title: 'Tests: add direct coverage for runtime/booleans/not_one.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:53'
 labels:
