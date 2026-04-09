@@ -1550,3 +1550,18 @@ test "Compiler e2e: player/ink_list_roundtrip.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Hello World.\n", out);
 }
+
+test "Compiler e2e: player/variable_observation.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "player/variable_observation.ink");
+    defer alloc.free(json);
+
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+
+    const b = story.resolveVariable("aBoolean");
+    try std.testing.expect(b != null);
+    const n = story.resolveVariable("anInteger");
+    try std.testing.expect(n != null);
+    if (n) |v| try std.testing.expectEqual(RuntimeObject{ .int = 3 }, v);
+}
