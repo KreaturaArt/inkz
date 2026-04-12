@@ -1511,6 +1511,12 @@ test "Compiler e2e: builtins/read_count_across_threads.ink" {
     defer alloc.free(out);
     try std.testing.expect(out.len > 0);
 }
+test "Compiler e2e: builtins/read_count_variable_target.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/read_count_variable_target.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("Count start: 0 0 0\n1\n2\n3\nCount end: 3 3 3\n", out);
+}
 
 // ── TASK-85: integration — callstack remaining ───────────────────────────────
 
