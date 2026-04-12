@@ -64,7 +64,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `true_plus_true.ink`
   - "Compiler e2e: booleans/true_plus_true.ink" — `src/test/compiler_helpers.zig`
 - `two_plus_true.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: booleans/two_plus_true.ink" — `src/test/compiler_helpers.zig`
 
 #### `runtime/builtins/`
 
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/booleans/two_plus_true.ink`
 - `runtime/builtins/read_count_variable_target.ink`
 - `runtime/builtins/turns_since_with_variable_target.ink`
 - `runtime/builtins/visit_counts_when_choosing.ink`
