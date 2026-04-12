@@ -77,7 +77,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `read_count_dot_separated_path.ink`
   - "Compiler e2e: builtins/read_count_dot_separated_path.ink" — `src/test/compiler_helpers.zig`
 - `read_count_variable_target.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: builtins/read_count_variable_target.ink" — `src/test/compiler_helpers.zig`
 - `turns.ink`
   - "Compiler e2e: TURNS() built-in" — `src/test/compiler_helpers.zig`
 - `turns_since.ink`
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/builtins/read_count_variable_target.ink`
 - `runtime/builtins/turns_since_with_variable_target.ink`
 - `runtime/builtins/visit_counts_when_choosing.ink`
 - `runtime/choices/choice_thread_forking.ink`
