@@ -296,7 +296,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `include.ink`
   - "Compiler parser: INCLUDE paths" — `src/compiler/parser.zig`
 - `nested_include.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: misc/nested_include.ink" — `src/test/compiler_helpers.zig`
 - `quote_character_significance.ink`
   - "Compiler e2e: misc/quote_character_significance.ink" — `src/test/compiler_helpers.zig`
 - `whitespace.ink`
@@ -305,13 +305,13 @@ A fixture is marked unused when no unit test references that file directly; it m
 #### `runtime/misc/includes/`
 
 - `included_file.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: misc/includes/included_file.ink" — `src/test/compiler_helpers.zig`
 - `included_file_2.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: misc/includes/included_file_2.ink" — `src/test/compiler_helpers.zig`
 - `included_file_3.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: misc/includes/included_file_3.ink" — `src/test/compiler_helpers.zig`
 - `included_file_4.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: misc/includes/included_file_4.ink" — `src/test/compiler_helpers.zig`
 
 #### `runtime/multiflow/`
 
@@ -913,11 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/misc/includes/included_file.ink`
-- `runtime/misc/includes/included_file_2.ink`
-- `runtime/misc/includes/included_file_3.ink`
-- `runtime/misc/includes/included_file_4.ink`
-- `runtime/misc/nested_include.ink`
 - `runtime/multiflow/multi_flow_basics.ink`
 - `runtime/multiflow/multi_flow_save_load_threads.ink`
 - `runtime/newlines/newlines_trimming_with_func_external_fallback.ink`
