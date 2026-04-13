@@ -1,9 +1,12 @@
 ---
 id: TASK-117
-title: 'Tests: add direct coverage for runtime/lists/contains_empty_list_always_false.ink'
-status: To Do
+title: >-
+  Tests: add direct coverage for
+  runtime/lists/contains_empty_list_always_false.ink
+status: Done
 assignee: []
 created_date: '2026-04-08 13:56'
+updated_date: '2026-04-13 16:44'
 labels:
   - tests
   - coverage

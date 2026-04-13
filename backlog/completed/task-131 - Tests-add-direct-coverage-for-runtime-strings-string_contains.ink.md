@@ -1,9 +1,10 @@
 ---
 id: TASK-131
 title: 'Tests: add direct coverage for runtime/strings/string_contains.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:56'
+updated_date: '2026-04-13 16:51'
 labels:
   - tests
   - coverage

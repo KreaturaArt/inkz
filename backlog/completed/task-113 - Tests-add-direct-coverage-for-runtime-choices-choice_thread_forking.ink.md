@@ -1,9 +1,10 @@
 ---
 id: TASK-113
 title: 'Tests: add direct coverage for runtime/choices/choice_thread_forking.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:54'
+updated_date: '2026-04-13 16:40'
 labels:
   - tests
   - coverage
