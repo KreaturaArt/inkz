@@ -760,11 +760,11 @@ A fixture is marked unused when no unit test references that file directly; it m
 #### `runtime/misc/includes/`
 
 - `included_file.ink.json`
-  - Unused in direct unit tests
+  - "Story includes/included_file" — `src/runtime/story.zig`
 - `included_file_2.ink.json`
-  - Unused in direct unit tests
+  - "Story includes/included_file_2" — `src/runtime/story.zig`
 - `included_file_4.ink.json`
-  - Unused in direct unit tests
+  - "Story includes/included_file_4" — `src/runtime/story.zig`
 
 #### `runtime/multiflow/`
 
@@ -911,8 +911,3 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `player/variables.ink.json.import`
   - Unused in direct unit tests
 
-## Unused Compiled Fixtures
-
-- `runtime/misc/includes/included_file.ink.json`
-- `runtime/misc/includes/included_file_2.ink.json`
-- `runtime/misc/includes/included_file_4.ink.json`
