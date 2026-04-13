@@ -89,7 +89,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `visit_count_bug_due_to_nested_containers.ink`
   - "Compiler e2e: builtins/visit_count_bug_due_to_nested_containers.ink" — `src/test/compiler_helpers.zig`
 - `visit_counts_when_choosing.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: builtins/visit_counts_when_choosing.ink" — `src/test/compiler_helpers.zig`
 
 #### `runtime/callstack/`
 
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/builtins/visit_counts_when_choosing.ink`
 - `runtime/choices/choice_thread_forking.ink`
 - `runtime/choices/fallback_choice_on_thread.ink`
 - `runtime/evaluation/evaluating_ink_functions_from_game.ink`
