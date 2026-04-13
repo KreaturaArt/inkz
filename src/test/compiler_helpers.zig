@@ -1538,6 +1538,28 @@ test "Compiler e2e: builtins/visit_counts_when_choosing.ink" {
     defer alloc.free(out2);
     try std.testing.expect(std.mem.indexOf(u8, out2, "this is the end") != null);
 }
+test "Compiler e2e: choices/choice_thread_forking.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/choices/choice_thread_forking.ink");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqual(@as(usize, 1), story.currentChoices().len);
+    try std.testing.expectEqualStrings("A choice", story.currentChoices()[0].text);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "A choice") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "Vaue of local var is: ") != null);
+}
+test "Compiler e2e: choices/fallback_choice_on_thread.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/choices/fallback_choice_on_thread.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Should be 1 not 0: ") != null);
+}
 
 // ── TASK-85: integration — callstack remaining ───────────────────────────────
 
