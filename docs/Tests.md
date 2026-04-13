@@ -106,7 +106,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `choice_diverts_to_done.ink`
   - "Compiler e2e: choice_diverts_to_done.ink — start-text choice" — `src/test/compiler_helpers.zig`
 - `choice_thread_forking.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: choices/choice_thread_forking.ink" — `src/test/compiler_helpers.zig`
 - `choice_with_brackets_only.ink`
   - "Compiler e2e: choice_with_brackets_only.ink — brackets-only choice" — `src/test/compiler_helpers.zig`
 - `conditional_choices.ink`
@@ -116,7 +116,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `default_simple_gather.ink`
   - "Compiler e2e: default_simple_gather.ink — fallback choice + gather" — `src/test/compiler_helpers.zig`
 - `fallback_choice_on_thread.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: choices/fallback_choice_on_thread.ink" — `src/test/compiler_helpers.zig`
 - `gather_choice_same_line.ink`
   - "Compiler e2e: gather_choice_same_line.ink" — `src/test/compiler_helpers.zig`
 - `has_read_on_choice.ink`
@@ -913,8 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/choices/choice_thread_forking.ink`
-- `runtime/choices/fallback_choice_on_thread.ink`
 - `runtime/evaluation/evaluating_ink_functions_from_game.ink`
 - `runtime/evaluation/evaluating_ink_functions_from_game_2.ink`
 - `runtime/lists/contains_empty_list_always_false.ink`
