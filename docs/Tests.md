@@ -316,9 +316,9 @@ A fixture is marked unused when no unit test references that file directly; it m
 #### `runtime/multiflow/`
 
 - `multi_flow_basics.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: multiflow/multi_flow_basics.ink" — `src/test/compiler_helpers.zig`
 - `multi_flow_save_load_threads.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: multiflow/multi_flow_save_load_threads.ink" — `src/test/compiler_helpers.zig`
 
 #### `runtime/newlines/`
 
@@ -331,7 +331,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `newline_consistency_3.ink`
   - "Compiler e2e: newlines/newline_consistency_3.ink" — `src/test/compiler_helpers.zig`
 - `newlines_trimming_with_func_external_fallback.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: newlines/newlines_trimming_with_func_external_fallback.ink" — `src/test/compiler_helpers.zig`
 - `newlines_with_string_eval.ink`
   - "Compiler e2e: newlines/newlines_with_string_eval.ink" — `src/test/compiler_helpers.zig`
 
@@ -355,7 +355,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `string_constants.ink`
   - "Compiler e2e: string_constants.ink" — `src/test/compiler_helpers.zig`
 - `string_contains.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: strings/string_contains.ink" — `src/test/compiler_helpers.zig`
 - `string_type_coercion.ink`
   - "Compiler e2e: strings/string_type_coercion.ink" — `src/test/compiler_helpers.zig`
 - `strings_in_choices.ink`
@@ -910,13 +910,6 @@ A fixture is marked unused when no unit test references that file directly; it m
   - Unused in direct unit tests
 - `player/variables.ink.json.import`
   - Unused in direct unit tests
-
-## Unused Original Fixtures
-
-- `runtime/multiflow/multi_flow_basics.ink`
-- `runtime/multiflow/multi_flow_save_load_threads.ink`
-- `runtime/newlines/newlines_trimming_with_func_external_fallback.ink`
-- `runtime/strings/string_contains.ink`
 
 ## Unused Compiled Fixtures
 

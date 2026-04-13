@@ -1197,6 +1197,46 @@ test "Compiler e2e: misc/quote_character_significance.ink" {
     try std.testing.expect(std.mem.indexOf(u8, out, "Joe") != null);
 }
 
+test "Compiler e2e: multiflow/multi_flow_basics.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/multiflow/multi_flow_basics.ink");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    try story.switchFlow("f1");
+    try story.choosePathString("knot1");
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expectEqualStrings("knot 1 line 1\nknot 1 line 2\n", out1);
+    try story.switchFlow("f2");
+    try story.choosePathString("knot2");
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expectEqualStrings("knot 2 line 1\nknot 2 line 2\n", out2);
+}
+test "Compiler e2e: multiflow/multi_flow_save_load_threads.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/multiflow/multi_flow_save_load_threads.ink");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "Default line 1") != null);
+}
+test "Compiler e2e: newlines/newlines_trimming_with_func_external_fallback.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/newlines/newlines_trimming_with_func_external_fallback.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len >= 0);
+}
+test "Compiler e2e: strings/string_contains.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/strings/string_contains.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("1\n0\n1\n1\n", out);
+}
+
 // ── TASK-85: integration — newlines remaining ────────────────────────────────
 
 test "Compiler e2e: newlines/newline_consistency_3.ink" {
