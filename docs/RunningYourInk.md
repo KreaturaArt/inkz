@@ -7,7 +7,9 @@
   ```sh
   inkz compile story.ink -o story.ink.json
   ```
+
 * Add `inkz` as a dependency in your `build.zig.zon` and import the `ink` module in your `build.zig`.
+
 * Load the compiled JSON and run the story (see **Getting started with the runtime API**, below).
 
 ## Further information
