@@ -1560,6 +1560,18 @@ test "Compiler e2e: choices/fallback_choice_on_thread.ink" {
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "Should be 1 not 0: ") != null);
 }
+test "Compiler e2e: evaluation/evaluating_ink_functions_from_game.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/evaluating_ink_functions_from_game.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Top level content") != null);
+}
+test "Compiler e2e: evaluation/evaluating_ink_functions_from_game_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/evaluation/evaluating_ink_functions_from_game_2.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("One\nTwo\nThree\n", out);
+}
 
 // ── TASK-85: integration — callstack remaining ───────────────────────────────
 

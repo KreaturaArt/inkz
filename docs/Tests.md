@@ -194,9 +194,9 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `evaluating_function_variable_state_bug.ink`
   - "Compiler e2e: evaluation/evaluating_function_variable_state_bug.ink" — `src/test/compiler_helpers.zig`
 - `evaluating_ink_functions_from_game.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: evaluation/evaluating_ink_functions_from_game.ink" — `src/test/compiler_helpers.zig`
 - `evaluating_ink_functions_from_game_2.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: evaluation/evaluating_ink_functions_from_game_2.ink" — `src/test/compiler_helpers.zig`
 - `evaluation_stack_leaks.ink`
   - "Compiler e2e: evaluation/evaluation_stack_leaks.ink" — `src/test/compiler_helpers.zig`
 - `factorial_by_reference.ink`
@@ -913,8 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/evaluation/evaluating_ink_functions_from_game.ink`
-- `runtime/evaluation/evaluating_ink_functions_from_game_2.ink`
 - `runtime/lists/contains_empty_list_always_false.ink`
 - `runtime/lists/empty_list_origin_after_assignment.ink`
 - `runtime/lists/list_mixed_items.ink`
