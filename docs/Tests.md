@@ -85,7 +85,7 @@ A fixture is marked unused when no unit test references that file directly; it m
 - `turns_since_nested.ink`
   - "Compiler e2e: builtins/turns_since_nested.ink" — `src/test/compiler_helpers.zig`
 - `turns_since_with_variable_target.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: builtins/turns_since_with_variable_target.ink" — `src/test/compiler_helpers.zig`
 - `visit_count_bug_due_to_nested_containers.ink`
   - "Compiler e2e: builtins/visit_count_bug_due_to_nested_containers.ink" — `src/test/compiler_helpers.zig`
 - `visit_counts_when_choosing.ink`
@@ -913,7 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/builtins/turns_since_with_variable_target.ink`
 - `runtime/builtins/visit_counts_when_choosing.ink`
 - `runtime/choices/choice_thread_forking.ink`
 - `runtime/choices/fallback_choice_on_thread.ink`

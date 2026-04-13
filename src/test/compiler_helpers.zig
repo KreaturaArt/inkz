@@ -1517,6 +1517,12 @@ test "Compiler e2e: builtins/read_count_variable_target.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Count start: 0 0 0\n1\n2\n3\nCount end: 3 3 3\n", out);
 }
+test "Compiler e2e: builtins/turns_since_with_variable_target.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/builtins/turns_since_with_variable_target.ink", &.{0});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
 
 // ── TASK-85: integration — callstack remaining ───────────────────────────────
 
@@ -1777,3 +1783,4 @@ test "Compiler e2e: booleans/two_plus_true.ink" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("3\n", out);
 }
+
