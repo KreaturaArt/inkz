@@ -1,9 +1,12 @@
 ---
 id: TASK-130
-title: 'Tests: add direct coverage for runtime/newlines/newlines_trimming_with_func_external_fallback.ink'
-status: To Do
+title: >-
+  Tests: add direct coverage for
+  runtime/newlines/newlines_trimming_with_func_external_fallback.ink
+status: Done
 assignee: []
 created_date: '2026-04-08 13:56'
+updated_date: '2026-04-13 16:50'
 labels:
   - tests
   - coverage

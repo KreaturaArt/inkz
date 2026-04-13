@@ -3,9 +3,10 @@ id: TASK-111
 title: >-
   Tests: add direct coverage for
   runtime/builtins/turns_since_with_variable_target.ink
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:54'
+updated_date: '2026-04-13 07:03'
 labels:
   - tests
   - coverage

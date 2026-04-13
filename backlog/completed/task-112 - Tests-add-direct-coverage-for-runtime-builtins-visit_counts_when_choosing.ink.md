@@ -1,9 +1,10 @@
 ---
 id: TASK-112
 title: 'Tests: add direct coverage for runtime/builtins/visit_counts_when_choosing.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:54'
+updated_date: '2026-04-13 08:00'
 labels:
   - tests
   - coverage

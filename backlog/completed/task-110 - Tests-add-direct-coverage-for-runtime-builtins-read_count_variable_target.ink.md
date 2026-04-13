@@ -1,9 +1,10 @@
 ---
 id: TASK-110
 title: 'Tests: add direct coverage for runtime/builtins/read_count_variable_target.ink'
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-04-08 13:54'
+updated_date: '2026-04-12 15:05'
 labels:
   - tests
   - coverage
