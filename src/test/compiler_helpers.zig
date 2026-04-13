@@ -1523,6 +1523,21 @@ test "Compiler e2e: builtins/turns_since_with_variable_target.ink" {
     defer alloc.free(out);
     try std.testing.expect(out.len > 0);
 }
+test "Compiler e2e: builtins/visit_counts_when_choosing.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/builtins/visit_counts_when_choosing.ink");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    try story.choosePathString("TestKnot");
+    const out1 = try story.cont();
+    defer alloc.free(out1);
+    try std.testing.expect(std.mem.indexOf(u8, out1, "this is a test") != null);
+    try story.chooseChoiceIndex(0);
+    const out2 = try story.cont();
+    defer alloc.free(out2);
+    try std.testing.expect(std.mem.indexOf(u8, out2, "this is the end") != null);
+}
 
 // ── TASK-85: integration — callstack remaining ───────────────────────────────
 
