@@ -692,6 +692,43 @@ test "Compiler e2e: LIST more_list_operations" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("1\nl\n\nn\n\nl, m\n\nn\n", out);
 }
+test "Compiler e2e: lists/contains_empty_list_always_false.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/contains_empty_list_always_false.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "1") == null);
+}
+test "Compiler e2e: lists/empty_list_origin_after_assignment.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/empty_list_origin_after_assignment.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(out.len > 0);
+}
+test "Compiler e2e: lists/list_mixed_items.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/list_mixed_items.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("a, c, y\n", out);
+}
+test "Compiler e2e: lists/list_random.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/list_random.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqual(@as(usize, 10), std.mem.count(u8, out, "\n"));
+}
+test "Compiler e2e: lists/list_range.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/list_range.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Two, Three, Four, Five, Six\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Pizza") != null);
+}
+test "Compiler e2e: lists/list_save_load.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/lists/list_save_load.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("a, c, x\n", out);
+}
 
 // ── Divert target variable tests ──────────────────────────────────────────────
 

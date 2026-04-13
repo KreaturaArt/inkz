@@ -245,21 +245,21 @@ A fixture is marked unused when no unit test references that file directly; it m
 #### `runtime/lists/`
 
 - `contains_empty_list_always_false.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: lists/contains_empty_list_always_false.ink" — `src/test/compiler_helpers.zig`
 - `empty_list_origin.ink`
   - "Compiler e2e: LIST empty_list_origin" — `src/test/compiler_helpers.zig`
 - `empty_list_origin_after_assignment.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: lists/empty_list_origin_after_assignment.ink" — `src/test/compiler_helpers.zig`
 - `list_basic_operations.ink`
   - "Compiler e2e: LIST basic" — `src/test/compiler_helpers.zig`
 - `list_mixed_items.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: lists/list_mixed_items.ink" — `src/test/compiler_helpers.zig`
 - `list_random.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: lists/list_random.ink" — `src/test/compiler_helpers.zig`
 - `list_range.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: lists/list_range.ink" — `src/test/compiler_helpers.zig`
 - `list_save_load.ink`
-  - Unused in direct unit tests
+  - "Compiler e2e: lists/list_save_load.ink" — `src/test/compiler_helpers.zig`
 - `more_list_operations.ink`
   - "Compiler e2e: LIST more_list_operations" — `src/test/compiler_helpers.zig`
 
@@ -913,12 +913,6 @@ A fixture is marked unused when no unit test references that file directly; it m
 
 ## Unused Original Fixtures
 
-- `runtime/lists/contains_empty_list_always_false.ink`
-- `runtime/lists/empty_list_origin_after_assignment.ink`
-- `runtime/lists/list_mixed_items.ink`
-- `runtime/lists/list_random.ink`
-- `runtime/lists/list_range.ink`
-- `runtime/lists/list_save_load.ink`
 - `runtime/misc/includes/included_file.ink`
 - `runtime/misc/includes/included_file_2.ink`
 - `runtime/misc/includes/included_file_3.ink`
