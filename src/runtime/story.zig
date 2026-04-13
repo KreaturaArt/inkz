@@ -4506,6 +4506,39 @@ test "Story include" {
     try std.testing.expect(!story.canContinue());
 }
 
+test "Story includes/included_file" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/includes/included_file.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is include 1.\n", out);
+    try std.testing.expect(!story.canContinue());
+}
+test "Story includes/included_file_2" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/includes/included_file_2.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is include 2.\n", out);
+    try std.testing.expect(!story.canContinue());
+}
+test "Story includes/included_file_4" {
+    const alloc = std.testing.allocator;
+    const json = try readFixture(alloc, "misc/includes/included_file_4.ink.json");
+    defer alloc.free(json);
+    var story = try Story.initFromJson(alloc, json);
+    defer story.deinit();
+    const out = try story.cont();
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "5") != null);
+    try std.testing.expect(!story.canContinue());
+}
 test "Story nested_include" {
     const alloc = std.testing.allocator;
     const json = try readFixture(alloc, "misc/nested_include.ink.json");
