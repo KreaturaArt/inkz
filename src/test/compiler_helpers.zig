@@ -284,6 +284,36 @@ test "Compiler e2e: misc/whitespace.ink fixture" {
     defer alloc.free(out);
     try std.testing.expectEqualStrings("Hello!\nWorld.\n", out);
 }
+test "Compiler e2e: misc/includes/included_file.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/includes/included_file.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is include 1.\n", out);
+}
+test "Compiler e2e: misc/includes/included_file_2.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/includes/included_file_2.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("This is include 2.\n", out);
+}
+test "Compiler e2e: misc/includes/included_file_3.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/includes/included_file_3.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expectEqualStrings("", out);
+}
+test "Compiler e2e: misc/includes/included_file_4.ink" {
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureAndRun(alloc, "runtime/misc/includes/included_file_4.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "5") != null);
+}
+test "Compiler e2e: misc/nested_include.ink" {
+    const alloc = std.testing.allocator;
+    const json = try compileFixture(alloc, "runtime/misc/nested_include.ink");
+    defer alloc.free(json);
+    try std.testing.expect(std.mem.indexOf(u8, json, "This is the main file") != null);
+}
 
 // ── Expression / evaluation tests ─────────────────────────────────────────────
 
