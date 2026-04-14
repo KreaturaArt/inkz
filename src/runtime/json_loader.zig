@@ -35,7 +35,7 @@ pub fn loadStory(arena: std.mem.Allocator, json_text: []const u8) !LoadedStory {
     const root_json = obj.get("root") orelse return error.MissingRoot;
     if (root_json != .array) return error.InvalidRoot;
 
-    const list_defs = obj.get("listDefs") orelse std.json.Value{ .object = std.json.ObjectMap.init(arena) };
+    const list_defs = obj.get("listDefs") orelse std.json.Value{ .object = .empty };
 
     var containers = std.ArrayList(Container).empty;
     var named_entries = std.ArrayList(NamedEntry).empty;

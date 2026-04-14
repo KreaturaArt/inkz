@@ -160,7 +160,7 @@ test "ListDefinitionsOrigin.parse empty listDefs" {
     defer arena.deinit();
     const alloc = arena.allocator();
 
-    const empty = std.json.Value{ .object = std.json.ObjectMap.init(alloc) };
+    const empty = std.json.Value{ .object = .empty };
     const origin = try ListDefinitionsOrigin.parse(alloc, empty);
     try std.testing.expectEqual(@as(usize, 0), origin.definitions.count());
 }
