@@ -815,11 +815,14 @@ test "Compiler e2e: variable_declaration_in_conditional.ink" {
 // ── TASK-79: named gathers, choice labels, nested choices ─────────────────────
 
 test "Compiler e2e: should_not_gather_due_to_choice.ink" {
-    // * opt → nested weave with -- text, ** impossible, ** -> END; - gather
+    // * opt → nested weave: text, {false} impossible, invisible default -> END; - gather
+    // Invisible default fires (all choices filtered) → END; "gather" is never reached.
+    // Matches runtime test "Story should_not_gather_due_to_choice" which asserts gather==null.
     const alloc = std.testing.allocator;
     const out = try compileFixtureAndRun(alloc, "runtime/choices/should_not_gather_due_to_choice.ink", &.{0});
     defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "gather") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "text") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "gather") == null);
 }
 
 test "Compiler e2e: weave_gathers.ink" {
@@ -1955,35 +1958,89 @@ test "Compiler e2e: booleans/two_plus_true.ink" {
 
 // ── Integration fixtures ───────────────────────────────────────────────────────
 
-test "Compiler e2e: simple_taster_tutorial.ink - silent path" {
-    const alloc = std.testing.allocator;
-    // Choose "... but I said nothing" (depth-1 choice 1) → reaches ending directly.
-    const out = try compileFixtureRootAndRun(alloc, "simple_taster_tutorial.ink", &.{1});
-    defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "we passed the day in silence") != null);
+/// Run a pre-compiled story JSON with a fixed choice sequence. Caller owns the result.
+fn runFromJson(alloc: std.mem.Allocator, json: []const u8, choices: []const usize) ![]u8 {
+    var s = try Story.initFromJson(alloc, json);
+    defer s.deinit();
+    var buf = std.ArrayList(u8).empty;
+    errdefer buf.deinit(alloc);
+    var ci: usize = 0;
+    while (true) {
+        if (s.canContinue()) {
+            const out = try s.cont();
+            defer alloc.free(out);
+            try buf.appendSlice(alloc, out);
+        } else if (s.currentChoices().len > 0 and ci < choices.len) {
+            try s.chooseChoiceIndex(choices[ci]);
+            ci += 1;
+        } else break;
+    }
+    return buf.toOwnedSlice(alloc);
 }
 
-test "DEBUG: crime_scene json" {
+test "Compiler e2e: simple_taster_tutorial.ink - all choice paths" {
+    // Choice tree (all 8 paths):
+    //
+    //   [1]           → silent ("said nothing")
+    //   [0,1]         → "Ah." branch
+    //   [0,0,0,0..2]  → "A wager!" → "But surely" → post-gather choice 0/1/2
+    //   [0,0,1,0..2]  → "A wager!" → "Most serious" → post-gather choice 0/1/2
+    //
+    // Every path converges at "we passed the day in silence."
+    // `phrases` lists text unique to that path (pre-gather and/or post-gather branch).
     const alloc = std.testing.allocator;
-    const c = @import("../compiler/compiler.zig");
     const io = std.testing.io;
-    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/simple_taster_tutorial.ink", alloc, .limited(1024 * 1024));
     defer alloc.free(src);
-    const json = try c.compile(alloc, src);
+    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
     defer alloc.free(json);
-    std.debug.print("\nCrime scene JSON:\n{s}\n", .{json});
+
+    const Case = struct { choices: []const usize, phrases: []const []const u8 };
+    const cases = [_]Case{
+        .{ .choices = &.{1},          .phrases = &.{ "said nothing" } },
+        .{ .choices = &.{0, 1},       .phrases = &.{ "uncertain what I thought" } },
+        .{ .choices = &.{0, 0, 0, 0}, .phrases = &.{ "surely that is foolishness", "endeavour to find out" } },
+        .{ .choices = &.{0, 0, 0, 1}, .phrases = &.{ "surely that is foolishness", "Twenty thousand pounds" } },
+        .{ .choices = &.{0, 0, 0, 2}, .phrases = &.{ "surely that is foolishness", "polite cough" } },
+        .{ .choices = &.{0, 0, 1, 0}, .phrases = &.{ "most serious matter",        "endeavour to find out" } },
+        .{ .choices = &.{0, 0, 1, 1}, .phrases = &.{ "most serious matter",        "Twenty thousand pounds" } },
+        .{ .choices = &.{0, 0, 1, 2}, .phrases = &.{ "most serious matter",        "polite cough" } },
+    };
+
+    for (cases) |tc| {
+        const out = try runFromJson(alloc, json, tc.choices);
+        defer alloc.free(out);
+        try std.testing.expect(std.mem.indexOf(u8, out, "we passed the day in silence") != null);
+        for (tc.phrases) |phrase| {
+            try std.testing.expect(std.mem.indexOf(u8, out, phrase) != null);
+        }
+    }
 }
 
-test "Compiler e2e: simple_taster_tutorial.ink - full talkative path" {
+test "Compiler e2e: simple_taster_tutorial.ink - interactive always-first loop" {
+    // Simulate an interactive session that always picks choice 0 until the story
+    // ends naturally. Verifies the story terminates without overflow or hang.
     const alloc = std.testing.allocator;
-    // Path: "and I could not contain myself" → "'A wager!'" → "'But surely foolishness!'"
-    // → gather → "'But can we win?'" → "'A modest wager?'" → "I asked nothing further"
-    // → depth-2 gather "After that," → depth-1 gather "we passed the day in silence."
-    const out = try compileFixtureRootAndRun(alloc, "simple_taster_tutorial.ink", &.{ 0, 0, 0, 0, 0, 0 });
-    defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "Monsieur Fogg") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "wager") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "we passed the day in silence") != null);
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/simple_taster_tutorial.ink", alloc, .limited(1024 * 1024));
+    defer alloc.free(src);
+    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    defer alloc.free(json);
+    var s = try Story.initFromJson(alloc, json);
+    defer s.deinit();
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(alloc);
+    var turns: usize = 0;
+    while (turns < 20) : (turns += 1) {
+        if (s.canContinue()) {
+            const out = try s.cont();
+            defer alloc.free(out);
+            try buf.appendSlice(alloc, out);
+        } else if (s.currentChoices().len > 0) {
+            try s.chooseChoiceIndex(0);
+        } else break;
+    }
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "we passed the day in silence") != null);
 }
 
 test "Compiler e2e: crime_scene.ink - initial scene loads" {

@@ -282,13 +282,23 @@ const Gen = struct {
                     try items.append(self.alloc, .{ .temp_assign = .{ .name = p.name, .is_new = true } });
                 }
             }
-            for (knot.content) |item| {
-                try self.genFlowItem(&items, item, knot.name);
-            }
-            // When a knot has no explicit content before its first stitch,
-            // Inklecate emits an auto-divert to the first stitch so that
-            // `-> knot` naturally falls through to `knot.first_stitch`.
-            if (knot.content.len == 0) {
+            if (knot.content.len > 0) {
+                if (itemsHaveChoices(knot.content)) {
+                    // Knot has both stitches and choices in main content: compile
+                    // the content as a weave holder at knot.0, same as a stitch-less knot.
+                    const inner = try self.newContainer(null);
+                    const holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.0", .{knot.name});
+                    try self.genWeave(knot.content, inner, holder_abs, false, 1, null, knot.name);
+                    try items.append(self.alloc, .{ .container = inner });
+                } else {
+                    for (knot.content) |item| {
+                        try self.genFlowItem(&items, item, knot.name);
+                    }
+                }
+            } else {
+                // When a knot has no explicit content before its first stitch,
+                // Inklecate emits an auto-divert to the first stitch so that
+                // `-> knot` naturally falls through to `knot.first_stitch`.
                 const first_stitch_path = try std.fmt.allocPrint(
                     self.alloc, "{s}.{s}", .{ knot.name, knot.stitches[0].name });
                 try items.append(self.alloc, .{ .divert = first_stitch_path });
@@ -390,7 +400,14 @@ const Gen = struct {
             },
             .thread_start => |knot_name| {
                 try out.append(self.alloc, .{ .string = "thread" });
-                try out.append(self.alloc, .{ .divert = knot_name });
+                // Strip any function-call arguments ("name(args)" → "name")
+                const paren_pos = std.mem.indexOfScalar(u8, knot_name, '(') orelse knot_name.len;
+                const name = std.mem.trim(u8, knot_name[0..paren_pos], " \t");
+                // Resolve stitch/gather name to its absolute path.
+                const resolved = self.gather_label_paths.get(name) orelse
+                    self.stitch_paths.get(name) orelse
+                    name;
+                try out.append(self.alloc, .{ .divert = resolved });
             },
         }
     }
@@ -857,12 +874,19 @@ const Gen = struct {
                                 cur_content = &init_sec_content;
                                 section_choice_count = 0;
                             } else {
-                                // First gather but not initial → start named section.
+                                const gather_sec_abs = try std.fmt.allocPrint(
+                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                                // When there are no pre-gather choices, the story needs an
+                                // explicit divert to flow from the preamble into the gather
+                                // section (pre-gather choices stop naturally via pointer-null).
+                                if (cur_choice_idx == 0) {
+                                    try main_content.append(self.alloc, .{ .divert = gather_sec_abs });
+                                }
+                                // Start named section.
                                 state = .in_named;
                                 named_sec_name = gname;
                                 named_sec_has_user_label = g.label != null;
-                                cur_holder_abs = try std.fmt.allocPrint(
-                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                                cur_holder_abs = gather_sec_abs;
                                 cur_is_root = false;
                                 cur_content = &named_sec_content;
                                 section_choice_count = 0;
@@ -974,9 +998,13 @@ const Gen = struct {
             },
             .in_initial => {
                 // Only initial section (no subsequent gathers).
-                // Append outer_gather_path divert if provided.
+                // Only add the divert when there are no choices; choice bodies
+                // already divert to outer_gather_path, and the section body
+                // must not bypass the stop-at-choices mechanism.
                 if (outer_gather_path) |ogp| {
-                    try init_sec_content.append(self.alloc, .{ .divert = ogp });
+                    if (section_choice_count == 0) {
+                        try init_sec_content.append(self.alloc, .{ .divert = ogp });
+                    }
                 }
                 init_sec_container.?.content =
                     try init_sec_content.toOwnedSlice(self.alloc);
@@ -985,9 +1013,14 @@ const Gen = struct {
                 try main_content.append(self.alloc, .{ .container = init_sec_container.? });
             },
             .in_named => {
-                // Append outer_gather_path divert to last named section if provided.
+                // Only add the outer_gather_path divert when the section has no
+                // choices.  Choice bodies already divert to outer_gather_path;
+                // leaving the divert unconditional causes the story to bypass
+                // stop-at-choices and run directly to the outer gather.
                 if (outer_gather_path) |ogp| {
-                    try named_sec_content.append(self.alloc, .{ .divert = ogp });
+                    if (section_choice_count == 0) {
+                        try named_sec_content.append(self.alloc, .{ .divert = ogp });
+                    }
                 } else if (is_root and cur_choice_idx > 0) {
                     const tail_name = try std.fmt.allocPrint(self.alloc, "g-{}", .{gather_processed});
                     const tail = try self.newContainer(tail_name);
