@@ -2,9 +2,10 @@
 .DS_Store
 
 
-# ---> Zig
+# Zig
 .zig-cache/
 zig-out/
+zig-pkg/
 build/
 build-*/
 docgen_tmp/

@@ -377,7 +377,10 @@ pub const Parser = struct {
                 _ = self.eat(); // <-
                 const target = if (self.cur().tag == .text) blk: {
                     const t = self.eat();
-                    break :blk std.mem.trim(u8, t.loc.slice(self.src), " \t");
+                    const raw = std.mem.trim(u8, t.loc.slice(self.src), " \t");
+                    // Strip function-call arguments: "name(args)" → "name"
+                    const paren = std.mem.indexOfScalar(u8, raw, '(') orelse raw.len;
+                    break :blk raw[0..paren];
                 } else "";
                 self.skipToEol();
                 if (target.len > 0) {
