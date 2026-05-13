@@ -97,6 +97,19 @@ pub fn compileFixture(
     return compiler.compile(alloc, src);
 }
 
+/// Load an .ink file from test/fixture/ (root), compile and run it.
+/// Caller owns the returned slice.
+pub fn compileFixtureRootAndRun(
+    alloc: std.mem.Allocator,
+    comptime rel_path: []const u8,
+    choices: []const usize,
+) ![]u8 {
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/" ++ rel_path, alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    return compileAndRun(alloc, src, choices);
+}
+
 /// Load an .ink file from test/fixture/original/, compile and run it.
 /// Caller owns the returned slice.
 pub fn compileFixtureAndRun(
@@ -1940,3 +1953,57 @@ test "Compiler e2e: booleans/two_plus_true.ink" {
     try std.testing.expectEqualStrings("3\n", out);
 }
 
+// ── Integration fixtures ───────────────────────────────────────────────────────
+
+test "Compiler e2e: simple_taster_tutorial.ink - silent path" {
+    const alloc = std.testing.allocator;
+    // Choose "... but I said nothing" (depth-1 choice 1) → reaches ending directly.
+    const out = try compileFixtureRootAndRun(alloc, "simple_taster_tutorial.ink", &.{1});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "we passed the day in silence") != null);
+}
+
+test "DEBUG: crime_scene json" {
+    const alloc = std.testing.allocator;
+    const c = @import("../compiler/compiler.zig");
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    const json = try c.compile(alloc, src);
+    defer alloc.free(json);
+    std.debug.print("\nCrime scene JSON:\n{s}\n", .{json});
+}
+
+test "Compiler e2e: simple_taster_tutorial.ink - full talkative path" {
+    const alloc = std.testing.allocator;
+    // Path: "and I could not contain myself" → "'A wager!'" → "'But surely foolishness!'"
+    // → gather → "'But can we win?'" → "'A modest wager?'" → "I asked nothing further"
+    // → depth-2 gather "After that," → depth-1 gather "we passed the day in silence."
+    const out = try compileFixtureRootAndRun(alloc, "simple_taster_tutorial.ink", &.{ 0, 0, 0, 0, 0, 0 });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "Monsieur Fogg") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "wager") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "we passed the day in silence") != null);
+}
+
+test "Compiler e2e: crime_scene.ink - initial scene loads" {
+    const alloc = std.testing.allocator;
+    // No choices: verify the opening scene compiles and runs.
+    const out = try compileFixtureRootAndRun(alloc, "crime_scene.ink", &.{});
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "bedroom") != null);
+}
+
+test "Compiler e2e: crime_scene.ink - examine desk and get cane" {
+    const alloc = std.testing.allocator;
+    // At top: choices are [bed(0), desk(1), window(2)].
+    // Choose desk(1) → sub-choices [pick up cane(0), turn on lamp(1), in-tray(2), open drawer(3)].
+    // Choose pick up cane(0) → gets cane, back to deskstate.
+    // Choose "Something else?"(4) → back to top.
+    // (top now has 4 visits from previous traversal so >= 5 not yet)
+    // Choose bed(0) to increment top visits, then sub-choose "Something else?".
+    const out = try compileFixtureRootAndRun(alloc, "crime_scene.ink", &.{ 1, 0 });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "desk") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "cane") != null);
+}

@@ -917,35 +917,21 @@ const Gen = struct {
 
                     // Compute gather_path: where should c-N divert after selection?
                     // (Only needed when inner_content has no nested weave of its own.)
+                    // Always use absolute paths so the divert works correctly even when
+                    // passed as outer_gather_path to a deeper nested weave.
                     const next_gi = gather_processed; // index of next gather after this choice
                     const gather_path: []const u8 = gp: {
                         if (next_gi < gather_names.items.len) {
                             const next_gname = gather_names.items[next_gi];
-                            // If we're in a section (not directly in holder), the next
-                            // gather is a named_child of the OUTER holder → absolute.
-                            // If we're directly in the holder, use is_root to decide.
-                            if (state == .pre_gather) {
-                                if (cur_is_root) {
-                                    break :gp try std.fmt.allocPrint(
-                                        self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
-                                } else {
-                                    break :gp try std.fmt.allocPrint(
-                                        self.alloc, ".^.^.{s}", .{next_gname});
-                                }
-                            } else {
-                                // Inside a section: the next gather is in the outer holder.
-                                break :gp try std.fmt.allocPrint(
-                                    self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
-                            }
+                            // The next gather is always a named_child of holder_abs_path.
+                            break :gp try std.fmt.allocPrint(
+                                self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
                         } else if (outer_gather_path) |ogp| {
                             break :gp ogp;
                         } else {
                             // No gathers at all and no outer path: implicit g-0.
-                            break :gp if (cur_is_root)
-                                try std.fmt.allocPrint(
-                                    self.alloc, "{s}.g-0", .{holder_abs_path})
-                            else
-                                ".^.^.g-0";
+                            break :gp try std.fmt.allocPrint(
+                                self.alloc, "{s}.g-0", .{holder_abs_path});
                         }
                     };
 
