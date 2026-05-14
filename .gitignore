@@ -1,7 +1,6 @@
 # Mac
 .DS_Store
 
-
 # Zig
 .zig-cache/
 zig-out/
@@ -10,3 +9,6 @@ build/
 build-*/
 docgen_tmp/
 sample.DS_Store
+
+# AI
+.claude
