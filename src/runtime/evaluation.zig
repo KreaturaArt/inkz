@@ -27,12 +27,15 @@ fn toInt(obj: RuntimeObject) ?i64 {
 }
 
 /// Returns true if obj is "truthy" (non-zero, non-false, non-void).
+/// Matches ink: empty list and empty string are false.
 pub fn isTruthy(obj: RuntimeObject) bool {
     return switch (obj) {
         .bool => |b| b,
         .int => |n| n != 0,
         .float => |f| f != 0.0,
         .void => false,
+        .list => |l| l.items.count() != 0,
+        .string => |s| s.len != 0,
         else => true,
     };
 }

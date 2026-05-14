@@ -28,13 +28,15 @@ pub fn runStory(
 
     var choice_idx: usize = 0;
     while (true) {
+        if (s.currentChoices().len > 0 and choice_idx < choices.len and !s.canContinue()) {
+            try s.chooseChoiceIndex(choices[choice_idx]);
+            choice_idx += 1;
+            continue;
+        }
         if (s.canContinue()) {
             const out = try s.cont();
             defer allocator.free(out);
             try output.appendSlice(allocator, out);
-        } else if (s.currentChoices().len > 0 and choice_idx < choices.len) {
-            try s.chooseChoiceIndex(choices[choice_idx]);
-            choice_idx += 1;
         } else {
             break;
         }

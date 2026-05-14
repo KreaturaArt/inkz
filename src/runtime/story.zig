@@ -885,7 +885,29 @@ pub const Story = struct {
     }
 
     fn runStepLoop(self: *Story) !void {
+        var step_count: usize = 0;
         while (self.canContinue()) {
+            if (step_count >= 500_000) return error.RunawayStepLoop;
+            step_count += 1;
+
+            // Must run *before* `step()`: executing the tail divert advances the pointer, so
+            // `currentObject()` would no longer be the divert we need to detect.
+            if (self.state.current_choices.items.len > 0)
+            {
+                const elem = self.state.call_stack.currentElement();
+                const cur = elem.current_pointer;
+                if (!cur.isNull()) {
+                    if (self.currentObject()) |next_obj| {
+                        if (self.loopBackDivertAfterChoices(cur, next_obj)) {
+                            // Match normal choice stops: pointer null while choices are visible so
+                            // `canContinue()` is false (see conditional_choices test / compileAndRun).
+                            self.state.call_stack.currentElement().current_pointer = Pointer.null_value;
+                            break;
+                        }
+                    }
+                }
+            }
+
             const result = try self.step();
             // Implicit function return: if execution fell off the end of a named function
             // container the pointer becomes null while still inside a function frame.
@@ -907,6 +929,177 @@ pub const Story = struct {
             }
             if (result == .stopped) break;
         }
+    }
+
+    fn loopBackDivertAfterChoices(self: *const Story, cur: Pointer, next_obj: *const RuntimeObject) bool {
+        return self.loopBackGatherTailPeel(cur, next_obj, 0, 16) == .reenter_menu;
+    }
+
+    const GatherTailPeel = enum { none, reenter_menu, block };
+
+    /// Scan `next_obj` (container and/or wrappers) for a leading plain divert that
+    /// jumps straight back into a weave choice menu already represented in `current_choices`.
+    fn loopBackGatherTailPeel(self: *const Story, cur: Pointer, next_obj: *const RuntimeObject, depth: usize, max_depth: usize) GatherTailPeel {
+        if (depth > max_depth) return .block;
+        switch (next_obj.*) {
+            .divert => |d| {
+                if (self.wouldReenterChoiceMenu(cur, d)) return .reenter_menu;
+                return .block;
+            },
+            .container => |cidx| {
+                const c = &self.containers[cidx];
+                if (c.content.len > 0) {
+                    for (c.content) |*slot| {
+                        switch (slot.*) {
+                            .void, .glue => continue,
+                            .string => |s| {
+                                if (std.mem.eql(u8, s, "\n")) continue else return .block;
+                            },
+                            .container => {
+                                switch (self.loopBackGatherTailPeel(cur, slot, depth + 1, max_depth)) {
+                                    .reenter_menu => return .reenter_menu,
+                                    .block => return .block,
+                                    .none => continue,
+                                }
+                            },
+                            .divert => |d| {
+                                if (self.wouldReenterChoiceMenu(cur, d)) return .reenter_menu;
+                                return .block;
+                            },
+                            else => return .block,
+                        }
+                    }
+                }
+                var ni = c.first_named;
+                const nend = c.first_named + c.named_len;
+                while (ni < nend) : (ni += 1) {
+                    const slot = RuntimeObject{ .container = self.named_entries[ni].container_idx };
+                    switch (self.loopBackGatherTailPeel(cur, &slot, depth + 1, max_depth)) {
+                        .reenter_menu => return .reenter_menu,
+                        .block => return .block,
+                        .none => continue,
+                    }
+                }
+                return .none;
+            },
+            else => return .block,
+        }
+    }
+
+    /// True if `d` jumps to the start of a container whose early content is a weave
+    /// choice menu (`choice_point`s). Used only while `current_choices` is non-empty and
+    /// a single runtime thread is active (see `runStepLoop`).
+    fn wouldReenterChoiceMenu(self: *const Story, cur: Pointer, d: value.Divert) bool {
+        return self.wouldReenterChoiceMenuInner(cur, d, true);
+    }
+
+    fn wouldReenterChoiceMenuInner(self: *const Story, cur: Pointer, d: value.Divert, allow_shim: bool) bool {
+        if (d.push_pop_type != null or d.is_variable) return false;
+        const t = self.resolvePath(d.target, cur) orelse return false;
+        if (t.isNull()) return false;
+        const tgt = &self.containers[t.container_idx];
+        if (self.containerHasChoicePointMenu(tgt, 0, 24)) {
+            return self.gatherMatchesPendingChoices(tgt.path);
+        }
+        if (!allow_shim) return false;
+        return self.shimContainerLeadsToChoiceMenu(cur, t.container_idx, 0, 24);
+    }
+
+    fn weaveGatherPathTailLabel(path: []const u8) []const u8 {
+        return if (std.mem.lastIndexOfScalar(u8, path, '.')) |i| path[i + 1 ..] else path;
+    }
+
+    fn isAutoWeaveGatherName(name: []const u8) bool {
+        return name.len >= 2 and name[0] == 'g' and name[1] == '-';
+    }
+
+    fn gatherMatchesPendingChoices(self: *const Story, gather_path: []const u8) bool {
+        if (self.state.current_choices.items.len == 0) return false;
+        const gtail = weaveGatherPathTailLabel(gather_path);
+        for (self.state.current_choices.items) |ch| {
+            const sp = ch.source_path;
+            if (std.mem.eql(u8, sp, gather_path)) return true;
+            if (sp.len > gather_path.len and std.mem.startsWith(u8, sp, gather_path) and sp[gather_path.len] == '.')
+                return true;
+            if (gather_path.len > sp.len and std.mem.startsWith(u8, gather_path, sp) and gather_path[sp.len] == '.')
+                return true;
+            if (!isAutoWeaveGatherName(gtail) and std.mem.eql(u8, weaveGatherPathTailLabel(sp), gtail))
+                return true;
+        }
+        return false;
+    }
+
+    /// True when `maybe_ancestor` is `maybe_desc` or a strict ancestor in the container tree.
+    fn containerIdxIsAncestorOrEqual(self: *const Story, maybe_ancestor: u32, maybe_desc: u32) bool {
+        var d: u32 = maybe_desc;
+        while (true) {
+            if (d == maybe_ancestor) return true;
+            const p = self.containers[d].parent_idx;
+            if (p == null_container_idx) return false;
+            d = p;
+        }
+    }
+
+    /// Plain divert while a menu is showing: if the target is an ancestor of every visible
+    /// choice's source container, executing the divert would re-scan the same weave (e.g.
+    /// `-> bedhub` after `* *` choices). Stop like the pre-step peel (null pointer).
+    fn divertTargetsAncestorOfAnyChoiceSource(self: *const Story, divert_target_cidx: u32) bool {
+        const tpath = self.containers[divert_target_cidx].path;
+        for (self.state.current_choices.items) |ch| {
+            if (self.path_to_idx.get(ch.source_path)) |scidx| {
+                if (self.containerIdxIsAncestorOrEqual(divert_target_cidx, scidx)) return true;
+            } else if (ch.source_path.len > tpath.len and
+                std.mem.startsWith(u8, ch.source_path, tpath) and
+                ch.source_path[tpath.len] == '.')
+            {
+                return true;
+            }
+            if (ch.target_path.len > tpath.len and
+                std.mem.startsWith(u8, ch.target_path, tpath) and
+                ch.target_path[tpath.len] == '.')
+                return true;
+            if (self.resolvePath(ch.target_path, Pointer.null_value)) |ctp| {
+                if (!ctp.isNull()) {
+                    if (self.containerIdxIsAncestorOrEqual(divert_target_cidx, ctp.container_idx)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    fn shimContainerLeadsToChoiceMenu(self: *const Story, cur: Pointer, cidx: u32, depth: u8, max_depth: u8) bool {
+        if (depth > max_depth) return false;
+        const c = &self.containers[cidx];
+        for (c.content) |obj| {
+            switch (obj) {
+                .void, .glue => continue,
+                .string => |s| {
+                    if (std.mem.eql(u8, s, "\n")) continue else return false;
+                },
+                .container => |inner| return self.shimContainerLeadsToChoiceMenu(cur, inner, depth + 1, max_depth),
+                .divert => |d2| return self.wouldReenterChoiceMenuInner(cur, d2, true),
+                else => return false,
+            }
+        }
+        var ni = c.first_named;
+        const nend = c.first_named + c.named_len;
+        while (ni < nend) : (ni += 1) {
+            if (self.shimContainerLeadsToChoiceMenu(cur, self.named_entries[ni].container_idx, depth + 1, max_depth))
+                return true;
+        }
+        return false;
+    }
+
+    fn containerHasChoicePointMenu(self: *const Story, c: *const Container, depth: u8, max_depth: u8) bool {
+        if (depth > max_depth) return false;
+        for (c.content) |obj| {
+            if (obj == .choice_point) return true;
+            if (obj == .container) {
+                if (self.containerHasChoicePointMenu(&self.containers[obj.container], depth + 1, max_depth))
+                    return true;
+            }
+        }
+        return false;
     }
 
     fn collectOutput(self: *Story) ![]u8 {
@@ -1147,12 +1340,14 @@ pub const Story = struct {
                         if (thread.call_stack.items[j].temporary_variables.get(va.name)) |existing| {
                             // If the existing value is a variable pointer, write through it.
                             if (existing == .variable_pointer) {
-                                const target = self.resolveVariablePointerTarget(existing.variable_pointer.name);
+                                const target = self.resolveVariablePointerTarget(existing.variable_pointer);
                                 if (target.is_global) {
                                     self.state.variables_state.setAssumeCapacity(target.name, val);
                                     self.notifyObservers(target.name, val);
+                                } else if (target.temp_stack_index) |si| {
+                                    thread.call_stack.items[si].temporary_variables.setAssumeCapacity(target.name, val);
                                 } else {
-                                    // Write to the frame where the target temp is defined (bottom-up).
+                                    // Fallback: legacy search (should be rare if pointer resolution is correct).
                                     for (thread.call_stack.items) |*frame| {
                                         if (frame.temporary_variables.get(target.name) != null) {
                                             frame.temporary_variables.setAssumeCapacity(target.name, val);
@@ -1172,11 +1367,19 @@ pub const Story = struct {
                         self.notifyObservers(va.name, val);
                     }
                 } else if (va.is_global) {
-                    self.state.variables_state.setAssumeCapacity(va.name, val);
-                    self.notifyObservers(va.name, val);
+                    var v = val;
+                    if (v == .variable_pointer and v.variable_pointer.context_index == -1) {
+                        v = .{ .variable_pointer = self.normalizeVariablePointer(v.variable_pointer) };
+                    }
+                    self.state.variables_state.setAssumeCapacity(va.name, v);
+                    self.notifyObservers(va.name, v);
                 } else {
                     // New temp var declaration: pre-allocated capacity in callstack.push ensures no resize.
-                    elem.temporary_variables.setAssumeCapacity(va.name, val);
+                    var v = val;
+                    if (v == .variable_pointer and v.variable_pointer.context_index == -1) {
+                        v = .{ .variable_pointer = self.normalizeVariablePointer(v.variable_pointer) };
+                    }
+                    elem.temporary_variables.setAssumeCapacity(va.name, v);
                 }
                 self.advancePointer();
                 return .ok;
@@ -1743,6 +1946,16 @@ pub const Story = struct {
         };
         if (target_ptr.isNull()) return error.DivertTargetNotFound;
 
+        // Weave tail: `-> same_gather` while a menu is showing would re-run every `choice_point`
+        // in one `cont()` (crime_scene bedhub). Match when string-based peel misses.
+        if (d.push_pop_type == null and
+            self.state.current_choices.items.len > 0 and
+            self.divertTargetsAncestorOfAnyChoiceSource(target_ptr.container_idx))
+        {
+            elem.current_pointer = Pointer.null_value;
+            return .ok;
+        }
+
         // Only record a visit when entering a container from its start (index 0).
         // Diverts into the middle of a container (e.g. jump-back-to-nop in sequences)
         // must not count as a new visit.
@@ -1781,12 +1994,12 @@ pub const Story = struct {
             i -= 1;
             if (thread.call_stack.items[i].temporary_variables.get(name)) |v| {
                 // Dereference variable pointers (pass-by-reference support).
-                if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
+                if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer);
                 return v;
             }
         }
         if (self.state.variables_state.get(name)) |v| {
-            if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
+            if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer);
             return v;
         }
         // Fallback: check if name is a list item defined in any list origin.
@@ -1808,38 +2021,132 @@ pub const Story = struct {
         return null;
     }
 
-    /// Dereference a variable pointer (pass-by-reference): search globals first, then callstack
-    /// bottom-up (oldest frame first) to find the actual value.  Follows pointer chains.
-    fn resolveVariablePointer(self: *Story, name: []const u8) ?RuntimeObject {
-        if (self.state.variables_state.get(name)) |v| {
-            if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
-            return v;
+    fn globalVariableExists(self: *const Story, name: []const u8) bool {
+        return self.state.variables_state.get(name) != null;
+    }
+
+    /// Pin `ci:-1` references like ink's `ResolveVariablePointer` / `GetContextIndexOfVariableNamed`:
+    /// globals use `ci == 0`; otherwise find the declaring temp on an outer frame (skip the callee
+    /// top frame so `^var x` passed into a nested `f(ref x)` does not resolve to the ref slot itself).
+    /// If the located slot already holds a pointer, collapse to that inner pointer (ink double redirect).
+    fn normalizeVariablePointer(self: *Story, vp0: @FieldType(RuntimeObject, "variable_pointer")) @FieldType(RuntimeObject, "variable_pointer") {
+        var cur = vp0;
+        var hops: u32 = 0;
+        while (cur.context_index == -1 and hops < 128) : (hops += 1) {
+            cur = self.normalizeVariablePointerOne(cur);
         }
+        return cur;
+    }
+
+    fn normalizeVariablePointerOne(self: *Story, vp0: @FieldType(RuntimeObject, "variable_pointer")) @FieldType(RuntimeObject, "variable_pointer") {
+        if (vp0.context_index != -1) return vp0;
+        if (self.globalVariableExists(vp0.name)) {
+            if (self.state.variables_state.get(vp0.name)) |raw| {
+                if (raw == .variable_pointer) return raw.variable_pointer;
+            }
+            return .{ .name = vp0.name, .context_index = 0 };
+        }
+
         const thread = self.state.call_stack.currentThread();
-        for (thread.call_stack.items) |frame| {
-            if (frame.temporary_variables.get(name)) |v| {
-                if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer.name);
-                return v;
+        const items = thread.call_stack.items;
+        const skip_top = items.len >= 2;
+
+        var i: usize = items.len;
+        while (i > 0) {
+            i -= 1;
+            if (skip_top and i + 1 == items.len) continue;
+            if (items[i].temporary_variables.get(vp0.name)) |v| {
+                if (v == .variable_pointer) return v.variable_pointer;
+                return .{ .name = vp0.name, .context_index = @as(i32, @intCast(i)) + 1 };
+            }
+        }
+
+        // Match ink default temp lookup: current top frame, 1-based slot index.
+        return .{ .name = vp0.name, .context_index = @as(i32, @intCast(items.len)) };
+    }
+
+    /// Dereference a variable pointer (pass-by-reference).
+    /// `context_index == -1` (ink JSON default): normalized like ink `ResolveVariablePointer` before read.
+    /// `context_index == 0`: globals only (ink global pointer).
+    /// `context_index > 0`: ink 1-based call-stack slot `items[context_index - 1]`.
+    fn resolveVariablePointer(self: *Story, vp0: @FieldType(RuntimeObject, "variable_pointer")) ?RuntimeObject {
+        var cur = vp0;
+        var hops: u32 = 0;
+        while (hops < 8192) : (hops += 1) {
+            if (cur.context_index == -1) {
+                cur = self.normalizeVariablePointer(cur);
+                continue;
+            }
+            if (cur.context_index == 0) {
+                if (self.state.variables_state.get(cur.name)) |v| {
+                    if (v == .variable_pointer) {
+                        cur = v.variable_pointer;
+                        continue;
+                    }
+                    return v;
+                }
+                return null;
+            }
+            if (cur.context_index > 0) {
+                const thread = self.state.call_stack.currentThread();
+                const items = thread.call_stack.items;
+                const idx = @as(usize, @intCast(cur.context_index - 1));
+                if (idx >= items.len) return null;
+                if (items[idx].temporary_variables.get(cur.name)) |v| {
+                    if (v == .variable_pointer) {
+                        cur = v.variable_pointer;
+                        continue;
+                    }
+                    return v;
+                }
+                return null;
             }
         }
         return null;
     }
 
     /// Find the ultimate write target for a variable pointer chain.
-    /// Returns (name, is_global) of the final concrete variable.
-    fn resolveVariablePointerTarget(self: *Story, name: []const u8) struct { name: []const u8, is_global: bool } {
-        if (self.state.variables_state.get(name)) |v| {
-            if (v == .variable_pointer) return self.resolveVariablePointerTarget(v.variable_pointer.name);
-            return .{ .name = name, .is_global = true };
-        }
-        const thread = self.state.call_stack.currentThread();
-        for (thread.call_stack.items) |frame| {
-            if (frame.temporary_variables.get(name)) |v| {
-                if (v == .variable_pointer) return self.resolveVariablePointerTarget(v.variable_pointer.name);
-                return .{ .name = name, .is_global = false };
+    const VariablePointerWriteTarget = struct {
+        name: []const u8,
+        is_global: bool,
+        /// When non-null, the index into `call_stack.items` holding the temp slot.
+        temp_stack_index: ?usize = null,
+    };
+
+    fn resolveVariablePointerTarget(self: *Story, vp0: @FieldType(RuntimeObject, "variable_pointer")) VariablePointerWriteTarget {
+        var cur = vp0;
+        var hops: u32 = 0;
+        while (hops < 8192) : (hops += 1) {
+            if (cur.context_index == -1) {
+                cur = self.normalizeVariablePointer(cur);
+                continue;
+            }
+            if (cur.context_index == 0) {
+                if (self.state.variables_state.get(cur.name)) |v| {
+                    if (v == .variable_pointer) {
+                        cur = v.variable_pointer;
+                        continue;
+                    }
+                    return .{ .name = cur.name, .is_global = true, .temp_stack_index = null };
+                }
+                return .{ .name = vp0.name, .is_global = true, .temp_stack_index = null };
+            }
+            if (cur.context_index > 0) {
+                const thread = self.state.call_stack.currentThread();
+                const items = thread.call_stack.items;
+                const idx = @as(usize, @intCast(cur.context_index - 1));
+                if (idx >= items.len) return .{ .name = vp0.name, .is_global = true, .temp_stack_index = null };
+                if (items[idx].temporary_variables.get(cur.name)) |v| {
+                    if (v == .variable_pointer) {
+                        cur = v.variable_pointer;
+                        continue;
+                    }
+                    return .{ .name = cur.name, .is_global = false, .temp_stack_index = idx };
+                }
+                return .{ .name = vp0.name, .is_global = true, .temp_stack_index = null };
             }
         }
-        return .{ .name = name, .is_global = true };
+        return .{ .name = vp0.name, .is_global = true, .temp_stack_index = null };
     }
 
     /// Resolve a path string to a Pointer.

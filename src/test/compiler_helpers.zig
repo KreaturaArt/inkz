@@ -6,6 +6,7 @@ const std = @import("std");
 const Story = @import("../runtime/story.zig").Story;
 const RuntimeObject = @import("../runtime/story.zig").RuntimeObject;
 const compiler = @import("../compiler/compiler.zig");
+const helpers = @import("helpers.zig");
 
 fn extFunctionCount(args: []const RuntimeObject) ?RuntimeObject {
     if (args.len == 0) return .{ .int = 3 };
@@ -67,13 +68,17 @@ pub fn compileAndRun(
 
     var choice_idx: usize = 0;
     while (true) {
+        // When the VM pauses with a choice menu (pointer null / peel stop), `canContinue()` is
+        // false — choose before calling `cont()` again (matches Ink's Continue loop).
+        if (s.currentChoices().len > 0 and choice_idx < choices.len and !s.canContinue()) {
+            try s.chooseChoiceIndex(choices[choice_idx]);
+            choice_idx += 1;
+            continue;
+        }
         if (s.canContinue()) {
             const out = try s.cont();
             defer alloc.free(out);
             try output.appendSlice(alloc, out);
-        } else if (s.currentChoices().len > 0 and choice_idx < choices.len) {
-            try s.chooseChoiceIndex(choices[choice_idx]);
-            choice_idx += 1;
         } else {
             break;
         }
@@ -128,13 +133,15 @@ pub fn compileFixtureAndRun(
 
     var choice_idx: usize = 0;
     while (true) {
+        if (s.currentChoices().len > 0 and choice_idx < choices.len and !s.canContinue()) {
+            try s.chooseChoiceIndex(choices[choice_idx]);
+            choice_idx += 1;
+            continue;
+        }
         if (s.canContinue()) {
             const out = try s.cont();
             defer alloc.free(out);
             try output.appendSlice(alloc, out);
-        } else if (s.currentChoices().len > 0 and choice_idx < choices.len) {
-            try s.chooseChoiceIndex(choices[choice_idx]);
-            choice_idx += 1;
         } else {
             break;
         }
@@ -1966,13 +1973,15 @@ fn runFromJson(alloc: std.mem.Allocator, json: []const u8, choices: []const usiz
     errdefer buf.deinit(alloc);
     var ci: usize = 0;
     while (true) {
+        if (s.currentChoices().len > 0 and ci < choices.len and !s.canContinue()) {
+            try s.chooseChoiceIndex(choices[ci]);
+            ci += 1;
+            continue;
+        }
         if (s.canContinue()) {
             const out = try s.cont();
             defer alloc.free(out);
             try buf.appendSlice(alloc, out);
-        } else if (s.currentChoices().len > 0 and ci < choices.len) {
-            try s.chooseChoiceIndex(choices[ci]);
-            ci += 1;
         } else break;
     }
     return buf.toOwnedSlice(alloc);
@@ -2059,6 +2068,81 @@ test "Compiler e2e: crime_scene.ink - examine desk and get cane" {
     try std.testing.expect(std.mem.indexOf(u8, out, "cane") != null);
 }
 
+test "Compiler e2e: weave trailing gather divert waits until after choice" {
+    // Minimal weave with `- -> h` after nested `* *` under `(h)` (crime_scene bedhub pattern).
+    const alloc = std.testing.allocator;
+    const out = try compileFixtureRootAndRun(alloc, "runtime/weaves/trailing_gather_loop.ink", &.{0});
+    defer alloc.free(out);
+    // Choice labels are not echoed into `cont()` output; assert the choice body ran.
+    try std.testing.expect(std.mem.indexOf(u8, out, "picked") != null);
+}
+
+test "Compiler e2e: crime_scene.ink - examine bed fully" {
+    // Precompiled JSON keeps this under `zig build test --test-timeout 1s`. Regenerate with:
+    // `zig run emit_crime_json.zig` after editing `test/fixture/crime_scene.ink`.
+    const alloc = std.testing.allocator;
+    const json = try helpers.loadFixture(alloc, "crime_scene.ink.json");
+    defer alloc.free(json);
+    const out = try runFromJson(alloc, json, &.{ 0, 0, 0, 0 });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "neatly made") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "crumpled") != null);
+}
+
+test "Compiler e2e: crime_scene.ink - examine window" {
+    // top→window→look down→look at glass
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    defer alloc.free(json);
+    const out = try runFromJson(alloc, json, &.{ 2, 0 });
+    defer alloc.free(out);
+    try std.testing.expect(std.mem.indexOf(u8, out, "window") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out, "brook") != null);
+}
+
+test "Compiler e2e: crime_scene.ink - desk then bed then window then leave" {
+    // Drive all three main sections, return to top enough times to reach
+    // top >= 5, then leave and report nothing to Joe.
+    // Choices (each index relative to what's available that turn):
+    //   desk(1)→pick cane(0)→something else(3 after deskstate>=2)→
+    //   bed(0)→lift(0)→test(1 after lift)→something else(when TURNS_SINCE>1)→
+    //   window(0)→look down(0)→something else(if avail)→...→leave→nothing
+    // Rather than hard-coding exact indices, drive with always-first and verify
+    // that eventually "hall" text or "Joe" appears.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    defer alloc.free(json);
+
+    // Always pick the LAST available choice at each step — this tends to exhaust
+    // sub-sections and return to top faster (since "Something else?" / "Leave" are
+    // usually the last choice), reaching `joe_in_hall` naturally.
+    var s = try Story.initFromJson(alloc, json);
+    defer s.deinit();
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(alloc);
+    var turns: usize = 0;
+    while (turns < 60) : (turns += 1) {
+        if (s.canContinue()) {
+            const out = try s.cont();
+            defer alloc.free(out);
+            try buf.appendSlice(alloc, out);
+        } else if (s.currentChoices().len > 0) {
+            // Always pick the last choice; "Something else?" / "Leave" / "That's it." tend to be last.
+            try s.chooseChoiceIndex(s.currentChoices().len - 1);
+        } else break;
+    }
+    // Must not crash; bedroom text should appear.
+    try std.testing.expect(std.mem.indexOf(u8, buf.items, "bedroom") != null);
+    // If we reached Joe, his greeting should appear; if not at least bedroom was explored.
+    _ = std.mem.indexOf(u8, buf.items, "Joe"); // optional — just check no crash
+}
+
 // ── crime_scene exhaustive / scenario tests ────────────────────────────────────
 
 /// DFS: run story with `path`, then extend path by one for each available choice.
@@ -2095,7 +2179,6 @@ fn crimeDFS(
 test "Compiler e2e: crime_scene.ink - all states reachable within 3 choices" {
     // Explores every possible choice sequence up to depth 3 without crashing.i
     // (3 levels covers all initial top-level choices plus one sub-choice each.)
-    if (true) return error.SkipZigTest;
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
@@ -2105,76 +2188,4 @@ test "Compiler e2e: crime_scene.ink - all states reachable within 3 choices" {
     var path = std.ArrayList(usize).empty;
     defer path.deinit(alloc);
     try crimeDFS(alloc, json, &path, 3);
-}
-
-test "Compiler e2e: crime_scene.ink - examine bed fully" {
-    // top→bed→lift→remove→pull back duvet→bloodstain visible
-    // Choices: bed(0 at top), lift(0 in bedhub), remove(0 after crumpled), pull back duvet(0 after covers_off)
-    if (true) return error.SkipZigTest;
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
-    defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
-    defer alloc.free(json);
-    const out = try runFromJson(alloc, json, &.{ 0, 0, 0, 0 });
-    defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "neatly made") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "crumpled") != null);
-}
-
-test "Compiler e2e: crime_scene.ink - examine window" {
-    // top→window→look down→look at glass
-    if (true) return error.SkipZigTest;
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
-    defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
-    defer alloc.free(json);
-    const out = try runFromJson(alloc, json, &.{ 2, 0 });
-    defer alloc.free(out);
-    try std.testing.expect(std.mem.indexOf(u8, out, "window") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out, "brook") != null);
-}
-
-test "Compiler e2e: crime_scene.ink - desk then bed then window then leave" {
-    // Drive all three main sections, return to top enough times to reach
-    // top >= 5, then leave and report nothing to Joe.
-    // Choices (each index relative to what's available that turn):
-    //   desk(1)→pick cane(0)→something else(3 after deskstate>=2)→
-    //   bed(0)→lift(0)→test(1 after lift)→something else(when TURNS_SINCE>1)→
-    //   window(0)→look down(0)→something else(if avail)→...→leave→nothing
-    // Rather than hard-coding exact indices, drive with always-first and verify
-    // that eventually "hall" text or "Joe" appears.
-    if (true) return error.SkipZigTest;
-    const alloc = std.testing.allocator;
-    const io = std.testing.io;
-    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
-    defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
-    defer alloc.free(json);
-
-    // Always pick the LAST available choice at each step — this tends to exhaust
-    // sub-sections and return to top faster (since "Something else?" / "Leave" are
-    // usually the last choice), reaching `joe_in_hall` naturally.
-    var s = try Story.initFromJson(alloc, json);
-    defer s.deinit();
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(alloc);
-    var turns: usize = 0;
-    while (turns < 60) : (turns += 1) {
-        if (s.canContinue()) {
-            const out = try s.cont();
-            defer alloc.free(out);
-            try buf.appendSlice(alloc, out);
-        } else if (s.currentChoices().len > 0) {
-            // Always pick the last choice; "Something else?" / "Leave" / "That's it." tend to be last.
-            try s.chooseChoiceIndex(s.currentChoices().len - 1);
-        } else break;
-    }
-    // Must not crash; bedroom text should appear.
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "bedroom") != null);
-    // If we reached Joe, his greeting should appear; if not at least bedroom was explored.
-    _ = std.mem.indexOf(u8, buf.items, "Joe"); // optional — just check no crash
 }
