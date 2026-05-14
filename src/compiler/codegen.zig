@@ -852,11 +852,15 @@ const Gen = struct {
 
         var gather_processed: u32 = 0; // how many min_nesting gathers we've seen
 
-        for (items) |item| {
-            switch (item) {
+        var item_i: usize = 0;
+        while (item_i < items.len) {
+            switch (items[item_i]) {
                 // ── Gather at min_nesting level ───────────────────────────────
                 .gather => |g| {
-                    if (logicalWeaveNesting(g.nesting, weave_base_nesting) != min_nesting) continue;
+                    if (logicalWeaveNesting(g.nesting, weave_base_nesting) != min_nesting) {
+                        item_i += 1;
+                        continue;
+                    }
 
                     const gname = gather_names.items[gather_processed];
 
@@ -933,11 +937,48 @@ const Gen = struct {
                         },
                     }
                     gather_processed += 1;
+                    item_i += 1;
                 },
 
-                // ── Choice at min_nesting level ───────────────────────────────
+                // ── Choice at min_nesting level (or batch deeper siblings) ───
                 .choice => |ch| {
-                    if (logicalWeaveNesting(ch.nesting, weave_base_nesting) != min_nesting) continue;
+                    const ln = logicalWeaveNesting(ch.nesting, weave_base_nesting);
+                    if (ln != min_nesting) {
+                        if (ln > min_nesting) {
+                            // Consecutive `* *` (etc.) under the same gather were skipped by
+                            // `continue` in the old `for` loop — emit them as one nested weave.
+                            var batch_end = item_i;
+                            batch: while (batch_end < items.len) {
+                                switch (items[batch_end]) {
+                                    .choice => |ch2| {
+                                        if (logicalWeaveNesting(ch2.nesting, weave_base_nesting) != ln) break :batch;
+                                        batch_end += 1;
+                                    },
+                                    else => break :batch,
+                                }
+                            }
+                            const batch = items[item_i..batch_end];
+                            const next_gi = gather_processed;
+                            const gather_path: []const u8 = gp: {
+                                if (next_gi < gather_names.items.len) {
+                                    const next_gname = gather_names.items[next_gi];
+                                    break :gp try std.fmt.allocPrint(
+                                        self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
+                                } else if (outer_gather_path) |ogp| {
+                                    break :gp ogp;
+                                } else {
+                                    break :gp try std.fmt.allocPrint(
+                                        self.alloc, "{s}.g-0", .{holder_abs_path});
+                                }
+                            };
+                            try self.genNestedWeave(cur_content, batch, cur_holder_abs, 1, gather_path);
+                            section_choice_count += @intCast(batch.len);
+                            item_i = batch_end;
+                            continue;
+                        }
+                        item_i += 1;
+                        continue;
+                    }
 
                     // Compute gather_path: where should c-N divert after selection?
                     // (Only needed when inner_content has no nested weave of its own.)
@@ -979,10 +1020,14 @@ const Gen = struct {
                     );
                     cur_choice_idx += 1;
                     section_choice_count += 1;
+                    item_i += 1;
                 },
 
                 // ── Other items ───────────────────────────────────────────────
-                else => try self.genFlowItem(cur_content, item, cur_holder_abs),
+                else => {
+                    try self.genFlowItem(cur_content, items[item_i], cur_holder_abs);
+                    item_i += 1;
+                },
             }
         }
 
