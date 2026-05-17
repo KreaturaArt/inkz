@@ -713,9 +713,15 @@ pub const Story = struct {
         const obj = root.object;
 
         // Simple scalars
-        if (obj.get("currentTurnIndex")) |v| self.state.current_turn_index = @intCast(v.integer);
-        if (obj.get("storySeed")) |v| self.state.story_seed = @intCast(v.integer);
-        if (obj.get("didSafeExit")) |v| self.state.did_safe_exit = v.bool;
+        if (obj.get("currentTurnIndex")) |v| if (v == .integer) {
+            self.state.current_turn_index = @intCast(v.integer);
+        };
+        if (obj.get("storySeed")) |v| if (v == .integer) {
+            self.state.story_seed = @intCast(v.integer);
+        };
+        if (obj.get("didSafeExit")) |v| if (v == .bool) {
+            self.state.did_safe_exit = v.bool;
+        };
 
         // Restore variables
         if (obj.get("variablesState")) |vars_val| {
@@ -736,6 +742,7 @@ pub const Story = struct {
                 @memset(self.visit_counts, 0);
                 var it = vc_val.object.iterator();
                 while (it.next()) |e| {
+                    if (e.value_ptr.* != .integer) continue;
                     const count: u32 = @intCast(e.value_ptr.*.integer);
                     if (self.path_to_idx.get(e.key_ptr.*)) |cidx| {
                         self.visit_counts[cidx] = count;
@@ -750,6 +757,7 @@ pub const Story = struct {
                 @memset(self.turn_indices, -1);
                 var it = ti_val.object.iterator();
                 while (it.next()) |e| {
+                    if (e.value_ptr.* != .integer) continue;
                     const idx: i32 = @intCast(e.value_ptr.*.integer);
                     if (self.path_to_idx.get(e.key_ptr.*)) |cidx| {
                         self.turn_indices[cidx] = idx;
@@ -794,7 +802,10 @@ pub const Story = struct {
                 for (threads_val.array.items) |thread_val| {
                     if (thread_val != .object) continue;
                     const thread_obj = thread_val.object;
-                    const thread_idx: u32 = if (thread_obj.get("threadIndex")) |v| @intCast(v.integer) else 0;
+                    const thread_idx: u32 = if (thread_obj.get("threadIndex")) |v| switch (v) {
+                        .integer => |n| @intCast(n),
+                        else => 0,
+                    } else 0;
                     if (thread_idx > max_thread_idx) max_thread_idx = thread_idx;
                     var new_thread = callstack_mod.Thread{
                         .call_stack = std.ArrayList(callstack_mod.Element).empty,
@@ -809,7 +820,10 @@ pub const Story = struct {
                             for (cs_val.array.items) |elem_val| {
                                 if (elem_val != .object) continue;
                                 const elem_obj = elem_val.object;
-                                const type_int: u32 = if (elem_obj.get("type")) |v| @intCast(v.integer) else 0;
+                                const type_int: u32 = if (elem_obj.get("type")) |v| switch (v) {
+                                    .integer => |n| @intCast(n),
+                                    else => 0,
+                                } else 0;
                                 const ppt: ?callstack_mod.PushPopType = switch (type_int) {
                                     1 => .function,
                                     2 => .tunnel,
@@ -819,8 +833,11 @@ pub const Story = struct {
                                     try self.parsePointer(pp)
                                 else
                                     Pointer.null_value;
-                                const in_exp = if (elem_obj.get("exp")) |v| v.bool else false;
-                                const osi: usize = if (elem_obj.get("osi")) |v| @intCast(v.integer) else 0;
+                                const in_exp = if (elem_obj.get("exp")) |v| (v == .bool and v.bool) else false;
+                                const osi: usize = if (elem_obj.get("osi")) |v| switch (v) {
+                                    .integer => |n| @intCast(n),
+                                    else => 0,
+                                } else 0;
                                 var elem = callstack_mod.Element.init(ppt, ptr);
                                 elem.in_expression_evaluation = in_exp;
                                 elem.output_stream_index_at_push = osi;
@@ -848,7 +865,7 @@ pub const Story = struct {
             }
         }
 
-        self.state.did_safe_exit = if (obj.get("didSafeExit")) |v| v.bool else false;
+        self.state.did_safe_exit = if (obj.get("didSafeExit")) |v| (v == .bool and v.bool) else false;
 
         // Re-ensure pre-allocated capacity so the hot path can use appendAssumeCapacity.
         try self.state.evaluation_stack.ensureTotalCapacity(self.allocator, 256);
@@ -863,10 +880,12 @@ pub const Story = struct {
         if (val != .object) return Pointer.null_value;
         const o = val.object;
         const idx_val = o.get("idx") orelse return Pointer.null_value;
+        if (idx_val != .integer) return Pointer.null_value;
         const idx: i32 = @intCast(idx_val.integer);
         if (idx < 0) return Pointer.null_value;
         const cpath_val = o.get("cPath") orelse return Pointer.null_value;
         if (cpath_val == .null) return Pointer.null_value;
+        if (cpath_val != .string) return Pointer.null_value;
         const cpath = cpath_val.string;
         const container_idx = self.path_to_idx.get(cpath) orelse return Pointer.null_value;
         return .{ .container_idx = container_idx, .index = idx };
