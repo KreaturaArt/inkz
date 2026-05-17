@@ -867,6 +867,13 @@ pub const Story = struct {
 
         self.state.did_safe_exit = if (obj.get("didSafeExit")) |v| (v == .bool and v.bool) else false;
 
+        // Reconstruct string_eval_depth from the restored output_stream sentinel count.
+        self.state.string_eval_depth = 0;
+        for (self.state.output_stream.items) |item| {
+            if (item == .control_command and item.control_command == .begin_string)
+                self.state.string_eval_depth += 1;
+        }
+
         // Re-ensure pre-allocated capacity so the hot path can use appendAssumeCapacity.
         try self.state.evaluation_stack.ensureTotalCapacity(self.allocator, 256);
         try self.state.output_stream.ensureTotalCapacity(self.allocator, 1024);
@@ -1570,8 +1577,10 @@ pub const Story = struct {
                 return .ok;
             },
             .begin_string => {
-                // Push sentinel; strings now route to output_stream (detected via inStringEvalMode())
+                // Push sentinel (needed by end_string to find the collection start point)
+                // and increment depth counter so inStringEvalMode() is O(1).
                 self.state.output_stream.appendAssumeCapacity(.{ .control_command = .begin_string });
+                self.state.string_eval_depth += 1;
                 self.advancePointer();
                 return .ok;
             },
@@ -1588,13 +1597,16 @@ pub const Story = struct {
                 for (self.state.output_stream.items[start + 1 ..]) |it| {
                     switch (it) {
                         .string => {
-                            @memcpy(self.string_eval_buf[len..][0..it.string.len], it.string);
-                            len += it.string.len;
+                            const chunk = it.string;
+                            if (len + chunk.len > self.string_eval_buf.len) return error.StringEvalBufferOverflow;
+                            @memcpy(self.string_eval_buf[len..][0..chunk.len], chunk);
+                            len += chunk.len;
                         },
                         .int, .float, .bool, .list => {
                             var tmp = std.ArrayList(u8).empty;
                             defer tmp.deinit(self.allocator);
                             try appendObjectText(self.allocator, &tmp, it);
+                            if (len + tmp.items.len > self.string_eval_buf.len) return error.StringEvalBufferOverflow;
                             @memcpy(self.string_eval_buf[len..][0..tmp.items.len], tmp.items);
                             len += tmp.items.len;
                         },
@@ -1602,6 +1614,7 @@ pub const Story = struct {
                     }
                 }
                 self.state.output_stream.shrinkRetainingCapacity(start);
+                if (self.state.string_eval_depth > 0) self.state.string_eval_depth -= 1;
                 // Dupe into the arena so the string lives until story.deinit()
                 const s = try self.arena.allocator().dupe(u8, self.string_eval_buf[0..len]);
                 self.state.evaluation_stack.appendAssumeCapacity(.{ .string = s });
@@ -2062,13 +2075,10 @@ pub const Story = struct {
         return .ok;
     }
 
-    /// Returns true if there is a begin_string sentinel on the output_stream,
-    /// indicating we are inside a str/str block collecting text.
+    /// Returns true when inside a str/str string-eval block.
+    /// O(1): uses string_eval_depth counter maintained by begin_string/end_string dispatch.
     fn inStringEvalMode(self: *const Story) bool {
-        for (self.state.output_stream.items) |item| {
-            if (item == .control_command and item.control_command == .begin_string) return true;
-        }
-        return false;
+        return self.state.string_eval_depth > 0;
     }
 
     pub fn resolveVariable(self: *Story, name: []const u8) ?RuntimeObject {
@@ -2351,8 +2361,9 @@ pub const Story = struct {
         var in_nextp: usize = 21;
 
         // Fisher-Yates–like: pick the iteration_index-th element from a shuffled list.
-        var unpicked: [32]u32 = undefined; // max reasonable sequence length
-        const n = @min(num_elements, 32);
+        // 256 covers any sequence a narrative author would write; stack-allocated so no alloc.
+        var unpicked: [256]u32 = undefined;
+        const n = @min(num_elements, 256);
         for (0..n) |x| unpicked[x] = @intCast(x);
         var unpicked_count: u32 = n;
 

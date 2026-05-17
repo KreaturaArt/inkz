@@ -19,6 +19,9 @@ pub const StoryState = struct {
     story_seed: u32,
     did_safe_exit: bool,
     allocator: std.mem.Allocator,
+    /// Depth of nested str/str string-eval blocks. Avoids O(n) scan of output_stream
+    /// to detect string-eval mode; incremented by begin_string, decremented by end_string.
+    string_eval_depth: u32 = 0,
 
     pub fn init(allocator: std.mem.Allocator) !StoryState {
         return StoryState{
