@@ -31,6 +31,7 @@ pub fn loadStory(arena: std.mem.Allocator, json_text: []const u8) !LoadedStory {
     const obj = root_val.object;
 
     const version_val = obj.get(fmt.key_ink_version) orelse return error.MissingInkVersion;
+    if (version_val != .integer) return error.InvalidInkJson;
     const ink_version: u32 = @intCast(version_val.integer);
 
     const root_json = obj.get(fmt.key_root) orelse return error.MissingRoot;
@@ -88,8 +89,12 @@ fn buildContainer(
         } else if (last == .object) {
             content_end = arr.len - 1;
             meta_object = last.object;
-            if (last.object.get(fmt.key_meta_flags)) |fv| flags = @bitCast(@as(u8, @intCast(fv.integer)));
-            if (last.object.get(fmt.key_meta_name)) |nv| container_name = try arena.dupe(u8, nv.string);
+            if (last.object.get(fmt.key_meta_flags)) |fv| {
+                if (fv == .integer) flags = @bitCast(@as(u8, @intCast(fv.integer)));
+            }
+            if (last.object.get(fmt.key_meta_name)) |nv| {
+                if (nv == .string) container_name = try arena.dupe(u8, nv.string);
+            }
         }
     }
 
@@ -205,6 +210,7 @@ fn parseStringObject(s: []const u8) RuntimeObject {
 fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, obj: std.json.ObjectMap) ParseError!RuntimeObject {
     _ = parent_path;
     if (obj.get(fmt.key_divert)) |t| {
+        if (t != .string) return error.UnknownObjectFormat;
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
             .is_conditional = obj.get(fmt.key_conditional) != null,
@@ -214,6 +220,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         } };
     }
     if (obj.get(fmt.key_tunnel_divert)) |t| {
+        if (t != .string) return error.UnknownObjectFormat;
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
             .is_conditional = obj.get(fmt.key_conditional) != null,
@@ -223,6 +230,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         } };
     }
     if (obj.get(fmt.key_function_call_0)) |t| {
+        if (t != .string) return error.UnknownObjectFormat;
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
             .is_conditional = obj.get(fmt.key_conditional) != null,
@@ -239,6 +247,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
             if (key.len > 3 and std.mem.startsWith(u8, key, fmt.key_function_call_prefix) and key[key.len - 1] == ')') {
                 const n_str = key[fmt.key_function_call_prefix.len .. key.len - 1];
                 if (std.fmt.parseInt(u32, n_str, 10)) |_| {
+                    if (entry.value_ptr.* != .string) return error.UnknownObjectFormat;
                     return .{ .divert = .{
                         .target = try arena.dupe(u8, entry.value_ptr.string),
                         .is_conditional = obj.get(fmt.key_conditional) != null,
@@ -251,7 +260,11 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         }
     }
     if (obj.get(fmt.key_external_call)) |t| {
-        const args: u32 = if (obj.get(fmt.key_external_args)) |a| @intCast(a.integer) else 0;
+        if (t != .string) return error.UnknownObjectFormat;
+        const args: u32 = if (obj.get(fmt.key_external_args)) |a| switch (a) {
+            .integer => |n| @intCast(n),
+            else => 0,
+        } else 0;
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
             .is_conditional = false,
@@ -261,13 +274,18 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         } };
     }
     if (obj.get(fmt.key_choice_point)) |p| {
-        const flags: u8 = if (obj.get(fmt.key_choice_flags)) |f| @intCast(f.integer) else 0;
+        if (p != .string) return error.UnknownObjectFormat;
+        const flags: u8 = if (obj.get(fmt.key_choice_flags)) |f| switch (f) {
+            .integer => |n| @intCast(n),
+            else => 0,
+        } else 0;
         return .{ .choice_point = .{
             .path = try arena.dupe(u8, p.string),
             .flags = flags,
         } };
     }
     if (obj.get(fmt.key_var_assign)) |n| {
+        if (n != .string) return error.UnknownObjectFormat;
         return .{ .variable_assignment = .{
             .name = try arena.dupe(u8, n.string),
             .is_new_decl = obj.get(fmt.key_reassign) == null,
@@ -275,6 +293,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         } };
     }
     if (obj.get(fmt.key_temp_assign)) |n| {
+        if (n != .string) return error.UnknownObjectFormat;
         return .{ .variable_assignment = .{
             .name = try arena.dupe(u8, n.string),
             .is_new_decl = obj.get(fmt.key_reassign) == null,
@@ -282,22 +301,29 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         } };
     }
     if (obj.get(fmt.key_var_ref)) |n| {
+        if (n != .string) return error.UnknownObjectFormat;
         return .{ .variable_reference = .{
             .name = try arena.dupe(u8, n.string),
             .path_for_count = null,
         } };
     }
     if (obj.get(fmt.key_read_count)) |p| {
+        if (p != .string) return error.UnknownObjectFormat;
         return .{ .variable_reference = .{
             .name = "",
             .path_for_count = try arena.dupe(u8, p.string),
         } };
     }
     if (obj.get(fmt.key_divert_target_val)) |p| {
+        if (p != .string) return error.UnknownObjectFormat;
         return .{ .divert_target = try arena.dupe(u8, p.string) };
     }
     if (obj.get(fmt.key_var_pointer)) |n| {
-        const ctx: i32 = if (obj.get(fmt.key_var_pointer_ctx)) |ci| @intCast(ci.integer) else 0;
+        if (n != .string) return error.UnknownObjectFormat;
+        const ctx: i32 = if (obj.get(fmt.key_var_pointer_ctx)) |ci| switch (ci) {
+            .integer => |x| @intCast(x),
+            else => 0,
+        } else 0;
         return .{ .variable_pointer = .{
             .name = try arena.dupe(u8, n.string),
             .context_index = ctx,
