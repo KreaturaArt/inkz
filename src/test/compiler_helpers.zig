@@ -1965,10 +1965,8 @@ test "Compiler e2e: booleans/two_plus_true.ink" {
 
 // ── Integration fixtures ───────────────────────────────────────────────────────
 
-/// Run a pre-compiled story JSON with a fixed choice sequence. Caller owns the result.
-fn runFromJson(alloc: std.mem.Allocator, json: []const u8, choices: []const usize) ![]u8 {
-    var s = try Story.initFromJson(alloc, json);
-    defer s.deinit();
+/// Drive a Story through a fixed choice sequence, collecting all output. Caller owns result.
+fn driveChoices(alloc: std.mem.Allocator, s: *Story, choices: []const usize) ![]u8 {
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(alloc);
     var ci: usize = 0;
@@ -1987,6 +1985,35 @@ fn runFromJson(alloc: std.mem.Allocator, json: []const u8, choices: []const usiz
     return buf.toOwnedSlice(alloc);
 }
 
+/// Run a pre-compiled story JSON with a fixed choice sequence. Caller owns the result.
+fn runFromJson(alloc: std.mem.Allocator, json: []const u8, choices: []const usize) ![]u8 {
+    var s = try Story.initFromJson(alloc, json);
+    defer s.deinit();
+    return driveChoices(alloc, &s, choices);
+}
+
+/// Run both JSON and direct paths with the same choices. Assert outputs match.
+/// Returns the common output (caller owns).
+fn runBothAndAssert(
+    alloc: std.mem.Allocator,
+    json: []const u8,
+    src: []const u8,
+    choices: []const usize,
+) ![]u8 {
+    var sj = try Story.initFromJson(alloc, json);
+    defer sj.deinit();
+    const out_json = try driveChoices(alloc, &sj, choices);
+    errdefer alloc.free(out_json);
+
+    var sd = try compiler.compileToStory(alloc, src);
+    defer sd.deinit();
+    const out_direct = try driveChoices(alloc, &sd, choices);
+    defer alloc.free(out_direct);
+
+    try std.testing.expectEqualStrings(out_json, out_direct);
+    return out_json;
+}
+
 test "Compiler e2e: simple_taster_tutorial.ink - all choice paths" {
     // Choice tree (all 8 paths):
     //
@@ -1997,11 +2024,12 @@ test "Compiler e2e: simple_taster_tutorial.ink - all choice paths" {
     //
     // Every path converges at "we passed the day in silence."
     // `phrases` lists text unique to that path (pre-gather and/or post-gather branch).
+    // Both JSON and direct paths run for each case; outputs must match.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/simple_taster_tutorial.ink", alloc, .limited(1024 * 1024));
     defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    const json = try compiler.compile(alloc, src);
     defer alloc.free(json);
 
     const Case = struct { choices: []const usize, phrases: []const []const u8 };
@@ -2017,7 +2045,8 @@ test "Compiler e2e: simple_taster_tutorial.ink - all choice paths" {
     };
 
     for (cases) |tc| {
-        const out = try runFromJson(alloc, json, tc.choices);
+        // runBothAndAssert runs JSON + direct paths and asserts they produce identical output.
+        const out = try runBothAndAssert(alloc, json, src, tc.choices);
         defer alloc.free(out);
         try std.testing.expect(std.mem.indexOf(u8, out, "we passed the day in silence") != null);
         for (tc.phrases) |phrase| {
@@ -2028,41 +2057,72 @@ test "Compiler e2e: simple_taster_tutorial.ink - all choice paths" {
 
 test "Compiler e2e: simple_taster_tutorial.ink - interactive always-first loop" {
     // Simulate an interactive session that always picks choice 0 until the story
-    // ends naturally. Verifies the story terminates without overflow or hang.
+    // ends naturally. Both JSON and direct paths run in lockstep; outputs must match.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/simple_taster_tutorial.ink", alloc, .limited(1024 * 1024));
     defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    const json = try compiler.compile(alloc, src);
     defer alloc.free(json);
-    var s = try Story.initFromJson(alloc, json);
-    defer s.deinit();
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(alloc);
+
+    // JSON path.
+    var sj = try Story.initFromJson(alloc, json);
+    defer sj.deinit();
+    var buf_j = std.ArrayList(u8).empty;
+    defer buf_j.deinit(alloc);
     var turns: usize = 0;
     while (turns < 20) : (turns += 1) {
-        if (s.canContinue()) {
-            const out = try s.cont();
+        if (sj.canContinue()) {
+            const out = try sj.cont();
             defer alloc.free(out);
-            try buf.appendSlice(alloc, out);
-        } else if (s.currentChoices().len > 0) {
-            try s.chooseChoiceIndex(0);
+            try buf_j.appendSlice(alloc, out);
+        } else if (sj.currentChoices().len > 0) {
+            try sj.chooseChoiceIndex(0);
         } else break;
     }
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "we passed the day in silence") != null);
+
+    // Direct path.
+    var sd = try compiler.compileToStory(alloc, src);
+    defer sd.deinit();
+    var buf_d = std.ArrayList(u8).empty;
+    defer buf_d.deinit(alloc);
+    turns = 0;
+    while (turns < 20) : (turns += 1) {
+        if (sd.canContinue()) {
+            const out = try sd.cont();
+            defer alloc.free(out);
+            try buf_d.appendSlice(alloc, out);
+        } else if (sd.currentChoices().len > 0) {
+            try sd.chooseChoiceIndex(0);
+        } else break;
+    }
+
+    try std.testing.expectEqualStrings(buf_j.items, buf_d.items);
+    try std.testing.expect(std.mem.indexOf(u8, buf_j.items, "we passed the day in silence") != null);
 }
 
 test "Compiler e2e: crime_scene.ink - initial scene loads" {
-    const alloc = std.testing.allocator;
     // No choices: verify the opening scene compiles and runs.
-    const out = try compileFixtureRootAndRun(alloc, "crime_scene.ink", &.{});
+    // Both JSON and direct paths run; outputs must match.
+    const alloc = std.testing.allocator;
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    const json = try compiler.compile(alloc, src);
+    defer alloc.free(json);
+    const out = try runBothAndAssert(alloc, json, src, &.{});
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "bedroom") != null);
 }
 
 test "Compiler e2e: crime_scene.ink - examine desk and get cane" {
     const alloc = std.testing.allocator;
-    const out = try compileFixtureRootAndRun(alloc, "crime_scene.ink", &.{ 1, 0 });
+    const io = std.testing.io;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    const json = try compiler.compile(alloc, src);
+    defer alloc.free(json);
+    const out = try runBothAndAssert(alloc, json, src, &.{ 1, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "desk") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "cane") != null);
@@ -2078,114 +2138,148 @@ test "Compiler e2e: weave trailing gather divert waits until after choice" {
 }
 
 test "Compiler e2e: crime_scene.ink - examine bed fully" {
-    // Precompiled JSON keeps this under `zig build test --test-timeout 1s`. Regenerate with:
-    // `zig run emit_crime_json.zig` after editing `test/fixture/crime_scene.ink`.
+    // Precompiled JSON for the JSON path (fast); source compiled fresh for the direct path.
+    // Regenerate crime_scene.ink.json with `zig run emit_crime_json.zig` after editing.
+    // Both paths must produce identical output.
     const alloc = std.testing.allocator;
+    const io = std.testing.io;
     const json = try helpers.loadFixture(alloc, "crime_scene.ink.json");
     defer alloc.free(json);
-    const out = try runFromJson(alloc, json, &.{ 0, 0, 0, 0 });
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    const out = try runBothAndAssert(alloc, json, src, &.{ 0, 0, 0, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "neatly made") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "crumpled") != null);
 }
 
 test "Compiler e2e: crime_scene.ink - examine window" {
-    // top→window→look down→look at glass
+    // top→window→look down→look at glass. Both paths run; outputs must match.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    const json = try compiler.compile(alloc, src);
     defer alloc.free(json);
-    const out = try runFromJson(alloc, json, &.{ 2, 0 });
+    const out = try runBothAndAssert(alloc, json, src, &.{ 2, 0 });
     defer alloc.free(out);
     try std.testing.expect(std.mem.indexOf(u8, out, "window") != null);
     try std.testing.expect(std.mem.indexOf(u8, out, "brook") != null);
 }
 
 test "Compiler e2e: crime_scene.ink - desk then bed then window then leave" {
-    // Drive all three main sections, return to top enough times to reach
-    // top >= 5, then leave and report nothing to Joe.
-    // Choices (each index relative to what's available that turn):
-    //   desk(1)→pick cane(0)→something else(3 after deskstate>=2)→
-    //   bed(0)→lift(0)→test(1 after lift)→something else(when TURNS_SINCE>1)→
-    //   window(0)→look down(0)→something else(if avail)→...→leave→nothing
-    // Rather than hard-coding exact indices, drive with always-first and verify
-    // that eventually "hall" text or "Joe" appears.
+    // Drive all three main sections by always picking the last choice (tends to exhaust
+    // sub-sections fastest). Both JSON and direct paths run; outputs must match.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    const json = try compiler.compile(alloc, src);
     defer alloc.free(json);
 
-    // Always pick the LAST available choice at each step — this tends to exhaust
-    // sub-sections and return to top faster (since "Something else?" / "Leave" are
-    // usually the last choice), reaching `joe_in_hall` naturally.
-    var s = try Story.initFromJson(alloc, json);
-    defer s.deinit();
-    var buf = std.ArrayList(u8).empty;
-    defer buf.deinit(alloc);
+    // JSON path.
+    var sj = try Story.initFromJson(alloc, json);
+    defer sj.deinit();
+    var buf_j = std.ArrayList(u8).empty;
+    defer buf_j.deinit(alloc);
     var turns: usize = 0;
     while (turns < 60) : (turns += 1) {
-        if (s.canContinue()) {
-            const out = try s.cont();
+        if (sj.canContinue()) {
+            const out = try sj.cont();
             defer alloc.free(out);
-            try buf.appendSlice(alloc, out);
-        } else if (s.currentChoices().len > 0) {
-            // Always pick the last choice; "Something else?" / "Leave" / "That's it." tend to be last.
-            try s.chooseChoiceIndex(s.currentChoices().len - 1);
+            try buf_j.appendSlice(alloc, out);
+        } else if (sj.currentChoices().len > 0) {
+            try sj.chooseChoiceIndex(sj.currentChoices().len - 1);
         } else break;
     }
-    // Must not crash; bedroom text should appear.
-    try std.testing.expect(std.mem.indexOf(u8, buf.items, "bedroom") != null);
-    // If we reached Joe, his greeting should appear; if not at least bedroom was explored.
-    _ = std.mem.indexOf(u8, buf.items, "Joe"); // optional — just check no crash
+
+    // Direct path.
+    var sd = try compiler.compileToStory(alloc, src);
+    defer sd.deinit();
+    var buf_d = std.ArrayList(u8).empty;
+    defer buf_d.deinit(alloc);
+    turns = 0;
+    while (turns < 60) : (turns += 1) {
+        if (sd.canContinue()) {
+            const out = try sd.cont();
+            defer alloc.free(out);
+            try buf_d.appendSlice(alloc, out);
+        } else if (sd.currentChoices().len > 0) {
+            try sd.chooseChoiceIndex(sd.currentChoices().len - 1);
+        } else break;
+    }
+
+    try std.testing.expectEqualStrings(buf_j.items, buf_d.items);
+    try std.testing.expect(std.mem.indexOf(u8, buf_j.items, "bedroom") != null);
+    _ = std.mem.indexOf(u8, buf_j.items, "Joe");
 }
 
 // ── crime_scene exhaustive / scenario tests ────────────────────────────────────
 
-/// DFS: run story with `path`, then extend path by one for each available choice.
-/// `depth` limits how many additional levels to explore. Asserts no crash/error
-/// at every reachable state.
-fn crimeDFS(
+/// DFS over the story's choice tree. At each node, runs both the JSON path and the
+/// direct path, asserting identical output. `depth` limits additional recursion levels.
+fn crimeDFSDual(
     alloc: std.mem.Allocator,
     json: []const u8,
+    src: []const u8,
     path: *std.ArrayList(usize),
     depth: usize,
 ) !void {
-    // Run story with current path; record available choices at the end.
-    var s = try Story.initFromJson(alloc, json);
-    defer s.deinit();
+    // JSON path: drive to current path end, collect output + remaining choices.
+    var sj = try Story.initFromJson(alloc, json);
+    defer sj.deinit();
+    var buf_j = std.ArrayList(u8).empty;
+    defer buf_j.deinit(alloc);
     var ci: usize = 0;
     while (true) {
-        if (s.canContinue()) {
-            const out = try s.cont();
-            alloc.free(out);
-        } else if (s.currentChoices().len > 0 and ci < path.items.len) {
-            try s.chooseChoiceIndex(path.items[ci]);
+        if (sj.canContinue()) {
+            const out = try sj.cont();
+            defer alloc.free(out);
+            try buf_j.appendSlice(alloc, out);
+        } else if (sj.currentChoices().len > 0 and ci < path.items.len) {
+            try sj.chooseChoiceIndex(path.items[ci]);
             ci += 1;
         } else break;
     }
-    if (depth == 0 or s.currentChoices().len == 0) return;
-    const n = s.currentChoices().len;
+
+    // Direct path: same choice sequence.
+    var sd = try compiler.compileToStory(alloc, src);
+    defer sd.deinit();
+    var buf_d = std.ArrayList(u8).empty;
+    defer buf_d.deinit(alloc);
+    ci = 0;
+    while (true) {
+        if (sd.canContinue()) {
+            const out = try sd.cont();
+            defer alloc.free(out);
+            try buf_d.appendSlice(alloc, out);
+        } else if (sd.currentChoices().len > 0 and ci < path.items.len) {
+            try sd.chooseChoiceIndex(path.items[ci]);
+            ci += 1;
+        } else break;
+    }
+
+    try std.testing.expectEqualStrings(buf_j.items, buf_d.items);
+
+    if (depth == 0 or sj.currentChoices().len == 0) return;
+    const n = sj.currentChoices().len;
     for (0..n) |i| {
         try path.append(alloc, i);
-        try crimeDFS(alloc, json, path, depth - 1);
+        try crimeDFSDual(alloc, json, src, path, depth - 1);
         _ = path.pop();
     }
 }
 
 test "Compiler e2e: crime_scene.ink - all states reachable within 3 choices" {
-    // Explores every possible choice sequence up to depth 3 without crashing.i
-    // (3 levels covers all initial top-level choices plus one sub-choice each.)
+    // Explores every choice sequence up to depth 3. At each node both JSON and direct
+    // paths run and must produce identical output. No crash/mismatch allowed.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
-    const json = try @import("../compiler/compiler.zig").compile(alloc, src);
+    const json = try compiler.compile(alloc, src);
     defer alloc.free(json);
     var path = std.ArrayList(usize).empty;
     defer path.deinit(alloc);
-    try crimeDFS(alloc, json, &path, 3);
+    try crimeDFSDual(alloc, json, src, &path, 3);
 }
