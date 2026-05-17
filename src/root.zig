@@ -6,6 +6,7 @@ pub const compiler = struct {
     pub const codegen = @import("compiler/codegen.zig");
     pub const serializer = @import("compiler/serializer.zig");
     pub const compile = @import("compiler/compiler.zig");
+    pub const codegen_to_runtime = @import("compiler/codegen_to_runtime.zig");
 };
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
@@ -45,5 +46,6 @@ test {
     _ = @import("compiler/codegen.zig");
     _ = @import("compiler/serializer.zig");
     _ = @import("compiler/compiler.zig");
+    _ = @import("compiler/codegen_to_runtime.zig");
     _ = @import("test/compiler_helpers.zig");
 }

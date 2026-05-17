@@ -230,6 +230,71 @@ pub const Story = struct {
         return story;
     }
 
+    /// Create a Story from pre-built Container[] and NamedEntry[] arrays.
+    /// `arena_in` must already own the containers/named_entries allocations; Story takes
+    /// ownership of the arena. The caller must have `errdefer arena_in.deinit()` active
+    /// for error paths before this call returns.
+    pub fn initFromContainers(
+        allocator: std.mem.Allocator,
+        arena_in: std.heap.ArenaAllocator,
+        containers: []Container,
+        named_entries: []NamedEntry,
+        list_defs: lists.ListDefinitionsOrigin,
+    ) !Story {
+        var arena = arena_in;
+        var st = try StoryState.init(allocator);
+        errdefer st.deinit();
+
+        st.call_stack.currentElement().current_pointer = .{
+            .container_idx = 0,
+            .index = 0,
+        };
+
+        var path_to_idx = std.StringHashMapUnmanaged(u32){};
+        for (containers, 0..) |c, i| {
+            try path_to_idx.put(arena.allocator(), c.path, @intCast(i));
+        }
+
+        var story = Story{
+            .containers = containers,
+            .named_entries = named_entries,
+            .path_to_idx = path_to_idx,
+            .state = st,
+            .arena = arena,
+            .allocator = allocator,
+            .list_defs = list_defs,
+        };
+
+        story.visit_counts = try story.arena.allocator().alloc(u32, story.containers.len);
+        @memset(story.visit_counts, 0);
+        story.turn_indices = try story.arena.allocator().alloc(i32, story.containers.len);
+        @memset(story.turn_indices, -1);
+
+        try story.state.evaluation_stack.ensureTotalCapacity(story.allocator, 256);
+        try story.state.output_stream.ensureTotalCapacity(story.allocator, 1024);
+        try story.state.current_choices.ensureTotalCapacity(story.allocator, 32);
+        try story.current_tags.ensureTotalCapacity(story.allocator, 16);
+        try story.state.variables_state.globals.ensureTotalCapacity(story.allocator, 256);
+
+        if (story.namedLookup(0, "global decl")) |global_decl_idx| {
+            const saved_ptr = story.state.call_stack.currentElement().current_pointer;
+            story.state.call_stack.currentElement().current_pointer = .{
+                .container_idx = global_decl_idx,
+                .index = 0,
+            };
+            while (true) {
+                const r = try story.step();
+                if (r == .stopped) break;
+                if (story.state.call_stack.currentElement().current_pointer.isNull()) break;
+            }
+            story.state.call_stack.currentElement().current_pointer = saved_ptr;
+            story.state.did_safe_exit = false;
+            story.state.output_stream.clearRetainingCapacity();
+        }
+
+        return story;
+    }
+
     pub fn deinit(self: *Story) void {
         var it = self.named_flows.iterator();
         while (it.next()) |entry| entry.value_ptr.deinit(self.allocator);
