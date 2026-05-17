@@ -1,9 +1,10 @@
 ---
 id: TASK-138
 title: Batch serializer.zig JSON output (replace per-byte appends)
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-14 17:43'
+updated_date: '2026-05-17 17:06'
 labels:
   - compiler
   - performance
@@ -38,6 +39,12 @@ Simpler alternative: switch to `std.ArrayList.writer()` + `std.io.bufferedWriter
 - Measurable: `zig build bench` (if bench exists) or unit test timing shows improvement on large stories
 <!-- SECTION:DESCRIPTION:END -->
 
-- [ ] #1 All serializer tests pass with byte-identical output
-- [ ] #2 serializer.zig uses buffered writes rather than single-byte ArrayList.append() calls
+- [x] #1 All serializer tests pass with byte-identical output
+- [x] #2 serializer.zig uses buffered writes rather than single-byte ArrayList.append() calls
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Replaced the per-character `buf.appendSlice`/`buf.append` loop in `writeJsonStr` with a single `ensureUnusedCapacity(s.len * 2)` up front followed by `appendSliceAssumeCapacity`/`appendAssumeCapacity` calls that never check capacity in the inner loop. This eliminates O(N) allocation-check overhead for every serialized string. All 549 tests pass; output byte-identical.
+<!-- SECTION:FINAL_SUMMARY:END -->

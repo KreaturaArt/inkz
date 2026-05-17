@@ -1,5 +1,6 @@
 const std = @import("std");
 const value = @import("value.zig");
+const fmt = @import("../ink_format.zig");
 
 pub const Container = value.Container;
 pub const RuntimeObject = value.RuntimeObject;
@@ -29,13 +30,13 @@ pub fn loadStory(arena: std.mem.Allocator, json_text: []const u8) !LoadedStory {
     if (root_val != .object) return error.InvalidInkJson;
     const obj = root_val.object;
 
-    const version_val = obj.get("inkVersion") orelse return error.MissingInkVersion;
+    const version_val = obj.get(fmt.key_ink_version) orelse return error.MissingInkVersion;
     const ink_version: u32 = @intCast(version_val.integer);
 
-    const root_json = obj.get("root") orelse return error.MissingRoot;
+    const root_json = obj.get(fmt.key_root) orelse return error.MissingRoot;
     if (root_json != .array) return error.InvalidRoot;
 
-    const list_defs = obj.get("listDefs") orelse std.json.Value{ .object = .empty };
+    const list_defs = obj.get(fmt.key_list_defs) orelse std.json.Value{ .object = .empty };
 
     var containers = std.ArrayList(Container).empty;
     var named_entries = std.ArrayList(NamedEntry).empty;
@@ -87,8 +88,8 @@ fn buildContainer(
         } else if (last == .object) {
             content_end = arr.len - 1;
             meta_object = last.object;
-            if (last.object.get("#f")) |fv| flags = @bitCast(@as(u8, @intCast(fv.integer)));
-            if (last.object.get("#n")) |nv| container_name = try arena.dupe(u8, nv.string);
+            if (last.object.get(fmt.key_meta_flags)) |fv| flags = @bitCast(@as(u8, @intCast(fv.integer)));
+            if (last.object.get(fmt.key_meta_name)) |nv| container_name = try arena.dupe(u8, nv.string);
         }
     }
 
@@ -125,7 +126,7 @@ fn buildContainer(
         var it = meta.iterator();
         while (it.next()) |entry| {
             const k = entry.key_ptr.*;
-            if (std.mem.eql(u8, k, "#f") or std.mem.eql(u8, k, "#n")) continue;
+            if (std.mem.eql(u8, k, fmt.key_meta_flags) or std.mem.eql(u8, k, fmt.key_meta_name)) continue;
             const child_path = if (path.len > 0)
                 try std.fmt.allocPrint(arena, "{s}.{s}", .{ path, k })
             else
@@ -192,7 +193,7 @@ fn parseRuntimeObject(
 }
 
 fn parseStringObject(s: []const u8) RuntimeObject {
-    if (s.len > 0 and s[0] == '^') return .{ .string = s[1..] };
+    if (s.len > 0 and s[0] == fmt.text_prefix_char) return .{ .string = s[1..] };
     if (std.mem.eql(u8, s, "\n")) return .{ .string = "\n" };
     if (std.mem.eql(u8, s, "<>")) return .glue;
     if (std.mem.eql(u8, s, "void")) return .void;
@@ -203,29 +204,29 @@ fn parseStringObject(s: []const u8) RuntimeObject {
 
 fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, obj: std.json.ObjectMap) ParseError!RuntimeObject {
     _ = parent_path;
-    if (obj.get("->")) |t| {
+    if (obj.get(fmt.key_divert)) |t| {
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
-            .is_conditional = obj.get("c") != null,
-            .is_variable = obj.get("var") != null,
+            .is_conditional = obj.get(fmt.key_conditional) != null,
+            .is_variable = obj.get(fmt.key_is_variable) != null,
             .push_pop_type = null,
             .external_args = 0,
         } };
     }
-    if (obj.get("->t->")) |t| {
+    if (obj.get(fmt.key_tunnel_divert)) |t| {
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
-            .is_conditional = obj.get("c") != null,
-            .is_variable = obj.get("var") != null,
+            .is_conditional = obj.get(fmt.key_conditional) != null,
+            .is_variable = obj.get(fmt.key_is_variable) != null,
             .push_pop_type = .tunnel,
             .external_args = 0,
         } };
     }
-    if (obj.get("f()")) |t| {
+    if (obj.get(fmt.key_function_call_0)) |t| {
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
-            .is_conditional = obj.get("c") != null,
-            .is_variable = obj.get("var") != null,
+            .is_conditional = obj.get(fmt.key_conditional) != null,
+            .is_variable = obj.get(fmt.key_is_variable) != null,
             .push_pop_type = .function,
             .external_args = 0,
         } };
@@ -235,13 +236,13 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
         var it = obj.iterator();
         while (it.next()) |entry| {
             const key = entry.key_ptr.*;
-            if (key.len > 3 and std.mem.startsWith(u8, key, "f(") and key[key.len - 1] == ')') {
-                const n_str = key[2 .. key.len - 1];
+            if (key.len > 3 and std.mem.startsWith(u8, key, fmt.key_function_call_prefix) and key[key.len - 1] == ')') {
+                const n_str = key[fmt.key_function_call_prefix.len .. key.len - 1];
                 if (std.fmt.parseInt(u32, n_str, 10)) |_| {
                     return .{ .divert = .{
                         .target = try arena.dupe(u8, entry.value_ptr.string),
-                        .is_conditional = obj.get("c") != null,
-                        .is_variable = obj.get("var") != null,
+                        .is_conditional = obj.get(fmt.key_conditional) != null,
+                        .is_variable = obj.get(fmt.key_is_variable) != null,
                         .push_pop_type = .function,
                         .external_args = 0,
                     } };
@@ -249,8 +250,8 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
             }
         }
     }
-    if (obj.get("x()")) |t| {
-        const args: u32 = if (obj.get("exArgs")) |a| @intCast(a.integer) else 0;
+    if (obj.get(fmt.key_external_call)) |t| {
+        const args: u32 = if (obj.get(fmt.key_external_args)) |a| @intCast(a.integer) else 0;
         return .{ .divert = .{
             .target = try arena.dupe(u8, t.string),
             .is_conditional = false,
@@ -259,54 +260,54 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
             .external_args = args,
         } };
     }
-    if (obj.get("*")) |p| {
-        const flags: u8 = if (obj.get("flg")) |f| @intCast(f.integer) else 0;
+    if (obj.get(fmt.key_choice_point)) |p| {
+        const flags: u8 = if (obj.get(fmt.key_choice_flags)) |f| @intCast(f.integer) else 0;
         return .{ .choice_point = .{
             .path = try arena.dupe(u8, p.string),
             .flags = flags,
         } };
     }
-    if (obj.get("VAR=")) |n| {
+    if (obj.get(fmt.key_var_assign)) |n| {
         return .{ .variable_assignment = .{
             .name = try arena.dupe(u8, n.string),
-            .is_new_decl = obj.get("re") == null,
+            .is_new_decl = obj.get(fmt.key_reassign) == null,
             .is_global = true,
         } };
     }
-    if (obj.get("temp=")) |n| {
+    if (obj.get(fmt.key_temp_assign)) |n| {
         return .{ .variable_assignment = .{
             .name = try arena.dupe(u8, n.string),
-            .is_new_decl = obj.get("re") == null,
+            .is_new_decl = obj.get(fmt.key_reassign) == null,
             .is_global = false,
         } };
     }
-    if (obj.get("VAR?")) |n| {
+    if (obj.get(fmt.key_var_ref)) |n| {
         return .{ .variable_reference = .{
             .name = try arena.dupe(u8, n.string),
             .path_for_count = null,
         } };
     }
-    if (obj.get("CNT?")) |p| {
+    if (obj.get(fmt.key_read_count)) |p| {
         return .{ .variable_reference = .{
             .name = "",
             .path_for_count = try arena.dupe(u8, p.string),
         } };
     }
-    if (obj.get("^->")) |p| {
+    if (obj.get(fmt.key_divert_target_val)) |p| {
         return .{ .divert_target = try arena.dupe(u8, p.string) };
     }
-    if (obj.get("^var")) |n| {
-        const ctx: i32 = if (obj.get("ci")) |ci| @intCast(ci.integer) else 0;
+    if (obj.get(fmt.key_var_pointer)) |n| {
+        const ctx: i32 = if (obj.get(fmt.key_var_pointer_ctx)) |ci| @intCast(ci.integer) else 0;
         return .{ .variable_pointer = .{
             .name = try arena.dupe(u8, n.string),
             .context_index = ctx,
         } };
     }
     // inkVersion 20: inline tag objects {"#":"tag_text"} — stored as void
-    if (obj.get("#")) |_| {
+    if (obj.get(fmt.key_inline_tag)) |_| {
         return .void;
     }
-    if (obj.get("list")) |list_val| {
+    if (obj.get(fmt.key_list)) |list_val| {
         const ink_list = try arena.create(value.InkList);
         ink_list.* = .{};
         if (list_val == .object) {
@@ -321,7 +322,7 @@ fn parseObjectRuntimeObject(arena: std.mem.Allocator, parent_path: []const u8, o
                 try ink_list.items.put(arena, key, v);
             }
         }
-        if (obj.get("origins")) |origins_val| {
+        if (obj.get(fmt.key_list_origins)) |origins_val| {
             if (origins_val == .array) {
                 const origins = try arena.alloc([]const u8, origins_val.array.items.len);
                 for (origins_val.array.items, 0..) |o, i| {

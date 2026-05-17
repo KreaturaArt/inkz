@@ -1,9 +1,10 @@
 ---
 id: TASK-137
 title: Eliminate duplicate format spec between serializer.zig and json_loader.zig
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-14 17:43'
+updated_date: '2026-05-17 17:04'
 labels:
   - compiler
   - runtime
@@ -56,7 +57,13 @@ Both files import and use these. Format change = one place.
 - No behavioral change
 <!-- SECTION:DESCRIPTION:END -->
 
-- [ ] #1 Shared format constants file exists and is imported by both serializer.zig and json_loader.zig
-- [ ] #2 No duplicated ink.json key string literals across serializer.zig and json_loader.zig
-- [ ] #3 All existing tests pass
+- [x] #1 Shared format constants file exists and is imported by both serializer.zig and json_loader.zig
+- [x] #2 No duplicated ink.json key string literals across serializer.zig and json_loader.zig
+- [x] #3 All existing tests pass
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+New file `src/ink_format.zig` with 20 pub constants covering all ink.json wire-format keys (`key_divert`, `key_tunnel_divert`, `key_var_assign`, `key_meta_name`, `key_meta_flags`, etc.) plus `text_prefix`/`text_prefix_char`. Both `serializer.zig` and `json_loader.zig` import it as `const fmt = @import("../ink_format.zig")` and use the constants throughout. `root.zig` exports the module and adds it to the test block. 549/549 tests pass; JSON output identical.
+<!-- SECTION:FINAL_SUMMARY:END -->
