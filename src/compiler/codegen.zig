@@ -75,34 +75,62 @@ pub fn generate(alloc: std.mem.Allocator, story: Parsed.Story) !*CContainer {
 
 // ── Codegen implementation ────────────────────────────────────────────────────
 
+/// Per-name metadata stored in Gen.names.  A single name can carry multiple
+/// kinds simultaneously (e.g. a function knot is both is_knot and has fn_params).
+const NameEntry = struct {
+    /// Set for knot/stitch names → bare name in expression emits read_count not var_ref.
+    is_knot: bool = false,
+    /// Set for global VAR names → divert to this name emits divert_via_var.
+    is_global_var: bool = false,
+    /// Non-null for CONST names → inline the constant expression at codegen time.
+    constant: ?*const Parsed.Expression = null,
+    /// Non-null for choice labels → absolute container path for read-count / divert.
+    choice_path: ?[]const u8 = null,
+    /// Non-null for gather labels → absolute container path for read-count / divert.
+    gather_path: ?[]const u8 = null,
+    /// Non-null for stitch bare names → "knot.stitch" full path for divert resolution.
+    stitch_full_path: ?[]const u8 = null,
+    /// Non-null for EXTERNAL functions → param count for external_call emission.
+    external_arg_count: ?u32 = null,
+    /// Non-null for function knots with params → used for ref-param call lowering.
+    fn_params: ?[]const Parsed.Param = null,
+};
+
 const Gen = struct {
     alloc: std.mem.Allocator,
-    /// Compile-time constant values, keyed by name.  Used to substitute CONST
-    /// references at codegen time so no {"VAR?":"name"} appears for constants.
-    const_map: std.StringHashMapUnmanaged(*const Parsed.Expression) = .{},
-    /// Names of declared knots/stitches (and function knots).  In a condition
-    /// expression, a bare name that matches a knot becomes {"CNT?":"name"}
-    /// (visit-count check) rather than {"VAR?":"name"} (variable lookup).
-    knot_names: std.StringHashMapUnmanaged(void) = .{},
-    /// Names of declared global VARs.  A divert to a var name becomes divert_via_var.
-    var_names: std.StringHashMapUnmanaged(void) = .{},
-    /// Names of divert-target params in the current function.  Same treatment as var_names.
-    divert_param_names: std.StringHashMapUnmanaged(void) = .{},
-    /// Choice labels → absolute path to the c-N container for read-count references.
-    choice_labels: std.StringHashMapUnmanaged([]const u8) = .{},
-    /// Gather labels → absolute path to the gather section container.
-    gather_label_paths: std.StringHashMapUnmanaged([]const u8) = .{},
-    /// Stitch bare names → full path (e.g. "stitch" → "knot.stitch").
-    stitch_paths: std.StringHashMapUnmanaged([]const u8) = .{},
-    /// Names of EXTERNAL function declarations — calls to these use external_call.
-    external_fn_names: std.StringHashMapUnmanaged(u32) = .{}, // name → param_count
-    /// Function signatures used for ref-parameter call lowering.
-    function_params: std.StringHashMapUnmanaged([]const Parsed.Param) = .{},
+    /// Unified name table: knots, stitches, VARs, CONSTs, labels, external fns, fn params.
+    /// A single entry can carry multiple roles (e.g. a function knot is both is_knot + fn_params).
+    names: std.StringHashMapUnmanaged(NameEntry) = .{},
+    /// Divert-target params for the current function knot (slice into parsed params).
+    /// Replaced per-knot; no separate HashMap needed since param counts are small.
+    current_divert_params: []const Parsed.Param = &.{},
     /// List definitions for resolving list item names in expressions.
     list_defs: []const Parsed.ListDef = &.{},
     /// True after emitting a content flow item (text, expr output) at the current level.
     /// Used to decide whether to emit a trailing "\n" after a simple logic line.
     last_was_content: bool = false,
+
+    /// Get-or-insert an entry for `key`, returning a mutable pointer to it.
+    fn putName(self: *Gen, key: []const u8) !*NameEntry {
+        const gop = try self.names.getOrPut(self.alloc, key);
+        if (!gop.found_existing) gop.value_ptr.* = .{};
+        return gop.value_ptr;
+    }
+
+    /// True if `name` is a divert-target param of the current function knot.
+    fn isDivertParam(self: *const Gen, name: []const u8) bool {
+        for (self.current_divert_params) |p| {
+            if (p.is_divert and std.mem.eql(u8, p.name, name)) return true;
+        }
+        return false;
+    }
+
+    /// True if `name` is a global VAR or a divert-target param of the current knot.
+    fn isVarOrParam(self: *const Gen, name: []const u8) bool {
+        if (self.isDivertParam(name)) return true;
+        if (self.names.get(name)) |e| return e.is_global_var;
+        return false;
+    }
 
     fn newContainer(self: *Gen, name: ?[]const u8) !*CContainer {
         const c = try self.alloc.create(CContainer);
@@ -126,10 +154,10 @@ const Gen = struct {
                     };
                     if (g.label) |lbl| {
                         const abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs, lbl });
-                        try self.gather_label_paths.put(self.alloc, lbl, abs);
+                        (try self.putName(lbl)).gather_path = abs;
                         if (context_name.len > 0) {
                             const qual = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
-                            try self.gather_label_paths.put(self.alloc, qual, abs);
+                            (try self.putName(qual)).gather_path = abs;
                         }
                     }
                     cur_section_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs, gname });
@@ -140,10 +168,10 @@ const Gen = struct {
                     if (ch.label) |lbl| {
                         const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{ci});
                         const abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
-                        try self.choice_labels.put(self.alloc, lbl, abs);
+                        (try self.putName(lbl)).choice_path = abs;
                         if (context_name.len > 0) {
                             const qual = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
-                            try self.choice_labels.put(self.alloc, qual, abs);
+                            (try self.putName(qual)).choice_path = abs;
                         }
                     }
                     ci += 1;
@@ -154,21 +182,20 @@ const Gen = struct {
     }
 
     fn generateRoot(self: *Gen, story: Parsed.Story) !*CContainer {
-        // Populate CONST map so value substitution works during genExpr.
+        // Populate CONSTs so value substitution works during genExpr.
         for (story.constants) |c| {
-            try self.const_map.put(self.alloc, c.name, c.value);
+            (try self.putName(c.name)).constant = c.value;
         }
-        // Populate knot_names so expressions can emit CNT? for knot references.
+        // Populate knot/stitch names, function params, stitch paths.
         for (story.knots) |knot| {
-            if (knot.is_function) {
-                try self.function_params.put(self.alloc, knot.name, knot.params);
-            }
-            try self.knot_names.put(self.alloc, knot.name, {});
+            const ke = try self.putName(knot.name);
+            ke.is_knot = true;
+            if (knot.is_function) ke.fn_params = knot.params;
             for (knot.stitches) |stitch| {
-                try self.knot_names.put(self.alloc, stitch.name, {});
-                // Register full path so `-> stitch` resolves to `knot.stitch`.
+                const se = try self.putName(stitch.name);
+                se.is_knot = true;
                 const full_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ knot.name, stitch.name });
-                try self.stitch_paths.put(self.alloc, stitch.name, full_path);
+                se.stitch_full_path = full_path;
             }
         }
         // Pre-scan ALL knot/stitch content to register gather and choice labels globally
@@ -184,13 +211,13 @@ const Gen = struct {
                 try self.preScanLabels(knot.content, try std.fmt.allocPrint(self.alloc, "{s}.0", .{knot.name}), knot.name, 1);
             }
         }
-        // Populate var_names so diverts to variable names become divert_via_var.
+        // Populate global VARs so diverts to variable names become divert_via_var.
         for (story.global_decls) |decl| {
-            try self.var_names.put(self.alloc, decl.name, {});
+            (try self.putName(decl.name)).is_global_var = true;
         }
-        // Populate external_fn_names so calls to external functions use external_call.
+        // Populate EXTERNAL functions so calls use external_call.
         for (story.external_fns) |ef| {
-            try self.external_fn_names.put(self.alloc, ef.name, ef.param_count);
+            (try self.putName(ef.name)).external_arg_count = ef.param_count;
         }
         // Store list defs for list literal resolution.
         self.list_defs = story.list_defs;
@@ -317,13 +344,8 @@ const Gen = struct {
         }
 
         // Track divert-target params for the duration of genKnotContent.
-        self.divert_param_names.clearRetainingCapacity();
-        for (knot.params) |p| {
-            if (p.is_divert) {
-                try self.divert_param_names.put(self.alloc, p.name, {});
-            }
-        }
-        defer self.divert_param_names.clearRetainingCapacity();
+        self.current_divert_params = knot.params;
+        defer self.current_divert_params = &.{};
         return self.genKnotContent(knot.content, knot.name, knot.params, knot.is_function);
     }
 
@@ -404,8 +426,9 @@ const Gen = struct {
                 const paren_pos = std.mem.indexOfScalar(u8, knot_name, '(') orelse knot_name.len;
                 const name = std.mem.trim(u8, knot_name[0..paren_pos], " \t");
                 // Resolve stitch/gather name to its absolute path.
-                const resolved = self.gather_label_paths.get(name) orelse
-                    self.stitch_paths.get(name) orelse
+                const resolved: []const u8 = if (self.names.get(name)) |e|
+                    e.gather_path orelse e.stitch_full_path orelse name
+                else
                     name;
                 try out.append(self.alloc, .{ .divert = resolved });
             },
@@ -427,7 +450,7 @@ const Gen = struct {
             // Tunnel-onwards: ->-> target (args) — push args + divert-target-val, then ->->.
             try out.append(self.alloc, .eval_start);
             for (d.args) |arg| try self.genExpr(out, arg.*);
-            if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
+            if (self.isVarOrParam(d.target)) {
                 try out.append(self.alloc, .{ .var_ref = d.target });
             } else {
                 try out.append(self.alloc, .{ .divert_target_val = d.target });
@@ -443,20 +466,22 @@ const Gen = struct {
                 }
                 try out.append(self.alloc, .eval_end);
             }
-            // Check gather/choice label paths first so labels resolve to abs paths.
-            if (self.gather_label_paths.get(d.target)) |abs_path| {
-                try out.append(self.alloc, .{ .divert = abs_path });
-            } else if (self.choice_labels.get(d.target)) |abs_path| {
-                try out.append(self.alloc, .{ .divert = abs_path });
-            } else if (self.stitch_paths.get(d.target)) |full_path| {
+            // Check label paths first so labels resolve to abs paths; then var/stitch.
+            const target_entry = self.names.get(d.target);
+            if (target_entry != null and target_entry.?.gather_path != null) {
+                try out.append(self.alloc, .{ .divert = target_entry.?.gather_path.? });
+            } else if (target_entry != null and target_entry.?.choice_path != null) {
+                try out.append(self.alloc, .{ .divert = target_entry.?.choice_path.? });
+            } else if (target_entry != null and target_entry.?.stitch_full_path != null) {
                 // Bare stitch name → resolve to full "knot.stitch" path.
+                const full_path = target_entry.?.stitch_full_path.?;
                 if (d.is_tunnel) {
                     try out.append(self.alloc, .{ .tunnel_divert = full_path });
                 } else {
                     try out.append(self.alloc, .{ .divert = full_path });
                 }
             } else if (d.is_tunnel) {
-                if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
+                if (self.isVarOrParam(d.target)) {
                     try out.append(self.alloc, .{ .tunnel_divert_via_var = d.target });
                 } else {
                     try out.append(self.alloc, .{ .tunnel_divert = d.target });
@@ -470,7 +495,7 @@ const Gen = struct {
                         try out.append(self.alloc, .eval_end);
                     }
                     if (d.onward_is_tunnel) {
-                        if (self.var_names.contains(onward_target) or self.divert_param_names.contains(onward_target)) {
+                        if (self.isVarOrParam(onward_target)) {
                             try out.append(self.alloc, .{ .tunnel_divert_via_var = onward_target });
                         } else {
                             try out.append(self.alloc, .{ .tunnel_divert = onward_target });
@@ -486,8 +511,7 @@ const Gen = struct {
                     try out.append(self.alloc, .eval_end);
                     try out.append(self.alloc, .tunnel_return);
                 }
-            } else if (self.var_names.contains(d.target) or self.divert_param_names.contains(d.target)) {
-                // Divert to a variable containing a divert target.
+            } else if (self.isVarOrParam(d.target)) {
                 try out.append(self.alloc, .{ .divert_via_var = d.target });
             } else {
                 try out.append(self.alloc, .{ .divert = d.target });
@@ -496,13 +520,14 @@ const Gen = struct {
     }
 
     fn appendResolvedPlainDivert(self: *Gen, out: *std.ArrayList(CObject), target: []const u8) !void {
-        if (self.gather_label_paths.get(target)) |abs_path| {
-            try out.append(self.alloc, .{ .divert = abs_path });
-        } else if (self.choice_labels.get(target)) |abs_path| {
-            try out.append(self.alloc, .{ .divert = abs_path });
-        } else if (self.stitch_paths.get(target)) |full_path| {
-            try out.append(self.alloc, .{ .divert = full_path });
-        } else if (self.var_names.contains(target) or self.divert_param_names.contains(target)) {
+        const e = self.names.get(target);
+        if (e != null and e.?.gather_path != null) {
+            try out.append(self.alloc, .{ .divert = e.?.gather_path.? });
+        } else if (e != null and e.?.choice_path != null) {
+            try out.append(self.alloc, .{ .divert = e.?.choice_path.? });
+        } else if (e != null and e.?.stitch_full_path != null) {
+            try out.append(self.alloc, .{ .divert = e.?.stitch_full_path.? });
+        } else if (self.isVarOrParam(target)) {
             try out.append(self.alloc, .{ .divert_via_var = target });
         } else {
             try out.append(self.alloc, .{ .divert = target });
@@ -774,11 +799,11 @@ const Gen = struct {
                         if (g.label) |lbl| {
                             const abs_path = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ holder_abs_path, lbl });
-                            try self.gather_label_paths.put(self.alloc, lbl, abs_path);
+                            (try self.putName(lbl)).gather_path = abs_path;
                             // Also register "context.label" for external diverts like `-> knot.gather`.
                             if (context_name.len > 0) {
                                 const qual_key = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
-                                try self.gather_label_paths.put(self.alloc, qual_key, abs_path);
+                                (try self.putName(qual_key)).gather_path = abs_path;
                             }
                         }
                         cur_section_abs = try std.fmt.allocPrint(
@@ -790,11 +815,11 @@ const Gen = struct {
                             const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{ci});
                             const abs_path = try std.fmt.allocPrint(
                                 self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
-                            try self.choice_labels.put(self.alloc, lbl, abs_path);
+                            (try self.putName(lbl)).choice_path = abs_path;
                             // Also register "context.label" for external diverts.
                             if (context_name.len > 0) {
                                 const qual_key = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ context_name, lbl });
-                                try self.choice_labels.put(self.alloc, qual_key, abs_path);
+                                (try self.putName(qual_key)).choice_path = abs_path;
                             }
                         }
                         ci += 1;
@@ -1107,7 +1132,7 @@ const Gen = struct {
 
         // Register choice label if present.
         if (ch.label) |lbl| {
-            try self.choice_labels.put(self.alloc, lbl, c_abs);
+            (try self.putName(lbl)).choice_path = c_abs;
         }
 
         // Compute flags.
@@ -1501,26 +1526,28 @@ const Gen = struct {
                 try out.append(self.alloc, .{ .string = "/str" });
             },
             .var_ref => |name| {
-                // Substitute CONST values at codegen time.
-                if (self.const_map.get(name)) |const_expr| {
-                    try self.genExpr(out, const_expr.*);
-                } else if (self.choice_labels.get(name)) |c_path| {
+                const e = self.names.get(name);
+                if (e != null and e.?.constant != null) {
+                    // Substitute CONST values at codegen time.
+                    try self.genExpr(out, e.?.constant.?.*);
+                } else if (e != null and e.?.choice_path != null) {
                     // Choice label in an expression → read-count of that choice.
-                    try out.append(self.alloc, .{ .read_count = c_path });
-                } else if (self.gather_label_paths.get(name)) |g_path| {
+                    try out.append(self.alloc, .{ .read_count = e.?.choice_path.? });
+                } else if (e != null and e.?.gather_path != null) {
                     // Gather label in an expression → read-count of that gather section.
-                    try out.append(self.alloc, .{ .read_count = g_path });
-                } else if (self.stitch_paths.get(name)) |full_path| {
+                    try out.append(self.alloc, .{ .read_count = e.?.gather_path.? });
+                } else if (e != null and e.?.stitch_full_path != null) {
                     // Bare stitch name in an expression → read-count using full path.
-                    try out.append(self.alloc, .{ .read_count = full_path });
+                    try out.append(self.alloc, .{ .read_count = e.?.stitch_full_path.? });
                 } else if (std.mem.indexOfScalar(u8, name, '.')) |dot| {
                     const head = name[0..dot];
-                    if (self.knot_names.contains(head) or std.mem.eql(u8, head, "0")) {
+                    const head_is_knot = if (self.names.get(head)) |he| he.is_knot else false;
+                    if (head_is_knot or std.mem.eql(u8, head, "0")) {
                         try out.append(self.alloc, .{ .read_count = name });
                     } else {
                         try out.append(self.alloc, .{ .var_ref = name });
                     }
-                } else if (self.knot_names.contains(name)) {
+                } else if (e != null and e.?.is_knot) {
                     // Bare knot name in an expression → visit-count check.
                     try out.append(self.alloc, .{ .read_count = name });
                 } else {
@@ -1556,10 +1583,11 @@ const Gen = struct {
                     return;
                 }
                 // Push arguments left-to-right, lowering ref params to variable pointers.
-                const params = self.function_params.get(c.name);
+                const call_entry = self.names.get(c.name);
+                const fn_params = if (call_entry != null) call_entry.?.fn_params else null;
                 for (c.args, 0..) |arg, idx| {
-                    if (params) |fn_params| {
-                        if (idx < fn_params.len and fn_params[idx].is_ref and arg.* == .var_ref) {
+                    if (fn_params) |fp| {
+                        if (idx < fp.len and fp[idx].is_ref and arg.* == .var_ref) {
                             try out.append(self.alloc, .{ .var_pointer = .{
                                 .name = arg.var_ref,
                                 .context_idx = -1,
@@ -1569,7 +1597,7 @@ const Gen = struct {
                     }
                     try self.genExpr(out, arg.*);
                 }
-                if (self.external_fn_names.contains(c.name)) {
+                if (call_entry != null and call_entry.?.external_arg_count != null) {
                     try out.append(self.alloc, .{ .external_call = .{
                         .name = c.name,
                         .arg_count = @intCast(c.args.len),
@@ -1578,7 +1606,7 @@ const Gen = struct {
                     try out.append(self.alloc, .{ .function_call = .{
                         .name = c.name,
                         .arg_count = @intCast(c.args.len),
-                        .is_var = self.var_names.contains(c.name) or self.divert_param_names.contains(c.name),
+                        .is_var = self.isVarOrParam(c.name),
                     } });
                 }
             },

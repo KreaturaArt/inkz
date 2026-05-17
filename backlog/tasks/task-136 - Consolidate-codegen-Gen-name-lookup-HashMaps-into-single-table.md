@@ -1,9 +1,10 @@
 ---
 id: TASK-136
 title: Consolidate codegen Gen name-lookup HashMaps into single table
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-14 17:42'
+updated_date: '2026-05-17 16:57'
 labels:
   - compiler
   - performance
@@ -66,7 +67,49 @@ Single O(1) lookup resolves name to its kind + value.
 - No behavioral change (same JSON output)
 <!-- SECTION:DESCRIPTION:END -->
 
-- [ ] #1 All existing compiler and runtime tests pass unchanged
-- [ ] #2 Gen struct uses ≤ 3 StringHashMapUnmanaged fields
-- [ ] #3 No change to compiler JSON output (serializer tests still pass)
+- [x] #1 All existing compiler and runtime tests pass unchanged
+- [x] #2 Gen struct uses ≤ 3 StringHashMapUnmanaged fields
+- [x] #3 No change to compiler JSON output (serializer tests still pass)
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+## What was done
+
+Consolidated 9 `StringHashMapUnmanaged` fields in `Gen` into 1 map + 1 slice.
+
+### New type
+
+Added `NameEntry` struct (before `Gen`) that carries all possible metadata for a name in a single entry — a name can hold multiple roles simultaneously (e.g. a function knot is both `is_knot=true` and `fn_params!=null`):
+```zig
+const NameEntry = struct {
+    is_knot: bool = false,
+    is_global_var: bool = false,
+    constant: ?*const Parsed.Expression = null,
+    choice_path: ?[]const u8 = null,
+    gather_path: ?[]const u8 = null,
+    stitch_full_path: ?[]const u8 = null,
+    external_arg_count: ?u32 = null,
+    fn_params: ?[]const Parsed.Param = null,
+};
+```
+
+### Gen struct changes
+
+Removed 9 fields, added 2:
+- `names: StringHashMapUnmanaged(NameEntry)` — replaces `const_map`, `knot_names`, `var_names`, `choice_labels`, `gather_label_paths`, `stitch_paths`, `external_fn_names`, `function_params`
+- `current_divert_params: []const Parsed.Param` — replaces `divert_param_names` HashMap; per-knot scope via `self.current_divert_params = knot.params` + `defer self.current_divert_params = &.{}` in `genKnot()`
+
+### New helpers
+
+- `putName(key) !*NameEntry` — get-or-insert with zero-init; `(try self.putName(k)).field = v` replaces all map puts
+- `isDivertParam(name) bool` — linear scan over `current_divert_params` (O(1) in practice, params ≤ 5)
+- `isVarOrParam(name) bool` — combines `is_global_var` from `names` + `isDivertParam`
+
+### Call sites updated
+
+`generateRoot`, `preScanLabels`, `genKnot`, `genFlowItem` (thread_start arm), `genDivert`, `appendResolvedPlainDivert`, `genWeave` (label registration), `genChoice` (label registration), `genExpr` (var_ref and call arms).
+
+All 549 tests pass. JSON output unchanged (serializer tests still pass).
+<!-- SECTION:FINAL_SUMMARY:END -->

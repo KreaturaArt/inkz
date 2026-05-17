@@ -1,3 +1,5 @@
+pub const ink_format = @import("ink_format.zig");
+
 // ── Compiler ──────────────────────────────────────────────────────────────────
 pub const compiler = struct {
     pub const parsed = @import("compiler/parsed.zig");
@@ -27,6 +29,7 @@ pub const RuntimeObject = value.RuntimeObject;
 pub const Value = value.RuntimeObject;
 
 test {
+    _ = @import("ink_format.zig");
     _ = value;
     _ = path;
     _ = pointer;

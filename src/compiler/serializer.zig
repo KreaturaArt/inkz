@@ -10,6 +10,7 @@ const std = @import("std");
 const cg = @import("codegen.zig");
 const CContainer = cg.CContainer;
 const CObject = cg.CObject;
+const fmt = @import("../ink_format.zig");
 
 // ── Public entry point ────────────────────────────────────────────────────────
 
@@ -26,9 +27,9 @@ pub fn serializeWithListDefs(alloc: std.mem.Allocator, root: *const CContainer, 
     var buf = std.ArrayList(u8).empty;
     errdefer buf.deinit(alloc);
 
-    try buf.appendSlice(alloc, "{\"inkVersion\":21,\"root\":");
+    try buf.appendSlice(alloc, "{\"" ++ fmt.key_ink_version ++ "\":21,\"" ++ fmt.key_root ++ "\":");
     try serContainer(alloc, &buf, root);
-    try buf.appendSlice(alloc, ",\"listDefs\":{");
+    try buf.appendSlice(alloc, ",\"" ++ fmt.key_list_defs ++ "\":{");
     for (list_defs, 0..) |ld, li| {
         if (li > 0) try buf.append(alloc, ',');
         try buf.append(alloc, '"');
@@ -75,7 +76,7 @@ fn serContainer(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), c: *const CCo
         try buf.append(alloc, '{');
         var mfirst = true;
         if (c.own_name) |n| {
-            try buf.appendSlice(alloc, "\"#n\":\"");
+            try buf.appendSlice(alloc, "\"" ++ fmt.key_meta_name ++ "\":\"");
             try writeJsonStr(alloc, buf, n);
             try buf.append(alloc, '"');
             mfirst = false;
@@ -83,7 +84,7 @@ fn serContainer(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), c: *const CCo
         if (c.flags != 0) {
             if (!mfirst) try buf.append(alloc, ',');
             var tmp: [32]u8 = undefined;
-            const s = std.fmt.bufPrint(&tmp, "\"#f\":{}", .{c.flags}) catch unreachable;
+            const s = std.fmt.bufPrint(&tmp, "\"" ++ fmt.key_meta_flags ++ "\":{}", .{c.flags}) catch unreachable;
             try buf.appendSlice(alloc, s);
             mfirst = false;
         }
@@ -104,7 +105,7 @@ fn serContainer(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), c: *const CCo
 fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) SerError!void {
     switch (obj) {
         .text => |t| {
-            try buf.appendSlice(alloc, "\"^");
+            try buf.appendSlice(alloc, "\"" ++ fmt.text_prefix);
             try writeJsonStr(alloc, buf, t);
             try buf.append(alloc, '"');
         },
@@ -114,19 +115,19 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
         .tunnel_return => try buf.appendSlice(alloc, "\"->->\""),
         .glue => try buf.appendSlice(alloc, "\"<>\""),
         .divert => |t| {
-            try buf.appendSlice(alloc, "{\"->\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_divert ++ "\":\"");
             try writeJsonStr(alloc, buf, t);
             try buf.appendSlice(alloc, "\"}");
         },
         .tunnel_divert => |t| {
-            try buf.appendSlice(alloc, "{\"->t->\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_tunnel_divert ++ "\":\"");
             try writeJsonStr(alloc, buf, t);
             try buf.appendSlice(alloc, "\"}");
         },
         .tunnel_divert_via_var => |name| {
-            try buf.appendSlice(alloc, "{\"->t->\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_tunnel_divert ++ "\":\"");
             try writeJsonStr(alloc, buf, name);
-            try buf.appendSlice(alloc, "\",\"var\":true}");
+            try buf.appendSlice(alloc, "\",\"" ++ fmt.key_is_variable ++ "\":true}");
         },
         .container => |c| try serContainer(alloc, buf, c),
         .eval_start => try buf.appendSlice(alloc, "\"ev\""),
@@ -160,66 +161,64 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try buf.append(alloc, '"');
         },
         .var_assign => |va| {
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_var_assign ++ "\":\"");
+            try writeJsonStr(alloc, buf, va.name);
             if (va.is_new) {
-                try buf.appendSlice(alloc, "{\"VAR=\":\"");
-                try writeJsonStr(alloc, buf, va.name);
                 try buf.appendSlice(alloc, "\"}");
             } else {
-                try buf.appendSlice(alloc, "{\"VAR=\":\"");
-                try writeJsonStr(alloc, buf, va.name);
-                try buf.appendSlice(alloc, "\",\"re\":true}");
+                try buf.appendSlice(alloc, "\",\"" ++ fmt.key_reassign ++ "\":true}");
             }
         },
         .var_ref => |name| {
-            try buf.appendSlice(alloc, "{\"VAR?\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_var_ref ++ "\":\"");
             try writeJsonStr(alloc, buf, name);
             try buf.appendSlice(alloc, "\"}");
         },
         .var_pointer => |vp| {
-            try buf.appendSlice(alloc, "{\"^var\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_var_pointer ++ "\":\"");
             try writeJsonStr(alloc, buf, vp.name);
-            try buf.appendSlice(alloc, "\",\"ci\":");
+            try buf.appendSlice(alloc, "\",\"" ++ fmt.key_var_pointer_ctx ++ "\":");
             var tmp: [24]u8 = undefined;
             const s = std.fmt.bufPrint(&tmp, "{}", .{vp.context_idx}) catch unreachable;
             try buf.appendSlice(alloc, s);
             try buf.append(alloc, '}');
         },
         .temp_assign => |ta| {
-            try buf.appendSlice(alloc, "{\"temp=\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_temp_assign ++ "\":\"");
             try writeJsonStr(alloc, buf, ta.name);
             if (ta.is_new) {
                 try buf.appendSlice(alloc, "\"}");
             } else {
-                try buf.appendSlice(alloc, "\",\"re\":true}");
+                try buf.appendSlice(alloc, "\",\"" ++ fmt.key_reassign ++ "\":true}");
             }
         },
         .cond_divert => |path| {
-            try buf.appendSlice(alloc, "{\"->\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_divert ++ "\":\"");
             try writeJsonStr(alloc, buf, path);
-            try buf.appendSlice(alloc, "\",\"c\":true}");
+            try buf.appendSlice(alloc, "\",\"" ++ fmt.key_conditional ++ "\":true}");
         },
         .dup => try buf.appendSlice(alloc, "\"du\""),
         .choice_point => |cp| {
-            try buf.appendSlice(alloc, "{\"*\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_choice_point ++ "\":\"");
             try writeJsonStr(alloc, buf, cp.path);
-            try buf.appendSlice(alloc, "\",\"flg\":");
+            try buf.appendSlice(alloc, "\",\"" ++ fmt.key_choice_flags ++ "\":");
             var tmp: [24]u8 = undefined;
             const s = std.fmt.bufPrint(&tmp, "{}", .{cp.flags}) catch unreachable;
             try buf.appendSlice(alloc, s);
             try buf.append(alloc, '}');
         },
         .divert_target_val => |path| {
-            try buf.appendSlice(alloc, "{\"^->\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_divert_target_val ++ "\":\"");
             try writeJsonStr(alloc, buf, path);
             try buf.appendSlice(alloc, "\"}");
         },
         .divert_via_var => |name| {
-            try buf.appendSlice(alloc, "{\"->\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_divert ++ "\":\"");
             try writeJsonStr(alloc, buf, name);
-            try buf.appendSlice(alloc, "\",\"var\":true}");
+            try buf.appendSlice(alloc, "\",\"" ++ fmt.key_is_variable ++ "\":true}");
         },
         .read_count => |path| {
-            try buf.appendSlice(alloc, "{\"CNT?\":\"");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_read_count ++ "\":\"");
             try writeJsonStr(alloc, buf, path);
             try buf.appendSlice(alloc, "\"}");
         },
@@ -228,7 +227,7 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             // {"f()":"name"} for 0 args, {"f(N)":"name"} for N args.
             var tmp: [32]u8 = undefined;
             const key = if (fc.arg_count == 0)
-                "\"f()\":"
+                "\"" ++ fmt.key_function_call_0 ++ "\":"
             else blk: {
                 const s = std.fmt.bufPrint(&tmp, "\"f({})\":", .{fc.arg_count}) catch unreachable;
                 break :blk s;
@@ -238,23 +237,23 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             try buf.append(alloc, '"');
             try writeJsonStr(alloc, buf, fc.name);
             try buf.append(alloc, '"');
-            if (fc.is_var) try buf.appendSlice(alloc, ",\"var\":true");
+            if (fc.is_var) try buf.appendSlice(alloc, ",\"" ++ fmt.key_is_variable ++ "\":true");
             try buf.append(alloc, '}');
         },
         .external_call => |ec| {
             // {"x()":"name","exArgs":N}
             try buf.append(alloc, '{');
-            try buf.appendSlice(alloc, "\"x()\":");
+            try buf.appendSlice(alloc, "\"" ++ fmt.key_external_call ++ "\":");
             try buf.append(alloc, '"');
             try writeJsonStr(alloc, buf, ec.name);
             var tmp2: [32]u8 = undefined;
-            const args_s = std.fmt.bufPrint(&tmp2, "\",\"exArgs\":{}}}", .{ec.arg_count}) catch unreachable;
+            const args_s = std.fmt.bufPrint(&tmp2, "\",\"" ++ fmt.key_external_args ++ "\":{}}}", .{ec.arg_count}) catch unreachable;
             try buf.appendSlice(alloc, args_s);
         },
         .list_val => |lv| {
             // Non-empty: {"list":{"origin.item":value,...}}
             // Empty with origin: {"list":{},"origins":["origin",...]}
-            try buf.appendSlice(alloc, "{\"list\":{");
+            try buf.appendSlice(alloc, "{\"" ++ fmt.key_list ++ "\":{");
             for (lv.entries, 0..) |e, i| {
                 if (i > 0) try buf.append(alloc, ',');
                 try buf.append(alloc, '"');
@@ -265,7 +264,7 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
             }
             try buf.append(alloc, '}');
             if (lv.entries.len == 0 and lv.origins.len > 0) {
-                try buf.appendSlice(alloc, ",\"origins\":[");
+                try buf.appendSlice(alloc, ",\"" ++ fmt.key_list_origins ++ "\":[");
                 for (lv.origins, 0..) |o, i| {
                     if (i > 0) try buf.append(alloc, ',');
                     try buf.append(alloc, '"');
@@ -280,15 +279,18 @@ fn serObject(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), obj: CObject) Se
 }
 
 /// Write `s` into `buf` with JSON string escaping (no surrounding quotes).
+/// Reserves worst-case capacity up front so the inner loop never allocates.
 fn writeJsonStr(alloc: std.mem.Allocator, buf: *std.ArrayList(u8), s: []const u8) !void {
+    // Every byte may expand to at most 2 bytes (e.g. '\n' → "\\n").
+    try buf.ensureUnusedCapacity(alloc, s.len * 2);
     for (s) |ch| {
         switch (ch) {
-            '"' => try buf.appendSlice(alloc, "\\\""),
-            '\\' => try buf.appendSlice(alloc, "\\\\"),
-            '\n' => try buf.appendSlice(alloc, "\\n"),
-            '\r' => try buf.appendSlice(alloc, "\\r"),
-            '\t' => try buf.appendSlice(alloc, "\\t"),
-            else => try buf.append(alloc, ch),
+            '"' => buf.appendSliceAssumeCapacity("\\\""),
+            '\\' => buf.appendSliceAssumeCapacity("\\\\"),
+            '\n' => buf.appendSliceAssumeCapacity("\\n"),
+            '\r' => buf.appendSliceAssumeCapacity("\\r"),
+            '\t' => buf.appendSliceAssumeCapacity("\\t"),
+            else => buf.appendAssumeCapacity(ch),
         }
     }
 }
