@@ -1,9 +1,10 @@
 ---
 id: TASK-139
 title: Build reverse list-item lookup map to eliminate O(n) scan in resolveVariable
-status: To Do
+status: Done
 assignee: []
 created_date: '2026-05-17 17:57'
+updated_date: '2026-05-17 18:54'
 labels:
   - runtime
   - performance
@@ -61,6 +62,12 @@ while (it.next()) |e| {
 - `resolveVariable` fallback is O(1) instead of O(n_defs)
 <!-- SECTION:DESCRIPTION:END -->
 
-- [ ] #1 All tests pass
-- [ ] #2 resolveVariable list-item fallback uses a HashMap not an iterator loop
+- [x] #1 All tests pass
+- [x] #2 resolveVariable list-item fallback uses a HashMap not an iterator loop
 <!-- AC:END -->
+
+## Final Summary
+
+<!-- SECTION:FINAL_SUMMARY:BEGIN -->
+Added `ListItemEntry = struct { origin: []const u8, value: i32 }` and `list_item_lookup: StringHashMapUnmanaged(ListItemEntry)` to `Story`. Built once at init (both `initFromJson` and `initFromContainers`) via `buildListItemLookup()`, which iterates all list definitions and populates the reverse map (first-wins on name collision, matching prior iterator behavior). `resolveVariable` fallback now does a single `list_item_lookup.get(name)` call instead of iterating all list origins. All 549 tests pass.
+<!-- SECTION:FINAL_SUMMARY:END -->

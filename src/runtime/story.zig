@@ -128,6 +128,9 @@ fn writeRtObjJson(w: *std.Io.Writer, obj: RuntimeObject) !void {
     }
 }
 
+/// Entry in Story.list_item_lookup: bare item name → origin + integer value.
+const ListItemEntry = struct { origin: []const u8, value: i32 };
+
 pub const Story = struct {
     /// Flat array of all containers; root is containers[0]. Arena-owned.
     containers: []Container,
@@ -147,6 +150,9 @@ pub const Story = struct {
     allocator: std.mem.Allocator,
     /// All list origin definitions from listDefs JSON section.
     list_defs: lists.ListDefinitionsOrigin = .{},
+    /// Reverse map: bare item name → {origin, value}. Built once at init for O(1)
+    /// resolveVariable fallback instead of iterating all list definitions.
+    list_item_lookup: std.StringHashMapUnmanaged(ListItemEntry) = .{},
     /// Invisible default choice target recorded per-cont(); null if none seen this turn.
     default_choice_target: ?[]const u8 = null,
     /// Tags collected during the current cont() call.
@@ -209,6 +215,9 @@ pub const Story = struct {
         // Pre-allocate global variable slots so setAssumeCapacity works in the hot path.
         // This covers both the init loop below AND normal story execution.
         try story.state.variables_state.globals.ensureTotalCapacity(story.allocator, 256);
+
+        // Build reverse list-item lookup for O(1) resolveVariable fallback.
+        try story.buildListItemLookup();
 
         // Execute global declarations if present.
         if (story.namedLookup(0, "global decl")) |global_decl_idx| {
@@ -275,6 +284,9 @@ pub const Story = struct {
         try story.state.current_choices.ensureTotalCapacity(story.allocator, 32);
         try story.current_tags.ensureTotalCapacity(story.allocator, 16);
         try story.state.variables_state.globals.ensureTotalCapacity(story.allocator, 256);
+
+        // Build reverse list-item lookup for O(1) resolveVariable fallback.
+        try story.buildListItemLookup();
 
         if (story.namedLookup(0, "global decl")) |global_decl_idx| {
             const saved_ptr = story.state.call_stack.currentElement().current_pointer;
@@ -926,8 +938,12 @@ pub const Story = struct {
                         ink_list.* = .{};
                         var it = list_val.object.iterator();
                         while (it.next()) |e| {
+                            const v: i32 = switch (e.value_ptr.*) {
+                                .integer => |n| @intCast(n),
+                                .float => |f| @intFromFloat(f),
+                                else => continue,
+                            };
                             const key = try self.arena.allocator().dupe(u8, e.key_ptr.*);
-                            const v: i32 = @intCast(e.value_ptr.*.integer);
                             try ink_list.items.put(self.arena.allocator(), key, v);
                         }
                         if (o.get("origins")) |origins_val| {
@@ -1767,8 +1783,10 @@ pub const Story = struct {
                     var tag_len: usize = 0;
                     for (stream.items[si + 1 ..]) |obj| {
                         if (obj == .string) {
-                            @memcpy(self.string_eval_buf[tag_len..][0..obj.string.len], obj.string);
-                            tag_len += obj.string.len;
+                            const chunk = obj.string;
+                            if (tag_len + chunk.len > self.string_eval_buf.len) return error.StringEvalBufferOverflow;
+                            @memcpy(self.string_eval_buf[tag_len..][0..chunk.len], chunk);
+                            tag_len += chunk.len;
                         }
                     }
                     stream.items.len = si; // remove sentinel and collected strings
@@ -2081,6 +2099,27 @@ pub const Story = struct {
         return self.state.string_eval_depth > 0;
     }
 
+    /// Build list_item_lookup from list_defs. Called once at init; arena-owned.
+    fn buildListItemLookup(self: *Story) !void {
+        const aa = self.arena.allocator();
+        var map = std.StringHashMapUnmanaged(ListItemEntry){};
+        var def_it = self.list_defs.definitions.iterator();
+        while (def_it.next()) |def_entry| {
+            const origin = def_entry.key_ptr.*;
+            var item_it = def_entry.value_ptr.items.iterator();
+            while (item_it.next()) |item_entry| {
+                // If two lists share an item name, first one wins (same as the old iterator order).
+                if (!map.contains(item_entry.key_ptr.*)) {
+                    try map.put(aa, item_entry.key_ptr.*, .{
+                        .origin = origin,
+                        .value = item_entry.value_ptr.*,
+                    });
+                }
+            }
+        }
+        self.list_item_lookup = map;
+    }
+
     pub fn resolveVariable(self: *Story, name: []const u8) ?RuntimeObject {
         const thread = self.state.call_stack.currentThread();
         var i = thread.call_stack.items.len;
@@ -2096,21 +2135,17 @@ pub const Story = struct {
             if (v == .variable_pointer) return self.resolveVariablePointer(v.variable_pointer);
             return v;
         }
-        // Fallback: check if name is a list item defined in any list origin.
-        var def_it = self.list_defs.definitions.iterator();
-        while (def_it.next()) |def_entry| {
-            const def = def_entry.value_ptr;
-            if (def.items.get(name)) |val| {
-                const arena = self.arena.allocator();
-                const key = std.fmt.allocPrint(arena, "{s}.{s}", .{ def.name, name }) catch return null;
-                const ink_list = arena.create(lists.InkList) catch return null;
-                ink_list.* = .{};
-                ink_list.items.put(arena, key, val) catch return null;
-                const origins = arena.alloc([]const u8, 1) catch return null;
-                origins[0] = def.name;
-                ink_list.origins = origins;
-                return .{ .list = ink_list };
-            }
+        // Fallback: bare list item name → single-item InkList (O(1) via list_item_lookup).
+        if (self.list_item_lookup.get(name)) |entry| {
+            const aa = self.arena.allocator();
+            const key = std.fmt.allocPrint(aa, "{s}.{s}", .{ entry.origin, name }) catch return null;
+            const ink_list = aa.create(lists.InkList) catch return null;
+            ink_list.* = .{};
+            ink_list.items.put(aa, key, entry.value) catch return null;
+            const origins = aa.alloc([]const u8, 1) catch return null;
+            origins[0] = entry.origin;
+            ink_list.origins = origins;
+            return .{ .list = ink_list };
         }
         return null;
     }
