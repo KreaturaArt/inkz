@@ -1,5 +1,6 @@
-# Mac
-.DS_Store
+# Project
+
+reference/
 
 # Zig
 .zig-cache/
@@ -12,3 +13,6 @@ sample.DS_Store
 
 # AI
 .claude
+
+# Mac
+.DS_Store
