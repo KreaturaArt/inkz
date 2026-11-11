@@ -61,6 +61,23 @@ const Fixup = struct {
     at: u32,
 };
 
+/// A `VAR?` read, resolved in `finish` as ink resolves it: a global, else a list item (as a
+/// one-item list), else a temp.
+const VariableFixup = struct {
+    container: ContainerIndex,
+    position: u32,
+    name: StringId,
+};
+
+/// A list literal whose items and origins are names until the list definitions are known.
+const ListFixup = struct {
+    /// The extra index just after the `ListLiteral` record: items, then origins.
+    words_at: u32,
+    names_first: u32,
+    items_count: u32,
+    origins_count: u32,
+};
+
 const Frame = struct {
     container: ContainerIndex,
     scratch_first: u32,
@@ -94,6 +111,10 @@ pub const ProgramBuilder = struct {
     named_scratch: std.ArrayList(NamedEntry) = .empty,
     frames: std.ArrayList(Frame) = .empty,
     fixups: std.ArrayList(Fixup) = .empty,
+    variable_fixups: std.ArrayList(VariableFixup) = .empty,
+    list_fixups: std.ArrayList(ListFixup) = .empty,
+    /// Item names, then origin names, of each list fixup.
+    list_names: std.ArrayList(StringId) = .empty,
     globals: std.ArrayList(program_module.GlobalInfo) = .empty,
     list_origins: std.ArrayList(program_module.ListOrigin) = .empty,
     list_items: std.ArrayList(program_module.ListItem) = .empty,
@@ -126,6 +147,9 @@ pub const ProgramBuilder = struct {
         builder.named_scratch.deinit(gpa);
         builder.frames.deinit(gpa);
         builder.fixups.deinit(gpa);
+        builder.variable_fixups.deinit(gpa);
+        builder.list_fixups.deinit(gpa);
+        builder.list_names.deinit(gpa);
         builder.diagnostics.deinit(gpa);
         builder.diagnostic_bytes.deinit(gpa);
         builder.globals.deinit(gpa);
@@ -166,10 +190,6 @@ pub const ProgramBuilder = struct {
             try builder.scratch.append(gpa, .init(.enter_container, container));
         }
         const name: StringId = if (options.name) |text| try builder.intern(text) else .none;
-        if (!parent.is_none() and !name.is_none()) {
-            try builder.named_scratch.append(gpa, .{ .name = name, .child = container });
-        }
-        const path = try builder.child_path(parent, name, index_in_parent);
         try builder.containers.append(gpa, .{
             .instruction_first = .from_int(0),
             .instruction_count = 0,
@@ -178,8 +198,9 @@ pub const ProgramBuilder = struct {
             .depth = if (is_root) 0 else builder.containers.items(.depth)[parent.to_int()] + 1,
             .flags = options.flags,
             .name = name,
-            .path = path,
-            .path_hash = path_module.shuffle_hash(builder.strings.get(path)),
+            // Paths and hashes are computed in `finish`: a name may only arrive at the end.
+            .path = .none,
+            .path_hash = 0,
             .named_first = 0,
             .named_count = 0,
             .count_slot = container_module.no_count_slot,
@@ -191,6 +212,22 @@ pub const ProgramBuilder = struct {
         });
         assert(builder.current() == container);
         return container;
+    }
+
+    /// Names the current container. ink's JSON gives a container's name (`#n`) at its end.
+    pub fn set_name(builder: *ProgramBuilder, name: []const u8) !void {
+        assert(name.len > 0);
+        const container = builder.current();
+        builder.containers.items(.name)[container.to_int()] = try builder.intern(name);
+        assert(!builder.containers.items(.name)[container.to_int()].is_none());
+    }
+
+    /// Sets the current container's counting flags (`#f` in ink's JSON).
+    pub fn set_flags(builder: *ProgramBuilder, flags: ContainerFlags) void {
+        assert(builder.frames.items.len > 0);
+        const container = builder.current();
+        assert(flags.padding == 0);
+        builder.containers.items(.flags)[container.to_int()] = flags;
     }
 
     /// ink's path of a child: the parent's path plus the child's name, or its content index.
@@ -240,6 +277,12 @@ pub const ProgramBuilder = struct {
         };
         builder.scratch.shrinkRetainingCapacity(frame.scratch_first);
         builder.named_scratch.shrinkRetainingCapacity(frame.named_first);
+        // The parent's named entry for this container goes in now, when the parent's named
+        // entries are back on top of the scratch stack.
+        const name = builder.containers.items(.name)[position];
+        if (builder.frames.items.len > 0 and !name.is_none()) {
+            try builder.named_scratch.append(gpa, .{ .name = name, .child = frame.container });
+        }
         assert(builder.scratch.len == frame.scratch_first);
     }
 
@@ -271,6 +314,45 @@ pub const ProgramBuilder = struct {
         try builder.globals.append(builder.gpa, .{ .name = id });
         assert(builder.globals.items.len > 0);
         return .from_int(@intCast(builder.globals.items.len - 1));
+    }
+
+    /// A `VAR?` read of `name`, resolved in `finish`.
+    pub fn add_variable_get(builder: *ProgramBuilder, name: []const u8) !void {
+        assert(builder.frames.items.len > 0);
+        assert(name.len > 0);
+        const id = try builder.intern(name);
+        try builder.variable_fixups.append(builder.gpa, .{
+            .container = builder.current(),
+            .position = builder.content_count(),
+            .name = id,
+        });
+        try builder.add(.temp_get, id);
+    }
+
+    /// A list literal of items named `origin.item`, with the origins it was declared with.
+    pub fn add_list_literal(
+        builder: *ProgramBuilder,
+        items: []const []const u8,
+        origins: []const []const u8,
+    ) !void {
+        assert(origins.len > 0 or items.len == 0);
+        const gpa = builder.gpa;
+        const record = try builder.extra.add(gpa, instruction_module.ListLiteral{
+            .items_count = @intCast(items.len),
+            .origins_count = @intCast(origins.len),
+        });
+        const names_first: u32 = @intCast(builder.list_names.items.len);
+        for (items) |item| try builder.list_names.append(gpa, try builder.intern(item));
+        for (origins) |origin| try builder.list_names.append(gpa, try builder.intern(origin));
+        const words_at = try builder.extra.reserve_words(gpa, @intCast(items.len + origins.len));
+        try builder.list_fixups.append(gpa, .{
+            .words_at = words_at,
+            .names_first = names_first,
+            .items_count = @intCast(items.len),
+            .origins_count = @intCast(origins.len),
+        });
+        try builder.add(.list, @fromBackingInt(@intCast(record)));
+        assert(words_at == record + 2);
     }
 
     pub const ListItemDeclaration = struct { name: []const u8, value: i32 };
@@ -332,7 +414,7 @@ pub const ProgramBuilder = struct {
             .flags = flags,
         });
         try builder.add_fixup(.divert, path, at);
-        try builder.add(.divert, @enumFromInt(at));
+        try builder.add(.divert, @fromBackingInt(@intCast(at)));
     }
 
     /// A divert to the divert target held in variable `name`.
@@ -348,7 +430,7 @@ pub const ProgramBuilder = struct {
             .name = try builder.intern(name),
             .flags = flags,
         });
-        try builder.add(.divert, @enumFromInt(at));
+        try builder.add(.divert, @fromBackingInt(@intCast(at)));
         assert(builder.scratch.len > 0);
     }
 
@@ -365,7 +447,7 @@ pub const ProgramBuilder = struct {
             .flags = flags,
         });
         try builder.add_fixup(.choice_point, path, at);
-        try builder.add(.choice_point, @enumFromInt(at));
+        try builder.add(.choice_point, @fromBackingInt(@intCast(at)));
     }
 
     /// An instruction whose operand is the container at `path`: `divert_target` or `read_count`.
@@ -401,6 +483,8 @@ pub const ProgramBuilder = struct {
     pub fn finish(builder: *ProgramBuilder) !Program {
         assert(builder.frames.items.len == 0);
         assert(builder.staged.items.len == builder.containers.len);
+        try builder.resolve_variables();
+        try builder.resolve_lists();
         var program = try builder.layout();
         errdefer program.deinit(builder.gpa);
         try builder.resolve_fixups(&program);
@@ -423,6 +507,9 @@ pub const ProgramBuilder = struct {
         for (builder.staged.items, 0..) |staged, position| {
             const container = builder.containers.get(position);
             var info = container;
+            // Parents come first, so their paths exist already.
+            info.path = try builder.child_path(info.parent, info.name, info.index_in_parent);
+            info.path_hash = path_module.shuffle_hash(builder.strings.get(info.path));
             info.instruction_first = .from_int(@intCast(instructions.len));
             info.instruction_count = staged.instructions_count;
             info.named_first = @intCast(named.items.len);
@@ -491,6 +578,82 @@ pub const ProgramBuilder = struct {
         return builder.diagnostic_bytes.items[diagnostic.path_first..end];
     }
 
+    fn find_global(builder: *const ProgramBuilder, name: StringId) ?GlobalSlot {
+        assert(builder.globals.items.len < std.math.maxInt(u32));
+        assert(!name.is_none());
+        for (builder.globals.items, 0..) |global_info, slot| {
+            if (global_info.name == name) return .from_int(@intCast(slot));
+        }
+        return null;
+    }
+
+    /// A list item by its full name (`origin.item`) or bare name.
+    fn find_list_item(builder: *const ProgramBuilder, name: StringId) ?index.ListItemIndex {
+        assert(builder.list_items.items.len < std.math.maxInt(u32));
+        assert(!name.is_none());
+        for (builder.list_items.items, 0..) |item, position| {
+            if (item.full_name == name or item.name == name) return .from_int(@intCast(position));
+        }
+        return null;
+    }
+
+    fn find_list_origin(builder: *const ProgramBuilder, name: StringId) ?ListOriginIndex {
+        assert(builder.list_origins.items.len < std.math.maxInt(u32));
+        assert(!name.is_none());
+        for (builder.list_origins.items, 0..) |origin, position| {
+            if (origin.name == name) return .from_int(@intCast(position));
+        }
+        return null;
+    }
+
+    /// Rewrites each `VAR?` read now that every global and list item is known.
+    fn resolve_variables(builder: *ProgramBuilder) !void {
+        const opcodes = builder.finished.items(.opcode);
+        const operands = builder.finished.items(.operand);
+        for (builder.variable_fixups.items) |fixup| {
+            const staged = builder.staged.items[fixup.container.to_int()];
+            const at = staged.instructions_first + fixup.position;
+            assert(opcodes[at] == .temp_get);
+            if (builder.find_global(fixup.name)) |slot| {
+                opcodes[at] = .global_get;
+                operands[at] = @backingInt(slot);
+            } else if (builder.find_list_item(fixup.name)) |item| {
+                const origin = builder.list_items.items[item.to_int()].origin;
+                const record = try builder.extra.add(builder.gpa, instruction_module.ListLiteral{
+                    .items_count = 1,
+                    .origins_count = 1,
+                });
+                _ = try builder.extra.add_slice(builder.gpa, &.{
+                    @backingInt(item),
+                    @backingInt(origin),
+                });
+                opcodes[at] = .list;
+                operands[at] = record;
+            }
+        }
+        assert(opcodes.len == builder.finished.len);
+    }
+
+    /// Writes the item and origin indices of every list literal.
+    fn resolve_lists(builder: *ProgramBuilder) !void {
+        assert(builder.frames.items.len == 0);
+        const words = builder.extra.words.items;
+        for (builder.list_fixups.items) |fixup| {
+            const names = builder.list_names.items[fixup.names_first..];
+            for (0..fixup.items_count) |offset| {
+                const item = builder.find_list_item(names[offset]) orelse
+                    return error.UnknownListItem;
+                words[fixup.words_at + offset] = @backingInt(item);
+            }
+            for (0..fixup.origins_count) |offset| {
+                const name = names[fixup.items_count + offset];
+                const origin = builder.find_list_origin(name) orelse return error.UnknownListOrigin;
+                words[fixup.words_at + fixup.items_count + offset] = @backingInt(origin);
+            }
+        }
+        assert(builder.list_names.items.len >= builder.list_fixups.items.len);
+    }
+
     /// ink finds the global declaration and external fallbacks by name at the root.
     fn resolve_root_names(program: *Program) void {
         assert(program.containers.len > 0);
@@ -540,7 +703,7 @@ pub const ProgramBuilder = struct {
         switch (fixup.kind) {
             // The first two record words of both records are the target container and index.
             .divert, .choice_point => {
-                extra[fixup.at] = @intFromEnum(target.container);
+                extra[fixup.at] = @backingInt(target.container);
                 extra[fixup.at + 1] = position;
             },
             .container_operand => {
@@ -551,7 +714,7 @@ pub const ProgramBuilder = struct {
                 }
                 const info = program.table().get(fixup.container);
                 const at = info.instruction_first.to_int() + fixup.at;
-                program.instructions.items(.operand)[at] = @intFromEnum(target.container);
+                program.instructions.items(.operand)[at] = @backingInt(target.container);
             },
         }
         assert(!target.container.is_none());
@@ -637,13 +800,13 @@ test "path fixups resolve to containers and positions" {
     try build_sample(&builder);
     var program = try builder.finish();
     defer program.deinit(std.testing.allocator);
-    const divert_at = @intFromEnum(program.instruction_at(Program.root, 3).get(.divert));
+    const divert_at = @backingInt(program.instruction_at(Program.root, 3).get(.divert));
     const divert = extra_module.get(instruction_module.Divert, program.extra, divert_at).data;
     try std.testing.expectEqual(ContainerIndex.from_int(3), divert.target_container);
     const knot: ContainerIndex = .from_int(2);
     const stitch: ContainerIndex = .from_int(3);
     try std.testing.expectEqual(stitch, program.instruction_at(knot, 0).get(.read_count));
-    const back_at = @intFromEnum(program.instruction_at(stitch, 0).get(.divert));
+    const back_at = @backingInt(program.instruction_at(stitch, 0).get(.divert));
     const back = extra_module.get(instruction_module.Divert, program.extra, back_at).data;
     // From the stitch's content, `.^` leaves the content item and `.^` again goes to the knot.
     try std.testing.expectEqual(knot, back.target_container);
@@ -701,7 +864,7 @@ test "globals, lists, externals and the global declaration" {
         .arguments_count = 0,
         .conditional = false,
     });
-    try builder.add(.call_external, @enumFromInt(call));
+    try builder.add(.call_external, @fromBackingInt(@intCast(call)));
     _ = try builder.list_origin("colours", &.{
         .{ .name = "red", .value = 1 },
         .{ .name = "green", .value = 2 },
@@ -749,4 +912,57 @@ test "check catches bad global and list tables" {
     const items: []program_module.ListItem = @constCast(program.list_items);
     items[1].origin = .from_int(1);
     try std.testing.expectEqual(Program.Fault.list_item_origin_mismatch, program.check());
+}
+
+test "VAR? reads resolve to globals, list items or temps" {
+    // Goal: ink's lookup order, after everything is declared. Method: three reads made before
+    // the global and the list exist.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add_variable_get("score");
+    try builder.add_variable_get("blue");
+    try builder.add_variable_get("local");
+    try builder.add_list_literal(&.{ "colours.red", "colours.blue" }, &.{"colours"});
+    _ = try builder.global("score");
+    _ = try builder.list_origin(
+        "colours",
+        &.{ .{ .name = "red", .value = 1 }, .{ .name = "blue", .value = 2 } },
+    );
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    const opcodes = program.instructions.items(.opcode);
+    try std.testing.expectEqualSlices(Opcode, &.{ .global_get, .list, .temp_get, .list }, opcodes);
+    const literal_at = program.instructions.items(.operand)[3];
+    const literal = extra_module.get(instruction_module.ListLiteral, program.extra, literal_at);
+    try std.testing.expectEqual(@as(u32, 2), literal.data.items_count);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 0 }, program.extra[literal.end..][0..3]);
+}
+
+test "names and flags can arrive at a container's end" {
+    // Goal: ink's JSON gives #n and #f last. Method: name and flag a nested container after
+    // its content, then check its path, named entry and count slot.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    _ = try builder.begin_container(.{});
+    try builder.add(.done, {});
+    try builder.set_name("g-0");
+    builder.set_flags(.{ .visits_counted = true });
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    try std.testing.expectEqualStrings(
+        "g-0",
+        program.strings.get(program.containers.items(.path)[1]),
+    );
+    try std.testing.expectEqual(
+        ContainerIndex.from_int(1),
+        program.named_child(Program.root, "g-0").?,
+    );
+    try std.testing.expectEqual(@as(u32, 0), program.containers.items(.count_slot)[1]);
 }
