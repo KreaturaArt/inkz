@@ -23,6 +23,7 @@ pub const OldEngine = struct {
     /// The last save, owned, for `load` and `load_fresh`.
     saved: []u8 = &.{},
     tags: [][]const u8 = &.{},
+    names: [][]const u8 = &.{},
 
     pub fn init(gpa: std.mem.Allocator, json: []const u8) !OldEngine {
         var story = try Story.initFromJson(gpa, json);
@@ -47,6 +48,7 @@ pub const OldEngine = struct {
         engine.gpa.free(engine.turn_text);
         engine.gpa.free(engine.saved);
         engine.gpa.free(engine.tags);
+        engine.gpa.free(engine.names);
         engine.story.deinit();
         engine.* = undefined;
     }
@@ -135,6 +137,43 @@ pub const OldEngine = struct {
         engine.discard_turn();
         try engine.story.switchToDefaultFlow();
         assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    pub fn get(engine: *OldEngine, name: []const u8) !transcript.Value {
+        assert(name.len > 0);
+        const value = engine.story.state.variables_state.get(name) orelse return .null;
+        const result: transcript.Value = switch (value) {
+            .void => .null,
+            .int => |number| .{ .int = number },
+            .float => |number| .{ .float = number },
+            .bool => |flag| .{ .bool = flag },
+            .string => |text| .{ .string = text },
+            .divert_target => |path| .{ .other = path },
+            else => .{ .other = @tagName(value) },
+        };
+        assert(result != .string or result.string.len == value.string.len);
+        return result;
+    }
+
+    /// Global variable names, sorted so transcripts don't depend on hash order.
+    pub fn global_names(engine: *OldEngine) ![]const []const u8 {
+        const globals = &engine.story.state.variables_state.globals;
+        assert(globals.count() < 1 << 20);
+        const names = try engine.gpa.alloc([]const u8, globals.count());
+        var iterator = globals.keyIterator();
+        var index: u32 = 0;
+        while (iterator.next()) |key| : (index += 1) names[index] = key.*;
+        std.mem.sort([]const u8, names, {}, name_less_than);
+        engine.gpa.free(engine.names);
+        engine.names = names;
+        assert(index == names.len);
+        return names;
+    }
+
+    fn name_less_than(_: void, a: []const u8, b: []const u8) bool {
+        assert(a.len > 0);
+        assert(b.len > 0);
+        return std.mem.order(u8, a, b) == .lt;
     }
 
     pub fn visit_count(engine: *OldEngine, path: []const u8) !u32 {

@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
 
 /// `play` stops after this many turns, like the harness, so looping stories end.
 pub const turns_max = 200;
@@ -26,6 +27,10 @@ pub const Kind = enum {
     choices,
     choose,
     play,
+    /// Like `play`, but each choice index comes from `new Random(seed)` (P0.3 transcripts).
+    play_seeded,
+    /// Records every global variable, sorted by name (P0.3 transcripts).
+    globals,
     choose_path,
     evaluate,
     get,
@@ -53,6 +58,37 @@ pub const Action = struct {
     argument: []const u8,
 };
 
+/// A host-visible ink value, rendered like the harness renders C# values: `int 5`,
+/// `float 2.5`, `bool true`, `string "a"`, `list "A.x, B.y"`, or `null`.
+pub const Value = union(enum) {
+    null,
+    int: i64,
+    float: f64,
+    bool: bool,
+    string: []const u8,
+    list: []const u8,
+    other: []const u8,
+};
+
+pub fn write_value(writer: *std.Io.Writer, value: Value) !void {
+    if (value == .string) assert(value.string.len < 1024 * 1024);
+    if (value == .list) assert(value.list.len < 1024 * 1024);
+    switch (value) {
+        .null => try writer.writeAll("null"),
+        .int => |number| try writer.print("int {d}", .{number}),
+        .float => |number| try writer.print("float {d}", .{number}),
+        .bool => |flag| try writer.writeAll(if (flag) "bool true" else "bool false"),
+        .string => |text| {
+            try writer.writeAll("string ");
+            try write_json_string(writer, text);
+        },
+        inline .list, .other => |text, tag| {
+            try writer.writeAll(@tagName(tag) ++ " ");
+            try write_json_string(writer, text);
+        },
+    }
+}
+
 pub const Line = struct {
     text: []const u8,
     tags: []const []const u8,
@@ -74,12 +110,14 @@ pub fn parse_action(line_raw: []const u8) !?Action {
     const kind = std.meta.stringToEnum(Kind, name) orelse return error.UnknownAction;
     const needs_argument = switch (kind) {
         .seed, .choose, .choose_path, .evaluate, .get, .set, .observe, .bind, .unbind => true,
+        .play_seeded => true,
         .fallbacks, .switch_flow, .remove_flow, .visit_count, .tags_at => true,
         else => false,
     };
     if (needs_argument != (argument.len > 0)) return error.BadActionArgument;
     if (kind == .seed) _ = try std.fmt.parseInt(i32, argument, 10);
     if (kind == .choose) _ = try std.fmt.parseInt(u32, argument, 10);
+    if (kind == .play_seeded) _ = try std.fmt.parseInt(i32, argument, 10);
     assert(needs_argument == (argument.len > 0));
     return .{ .kind = kind, .argument = argument };
 }
@@ -129,7 +167,12 @@ fn apply_required(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
         .continue_maximally => try continue_maximally(engine, writer),
         .choices => try write_choices(engine, writer),
         .choose => try engine.choose(std.fmt.parseInt(u32, action.argument, 10) catch unreachable),
-        .play => try play(engine, writer),
+        .play => try play(engine, writer, null),
+        .play_seeded => {
+            const seed = std.fmt.parseInt(i32, action.argument, 10) catch unreachable;
+            var random = DotnetRandom.init(seed);
+            try play(engine, writer, &random);
+        },
         else => try apply_optional(engine, action, writer),
     }
     assert(action.kind != .seed or action.argument.len > 0);
@@ -155,6 +198,20 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
         .visit_count => {
             if (!@hasDecl(Engine, "visit_count")) return error.Unsupported;
             try writer.print("visit_count: {d}\n", .{try engine.visit_count(action.argument)});
+        },
+        .get => {
+            if (!@hasDecl(Engine, "get")) return error.Unsupported;
+            try writer.writeAll("value: ");
+            try write_value(writer, try engine.get(action.argument));
+            try writer.writeByte('\n');
+        },
+        .globals => {
+            if (!@hasDecl(Engine, "global_names")) return error.Unsupported;
+            for (try engine.global_names()) |name| {
+                try writer.print("global: {s} = ", .{name});
+                try write_value(writer, try engine.get(name));
+                try writer.writeByte('\n');
+            }
         },
         .global_tags => {
             if (!@hasDecl(Engine, "global_tags")) return error.Unsupported;
@@ -220,8 +277,9 @@ fn write_choices(engine: anytype, writer: *std.Io.Writer) !void {
     assert(engine.choices_count() == count);
 }
 
-/// Continues maximally and picks the first choice until the story ends or `turns_max`.
-fn play(engine: anytype, writer: *std.Io.Writer) !void {
+/// Continues maximally and makes a choice until the story ends or `turns_max`: the first
+/// choice, or one picked by `random` (`Next() % count`) when it is given.
+fn play(engine: anytype, writer: *std.Io.Writer, random: ?*DotnetRandom) !void {
     comptime assert(turns_max > 0);
     var turn: u32 = 0;
     while (turn < turns_max) : (turn += 1) {
@@ -231,11 +289,22 @@ fn play(engine: anytype, writer: *std.Io.Writer) !void {
             try writer.writeAll("end\n");
             return;
         }
-        try writer.writeAll("choose: 0\n");
-        try engine.choose(0);
+        const count = engine.choices_count();
+        const index = if (random) |generator| pick(generator, count) else 0;
+        assert(index < count);
+        try writer.print("choose: {d}\n", .{index});
+        try engine.choose(index);
     }
     assert(turn == turns_max);
     try writer.writeAll("turns_max reached\n");
+}
+
+/// `Next() % count`, as a host would pick a choice with .NET's Random.
+fn pick(random: *DotnetRandom, count: u32) u32 {
+    assert(count > 0);
+    const index: u32 = @intCast(@mod(random.next(), @as(i32, @intCast(count))));
+    assert(index < count);
+    return index;
 }
 
 /// Escapes like the harness: `"`, `\`, `\n`, `\r`, `\t`, other control bytes as `\u00xx`,
