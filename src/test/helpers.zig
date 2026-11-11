@@ -150,3 +150,31 @@ test "runStory list_basic_operations" {
     defer alloc.free(out);
     try std.testing.expect(out.len > 0);
 }
+
+test "zero allocation in cont: old runtime (skipped, recorded)" {
+    // Goal: P0.5 records the zero-allocation gate against the old runtime. Method: count
+    // allocator growth across cont() calls on crime_scene. The old runtime returns an owned
+    // string from cont() and grows arenas, so this is expected to allocate; the test reports
+    // the count and skips. The real gate is P5.11, on the new runtime, and must not skip.
+    const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllocator;
+    var counting = CountingAllocator.init(std.testing.allocator);
+    const gpa = counting.allocator();
+    const json = try loadFixture(gpa, "crime_scene.ink.json");
+    defer gpa.free(json);
+    var story = try Story.initFromJson(gpa, json);
+    defer story.deinit();
+    const before = counting.growths();
+    var calls: u32 = 0;
+    while (story.canContinue() and calls < 8) : (calls += 1) {
+        const out = try story.cont();
+        gpa.free(out);
+    }
+    const growths = counting.growths() - before;
+    if (growths > 0) {
+        std.debug.print(
+            "skipped: old runtime allocates {d} times in {d} cont() calls (gate is P5.11)\n",
+            .{ growths, calls },
+        );
+        return error.SkipZigTest;
+    }
+}
