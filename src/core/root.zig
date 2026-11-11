@@ -16,6 +16,7 @@ pub const instruction = @import("instruction.zig");
 pub const container = @import("container.zig");
 pub const program = @import("program.zig");
 pub const program_builder = @import("program_builder.zig");
+pub const program_dump = @import("program_dump.zig");
 
 test {
     _ = fault;
@@ -34,5 +35,6 @@ test {
     _ = container;
     _ = program;
     _ = program_builder;
+    _ = program_dump;
     _ = @import("sizes_test.zig");
 }
