@@ -12,6 +12,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const fault = @import("fault.zig");
+const index = @import("index.zig");
 
 pub const did_not_die_exit_code = 3;
 
@@ -21,6 +22,20 @@ pub const must_panic = struct {
         const result: Fault = .broken;
         assert(result != .ok);
         fault.verify(result);
+    }
+
+    pub fn index_to_int_of_none_panics() void {
+        const missing: index.ContainerIndex = .none;
+        assert(missing.is_none());
+        assert(missing.to_optional() == null);
+        _ = missing.to_int();
+    }
+
+    pub fn index_from_int_of_none_pattern_panics() void {
+        const pattern: u32 = std.math.maxInt(u32);
+        assert(pattern == @intFromEnum(index.StringId.none));
+        assert(pattern > 0);
+        _ = index.StringId.from_int(pattern);
     }
 };
 
