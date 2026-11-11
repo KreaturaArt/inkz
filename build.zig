@@ -62,6 +62,16 @@ pub fn build(b: *std.Build) void {
 
     test_all.dependOn(add_death_tests(b, target));
 
+    // Fuzz targets (P0.9): each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
+    // Zig's fuzzer writes its log to <cache>/tmp and fails if that directory is missing.
+    std.Io.Dir.cwd().createDirPath(b.graph.io, ".zig-cache/tmp") catch {};
+    _ = add_test_suite(b, .{
+        .step = "fuzz",
+        .root = "src/fuzz_targets.zig",
+        .description = "Run fuzz targets on their corpus (add --fuzz to fuzz)",
+        .own_filters = &.{"fuzz: "},
+    }, test_options);
+
     const write_transcripts = b.addExecutable(.{
         .name = "write_transcripts",
         .root_module = b.createModule(.{
@@ -109,6 +119,20 @@ pub fn build(b: *std.Build) void {
         bench_step.dependOn(&run_bench.step);
     }
 
+    const simulate = b.addExecutable(.{
+        .name = "simulate",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/simulate.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    simulate.root_module.addOptions("build_options", build_options);
+    const run_simulate = b.addRunArtifact(simulate);
+    run_simulate.setCwd(b.path("."));
+    run_simulate.addPassthruArgs();
+    b.step("simulate", "Play every case with seeded random choices (P0.9)").dependOn(&run_simulate.step);
+
     const lint = b.addExecutable(.{
         .name = "lint",
         .root_module = b.createModule(.{
@@ -134,17 +158,6 @@ pub fn build(b: *std.Build) void {
     run_inventory.setCwd(b.path("."));
     const inventory_step = b.step("test-inventory", "Count old-runtime tests that use internals");
     inventory_step.dependOn(&run_inventory.step);
-
-    // Tool steps that fail with a pointer to their issue until the tool exists.
-    const pending = [_]PendingTool{
-        .{ .step = "fuzz", .description = "Run fuzz targets", .issue = "TASK-140.9" },
-        .{ .step = "simulate", .description = "Run the story simulator", .issue = "TASK-140.9" },
-    };
-    for (pending) |tool| {
-        const step = b.step(tool.step, tool.description);
-        const message = b.fmt("'{s}' is not implemented yet ({s})", .{ tool.step, tool.issue });
-        step.dependOn(&b.addFail(message).step);
-    }
 }
 
 const death_cases = @import("src/core/death_cases.zig");
@@ -201,12 +214,6 @@ const TestSuite = struct {
     /// Test-name prefixes that belong to this suite. The compiler imports the runtime, so
     /// without these the runtime's tests would also run in `test-compiler`.
     own_filters: []const []const u8 = &.{},
-};
-
-const PendingTool = struct {
-    step: []const u8,
-    description: []const u8,
-    issue: []const u8,
 };
 
 const TestOptions = struct {
