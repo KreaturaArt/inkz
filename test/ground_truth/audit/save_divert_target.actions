@@ -1,0 +1,6 @@
+# A divert target held in a variable survives a save.
+continue_maximally
+save
+load_fresh
+choose 0
+continue_maximally

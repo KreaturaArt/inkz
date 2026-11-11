@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^First line.","\n","^Second ","<>","\n","^line. ","#","^second","/#","\n","^Third line","\n","ev",true,"/ev",[{"->":".^.b","c":true},{"b":["\n","<>","^ still third.","\n",{"->":"0.16"},null]}],"nop","\n","end",["done",{"#n":"g-0"}],null],"done",null],"listDefs":{}}

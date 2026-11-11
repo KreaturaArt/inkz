@@ -1,0 +1,9 @@
+# Choices, their tags and the next random value survive a save.
+seed 5
+continue_maximally
+choices
+save
+load_fresh
+choices
+choose 1
+continue_maximally

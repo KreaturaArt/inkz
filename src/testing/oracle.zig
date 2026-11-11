@@ -58,6 +58,8 @@ pub const Entry = struct {
     reason: []const u8,
     /// The evidence for the expected behaviour, such as a Tests.cs test or a ground-truth case.
     source: []const u8 = "",
+    /// The issue whose work removes this divergence, such as `TASK-145.8` (plan P0.7).
+    fix: []const u8 = "",
 };
 
 pub const Mismatch = struct {
@@ -438,6 +440,10 @@ fn write_entry(writer: *std.Io.Writer, entry: Entry) !void {
     if (entry.source.len > 0) {
         try writer.writeAll(", .source = ");
         try std.zon.stringify.serialize(entry.source, .{}, writer);
+    }
+    if (entry.fix.len > 0) {
+        try writer.writeAll(", .fix = ");
+        try std.zon.stringify.serialize(entry.fix, .{}, writer);
     }
     try writer.writeAll(" },\n");
 }
