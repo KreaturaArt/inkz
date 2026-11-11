@@ -11,6 +11,7 @@ pub const work_stack = @import("work_stack.zig");
 pub const tag_set = @import("tag_set.zig");
 pub const dotnet_random = @import("dotnet_random.zig");
 pub const path = @import("path.zig");
+pub const counting_allocator = @import("counting_allocator.zig");
 
 test {
     _ = fault;
@@ -24,5 +25,6 @@ test {
     _ = tag_set;
     _ = dotnet_random;
     _ = path;
+    _ = counting_allocator;
     _ = @import("sizes_test.zig");
 }
