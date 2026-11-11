@@ -11,6 +11,7 @@ const assert = std.debug.assert;
 const index = @import("index.zig");
 const limits = @import("limits.zig");
 const bounded_stack = @import("bounded_stack.zig");
+const instruction = @import("instruction.zig");
 
 /// Bytes per element when `T` is stored as a `std.MultiArrayList` (one array per field).
 pub fn soa_bytes(comptime T: type) comptime_int {
@@ -55,4 +56,10 @@ test "planned element sizes leave room for their contents" {
     try std.testing.expectEqual(@sizeOf(index.StringId) + bytes.value, bytes.temp);
     try std.testing.expectEqual(2 * bytes.value, bytes.global);
     try std.testing.expectEqual(@sizeOf(index.ContainerIndex), bytes.ancestor);
+}
+
+test "an instruction is 5 bytes in SoA" {
+    // Goal: plan D1. Method: soa_bytes of Instruction, and the opcode alone is one byte.
+    try std.testing.expectEqual(5, soa_bytes(instruction.Instruction));
+    try std.testing.expectEqual(1, @sizeOf(instruction.Opcode));
 }
