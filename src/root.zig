@@ -28,27 +28,10 @@ pub const Story = story.Story;
 pub const RuntimeObject = value.RuntimeObject;
 pub const Value = value.RuntimeObject;
 
+pub const core = @import("core/root.zig");
+
 test {
-    _ = @import("ink_format.zig");
-    _ = value;
-    _ = path;
-    _ = pointer;
-    _ = json_loader;
-    _ = variables;
-    _ = choices;
-    _ = callstack;
-    _ = state;
-    _ = evaluation;
-    _ = story;
-    _ = lists;
-    _ = @import("test/helpers.zig");
-    // Compiler
-    _ = @import("compiler/parsed.zig");
-    _ = @import("compiler/tokenizer.zig");
-    _ = @import("compiler/parser.zig");
-    _ = @import("compiler/codegen.zig");
-    _ = @import("compiler/serializer.zig");
-    _ = @import("compiler/compiler.zig");
-    _ = @import("compiler/codegen_to_runtime.zig");
-    _ = @import("test/compiler_helpers.zig");
+    _ = @import("test_runtime.zig");
+    _ = @import("test_compiler.zig");
+    _ = core;
 }
