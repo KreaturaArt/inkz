@@ -16,6 +16,36 @@ const Opcode = instruction_module.Opcode;
 const ContainerInfo = container_module.ContainerInfo;
 const NamedEntry = container_module.NamedEntry;
 const ContainerTable = container_module.ContainerTable;
+const GlobalSlot = index.GlobalSlot;
+const ListItemIndex = index.ListItemIndex;
+const ListOriginIndex = index.ListOriginIndex;
+const ExternalIndex = index.ExternalIndex;
+
+pub const GlobalInfo = struct {
+    name: StringId,
+};
+
+pub const ListOrigin = struct {
+    name: StringId,
+    /// The origin's items are `list_items[items_first..][0..items_count]`, in declaration order.
+    items_first: ListItemIndex,
+    items_count: u32,
+};
+
+pub const ListItem = struct {
+    origin: ListOriginIndex,
+    name: StringId,
+    /// `origin.item`, as ink names items in saves and in `VAR?` lookups.
+    full_name: StringId,
+    value: i32,
+};
+
+pub const ExternalInfo = struct {
+    name: StringId,
+    /// The ink function with the same name, used when the host binds nothing and fallbacks
+    /// are allowed; `.none` if the story has none.
+    fallback: ContainerIndex,
+};
 
 pub const Program = struct {
     strings: string_pool.FrozenStringPool,
@@ -23,6 +53,12 @@ pub const Program = struct {
     extra: []const u32,
     containers: std.MultiArrayList(ContainerInfo).Slice,
     named: []const NamedEntry,
+    globals: []const GlobalInfo,
+    list_origins: []const ListOrigin,
+    list_items: []const ListItem,
+    externals: []const ExternalInfo,
+    /// ink's `global decl` container, which declares the globals; `.none` if there is none.
+    global_declaration: ContainerIndex,
     /// How many containers count visits or turns: the length of the count arrays.
     count_slots_count: u32,
     ink_version: u32,
@@ -40,6 +76,11 @@ pub const Program = struct {
         extra_out_of_range,
         target_out_of_range,
         count_slot_out_of_range,
+        global_out_of_range,
+        external_out_of_range,
+        list_items_not_partitioned,
+        list_item_origin_mismatch,
+        fallback_out_of_range,
     };
 
     pub fn deinit(program: *Program, gpa: std.mem.Allocator) void {
@@ -50,6 +91,10 @@ pub const Program = struct {
         gpa.free(program.extra);
         program.containers.deinit(gpa);
         gpa.free(program.named);
+        gpa.free(program.globals);
+        gpa.free(program.list_origins);
+        gpa.free(program.list_items);
+        gpa.free(program.externals);
         program.* = undefined;
     }
 
@@ -140,8 +185,10 @@ pub const Program = struct {
         const structure = program.check_children();
         if (structure != .ok) return structure;
         const operands = program.check_operands();
-        assert(operands != .containers);
-        return operands;
+        if (operands != .ok) return operands;
+        const tables = program.check_tables();
+        assert(tables != .containers);
+        return tables;
     }
 
     pub fn verify(program: *const Program) void {
@@ -212,8 +259,10 @@ pub const Program = struct {
                 .container => if (operand >= containers_count) .container_out_of_range else .ok,
                 .divert => program.check_divert(operand),
                 .choice_point => program.check_choice_point(operand),
-                .external_call, .variable_pointer, .list => program.check_extra(operand, 2),
-                .none, .integer, .float, .boolean, .global => .ok,
+                .external_call => program.check_external_call(operand),
+                .variable_pointer, .list => program.check_extra(operand, 2),
+                .global => if (operand >= program.globals.len) .global_out_of_range else .ok,
+                .none, .integer, .float, .boolean => .ok,
             };
             if (result != .ok) return result;
         }
@@ -224,6 +273,72 @@ pub const Program = struct {
         }
         assert(strings_count > 0);
         return .ok;
+    }
+
+    fn check_external_call(program: *const Program, at: u32) Fault {
+        assert(program.externals.len < std.math.maxInt(u32));
+        const words = @typeInfo(instruction_module.ExternalCall).@"struct".field_names.len;
+        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
+        const call = extra_module.get(instruction_module.ExternalCall, program.extra, at).data;
+        if (call.external.is_none() or call.external.to_int() >= program.externals.len) {
+            return .external_out_of_range;
+        }
+        assert(words == 3);
+        return .ok;
+    }
+
+    /// Lists: each origin's items are one range, in origin order, and point back at it.
+    /// Externals: fallbacks exist.
+    fn check_tables(program: *const Program) Fault {
+        assert(program.list_items.len < std.math.maxInt(u32));
+        var next: u32 = 0;
+        for (program.list_origins, 0..) |origin, origin_index| {
+            if (origin.items_first.to_int() != next) return .list_items_not_partitioned;
+            next += origin.items_count;
+            if (next > program.list_items.len) return .list_items_not_partitioned;
+            const items = program.list_items[origin.items_first.to_int()..][0..origin.items_count];
+            for (items) |item| {
+                if (item.origin.to_int() != origin_index) return .list_item_origin_mismatch;
+            }
+        }
+        if (next != program.list_items.len) return .list_items_not_partitioned;
+        for (program.externals) |external| {
+            if (external.fallback.is_none()) continue;
+            if (external.fallback.to_int() >= program.containers.len) return .fallback_out_of_range;
+        }
+        assert(next == program.list_items.len);
+        return .ok;
+    }
+
+    pub fn global_by_name(program: *const Program, name: []const u8) ?GlobalSlot {
+        assert(name.len > 0);
+        const id = program.strings.find(name) orelse return null;
+        for (program.globals, 0..) |global, slot| {
+            if (global.name == id) return .from_int(@intCast(slot));
+        }
+        assert(program.globals.len < std.math.maxInt(u32));
+        return null;
+    }
+
+    /// A list item by `origin.item` or, as ink's `VAR?` allows, by its bare name.
+    pub fn list_item_by_name(program: *const Program, name: []const u8) ?ListItemIndex {
+        assert(name.len > 0);
+        const id = program.strings.find(name) orelse return null;
+        for (program.list_items, 0..) |item, position| {
+            if (item.full_name == id or item.name == id) return .from_int(@intCast(position));
+        }
+        assert(program.list_items.len < std.math.maxInt(u32));
+        return null;
+    }
+
+    pub fn external_by_name(program: *const Program, name: []const u8) ?ExternalIndex {
+        assert(name.len > 0);
+        const id = program.strings.find(name) orelse return null;
+        for (program.externals, 0..) |external, position| {
+            if (external.name == id) return .from_int(@intCast(position));
+        }
+        assert(program.externals.len < std.math.maxInt(u32));
+        return null;
     }
 
     fn check_extra(program: *const Program, at: u32, words: u32) Fault {

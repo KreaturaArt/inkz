@@ -19,6 +19,10 @@ const instruction_module = @import("instruction.zig");
 const container_module = @import("container.zig");
 const Program = @import("program.zig").Program;
 const ContainerIndex = index.ContainerIndex;
+const GlobalSlot = index.GlobalSlot;
+const ListOriginIndex = index.ListOriginIndex;
+const ExternalIndex = index.ExternalIndex;
+const program_module = @import("program.zig");
 const StringId = index.StringId;
 const Instruction = instruction_module.Instruction;
 const Opcode = instruction_module.Opcode;
@@ -29,6 +33,7 @@ const NamedEntry = container_module.NamedEntry;
 pub const path_components_max = 64;
 
 fn OperandOf(comptime opcode: Opcode) type {
+    comptime assert(@sizeOf(Opcode) == 1);
     comptime assert(@typeInfo(Opcode).@"enum".field_names.len > 0);
     return instruction_module.Operand(instruction_module.operand_kind(opcode));
 }
@@ -89,6 +94,10 @@ pub const ProgramBuilder = struct {
     named_scratch: std.ArrayList(NamedEntry) = .empty,
     frames: std.ArrayList(Frame) = .empty,
     fixups: std.ArrayList(Fixup) = .empty,
+    globals: std.ArrayList(program_module.GlobalInfo) = .empty,
+    list_origins: std.ArrayList(program_module.ListOrigin) = .empty,
+    list_items: std.ArrayList(program_module.ListItem) = .empty,
+    externals: std.ArrayList(program_module.ExternalInfo) = .empty,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
     /// The path texts of `diagnostics`, which outlive the strings of a failed `finish`.
     diagnostic_bytes: std.ArrayList(u8) = .empty,
@@ -119,6 +128,10 @@ pub const ProgramBuilder = struct {
         builder.fixups.deinit(gpa);
         builder.diagnostics.deinit(gpa);
         builder.diagnostic_bytes.deinit(gpa);
+        builder.globals.deinit(gpa);
+        builder.list_origins.deinit(gpa);
+        builder.list_items.deinit(gpa);
+        builder.externals.deinit(gpa);
         builder.* = undefined;
     }
 
@@ -248,6 +261,62 @@ pub const ProgramBuilder = struct {
         return id;
     }
 
+    /// The slot of global `name`, declared once however often it is asked for.
+    pub fn global(builder: *ProgramBuilder, name: []const u8) !GlobalSlot {
+        assert(name.len > 0);
+        const id = try builder.intern(name);
+        for (builder.globals.items, 0..) |existing, slot| {
+            if (existing.name == id) return .from_int(@intCast(slot));
+        }
+        try builder.globals.append(builder.gpa, .{ .name = id });
+        assert(builder.globals.items.len > 0);
+        return .from_int(@intCast(builder.globals.items.len - 1));
+    }
+
+    pub const ListItemDeclaration = struct { name: []const u8, value: i32 };
+
+    /// Declares list `name` with its items, in declaration order.
+    pub fn list_origin(
+        builder: *ProgramBuilder,
+        name: []const u8,
+        items: []const ListItemDeclaration,
+    ) !ListOriginIndex {
+        assert(name.len > 0);
+        const gpa = builder.gpa;
+        const origin: ListOriginIndex = .from_int(@intCast(builder.list_origins.items.len));
+        const first: index.ListItemIndex = .from_int(@intCast(builder.list_items.items.len));
+        for (items) |item| {
+            var buffer: [1024]u8 = undefined;
+            const full_name = try std.fmt.bufPrint(&buffer, "{s}.{s}", .{ name, item.name });
+            try builder.list_items.append(gpa, .{
+                .origin = origin,
+                .name = try builder.intern(item.name),
+                .full_name = try builder.intern(full_name),
+                .value = item.value,
+            });
+        }
+        try builder.list_origins.append(gpa, .{
+            .name = try builder.intern(name),
+            .items_first = first,
+            .items_count = @intCast(items.len),
+        });
+        assert(builder.list_items.items.len == first.to_int() + items.len);
+        return origin;
+    }
+
+    /// The index of external function `name`, declared once; its fallback is resolved in
+    /// `finish`.
+    pub fn external(builder: *ProgramBuilder, name: []const u8) !ExternalIndex {
+        assert(name.len > 0);
+        const id = try builder.intern(name);
+        for (builder.externals.items, 0..) |existing, position| {
+            if (existing.name == id) return .from_int(@intCast(position));
+        }
+        try builder.externals.append(builder.gpa, .{ .name = id, .fallback = .none });
+        assert(builder.externals.items.len > 0);
+        return .from_int(@intCast(builder.externals.items.len - 1));
+    }
+
     /// A divert to `path`, resolved in `finish`.
     pub fn add_divert(
         builder: *ProgramBuilder,
@@ -336,6 +405,7 @@ pub const ProgramBuilder = struct {
         errdefer program.deinit(builder.gpa);
         try builder.resolve_fixups(&program);
         if (builder.diagnostics.items.len > 0) return error.UnresolvedPaths;
+        resolve_root_names(&program);
         program.verify();
         return program;
     }
@@ -385,6 +455,14 @@ pub const ProgramBuilder = struct {
         errdefer gpa.free(extra);
         const named_owned = try named.toOwnedSlice(gpa);
         errdefer gpa.free(named_owned);
+        const globals = try builder.globals.toOwnedSlice(gpa);
+        errdefer gpa.free(globals);
+        const list_origins = try builder.list_origins.toOwnedSlice(gpa);
+        errdefer gpa.free(list_origins);
+        const list_items = try builder.list_items.toOwnedSlice(gpa);
+        errdefer gpa.free(list_items);
+        const externals = try builder.externals.toOwnedSlice(gpa);
+        errdefer gpa.free(externals);
         var containers = builder.containers;
         builder.containers = .empty;
         const program: Program = .{
@@ -393,6 +471,11 @@ pub const ProgramBuilder = struct {
             .extra = extra,
             .containers = containers.toOwnedSlice(),
             .named = named_owned,
+            .globals = globals,
+            .list_origins = list_origins,
+            .list_items = list_items,
+            .externals = externals,
+            .global_declaration = .none,
             .count_slots_count = count_slots,
             .ink_version = builder.ink_version,
         };
@@ -406,6 +489,18 @@ pub const ProgramBuilder = struct {
         assert(end <= builder.diagnostic_bytes.items.len);
         assert(diagnostic.path_count > 0);
         return builder.diagnostic_bytes.items[diagnostic.path_first..end];
+    }
+
+    /// ink finds the global declaration and external fallbacks by name at the root.
+    fn resolve_root_names(program: *Program) void {
+        assert(program.containers.len > 0);
+        program.global_declaration = program.named_child(Program.root, "global decl") orelse .none;
+        const externals: []program_module.ExternalInfo = @constCast(program.externals);
+        for (externals) |*info| {
+            const name = program.strings.get(info.name);
+            info.fallback = program.named_child(Program.root, name) orelse .none;
+        }
+        assert(program.global_declaration.is_none() or program.global_declaration.to_int() > 0);
     }
 
     fn resolve_fixups(builder: *ProgramBuilder, program: *Program) !void {
@@ -588,4 +683,70 @@ test "check catches a corrupted program" {
     try std.testing.expectEqual(Program.Fault.string_out_of_range, program.check());
     operands[0] = 1;
     try std.testing.expectEqual(Program.Fault.ok, program.check());
+}
+
+test "globals, lists, externals and the global declaration" {
+    // Goal: P2.5. Method: a story shaped like ink's JSON for
+    //   VAR mood = 1  LIST colours = red, (green), blue = 5  EXTERNAL roll()  and a fallback
+    //   function `roll`, then look everything up.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    const mood = try builder.global("mood");
+    try builder.add(.global_get, mood);
+    const roll = try builder.external("roll");
+    const call = try builder.extra.add(gpa, instruction_module.ExternalCall{
+        .external = roll,
+        .arguments_count = 0,
+        .conditional = false,
+    });
+    try builder.add(.call_external, @enumFromInt(call));
+    _ = try builder.list_origin("colours", &.{
+        .{ .name = "red", .value = 1 },
+        .{ .name = "green", .value = 2 },
+        .{ .name = "blue", .value = 5 },
+    });
+    _ = try builder.begin_container(.{ .name = "global decl", .named_only = true });
+    try builder.add(.integer, 1);
+    try builder.add(.global_declare, mood);
+    try builder.end_container();
+    _ = try builder.begin_container(.{ .name = "roll", .named_only = true });
+    try builder.add(.integer, 4);
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(mood, program.global_by_name("mood").?);
+    try std.testing.expectEqual(@as(?GlobalSlot, null), program.global_by_name("missing"));
+    const blue = program.list_item_by_name("colours.blue").?;
+    try std.testing.expectEqual(@as(i32, 5), program.list_items[blue.to_int()].value);
+    try std.testing.expectEqual(blue, program.list_item_by_name("blue").?);
+    const declaration = program.named_child(Program.root, "global decl").?;
+    try std.testing.expectEqual(declaration, program.global_declaration);
+    const fallback = program.externals[program.external_by_name("roll").?.to_int()].fallback;
+    try std.testing.expectEqual(program.named_child(Program.root, "roll").?, fallback);
+}
+
+test "check catches bad global and list tables" {
+    // Goal: negative space for P2.5. Method: a global operand past the table, then list items
+    // whose origin doesn't own them.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.global_get, try builder.global("x"));
+    _ = try builder.list_origin("letters", &.{
+        .{ .name = "a", .value = 1 },
+        .{ .name = "b", .value = 2 },
+    });
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    program.instructions.items(.operand)[0] = 1;
+    try std.testing.expectEqual(Program.Fault.global_out_of_range, program.check());
+    program.instructions.items(.operand)[0] = 0;
+    const items: []program_module.ListItem = @constCast(program.list_items);
+    items[1].origin = .from_int(1);
+    try std.testing.expectEqual(Program.Fault.list_item_origin_mismatch, program.check());
 }
