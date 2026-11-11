@@ -1,0 +1,9 @@
+# Tests.cs TestOnceOnlyChoicesCanLinkBackToSelf: no errors after the second choice.
+continue_maximally
+choices
+choose 0
+continue_maximally
+choices
+choose 0
+continue_maximally
+choices

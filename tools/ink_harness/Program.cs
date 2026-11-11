@@ -1,8 +1,9 @@
 // Ground-truth generator for inkz (plan D19). Commands:
 //
-//   compile <story.ink> <story.ink.json>     compile like inklecate
+//   compile <story.ink> <story.ink.json> [--count-all-visits]   compile like inklecate
 //   random <count> <seed>...                 System.Random(seed).Next() sequences
-//   run <story.ink.json> <case.actions>      replay host actions, print the transcript
+//   run <story.ink.json> <case.actions> <name>  replay host actions, print the transcript;
+//                                            a missing .actions file means `play`
 //
 // Every text output starts with a provenance header. Strings are JSON-escaped so the files
 // compare byte for byte. Nothing here depends on the clock: the story seed is always set.
@@ -29,11 +30,13 @@ static class Program
         switch (arguments[0])
         {
             case "compile" when arguments.Length == 3:
-                return Compile(arguments[1], arguments[2]);
+                return Compile(arguments[1], arguments[2], false);
+            case "compile" when arguments.Length == 4 && arguments[3] == "--count-all-visits":
+                return Compile(arguments[1], arguments[2], true);
             case "random" when arguments.Length >= 3:
                 return RandomSequences(arguments);
-            case "run" when arguments.Length == 3:
-                return Run(arguments[1], arguments[2]);
+            case "run" when arguments.Length == 4:
+                return Run(arguments[1], arguments[2], arguments[3]);
             default:
                 return Usage();
         }
@@ -52,7 +55,7 @@ static class Program
             $".NET {dotnet}; regenerate with: {command}\n";
     }
 
-    static int Compile(string sourcePath, string outputPath)
+    static int Compile(string sourcePath, string outputPath, bool countAllVisits)
     {
         var fullSource = Path.GetFullPath(sourcePath);
         var fullOutput = Path.GetFullPath(outputPath);
@@ -65,6 +68,7 @@ static class Program
             var compiler = new Compiler(File.ReadAllText(fullSource), new Compiler.Options
             {
                 sourceFilename = Path.GetFileName(fullSource),
+                countAllVisits = countAllVisits,
                 errorHandler = (message, type) =>
                 {
                     if (type == ErrorType.Error) errors.Add(message);
@@ -102,20 +106,26 @@ static class Program
         return 0;
     }
 
-    static int Run(string storyPath, string actionsPath)
+    static int Run(string storyPath, string actionsPath, string name)
     {
         var json = File.ReadAllText(storyPath);
-        var story = new Story(json);
-        var transcript = new Transcript(story);
-        var name = Path.GetFileNameWithoutExtension(actionsPath);
+        var transcript = new Transcript(json);
+        var actions = File.Exists(actionsPath) ? File.ReadAllLines(actionsPath) : new[] { "play" };
         var output = new StringBuilder();
         output.Append(Provenance($"mise run reference:expected -- {name}"));
-        foreach (var raw in File.ReadAllLines(actionsPath))
+        try
         {
-            var line = raw.Trim();
-            if (line.Length == 0 || line.StartsWith("#")) continue;
-            output.Append("> ").Append(line).Append('\n');
-            transcript.Apply(line, output);
+            foreach (var raw in actions)
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+                output.Append("> ").Append(line).Append('\n');
+                transcript.Apply(line, output);
+            }
+        }
+        catch (StopTranscript)
+        {
+            // The exception is already in the transcript.
         }
         Console.Out.Write(output.ToString());
         return 0;

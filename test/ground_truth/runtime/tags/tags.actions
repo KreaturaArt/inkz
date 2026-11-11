@@ -1,0 +1,8 @@
+# Tests.cs TestTags: global tags, tags at paths, and tags per line.
+global_tags
+continue
+tags_at knot
+tags_at knot.stitch
+choose_path knot
+continue
+continue
