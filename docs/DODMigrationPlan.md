@@ -2,6 +2,8 @@
 
 Status: accepted, revision 4 (2026-11-11). All decisions D1–D22 confirmed. Sources: audits of `src/runtime` and `src/compiler`, plus the reference projects `reference/fino` and `reference/zirp`. Engineering rules come from `TIGER_STYLE.md` (repo root).
 
+Every phase and phase item is tracked as a git-native issue (`git issue tree`). Phase N is the parent issue `TASK-14N`, and item PN.M is `TASK-14N.M` (P6b is `TASK-146.4`). See `AGENTS.md`.
+
 Revision 2 changes: TigerStyle is now a first-class constraint. That brought a new section §3 ("Engineering rules"), renamed identifiers (snake_case files, no abbreviations), no recursion anywhere, explicit limits, assertion density and paired verification, function and line limits, Zig-only tooling, fuzzing and simulation, and new decisions D8–D11.
 
 Revision 3 changes: gap review. Decided D12–D16:
