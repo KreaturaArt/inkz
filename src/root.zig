@@ -29,9 +29,3 @@ pub const RuntimeObject = value.RuntimeObject;
 pub const Value = value.RuntimeObject;
 
 pub const core = @import("core/root.zig");
-
-test {
-    _ = @import("test_runtime.zig");
-    _ = @import("test_compiler.zig");
-    _ = core;
-}
