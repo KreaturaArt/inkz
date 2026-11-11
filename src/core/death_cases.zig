@@ -13,6 +13,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const fault = @import("fault.zig");
 const index = @import("index.zig");
+const string_pool = @import("string_pool.zig");
 
 pub const did_not_die_exit_code = 3;
 
@@ -36,6 +37,14 @@ pub const must_panic = struct {
         assert(pattern == @intFromEnum(index.StringId.none));
         assert(pattern > 0);
         _ = index.StringId.from_int(pattern);
+    }
+
+    pub fn string_pool_get_of_unissued_id_panics() void {
+        var pool = string_pool.StringPool.init(std.heap.page_allocator) catch unreachable;
+        assert(pool.count() == 1);
+        const unissued = index.StringId.from_int(1);
+        assert(pool.find("anything") == null);
+        _ = pool.get(unissued);
     }
 };
 
