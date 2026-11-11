@@ -13,11 +13,16 @@ pub const OldEngine = struct {
     pub const tags_per_line = false;
 
     gpa: std.mem.Allocator,
+    /// The story JSON, kept for `load_fresh`.
+    json: []const u8,
     story: Story,
     /// The current turn's text, owned, and how much of it has been returned as lines.
     turn_text: []u8,
     turn_offset: u32,
     choice_buffer: [1]transcript.Choice = undefined,
+    /// The last save, owned, for `load` and `load_fresh`.
+    saved: []u8 = &.{},
+    tags: [][]const u8 = &.{},
 
     pub fn init(gpa: std.mem.Allocator, json: []const u8) !OldEngine {
         var story = try Story.initFromJson(gpa, json);
@@ -26,6 +31,7 @@ pub const OldEngine = struct {
         story.state.story_seed = 0;
         const engine: OldEngine = .{
             .gpa = gpa,
+            .json = json,
             .story = story,
             .turn_text = &.{},
             .turn_offset = 0,
@@ -39,6 +45,8 @@ pub const OldEngine = struct {
         assert(engine.turn_offset <= engine.turn_text.len);
         assert(engine.choices_count() <= engine.story.currentChoices().len);
         engine.gpa.free(engine.turn_text);
+        engine.gpa.free(engine.saved);
+        engine.gpa.free(engine.tags);
         engine.story.deinit();
         engine.* = undefined;
     }
@@ -98,6 +106,91 @@ pub const OldEngine = struct {
         engine.story.state.story_seed = @abs(value);
         assert(engine.story.state.story_seed == @abs(value));
         assert(engine.turn_offset <= engine.turn_text.len);
+    }
+
+
+    pub fn choose_path(engine: *OldEngine, path: []const u8) !void {
+        assert(path.len > 0);
+        engine.discard_turn();
+        try engine.story.choosePathString(path);
+        assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    pub fn switch_flow(engine: *OldEngine, name: []const u8) !void {
+        assert(name.len > 0);
+        engine.discard_turn();
+        try engine.story.switchFlow(name);
+        assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    pub fn remove_flow(engine: *OldEngine, name: []const u8) !void {
+        assert(name.len > 0);
+        engine.discard_turn();
+        try engine.story.removeFlow(name);
+        assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    pub fn default_flow(engine: *OldEngine, argument: []const u8) !void {
+        assert(argument.len == 0);
+        engine.discard_turn();
+        try engine.story.switchToDefaultFlow();
+        assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    pub fn visit_count(engine: *OldEngine, path: []const u8) !u32 {
+        assert(path.len > 0);
+        const count = engine.story.visitCountAtPathString(path);
+        assert(count < std.math.maxInt(u32));
+        return count;
+    }
+
+    pub fn global_tags(engine: *OldEngine) ![]const []const u8 {
+        assert(engine.turn_offset <= engine.turn_text.len);
+        engine.gpa.free(engine.tags);
+        engine.tags = &.{};
+        engine.tags = try engine.story.globalTags();
+        assert(engine.tags.len < 1024);
+        return engine.tags;
+    }
+
+    pub fn save(engine: *OldEngine) ![]const u8 {
+        assert(engine.turn_offset <= engine.turn_text.len);
+        engine.gpa.free(engine.saved);
+        engine.saved = &.{};
+        engine.saved = try engine.story.toJson(engine.gpa);
+        assert(engine.saved.len > 0);
+        return engine.saved;
+    }
+
+    pub fn load(engine: *OldEngine) !void {
+        assert(engine.turn_offset <= engine.turn_text.len);
+        if (engine.saved.len == 0) return error.NothingSaved;
+        engine.discard_turn();
+        try engine.story.loadStateFromJson(engine.saved);
+        assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    /// Loads the last save into a new story built from the same JSON.
+    pub fn load_fresh(engine: *OldEngine) !void {
+        assert(engine.json.len > 0);
+        if (engine.saved.len == 0) return error.NothingSaved;
+        var fresh = try Story.initFromJson(engine.gpa, engine.json);
+        errdefer fresh.deinit();
+        fresh.state.story_seed = 0;
+        try fresh.loadStateFromJson(engine.saved);
+        engine.story.deinit();
+        engine.story = fresh;
+        engine.discard_turn();
+        assert(engine.turn_offset == engine.turn_text.len);
+    }
+
+    /// Drops the rest of the current turn: the old runtime has already run it.
+    fn discard_turn(engine: *OldEngine) void {
+        assert(engine.turn_offset <= engine.turn_text.len);
+        engine.gpa.free(engine.turn_text);
+        engine.turn_text = &.{};
+        engine.turn_offset = 0;
+        assert(engine.turn_text.len == 0);
     }
 };
 

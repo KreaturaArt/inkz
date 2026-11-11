@@ -1,0 +1,15 @@
+# Tests.cs TestVisitCountsWhenChoosing (compiled with countAllVisits).
+visit_count TestKnot
+visit_count TestKnot2
+choose_path TestKnot
+visit_count TestKnot
+visit_count TestKnot2
+continue
+visit_count TestKnot
+visit_count TestKnot2
+choose 0
+visit_count TestKnot
+visit_count TestKnot2
+continue
+visit_count TestKnot
+visit_count TestKnot2

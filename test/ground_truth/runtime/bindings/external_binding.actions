@@ -1,0 +1,6 @@
+# Tests.cs TestExternalBinding.
+bind message record
+bind multiply multiply
+bind times repeat
+continue
+continue

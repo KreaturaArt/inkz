@@ -1,0 +1,6 @@
+# Tests.cs TestListSaveLoad: save, load into a fresh story, then continue elsewhere.
+continue_maximally
+save
+load_fresh
+choose_path elsewhere
+continue_maximally

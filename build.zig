@@ -8,6 +8,23 @@ pub fn build(b: *std.Build) void {
         "test-filter",
         "Only run tests whose names contain this text (repeatable)",
     ) orelse &.{};
+    const ledger_update = b.option(
+        bool,
+        "ledger-update",
+        "Rewrite test/divergence_ledger.zon from the ground-truth comparison",
+    ) orelse false;
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "ledger_update", ledger_update);
+    // The ground-truth gate replays each case in its own process (src/replay_case.zig).
+    const replay_case = b.addExecutable(.{
+        .name = "replay_case",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/replay_case.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    build_options.addOptionPath("replay_case_path", replay_case.getEmittedBin());
 
     const lib = b.addLibrary(.{
         .name = "inkz",
@@ -33,7 +50,12 @@ pub fn build(b: *std.Build) void {
         .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
         .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
     };
-    const test_options: TestOptions = .{ .target = target, .optimize = optimize, .filters = test_filters };
+    const test_options: TestOptions = .{
+        .target = target,
+        .optimize = optimize,
+        .filters = test_filters,
+        .build_options = build_options,
+    };
     for (suites) |suite| {
         test_all.dependOn(add_test_suite(b, suite, test_options));
     }
@@ -145,6 +167,7 @@ const TestOptions = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     filters: []const []const u8,
+    build_options: *std.Build.Step.Options,
 };
 
 fn add_test_suite(b: *std.Build, suite: TestSuite, options: TestOptions) *std.Build.Step {
@@ -158,7 +181,11 @@ fn add_test_suite(b: *std.Build, suite: TestSuite, options: TestOptions) *std.Bu
         }),
         .filters = filters,
     });
+    tests.root_module.addOptions("build_options", options.build_options);
     const run = b.addRunArtifact(tests);
+    // Tests read files under test/ (fixtures, ground truth, the ledger) that the build cache
+    // doesn't track, so they run every time.
+    run.has_side_effects = true;
     b.step(suite.step, suite.description).dependOn(&run.step);
     return &run.step;
 }

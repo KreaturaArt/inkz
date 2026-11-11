@@ -1,0 +1,5 @@
+# Tests.cs TestEvaluatingFunctionVariableStateBug.
+continue
+continue
+evaluate function_to_evaluate
+continue

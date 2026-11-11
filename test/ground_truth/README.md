@@ -14,15 +14,21 @@ mise run reference:random              # dotnet_random.expected
 
 ## A case
 
-- `<name>.ink`: the source (optional; a case may start from compiled JSON only).
-- `<name>.ink.json`: compiled by ink's own compiler at the pinned commit (regenerated from
-  `.ink` when it exists).
-- `<name>.actions`: the host actions to replay.
-- `<name>.expected`: what the host observes, written by the harness.
+A case id is a path below this directory without extension: `smoke`, or
+`runtime/choices/sticky_choices` for a story from `test/fixture/original/`.
+
+- `<id>.ink`: the source. Without it, the case uses `test/fixture/original/<id>.ink` (the
+  inkjs-ported sources of ink's `Tests.cs`), skipping files under `includes/`.
+- `<id>.ink.json`: compiled by ink's own compiler at the pinned commit.
+- `<id>.actions`: the host actions to replay. Without it, the case is `play`.
+- `<id>.count_all_visits`: an empty marker that compiles with ink's `countAllVisits`, as some
+  `Tests.cs` tests do.
+- `<id>.expected`: what the host observes, written by the harness.
 
 ### Actions
 
-One action per line. Blank lines and lines starting with `#` are ignored.
+One action per line. Blank lines and lines starting with `#` are ignored. Typed values are
+`int 5`, `float 2.5`, `bool true` or `string "text"` (JSON-escaped).
 
 | Action | Meaning |
 |---|---|
@@ -32,9 +38,20 @@ One action per line. Blank lines and lines starting with `#` are ignored.
 | `choices` | Record the current choices. |
 | `choose <i>` | `ChooseChoiceIndex(i)`. |
 | `play` | Repeat: continue maximally, record the choices, choose 0. Stops at the end or after 200 turns. |
-
-P0.10 adds the API actions (paths, functions, variables, observers, externals, save/load,
-flows).
+| `choose_path <path>` | `ChoosePathString(path)`. |
+| `evaluate <function> [<value>...]` | `EvaluateFunction`; records its text and result. |
+| `get <variable>` / `set <variable> <value>` | `variablesState[...]`. |
+| `observe <variable>` | Records `observed:` lines whenever the observer fires. |
+| `bind <function> <behaviour> [lookahead_unsafe]` | Binds an external: `record`, `return <value>`, `multiply`, `repeat`, or `increment_and_evaluate <ink function>`. Each call is recorded as an `external:` line. |
+| `unbind <function>` | `UnbindExternalFunction`. |
+| `fallbacks on` / `fallbacks off` | `allowExternalFunctionFallbacks`. |
+| `save` | Records `state.ToJson()` as a `save:` line and keeps it. |
+| `load` / `load_fresh` | Loads the kept save into this story, or into a new story from the same JSON. |
+| `reset` | `ResetState()`. |
+| `switch_flow <name>` / `remove_flow <name>` / `default_flow` | The flow API. |
+| `current_text` | Records `currentText`. |
+| `visit_count <path>` | `state.VisitCountAtPathString`. |
+| `tags_at <path>` / `global_tags` | `TagsForContentAtPath`, `globalTags`. |
 
 ### Expected output
 
@@ -44,12 +61,29 @@ what it produced. All strings are JSON-escaped.
 | Line | Meaning |
 |---|---|
 | `text: "<line>"` | One `Continue()` result, including its trailing newline. |
-| `tags: ["a", "b"]` | The tags of that line, when there are any. |
+| `tags: ["a", "b"]` | The tags of that line, when there are any, or the result of a tags action. |
 | `can_continue: false` | `continue` was called with nothing to continue. |
 | `choices: <n>` | The number of choices, followed by `  <i>: "<text>"` lines, each with optional `tags [...]`. |
 | `choose: 0` | `play` chose the first choice. |
 | `end` / `turns_max reached` | How `play` stopped. |
+| `value: <value>` / `result: <value>` | A variable, or a function's return value (`null` for none). |
+| `observed: <variable> = <value>` / `external: <function>(<values>)` | Callbacks during the action. |
+| `save: <json>` | A save, compared as JSON with key order ignored (D15). |
+| `visit_count: <n>` / `current_text: "<text>"` | Query results. |
 | `error: "<message>"` / `warning: "<message>"` | Reported through `onError` during the action. |
+| `exception: "<message>"` | ink threw; the transcript ends here. |
+
+The Zig layer (`src/testing/transcript.zig`) writes the same format, plus two lines of its own
+that end a transcript: `unsupported: <action>` when an engine lacks a capability, and
+`crash: <how>` when the engine process died.
+
+## The gate
+
+`zig build test` replays every case on each engine in its own process and compares the result
+with the `.expected` file. Every difference must be listed in `test/divergence_ledger.zon`,
+and every listed case must still differ. `zig build test -Dledger-update` rewrites the ledger:
+it adds new differences with an automatic reason, drops fixed ones and keeps the rest as they
+are, so reasons edited by hand survive.
 
 ## `dotnet_random.expected`
 

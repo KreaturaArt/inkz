@@ -1,0 +1,11 @@
+# Tests.cs TestMultiFlowBasics.
+switch_flow First
+choose_path knot1
+continue
+switch_flow Second
+choose_path knot2
+continue
+switch_flow First
+continue
+switch_flow Second
+continue

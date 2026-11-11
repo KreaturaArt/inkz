@@ -6,7 +6,12 @@
 //! An engine is any type with:
 //!   `tags_per_line: bool` (a declaration), `can_continue() bool`, `continue_line() !Line`,
 //!   `choices_count() u32`, `choice(u32) Choice`, `choose(u32) !void` and `seed(i32) void`.
-//! Slices returned by an engine are valid until its next mutating call.
+//! The other actions need an optional method of the same name as the action (`choose_path`,
+//! `visit_count`, `switch_flow`, ...; see `apply_optional`). When an engine lacks one, the
+//! transcript records `unsupported: <action>` and stops, so gaps show up in comparisons.
+//! An engine error is recorded as `exception: "<name>"` and stops the transcript too, like an
+//! ink exception in the harness. Slices returned by an engine are valid until its next
+//! mutating call.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -14,13 +19,38 @@ const assert = std.debug.assert;
 /// `play` stops after this many turns, like the harness, so looping stories end.
 pub const turns_max = 200;
 
-pub const Action = union(enum) {
-    seed: i32,
+pub const Kind = enum {
+    seed,
     @"continue",
     continue_maximally,
     choices,
-    choose: u32,
+    choose,
     play,
+    choose_path,
+    evaluate,
+    get,
+    set,
+    observe,
+    bind,
+    unbind,
+    fallbacks,
+    save,
+    load,
+    load_fresh,
+    current_text,
+    reset,
+    switch_flow,
+    remove_flow,
+    default_flow,
+    visit_count,
+    tags_at,
+    global_tags,
+};
+
+/// One action: its kind and the rest of the line, trimmed.
+pub const Action = struct {
+    kind: Kind,
+    argument: []const u8,
 };
 
 pub const Line = struct {
@@ -41,22 +71,17 @@ pub fn parse_action(line_raw: []const u8) !?Action {
     const name = if (space) |at| line[0..at] else line;
     const argument = if (space) |at| std.mem.trim(u8, line[at + 1 ..], " ") else "";
     assert(name.len > 0);
-    const action: Action = if (std.mem.eql(u8, name, "seed"))
-        .{ .seed = try std.fmt.parseInt(i32, argument, 10) }
-    else if (std.mem.eql(u8, name, "continue"))
-        .@"continue"
-    else if (std.mem.eql(u8, name, "continue_maximally"))
-        .continue_maximally
-    else if (std.mem.eql(u8, name, "choices"))
-        .choices
-    else if (std.mem.eql(u8, name, "choose"))
-        .{ .choose = try std.fmt.parseInt(u32, argument, 10) }
-    else if (std.mem.eql(u8, name, "play"))
-        .play
-    else
-        return error.UnknownAction;
-    if (action == .seed or action == .choose) assert(argument.len > 0);
-    return action;
+    const kind = std.meta.stringToEnum(Kind, name) orelse return error.UnknownAction;
+    const needs_argument = switch (kind) {
+        .seed, .choose, .choose_path, .evaluate, .get, .set, .observe, .bind, .unbind => true,
+        .fallbacks, .switch_flow, .remove_flow, .visit_count, .tags_at => true,
+        else => false,
+    };
+    if (needs_argument != (argument.len > 0)) return error.BadActionArgument;
+    if (kind == .seed) _ = try std.fmt.parseInt(i32, argument, 10);
+    if (kind == .choose) _ = try std.fmt.parseInt(u32, argument, 10);
+    assert(needs_argument == (argument.len > 0));
+    return .{ .kind = kind, .argument = argument };
 }
 
 /// Replays every action in `actions` against `engine`, writing the transcript (without the
@@ -68,23 +93,85 @@ pub fn replay(engine: anytype, actions: []const u8, writer: *std.Io.Writer) !voi
     while (lines.next()) |line| {
         const action = try parse_action(line) orelse continue;
         try writer.print("> {s}\n", .{std.mem.trim(u8, line, " \t\r")});
-        try apply(engine, action, writer);
+        const outcome = try apply(engine, action, writer);
         applied += 1;
+        if (outcome == .stop) break;
     }
     assert(applied <= actions.len);
 }
 
-fn apply(engine: anytype, action: Action, writer: *std.Io.Writer) !void {
+const Outcome = enum { next, stop };
+
+fn apply(engine: anytype, action: Action, writer: *std.Io.Writer) !Outcome {
     comptime assert(@typeInfo(@TypeOf(engine)) == .pointer);
     comptime assert(@hasDecl(@typeInfo(@TypeOf(engine)).pointer.child, "tags_per_line"));
-    switch (action) {
-        .seed => |seed| engine.seed(seed),
+    apply_required(engine, action, writer) catch |err| switch (err) {
+        error.WriteFailed, error.OutOfMemory => |fatal| return fatal,
+        error.Unsupported => {
+            try writer.print("unsupported: {t}\n", .{action.kind});
+            return .stop;
+        },
+        else => {
+            try writer.writeAll("exception: ");
+            try write_json_string(writer, @errorName(err));
+            try writer.writeByte('\n');
+            return .stop;
+        },
+    };
+    return .next;
+}
+
+fn apply_required(engine: anytype, action: Action, writer: *std.Io.Writer) anyerror!void {
+    assert(action.argument.len < 4096);
+    switch (action.kind) {
+        .seed => engine.seed(std.fmt.parseInt(i32, action.argument, 10) catch unreachable),
         .@"continue" => try continue_once(engine, writer),
         .continue_maximally => try continue_maximally(engine, writer),
         .choices => try write_choices(engine, writer),
-        .choose => |index| try engine.choose(index),
+        .choose => try engine.choose(std.fmt.parseInt(u32, action.argument, 10) catch unreachable),
         .play => try play(engine, writer),
+        else => try apply_optional(engine, action, writer),
     }
+    assert(action.kind != .seed or action.argument.len > 0);
+}
+
+/// Actions that need an optional engine capability, named like the action.
+fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyerror!void {
+    const Engine = @typeInfo(@TypeOf(engine)).pointer.child;
+    assert(action.argument.len < 4096);
+    switch (action.kind) {
+        inline .choose_path, .switch_flow, .remove_flow, .default_flow, .reset => |kind| {
+            if (!@hasDecl(Engine, @tagName(kind))) return error.Unsupported;
+            try @field(Engine, @tagName(kind))(engine, action.argument);
+        },
+        .save => {
+            if (!@hasDecl(Engine, "save")) return error.Unsupported;
+            try writer.print("save: {s}\n", .{try engine.save()});
+        },
+        inline .load, .load_fresh => |kind| {
+            if (!@hasDecl(Engine, @tagName(kind))) return error.Unsupported;
+            try @field(Engine, @tagName(kind))(engine);
+        },
+        .visit_count => {
+            if (!@hasDecl(Engine, "visit_count")) return error.Unsupported;
+            try writer.print("visit_count: {d}\n", .{try engine.visit_count(action.argument)});
+        },
+        .global_tags => {
+            if (!@hasDecl(Engine, "global_tags")) return error.Unsupported;
+            try writer.writeAll("tags: ");
+            try write_tags(writer, try engine.global_tags());
+            try writer.writeByte('\n');
+        },
+        else => return error.Unsupported,
+    }
+    assert(action.kind != .play);
+}
+
+fn write_tags(writer: *std.Io.Writer, tags: []const []const u8) !void {
+    assert(tags.len < 1024);
+    for (tags) |tag| assert(tag.len < 4096);
+    if (tags.len == 0) return writer.writeAll("[]");
+    try write_json_list(writer, tags);
 }
 
 fn continue_once(engine: anytype, writer: *std.Io.Writer) !void {
@@ -256,8 +343,8 @@ fn replay_to_string(gpa: std.mem.Allocator, engine: anytype, actions: []const u8
 }
 
 test "replay renders the harness transcript format" {
-    // Goal: byte-for-byte the format of tools/ink_harness/Transcript.cs. Method: replay every
-    // action kind against a scripted engine and compare with the expected text.
+    // Goal: byte-for-byte the format of tools/ink_harness/Transcript.cs, and stopping at an
+    // unsupported action. Method: replay against a scripted engine without visit_count.
     const gpa = std.testing.allocator;
     var engine: FakeEngine = .{};
     const actions =
@@ -269,6 +356,8 @@ test "replay renders the harness transcript format" {
         \\continue
         \\choices
         \\play
+        \\visit_count knot
+        \\continue
         \\
     ;
     const text = try replay_to_string(gpa, &engine, actions);
@@ -294,6 +383,8 @@ test "replay renders the harness transcript format" {
         \\text: "After.\n"
         \\choices: 0
         \\end
+        \\> visit_count knot
+        \\unsupported: visit_count
         \\
     ;
     try std.testing.expectEqualStrings(expected, text);
@@ -311,6 +402,10 @@ test "control bytes are escaped like the harness" {
 test "unknown actions are rejected" {
     // Goal: a typo in an .actions file fails loudly. Method: parse a bad and a good line.
     try std.testing.expectError(error.UnknownAction, parse_action("contineu"));
-    try std.testing.expectEqual(Action{ .choose = 3 }, (try parse_action("  choose 3 ")).?);
+    const choose = (try parse_action("  choose 3 ")).?;
+    try std.testing.expectEqual(Kind.choose, choose.kind);
+    try std.testing.expectEqualStrings("3", choose.argument);
     try std.testing.expectEqual(@as(?Action, null), try parse_action("   # note"));
+    try std.testing.expectError(error.BadActionArgument, parse_action("choose"));
+    try std.testing.expectError(error.BadActionArgument, parse_action("save now"));
 }

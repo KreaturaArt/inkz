@@ -1,0 +1,6 @@
+# Tests.cs TestChoiceThreadForking: a choice made in a thread survives save and load.
+continue
+save
+load_fresh
+choose 0
+continue_maximally
