@@ -743,7 +743,9 @@ pub const Story = struct {
                 var it = vars_val.object.iterator();
                 while (it.next()) |e| {
                     const rt_obj = try self.parseRtObj(e.value_ptr.*) orelse continue;
-                    try self.state.variables_state.set(self.allocator, e.key_ptr.*, rt_obj);
+                    // The key must outlive `parsed`, which is freed when this function returns.
+                    const name = try self.arena.allocator().dupe(u8, e.key_ptr.*);
+                    try self.state.variables_state.set(self.allocator, name, rt_obj);
                 }
             }
         }
@@ -858,7 +860,9 @@ pub const Story = struct {
                                         var it = temp_val.object.iterator();
                                         while (it.next()) |e| {
                                             const rt_obj = try self.parseRtObj(e.value_ptr.*) orelse continue;
-                                            try elem.temporary_variables.set(self.allocator, e.key_ptr.*, rt_obj);
+                                            // The key must outlive `parsed`.
+                                            const name = try self.arena.allocator().dupe(u8, e.key_ptr.*);
+                                            try elem.temporary_variables.set(self.allocator, name, rt_obj);
                                         }
                                     }
                                 }
