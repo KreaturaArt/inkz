@@ -10,8 +10,10 @@
 //! - `// lint: allow assertion_density: <reason>` anywhere in a file.
 //!
 //! The recursion check resolves calls by name: `f()` and `x.f()` match functions named `f` in
-//! the same file, and `alias.f()` matches `f` in the file imported as `alias`. It cannot see
-//! types, so it over-approximates within a file; a false positive needs a suppression.
+//! the same file, and `alias.f()` matches `f` in the file imported as `alias`. Calls through a
+//! field chain (`a.b.f()`), a call result, or an alias of `std` or `builtin` go to other types
+//! and are skipped. It cannot see types, so it over-approximates within a file; a false
+//! positive needs a suppression.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -81,6 +83,8 @@ const SourceFile = struct {
     functions_first: u32,
     functions_count: u32,
     imports: std.ArrayList(Import),
+    /// Names bound to `std`, `builtin` or something inside them, such as `const mem = std.mem`.
+    external_aliases: std.ArrayList([]const u8),
 };
 
 pub fn is_grandfathered(path: []const u8) bool {
@@ -127,6 +131,7 @@ pub const Linter = struct {
             .functions_first = @intCast(linter.functions.items.len),
             .functions_count = 0,
             .imports = .empty,
+            .external_aliases = .empty,
         });
         const file_index: u32 = @intCast(linter.files.items.len - 1);
         try linter.check_lines(file_index);
@@ -264,26 +269,26 @@ pub const Linter = struct {
         }
     }
 
-    /// Records `const alias = @import("file.zig");` declared at the top level.
+    /// Records `const alias = @import("file.zig");`, and aliases of `std` or `builtin`.
     fn add_import(linter: *Linter, file_index: u32, node: Ast.Node.Index) !void {
         const file = &linter.files.items[file_index];
         const declaration = file.tree.fullVarDecl(node).?;
         assert(declaration.ast.mut_token < file.tree.tokens.len);
         const initializer = declaration.ast.init_node.unwrap() orelse return;
-        const tag = file.tree.nodeTag(initializer);
-        if (tag != .builtin_call_two and tag != .builtin_call_two_comma) return;
-        const builtin = file.tree.tokenSlice(file.tree.nodeMainToken(initializer));
-        if (!std.mem.eql(u8, builtin, "@import")) return;
-        const argument = file.tree.nodeData(initializer).opt_node_and_opt_node[0].unwrap() orelse
+        const alias = file.tree.tokenSlice(declaration.ast.mut_token + 1);
+        const first = file.tree.tokenSlice(file.tree.firstToken(initializer));
+        if (std.mem.eql(u8, first, "std") or std.mem.eql(u8, first, "builtin")) {
+            try file.external_aliases.append(linter.arena, alias);
             return;
-        if (file.tree.nodeTag(argument) != .string_literal) return;
-        const literal = file.tree.tokenSlice(file.tree.nodeMainToken(argument));
-        assert(literal.len >= 2);
-        const relative = literal[1 .. literal.len - 1];
-        if (!std.mem.endsWith(u8, relative, ".zig")) return;
+        }
+        const relative = import_argument(&file.tree, initializer) orelse return;
+        if (!std.mem.endsWith(u8, relative, ".zig")) {
+            try file.external_aliases.append(linter.arena, alias);
+            return;
+        }
         const directory = std.fs.path.dirname(file.path) orelse "";
         const path = try join_normalized(linter.arena, directory, relative);
-        const alias = file.tree.tokenSlice(declaration.ast.mut_token + 1);
+        assert(path.len > 0);
         try file.imports.append(linter.arena, .{ .alias = alias, .path = path });
     }
 
@@ -301,10 +306,15 @@ pub const Linter = struct {
             const caller = linter.enclosing_function(file_index, call.ast.lparen) orelse continue;
             const callee = callee_of(file, call.ast.fn_expr) orelse continue;
             if (is_assertion(callee.name)) assertions_count += 1;
+            if (callee.target == .external) continue;
             try linter.calls.append(linter.arena, .{
                 .caller = caller,
                 .callee_name = callee.name,
-                .target_path = callee.target_path,
+                .target_path = switch (callee.target) {
+                    .same_file => null,
+                    .imported => |path| path,
+                    .external => unreachable,
+                },
             });
         }
         try linter.check_assertion_density(file_index, assertions_count);
@@ -413,33 +423,53 @@ pub const Linter = struct {
 
 const Callee = struct {
     name: []const u8,
-    target_path: ?[]const u8,
+    target: union(enum) {
+        same_file,
+        imported: []const u8,
+        external,
+    },
 };
 
-/// The name a call resolves to, and the imported file it names, if any.
+/// The name a call resolves to, and where to look for it.
 fn callee_of(file: *const SourceFile, expression: Ast.Node.Index) ?Callee {
     const tree = &file.tree;
     assert(tree.errors.len == 0);
     switch (tree.nodeTag(expression)) {
         .identifier => {
             const name = tree.tokenSlice(tree.nodeMainToken(expression));
-            return .{ .name = name, .target_path = null };
+            return .{ .name = name, .target = .same_file };
         },
         .field_access => {
             const data = tree.nodeData(expression).node_and_token;
             const name = tree.tokenSlice(data[1]);
             assert(name.len > 0);
-            if (tree.nodeTag(data[0]) != .identifier) return .{ .name = name, .target_path = null };
+            if (tree.nodeTag(data[0]) != .identifier) return .{ .name = name, .target = .external };
             const receiver = tree.tokenSlice(tree.nodeMainToken(data[0]));
             for (file.imports.items) |import| {
                 if (std.mem.eql(u8, import.alias, receiver)) {
-                    return .{ .name = name, .target_path = import.path };
+                    return .{ .name = name, .target = .{ .imported = import.path } };
                 }
             }
-            return .{ .name = name, .target_path = null };
+            for (file.external_aliases.items) |alias| {
+                if (std.mem.eql(u8, alias, receiver)) return .{ .name = name, .target = .external };
+            }
+            return .{ .name = name, .target = .same_file };
         },
         else => return null,
     }
+}
+
+/// The string argument of `@import("...")`, without quotes.
+fn import_argument(tree: *const Ast, node: Ast.Node.Index) ?[]const u8 {
+    const tag = tree.nodeTag(node);
+    if (tag != .builtin_call_two and tag != .builtin_call_two_comma) return null;
+    if (!std.mem.eql(u8, tree.tokenSlice(tree.nodeMainToken(node)), "@import")) return null;
+    const argument = tree.nodeData(node).opt_node_and_opt_node[0].unwrap() orelse return null;
+    if (tree.nodeTag(argument) != .string_literal) return null;
+    const literal = tree.tokenSlice(tree.nodeMainToken(argument));
+    assert(literal.len >= 2);
+    assert(literal[0] == '"');
+    return literal[1 .. literal.len - 1];
 }
 
 const Edge = struct {
@@ -954,6 +984,35 @@ test "direct, mutual and cross-file recursion are reported" {
     try expect_rules(diagnostics, &.{ .recursion, .recursion, .recursion });
     try std.testing.expectEqualStrings("src/a/a.zig", diagnostics[0].path);
     try std.testing.expectEqualStrings("src/local.zig", diagnostics[1].path);
+}
+
+test "calls into std and through field chains are not recursion" {
+    // Goal: the common false positives are gone. Method: functions named like std functions
+    // that call them through `std.x`, an alias of std, and a field chain.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const source =
+        \\const std = @import("std");
+        \\const mem = std.mem;
+        \\fn hash(bytes: []const u8) u64 {
+        \\    assert(bytes.len > 0);
+        \\    assert(true);
+        \\    return std.hash.Wyhash.hash(0, bytes);
+        \\}
+        \\fn eql(a: []const u8, b: []const u8) bool {
+        \\    assert(a.len > 0);
+        \\    assert(b.len > 0);
+        \\    return mem.eql(u8, a, b);
+        \\}
+        \\fn deinit(pool: *Pool) void {
+        \\    assert(pool.ok);
+        \\    assert(true);
+        \\    pool.table.deinit();
+        \\}
+        \\
+    ;
+    const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/core/pool.zig", source }});
+    try expect_rules(diagnostics, &.{});
 }
 
 test "a suppressed false positive is not reported" {
