@@ -2,8 +2,10 @@
 
 pub const fault = @import("fault.zig");
 pub const death_cases = @import("death_cases.zig");
+pub const index = @import("index.zig");
 
 test {
     _ = fault;
     _ = death_cases;
+    _ = index;
 }
