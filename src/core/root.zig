@@ -5,6 +5,7 @@ pub const death_cases = @import("death_cases.zig");
 pub const index = @import("index.zig");
 pub const limits = @import("limits.zig");
 pub const string_pool = @import("string_pool.zig");
+pub const extra = @import("extra.zig");
 
 test {
     _ = fault;
@@ -12,4 +13,5 @@ test {
     _ = index;
     _ = limits;
     _ = string_pool;
+    _ = extra;
 }
