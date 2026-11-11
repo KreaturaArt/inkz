@@ -5,7 +5,7 @@
 - Labels: dod, runtime, save, api
 - Dependencies: TASK-145 (VM)
 - Parent: TASK-146
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -17,7 +17,9 @@ Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 asser
 
 ## Acceptance Criteria
 - [ ] The P0.7 save bugs are fixed and their tests un-skipped.
-- [ ] The output of a C#-identical state equals the checked-in C# save byte for byte, modulo JSON key order if ink's writer order is not stable (to be checked).
+- [ ] The output of a C#-identical state is JSON-equivalent to the checked-in C# save (D15).
+- [ ] Only non-default globals are written.
+- [ ] Floats are printed as .NET 8 does.
 - [ ] Validated by unit tests; `zig build lint` passes on the new code.
 
 ## Implementation Notes

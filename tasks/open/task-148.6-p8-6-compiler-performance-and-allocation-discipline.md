@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: medium
 - Labels: dod, compiler, codegen
-- Dependencies: TASK-147 (front end), TASK-145 (VM)
+- Dependencies: TASK-148.4 (lowering)
 - Parent: TASK-148
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

@@ -5,7 +5,7 @@
 - Labels: dod, compiler, parser
 - Dependencies: TASK-147.0 (parser spike go/no-go)
 - Parent: TASK-147
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

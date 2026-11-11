@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, runtime, vm
-- Dependencies: TASK-144 (runtime state), TASK-140.12 (heuristic report)
+- Dependencies: TASK-144 (runtime state)
 - Parent: TASK-145
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

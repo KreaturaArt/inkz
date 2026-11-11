@@ -1,11 +1,11 @@
-# TASK-149.1: P9.1 Delete the old runtime
+# TASK-149.1: P9.1 Delete the old runtime and rename `src/vm/` to `src/runtime/` (D21)
 
 - Status: To Do
 - Priority: medium
 - Labels: dod, cleanup, docs
 - Dependencies: TASK-146 (save/load and API)
 - Parent: TASK-149
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

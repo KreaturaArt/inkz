@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.2 (build steps), TASK-140.8 (lint)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

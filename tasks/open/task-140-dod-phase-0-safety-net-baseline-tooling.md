@@ -4,13 +4,16 @@
 - Priority: high
 - Labels: dod, tooling, testing
 - Dependencies: —
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
 Phase 0 of the DOD migration plan (`docs/DODMigrationPlan.md` §6, Phase 0). This parent task tracks its subtasks; see the plan for architecture (§4), engineering rules (§3) and decisions (§5).
 
+Items have a real internal order; follow the subtask dependencies and the plan's Phase 0 intro.
+
 ## Acceptance Criteria
+- [ ] TASK-140.0 done: Reference toolchain (D19)
 - [ ] TASK-140.1 done: Zig 0.17 compatibility
 - [ ] TASK-140.2 done: Split build steps
 - [ ] TASK-140.3 done: Transcript corpus tool
@@ -23,7 +26,8 @@ Phase 0 of the DOD migration plan (`docs/DODMigrationPlan.md` §6, Phase 0). Thi
 - [ ] TASK-140.10 done: Ground-truth corpus
 - [ ] TASK-140.11 done: Engine-neutral test layer
 - [ ] TASK-140.12 done: Weave-heuristic instrumentation
-- [ ] `zig build lint` passes on all new code of this phase.
+- [ ] TASK-140.13 done: Test conventions (D20)
+- [ ] `zig build lint` passes on all new code written after TASK-140.8.
 
 ## Implementation Notes
 

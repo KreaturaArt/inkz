@@ -1,11 +1,11 @@
-# TASK-149.2: P9.2 Delete the old compiler
+# TASK-149.2: P9.2 Delete the old compiler and rename `src/compiler_next/` to `src/compiler/` (D21)
 
 - Status: To Do
 - Priority: medium
 - Labels: dod, cleanup, docs
 - Dependencies: TASK-148 (compiler)
 - Parent: TASK-149
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

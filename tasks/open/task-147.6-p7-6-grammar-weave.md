@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: medium
 - Labels: dod, compiler, parser
-- Dependencies: TASK-141 (core primitives)
+- Dependencies: TASK-147.3 (parser core)
 - Parent: TASK-147
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

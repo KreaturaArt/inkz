@@ -3,17 +3,17 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.2 (build steps), TASK-140.8 (lint)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
 Plan item P0.11 in `docs/DODMigrationPlan.md` §6 (Phase 0).
 
-(`test/harness.zig`).
+(`test/harness.zig`). It defines the interface plus the **old-engine adapter**; the new-engine adapter arrives with P5.1.
 - `run(story_source_or_json) -> Session`, `expect_line`, `expect_lines_until_choice`, `expect_choices`, `choose`, `expect_variable`, `expect_error`, `save`/`load`.
-- The layer is implemented for both engines. The old engine adapter splits turn output into lines.
+- The old-engine adapter splits turn output into lines and marks tags as unattributed.
 - Runtime tests are migrated onto the layer **before** P4, so they move once and run against both engines.
 
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.

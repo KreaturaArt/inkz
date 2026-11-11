@@ -1,15 +1,17 @@
-# TASK-145.1: P5.1 Labeled-switch `vm.run` with a step budget and `RunResult` signals
+# TASK-145.1: P5.1 Labeled-switch `vm.run` with a step budget and `RunResult` signals,
 
 - Status: To Do
 - Priority: high
 - Labels: dod, runtime, vm
-- Dependencies: TASK-144 (runtime state), TASK-140.12 (heuristic report)
+- Dependencies: TASK-144 (runtime state)
 - Parent: TASK-145
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
 Plan item P5.1 in `docs/DODMigrationPlan.md` §6 (Phase 5).
+
+plus the new-engine adapter for P0.11.
 
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.
 

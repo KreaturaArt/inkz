@@ -5,7 +5,7 @@
 - Labels: dod, core, program
 - Dependencies: TASK-141 (core primitives)
 - Parent: TASK-142
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -16,7 +16,7 @@ Plan item P2.2 in `docs/DODMigrationPlan.md` §6 (Phase 2).
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.
 
 ## Acceptance Criteria
-- [ ] Named lookup compares u32s only; out-of-range lookups assert; the depth and parent invariants hold in `verify`.
+- [ ] Named lookup compares u32s only; out-of-range lookups are reported by `check()`; the depth and parent invariants hold in `check()`.
 - [ ] Validated by unit tests; `zig build lint` passes on the new code.
 
 ## Implementation Notes

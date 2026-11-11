@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.3 (transcripts), TASK-140.8 (lint)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -14,7 +14,7 @@ Plan item P0.4 in `docs/DODMigrationPlan.md` §6 (Phase 0).
 Runs old vs new engine (or old vs stored transcripts) turn by turn.
 - `test/divergence_ledger.zon` lists every known difference with:
   - fixture and turn
-  - kind (S1–S9 or new)
+  - kind (S1–S11 or new)
   - reason
   - the ground-truth source that justifies the new behaviour
 - The oracle fails on any difference that is not in the ledger, **and on any ledger entry that no longer diverges**, so stale entries get removed.

@@ -5,18 +5,18 @@
 - Labels: dod, loader
 - Dependencies: TASK-142 (Program and builder)
 - Parent: TASK-143
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
 Plan item P3.1 in `docs/DODMigrationPlan.md` §6 (Phase 3).
 
-(no `std.json.Value` tree, explicit `WorkStack`, v20 and v21).
+(no `std.json.Value` tree, explicit `WorkStack`, v20 and v21, BOM stripping, fixed-buffer scanner, pieced escaped strings).
 
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.
 
 ## Acceptance Criteria
-- [ ] Every compiled fixture loads, including all 5 v20 fixtures.
+- [ ] Every compiled fixture loads, including all 5 v20 fixtures and the v20 tag literal.
 - [ ] No allocations after `finish()`.
 - [ ] Peak memory is below the old loader's.
 - [ ] Fuzz target added.

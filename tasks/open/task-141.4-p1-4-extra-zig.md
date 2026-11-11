@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, core
-- Dependencies: TASK-140 (lint, build steps)
+- Dependencies: TASK-140.2 (build steps), TASK-140.8 (lint), TASK-140.13 (test conventions)
 - Parent: TASK-141
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
