@@ -62,6 +62,20 @@ pub fn build(b: *std.Build) void {
 
     test_all.dependOn(add_death_tests(b, target));
 
+    const write_transcripts = b.addExecutable(.{
+        .name = "write_transcripts",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/write_transcripts.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    write_transcripts.root_module.addOptions("build_options", build_options);
+    const run_transcripts = b.addRunArtifact(write_transcripts);
+    run_transcripts.setCwd(b.path("."));
+    const transcripts_step = b.step("transcripts", "Regenerate test/transcripts (old runtime)");
+    transcripts_step.dependOn(&run_transcripts.step);
+
     const lint = b.addExecutable(.{
         .name = "lint",
         .root_module = b.createModule(.{

@@ -21,16 +21,28 @@ pub fn replay(
 ) ![]const u8 {
     assert(id.len > 0);
     assert(engine.len > 0);
-    if (!std.mem.eql(u8, engine, "old")) return error.UnknownEngine;
     const cwd = std.Io.Dir.cwd();
     const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{ cases_directory, id });
-    const json = try cwd.readFileAlloc(io, json_path, arena, .limited(file_bytes_max));
     const actions_path = try std.fmt.allocPrint(arena, "{s}/{s}.actions", .{ cases_directory, id });
     const actions = cwd.readFileAlloc(io, actions_path, arena, .limited(file_bytes_max)) catch |err|
         switch (err) {
             error.FileNotFound => "play",
             else => return err,
         };
+    return replay_json(arena, io, engine, json_path, actions);
+}
+
+/// Replays `actions` on the story at `json_path` with `engine` and returns the transcript.
+pub fn replay_json(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    engine: []const u8,
+    json_path: []const u8,
+    actions: []const u8,
+) ![]const u8 {
+    assert(json_path.len > 0);
+    if (!std.mem.eql(u8, engine, "old")) return error.UnknownEngine;
+    const json = try std.Io.Dir.cwd().readFileAlloc(io, json_path, arena, .limited(file_bytes_max));
     var output: std.Io.Writer.Allocating = .init(arena);
     var old = OldEngine.init(arena, json) catch |err| {
         try output.writer.print("exception: \"{t}\"\n", .{err});
