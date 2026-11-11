@@ -16,3 +16,7 @@ sample.DS_Store
 
 # Mac
 .DS_Store
+
+# Reference harness build output
+tools/ink_harness/obj/
+tools/ink_harness/bin/

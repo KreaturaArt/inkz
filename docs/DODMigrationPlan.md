@@ -246,7 +246,7 @@ These rules apply to **all new code** and are checked in review and by tooling (
 - **Comments.** Full sentences that say *why*. Every test begins with a comment giving its goal and method.
 - **Layout.** `zig fmt`, 4 spaces, at most 100 columns, braces on every multi-line `if`.
 - **Zero dependencies, Zig-only tooling.** Transcript generator, lint, bench, fixture runner and snapshot updater all live in `tools/*.zig` (no shell or Python), wired as build steps.
-- **Single exception: the reference harness (D19).** `reference/ink_harness/` is a small C# program that generates ground-truth data. It runs against pinned ink and inklecate builds on .NET 8, and is orchestrated by mise tasks (`mise run reference:setup`, `mise run reference:expected`). It is never part of `zig build`. Its outputs are checked in with a provenance header (ink commit, inklecate version, .NET version, command), so the Zig test suite never needs .NET. Rerun it only to add or update `.expected` data.
+- **Single exception: the reference harness (D19).** `tools/ink_harness/` is a small C# program that generates ground-truth data. It builds ink's own runtime and compiler from the pinned commit (ink v1.2.1, `35c63e52f1d3`, fetched into the ignored `reference/ink`) on .NET 8, and is orchestrated by mise tasks (`mise run reference:setup`, `mise run reference:expected`, `mise run reference:random`). It is never part of `zig build`. Its outputs are checked in with a provenance header (ink commit, inklecate version, .NET version, command), so the Zig test suite never needs .NET. Rerun it only to add or update `.expected` data.
 - **Toolchain pinning.** `mise.toml` pins `zig` (0.17.x) and `dotnet` (8). `build.zig.zon` sets `minimum_zig_version` to match.
 
 ---
@@ -552,7 +552,7 @@ The current `json_loader.zig` becomes `src/core/program_builder.zig` plus `src/c
 
 - **D17 Reference runtime: .NET 8 LTS.** All ground truth (outputs, float strings, RNG sequences, saves) is generated on .NET 8. Where .NET behaviour is platform-dependent (float-to-int out of range), inkz defines the result (D18) and lists it in the ledger.
 - **D18 Arithmetic faults are story errors.** Integer division or modulo by zero, `minInt / -1`, and float-to-int of NaN or out-of-range values push a runtime error. The current `cont()` then returns `error.StoryError`, or calls the error handler if one is installed. There is never a panic or undefined behaviour on story data. Ink's C# throws in these cases; out-of-range float-to-int, which doesn't throw in .NET 8, is a ledger entry.
-- **D19 Reference toolchain: a C# harness orchestrated by mise** (§3.3 exception). It covers pinned ink and inklecate, .NET 8, the `reference/ink_harness/` scripts and checked-in outputs with provenance. The Zig suite never needs .NET.
+- **D19 Reference toolchain: a C# harness orchestrated by mise** (§3.3 exception). It covers ink v1.2.1 (runtime and compiler built from one pinned commit, so no separate inklecate binary), .NET 8, the `tools/ink_harness/` sources and checked-in outputs with provenance. The Zig suite never needs .NET.
 - **D20 Negative-space tests.** `check()` returns a named `Fault` enum that tests inspect, and `verify()` asserts on it. Tests that need a real panic or assert run in a `zig build test-death` step: one child executable per case, expecting an abnormal exit.
 - **D21 New code locations.** The new runtime goes in `src/vm/` and the new compiler in `src/compiler_next/`. They are renamed to `src/runtime/` and `src/compiler/` when the old code is deleted (P9.1, P9.2). This avoids collisions with the old `state.zig`, `value.zig` and `path.zig`.
 - **D22 Callback context and host events.** All callbacks carry a `context: ?*anyopaque`. Ink's host events are offered as optional callbacks (§4.7).
@@ -577,8 +577,8 @@ Phase 0 has a real internal order:
 
 - **P0.0 Reference toolchain (D19).**
   - `mise.toml` pins `dotnet` 8 and a release of inklecate.
-  - `reference/ink_harness/` holds a C# console project referencing a pinned ink commit (`ink-engine-runtime`). It reads a case (`.ink`, or `.ink.json`, plus an action script, see P0.10) and writes `.expected`, RNG sequences and save JSON.
-  - mise tasks: `reference:setup`, `reference:expected` (regenerate all, or one case), `reference:random` (sequences for P1.8), `reference:saves` (§4.10 interop saves).
+  - `tools/ink_harness/` holds a C# console project referencing ink's runtime and compiler projects at the pinned commit. It compiles a case's `.ink`, replays its action script (see P0.10) and writes `.expected`; it also writes the RNG sequences. Saves are part of a transcript (a `save` action records the save JSON).
+  - mise tasks: `reference:setup`, `reference:expected` (regenerate all, or one case), `reference:random` (sequences for P1.8).
   - Every output file starts with a provenance header.
   - ✅ `mise run reference:expected -- <case>` regenerates a checked-in case byte for byte. A Zig test asserts that every ground-truth file has a valid provenance header. The Zig suite passes on a machine without .NET.
 - **P0.1 Zig 0.17 compatibility.** Replace `dupeZ` with `dupeSentinel`, pin `zig` in `mise.toml`, set `minimum_zig_version`, and fix any further 0.17 errors that lazy compilation reveals. Lint does not apply (the lint is built in P0.8).
@@ -642,8 +642,8 @@ Phase 0 has a real internal order:
     On the new engine it runs `State.verify()` after every `cont()`.
   - ✅ The harness runs on the old runtime with random choices and is reproducible by seed.
 - **P0.10 Ground-truth corpus.**
-  - Each case is `test/ground_truth/<name>.ink`, its inklecate-compiled `<name>.ink.json`, `<name>.actions.zon`, and `<name>.expected`.
-  - **Action script** (`.actions.zon`): an ordered list of host actions: `cont`, `continue_maximally`, `choose`, `choose_path_string`, `evaluate_function`, `get_variable`/`set_variable`, `observe` (expected notifications), `bind_external` (with scripted returns), `save`, `load`, `switch_flow`, `remove_flow`, `seed`. This covers the many `Tests.cs` cases that use the API.
+  - Each case is `test/ground_truth/<name>.ink`, its compiled `<name>.ink.json`, `<name>.actions`, and `<name>.expected` (formats in `test/ground_truth/README.md`).
+  - **Action script** (`.actions`, one action per line, so both the C# harness and Zig parse it trivially): an ordered list of host actions: `cont`, `continue_maximally`, `choose`, `choose_path_string`, `evaluate_function`, `get_variable`/`set_variable`, `observe` (expected notifications), `bind_external` (with scripted returns), `save`, `load`, `switch_flow`, `remove_flow`, `seed`. This covers the many `Tests.cs` cases that use the API.
   - **Expected file** (`.expected`): written by the harness (P0.0). It records, after every action, the line text, tags, choices, errors/warnings, observer notifications and requested variables.
   - **Sources:**
     - Port the relevant tests from ink's `tests/Tests.cs` at the pinned commit into cases.
@@ -731,7 +731,7 @@ Phase 0 has a real internal order:
 - **P6.1 `to_json(writer)`** (§4.10; streaming, iterative, zero allocation). `State.verify()` runs before saving. ✅ The P0.7 save bugs are fixed and their tests un-skipped. The output of a C#-identical state is JSON-equivalent to the checked-in C# save (D15). Only non-default globals are written. Floats are printed as .NET 8 does.
 - **P6.2 `load_json`** (fixed scratch, validate-then-commit, path resolution through `path.zig`). `verify()` runs after loading (pair assertion with P6.1).
   - ✅ Save, load, then continue produces the same transcript as an uninterrupted run, at every turn of every fixture.
-  - Every C#-produced save in `test/fixture/saves/` (generated by `mise run reference:saves`) loads and continues identically to C#, including saves that omit globals still at their default value.
+  - Every C#-produced save recorded in the ground-truth transcripts (`save` actions) loads and continues identically to C#, including saves that omit globals still at their default value.
   - A corrupted save leaves the story unchanged.
   - Zero allocations.
   - The fuzz target is added.

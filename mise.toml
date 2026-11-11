@@ -1,2 +1,16 @@
 [tools]
+dotnet = "8"
 zig = "0.17.1"
+
+# Reference harness (plan D19): the only non-Zig tooling. Never needed by `zig build`.
+[tasks."reference:setup"]
+description = "Fetch ink at the pinned commit and build tools/ink_harness"
+run = "tools/ink_harness/reference.sh setup"
+
+[tasks."reference:expected"]
+description = "Regenerate ground-truth expectations: all cases, or the named ones"
+run = "tools/ink_harness/reference.sh expected"
+
+[tasks."reference:random"]
+description = "Regenerate the .NET System.Random reference sequences"
+run = "tools/ink_harness/reference.sh random"

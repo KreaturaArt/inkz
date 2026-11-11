@@ -31,7 +31,7 @@ pub fn build(b: *std.Build) void {
             .own_filters = &.{ "compiler.", "compiler_helpers." },
         },
         .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
-        .{ .step = "test-tools", .root = "tools/lint.zig", .description = "Run tests of the tools" },
+        .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
     };
     const test_options: TestOptions = .{ .target = target, .optimize = optimize, .filters = test_filters };
     for (suites) |suite| {
