@@ -38,6 +38,8 @@ pub fn build(b: *std.Build) void {
         test_all.dependOn(add_test_suite(b, suite, test_options));
     }
 
+    test_all.dependOn(add_death_tests(b, target));
+
     const lint = b.addExecutable(.{
         .name = "lint",
         .root_module = b.createModule(.{
@@ -61,6 +63,53 @@ pub fn build(b: *std.Build) void {
         const step = b.step(tool.step, tool.description);
         const message = b.fmt("'{s}' is not implemented yet ({s})", .{ tool.step, tool.issue });
         step.dependOn(&b.addFail(message).step);
+    }
+}
+
+const death_cases = @import("src/core/death_cases.zig");
+
+/// `zig build test-death` (plan D20): runs each case in `src/core/death_cases.zig` as its own
+/// child process and checks how it ends. Always built in Debug, so assertions are on.
+fn add_death_tests(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
+    const runner = b.addExecutable(.{
+        .name = "death",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/death.zig"),
+            .target = target,
+            .optimize = .Debug,
+        }),
+    });
+    runner.root_module.addAnonymousImport("death_cases", .{
+        .root_source_file = b.path("src/core/death_cases.zig"),
+    });
+    const step = b.step("test-death", "Run cases that must panic, one process each");
+    const Expected = std.process.Child.Term;
+    const aborted: Expected = .{ .signal = .ABRT };
+    const caught: Expected = .{ .exited = death_cases.did_not_die_exit_code };
+    const returned: Expected = .{ .exited = 0 };
+    add_death_group(b, runner, step, death_cases.must_panic, aborted);
+    add_death_group(b, runner, step, death_cases.self_test_must_panic, caught);
+    add_death_group(b, runner, step, death_cases.must_return, returned);
+    return step;
+}
+
+fn add_death_group(
+    b: *std.Build,
+    runner: *std.Build.Step.Compile,
+    step: *std.Build.Step,
+    comptime group: type,
+    expected: std.process.Child.Term,
+) void {
+    inline for (comptime std.meta.declarations(group)) |declaration| {
+        const run = b.addRunArtifact(runner);
+        run.setName(b.fmt("death {s}", .{declaration}));
+        run.addArg(declaration);
+        run.addCheck(.{ .expect_term = expected });
+        // Capturing stderr keeps the expected panic traces out of the build output, and makes
+        // sure an abort really came from a panic.
+        const stderr_match = if (expected == .signal) "panic: " else "";
+        run.addCheck(.{ .expect_stderr_match = stderr_match });
+        step.dependOn(&run.step);
     }
 }
 
