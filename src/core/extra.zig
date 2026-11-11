@@ -58,6 +58,15 @@ pub const ExtraBuilder = struct {
         return index;
     }
 
+    /// Reserves `count` raw words, zeroed, to be filled later; returns the index of the first.
+    pub fn reserve_words(builder: *ExtraBuilder, gpa: Allocator, count_words: u32) !u32 {
+        const index = builder.count();
+        if (count_words > std.math.maxInt(u32) - index) return error.ExtraFull;
+        try builder.words.appendNTimes(gpa, 0, count_words);
+        assert(builder.count() == index + count_words);
+        return index;
+    }
+
     /// Overwrites the `T` stored at `index`.
     pub fn set(builder: *ExtraBuilder, index: u32, value: anytype) void {
         const T = @TypeOf(value);
@@ -120,7 +129,7 @@ fn to_word(value: anytype) u32 {
     const word: u32 = switch (@typeInfo(Field)) {
         .int, .float, .@"struct" => @bitCast(value),
         .bool => @intFromBool(value),
-        .@"enum" => @intCast(@intFromEnum(value)),
+        .@"enum" => @intCast(@backingInt(value)),
         else => comptime unreachable,
     };
     assert(std.meta.eql(from_word(Field, word), value));
@@ -135,7 +144,10 @@ fn from_word(comptime Field: type, word: u32) Field {
             assert(word <= 1);
             return word == 1;
         },
-        .@"enum" => |enumeration| return @enumFromInt(@as(enumeration.tag_type, @intCast(word))),
+        .@"enum" => |enumeration| {
+            const tag: enumeration.tag_type = @intCast(word);
+            return @enumFromInt(tag);
+        },
         else => comptime unreachable,
     }
 }
