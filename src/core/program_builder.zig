@@ -156,6 +156,7 @@ pub const ProgramBuilder = struct {
         if (!parent.is_none() and !name.is_none()) {
             try builder.named_scratch.append(gpa, .{ .name = name, .child = container });
         }
+        const path = try builder.child_path(parent, name, index_in_parent);
         try builder.containers.append(gpa, .{
             .instruction_first = .from_int(0),
             .instruction_count = 0,
@@ -164,8 +165,8 @@ pub const ProgramBuilder = struct {
             .depth = if (is_root) 0 else builder.containers.items(.depth)[parent.to_int()] + 1,
             .flags = options.flags,
             .name = name,
-            .path = try builder.child_path(parent, name, index_in_parent),
-            .path_hash = 0,
+            .path = path,
+            .path_hash = path_module.shuffle_hash(builder.strings.get(path)),
             .named_first = 0,
             .named_count = 0,
             .count_slot = container_module.no_count_slot,

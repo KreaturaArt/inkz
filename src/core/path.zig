@@ -15,6 +15,29 @@ const ContainerIndex = @import("index.zig").ContainerIndex;
 
 pub const parent_name = "^";
 
+/// ink's shuffle seed for a container: the sum of its path's UTF-16 code units, as C# sums the
+/// `char`s of a string. Invalid UTF-8 counts byte by byte.
+pub fn shuffle_hash(path_text: []const u8) u32 {
+    var hash: u32 = 0;
+    var view = std.unicode.Utf8View.init(path_text) catch {
+        for (path_text) |byte| hash +%= byte;
+        return hash;
+    };
+    var code_points = view.iterator();
+    while (code_points.nextCodepoint()) |code_point| {
+        if (code_point < 0x10000) {
+            hash +%= code_point;
+        } else {
+            // A surrogate pair: both halves count.
+            const offset = code_point - 0x10000;
+            hash +%= 0xD800 + (offset >> 10);
+            hash +%= 0xDC00 + (offset & 0x3FF);
+        }
+    }
+    assert(path_text.len > 0 or hash == 0);
+    return hash;
+}
+
 pub const Component = union(enum) {
     index: u32,
     name: []const u8,
@@ -277,6 +300,17 @@ fn test_target(container: u32, content_index: ?u32, is_approximate: bool) Target
 const root_origin: Origin = .{ .container = .from_int(0) };
 const exact = false;
 const inexact = true;
+
+test "shuffle_hash sums UTF-16 code units like ink" {
+    // Goal: P2.4. Method: values from test/ground_truth/audit/unicode_paths.paths (ink on
+    // .NET 8), and a character outside the Basic Multilingual Plane.
+    try std.testing.expectEqual(@as(u32, 0), shuffle_hash(""));
+    try std.testing.expectEqual(@as(u32, 290), shuffle_hash("0.g-0"));
+    try std.testing.expectEqual(@as(u32, 531), shuffle_hash("café"));
+    try std.testing.expectEqual(@as(u32, 1723), shuffle_hash("naïve.ünïcode"));
+    // U+1F600 is the pair D83D DE00 in UTF-16.
+    try std.testing.expectEqual(@as(u32, 0xD83D + 0xDE00), shuffle_hash("\u{1F600}"));
+}
 
 test "parse components, relative paths and the root path" {
     // Goal: the component grammar. Method: parse each kind and walk the components.
