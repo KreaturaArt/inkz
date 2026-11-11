@@ -14,6 +14,8 @@ pub const path = @import("path.zig");
 pub const counting_allocator = @import("counting_allocator.zig");
 pub const instruction = @import("instruction.zig");
 pub const container = @import("container.zig");
+pub const program = @import("program.zig");
+pub const program_builder = @import("program_builder.zig");
 
 test {
     _ = fault;
@@ -30,5 +32,7 @@ test {
     _ = counting_allocator;
     _ = instruction;
     _ = container;
+    _ = program;
+    _ = program_builder;
     _ = @import("sizes_test.zig");
 }

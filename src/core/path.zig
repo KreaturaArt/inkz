@@ -127,14 +127,15 @@ pub const Origin = struct {
 };
 
 /// Resolves `path` against `table`, which provides:
-///   `root() ContainerIndex`, `parent(ContainerIndex) ContainerIndex` (`.none` for the root),
+///   `root_container() ContainerIndex`, `parent(ContainerIndex) ContainerIndex` (`.none` for
+///   the root),
 ///   `named_child(ContainerIndex, []const u8) ?ContainerIndex`,
 ///   `content_count(ContainerIndex) u32`, and
 ///   `container_at(ContainerIndex, u32) ?ContainerIndex` (when that content item is one).
 pub fn resolve(table: anytype, origin: Origin, path: Path) Error!Target {
     assert(!origin.container.is_none());
     var components = path.iterator();
-    var current = if (path.relative) origin.container else table.root();
+    var current = if (path.relative) origin.container else table.root_container();
     if (path.relative and origin.from_content) {
         // Ink drops the first `^`: it moves from the content item to its container.
         if (components.next()) |component| {
@@ -216,7 +217,7 @@ const TestTable = struct {
         .{ .container = 2, .name = "stitch", .child = 3 },
     };
 
-    fn root(_: TestTable) ContainerIndex {
+    fn root_container(_: TestTable) ContainerIndex {
         assert(nodes.len > 0);
         assert(nodes[0].parent == none);
         return .from_int(0);
