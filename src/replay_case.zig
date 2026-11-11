@@ -1,12 +1,13 @@
 //! Replays one story and prints its transcript (plan P0.3, P0.10), run from the repository
 //! root:
-//!   `replay_case <engine> <case id>` for a ground-truth case, or
+//!   `replay_case <engine> <case id> [--actions <actions text>]` for a ground-truth case, or
 //!   `replay_case <engine> --json <story.ink.json> --actions <actions text>`.
 //! The gates start it once per story, so an engine crash is contained in this process.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const cases = @import("testing/cases.zig");
+const old_engine = @import("testing/old_engine.zig");
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -14,6 +15,8 @@ pub fn main(init: std.process.Init) !void {
     assert(arguments.len > 0);
     const text = if (arguments.len == 3)
         try cases.replay(arena, init.io, arguments[1], arguments[2])
+    else if (arguments.len == 5 and std.mem.eql(u8, arguments[3], "--actions"))
+        try cases.replay_with(arena, init.io, arguments[1], arguments[2], arguments[4])
     else if (arguments.len == 6 and std.mem.eql(u8, arguments[2], "--json") and
         std.mem.eql(u8, arguments[4], "--actions"))
         try cases.replay_json(arena, init.io, arguments[1], arguments[3], arguments[5])
@@ -27,4 +30,11 @@ pub fn main(init: std.process.Init) !void {
     try file_writer.interface.writeAll(text);
     try file_writer.interface.flush();
     assert(file_writer.interface.end == 0);
+    // For `zig build heuristics-report` (plan P0.12); not part of the transcript.
+    const totals = old_engine.heuristic_totals;
+    std.debug.print("heuristics: loop_back_gather_tail={d} " ++
+        "divert_ancestor_of_choice_source={d}\n", .{
+        totals.loop_back_gather_tail,
+        totals.divert_ancestor_of_choice_source,
+    });
 }

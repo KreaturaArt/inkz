@@ -18,19 +18,21 @@ pub const engines = [_][]const u8{ "old", "old_compiler" };
 /// Engines the transcript gate runs; they read the compiled fixtures directly.
 pub const transcript_engines = [_][]const u8{"old"};
 
-/// A case's source: `test/ground_truth/<id>.ink`, or the fixture it was compiled from.
+/// A case's source: `test/ground_truth/<id>.ink`, or the fixture or story it came from.
 pub fn source_path(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
     assert(id.len > 0);
-    const own = try std.fmt.allocPrint(arena, "{s}/{s}.ink", .{ cases_directory, id });
-    std.Io.Dir.cwd().access(io, own, .{}) catch {
-        const fixture = try std.fmt.allocPrint(arena, "test/fixture/original/{s}.ink", .{id});
-        assert(fixture.len > own.len);
-        return fixture;
-    };
-    return own;
+    const candidates = [_][]const u8{ cases_directory, "test/fixture/original", "test/fixture" };
+    for (candidates) |directory| {
+        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink", .{ directory, id });
+        std.Io.Dir.cwd().access(io, path, .{}) catch continue;
+        assert(std.mem.endsWith(u8, path, ".ink"));
+        return path;
+    }
+    return error.SourceNotFound;
 }
 
-/// Replays case `id` on `engine` and returns its transcript.
+/// Replays case `id` on `engine` and returns its transcript. `actions_override` replaces the
+/// case's own actions when given.
 pub fn replay(
     arena: std.mem.Allocator,
     io: std.Io,
@@ -39,14 +41,27 @@ pub fn replay(
 ) ![]const u8 {
     assert(id.len > 0);
     assert(engine.len > 0);
+    return replay_with(arena, io, engine, id, null);
+}
+
+pub fn replay_with(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    engine: []const u8,
+    id: []const u8,
+    actions_override: ?[]const u8,
+) ![]const u8 {
+    assert(id.len > 0);
+    assert(engine.len > 0);
     const cwd = std.Io.Dir.cwd();
     const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{ cases_directory, id });
     const actions_path = try std.fmt.allocPrint(arena, "{s}/{s}.actions", .{ cases_directory, id });
-    const actions = cwd.readFileAlloc(io, actions_path, arena, .limited(file_bytes_max)) catch |err|
-        switch (err) {
-            error.FileNotFound => "play",
-            else => return err,
-        };
+    const actions = actions_override orelse
+        cwd.readFileAlloc(io, actions_path, arena, .limited(file_bytes_max)) catch |err|
+            switch (err) {
+                error.FileNotFound => "play",
+                else => return err,
+            };
     if (std.mem.eql(u8, engine, "old_compiler")) {
         const source_file = try source_path(arena, io, id);
         const source = try cwd.readFileAlloc(io, source_file, arena, .limited(file_bytes_max));

@@ -28,12 +28,13 @@ setup() {
 
 # A case id is a path below test/ground_truth without extension, such as `smoke` or
 # `runtime/choices/sticky_choices`. Its source is test/ground_truth/<id>.ink, or else the
-# fixture test/fixture/original/<id>.ink. Its actions are test/ground_truth/<id>.actions, or
+# fixture test/fixture/original/<id>.ink, or else the story test/fixture/<id>.ink. Its actions are test/ground_truth/<id>.actions, or
 # `play` when that file doesn't exist.
 expected_one() {
     local id="$1"
     local source="$cases/$id.ink"
     [ -f "$source" ] || source="$root/test/fixture/original/$id.ink"
+    [ -f "$source" ] || source="$root/test/fixture/$id.ink"
     mkdir -p "$(dirname "$cases/$id")"
     local name
     name="$(basename "$id")"
@@ -56,6 +57,8 @@ expected_one() {
 all_ids() {
     for actions in "$cases"/*.actions; do basename "$actions" .actions; done
     (cd "$root/test/fixture/original" && find runtime -name '*.ink' -not -path '*/includes/*' | sed 's/\.ink$//' | sort)
+    # The full stories at the top of test/fixture/.
+    (cd "$root/test/fixture" && ls *.ink | sed 's/\.ink$//')
 }
 
 expected() {
