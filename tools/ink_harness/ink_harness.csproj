@@ -1,0 +1,19 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Ground-truth generator for inkz (plan D19). It runs the real ink runtime and compiler at
+    the commit pinned in mise.toml and writes reference data for the Zig test suite. It is
+    never part of `zig build`; run it through `mise run reference:...`.
+  -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../reference/ink/ink-engine-runtime/ink-engine-runtime.csproj" />
+    <ProjectReference Include="../../reference/ink/compiler/ink_compiler.csproj" />
+  </ItemGroup>
+</Project>
