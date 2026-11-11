@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[[{"->":"one"},["done",{"#n":"g-0"}],null],"done",{"one":[[["^One.","\n",{"->":"two"},{"#f":5,"#n":"here"}],null],null],"two":[[["^Two.","\n","ev",{"CNT?":"one.0.here"},"out","/ev","^ ","ev",{"CNT?":".^"},"out","/ev","^ ","ev",{"CNT?":".^"},"out","/ev","\n","end",{"#f":5,"#n":"here"}],null],null]}],"listDefs":{}}

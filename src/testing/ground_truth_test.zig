@@ -128,7 +128,7 @@ test "oracle: transcripts on every engine" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    for (cases.engines) |engine| {
+    for (cases.transcript_engines) |engine| {
         const results = try transcript_results(arena, std.testing.io, engine);
         const scope: oracle.Scope = .{ .engine = engine, .corpus = .transcripts };
         try oracle.check(arena, std.testing.io, scope, results);

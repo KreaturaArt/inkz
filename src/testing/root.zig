@@ -5,6 +5,7 @@ pub const old_engine = @import("old_engine.zig");
 pub const ground_truth = @import("ground_truth_test.zig");
 pub const cases = @import("cases.zig");
 pub const oracle = @import("oracle.zig");
+pub const known_bugs = @import("known_bugs.zig");
 pub const transcripts = @import("transcripts.zig");
 
 test {
@@ -13,4 +14,5 @@ test {
     _ = ground_truth;
     _ = transcripts;
     _ = oracle;
+    _ = known_bugs;
 }
