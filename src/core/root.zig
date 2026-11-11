@@ -6,6 +6,8 @@ pub const index = @import("index.zig");
 pub const limits = @import("limits.zig");
 pub const string_pool = @import("string_pool.zig");
 pub const extra = @import("extra.zig");
+pub const bounded_stack = @import("bounded_stack.zig");
+pub const work_stack = @import("work_stack.zig");
 
 test {
     _ = fault;
@@ -14,4 +16,6 @@ test {
     _ = limits;
     _ = string_pool;
     _ = extra;
+    _ = bounded_stack;
+    _ = work_stack;
 }
