@@ -13,6 +13,7 @@ pub const dotnet_random = @import("dotnet_random.zig");
 pub const path = @import("path.zig");
 pub const counting_allocator = @import("counting_allocator.zig");
 pub const instruction = @import("instruction.zig");
+pub const container = @import("container.zig");
 
 test {
     _ = fault;
@@ -28,5 +29,6 @@ test {
     _ = path;
     _ = counting_allocator;
     _ = instruction;
+    _ = container;
     _ = @import("sizes_test.zig");
 }
