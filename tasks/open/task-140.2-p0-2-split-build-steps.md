@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.1 (Zig 0.17 build)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -17,7 +17,7 @@ Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 asser
 
 ## Acceptance Criteria
 - [ ] Each step runs on its own, and the totals match the full suite.
-- [ ] Validated by unit tests; `zig build lint` passes on the new code.
+- [ ] Validated by unit tests.
 
 ## Implementation Notes
 

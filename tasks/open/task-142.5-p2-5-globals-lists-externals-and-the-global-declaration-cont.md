@@ -1,11 +1,11 @@
-# TASK-142.5: P2.5 Globals, lists and externals tables
+# TASK-142.5: P2.5 Globals, lists, externals and the `global_declaration` container
 
 - Status: To Do
 - Priority: high
 - Labels: dod, core, program
 - Dependencies: TASK-141 (core primitives)
 - Parent: TASK-142
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

@@ -5,7 +5,7 @@
 - Labels: dod, compiler, codegen
 - Dependencies: TASK-145 (new VM), TASK-148.1–148.3 (resolve, includes, lists), TASK-148.0 (adapter it replaces)
 - Parent: TASK-148
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

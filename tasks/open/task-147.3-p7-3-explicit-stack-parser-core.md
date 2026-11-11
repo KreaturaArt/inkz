@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: medium
 - Labels: dod, compiler, parser
-- Dependencies: TASK-147.0 (parser spike), TASK-147.2 (AST)
+- Dependencies: TASK-147.0 (parser spike), TASK-147.1 (tokenizer), TASK-147.2 (AST)
 - Parent: TASK-147
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

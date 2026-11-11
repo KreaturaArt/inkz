@@ -4,7 +4,7 @@
 - Priority: high
 - Labels: dod, loader
 - Dependencies: TASK-142 (Program and builder)
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 

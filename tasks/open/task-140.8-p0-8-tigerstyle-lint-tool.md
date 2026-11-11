@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.2 (build steps)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -24,7 +24,7 @@ Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 asser
 ## Acceptance Criteria
 - [ ] The lint passes on `src/core/` from day one.
 - [ ] A tests-for-the-linter suite shows each rule firing on sample inputs, including a suppressed false positive.
-- [ ] Validated by unit tests; `zig build lint` passes on the new code.
+- [ ] Validated by unit tests.
 
 ## Implementation Notes
 

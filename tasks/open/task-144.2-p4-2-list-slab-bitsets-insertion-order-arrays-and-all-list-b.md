@@ -1,20 +1,20 @@
-# TASK-144.5: P4.5 `OutputItem` stream and `string_marks`
+# TASK-144.2: P4.2 List slab bitsets, insertion-order arrays and all list builtins
 
 - Status: To Do
 - Priority: high
 - Labels: dod, runtime, state
 - Dependencies: TASK-143 (loader), TASK-140.10 (ground truth), TASK-140.11 (neutral test layer)
 - Parent: TASK-144
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
-Plan item P4.5 in `docs/DODMigrationPlan.md` §6 (Phase 4).
+Plan item P4.2 in `docs/DODMigrationPlan.md` §6 (Phase 4).
 
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.
 
 ## Acceptance Criteria
-- [ ] Every newline/glue/whitespace test passes.
+- [ ] All list tests ported; display order; empty-list origins; seeded `LIST_RANDOM` and cross-origin min/max ties match ground truth.
 - [ ] Validated by unit tests; `zig build lint` passes on the new code.
 
 ## Implementation Notes

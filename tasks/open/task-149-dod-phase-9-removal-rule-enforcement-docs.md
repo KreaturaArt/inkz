@@ -4,15 +4,15 @@
 - Priority: medium
 - Labels: dod, cleanup, docs
 - Dependencies: TASK-146 (save/API), TASK-148 (compiler)
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
 Phase 9 of the DOD migration plan (`docs/DODMigrationPlan.md` §6, Phase 9). This parent task tracks its subtasks; see the plan for architecture (§4), engineering rules (§3) and decisions (§5).
 
 ## Acceptance Criteria
-- [ ] TASK-149.1 done: Delete the old runtime
-- [ ] TASK-149.2 done: Delete the old compiler
+- [ ] TASK-149.1 done: Delete the old runtime and rename `src/vm/` to `src/runtime/` (D21)
+- [ ] TASK-149.2 done: Delete the old compiler and rename `src/compiler_next/` to `src/compiler/` (D21)
 - [ ] TASK-149.3 done: Documentation
 - [ ] TASK-149.4 done: Final benchmark report
 - [ ] `zig build lint` passes on all new code of this phase.

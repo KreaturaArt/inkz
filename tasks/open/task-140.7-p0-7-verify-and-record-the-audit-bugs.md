@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.10 (ground-truth expectations), TASK-140.8 (lint)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -17,11 +17,11 @@ Each becomes a failing test, skipped with a task id. Zero-debt rule: all must be
   - divert, divert-target and variable-pointer values are serialized as `null`
   - saved strings are truncated at 2048 bytes
   - choices, flows, tags and the seed are not saved
-  - `story_seed` never advances
+  - `previous_random` does not exist and `SEED_RANDOM` takes `abs` (S7)
   - variable lookup walks every frame
   - `aliveFlowNames` doesn't compile
   - the 33rd temp is undefined behaviour
-  - the semantic divergences S1–S8 (§1.1), each with a minimal reproduction and the expected ink output
+  - the semantic divergences S1–S11 (§1.1), each with a minimal reproduction and the expected ink output from the harness
 - Compiler:
   - label names collide globally across knots
   - `temp_names` is never reset
@@ -32,8 +32,7 @@ Each becomes a failing test, skipped with a task id. Zero-debt rule: all must be
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.
 
 ## Acceptance Criteria
-- [ ] Every runtime and compiler audit bug listed above has a failing test, marked skipped with the id of the task that will fix it.
-- [ ] Each divergence S1–S8 (plan §1.1) has a minimal reproduction with the expected ink output, marked skipped with its fixing task id.
+- [ ] Every listed bug has a failing test, marked skipped with the id of the task that fixes it.
 - [ ] A test lists all skipped tests with their task ids, so none can be forgotten before P9.
 - [ ] Validated by unit tests; `zig build lint` passes on the new code.
 

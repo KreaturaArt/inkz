@@ -3,17 +3,22 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, tooling, testing
-- Dependencies: —
+- Dependencies: TASK-140.0 (reference harness), TASK-140.11 (test layer), TASK-140.8 (lint)
 - Parent: TASK-140
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
 Plan item P0.10 in `docs/DODMigrationPlan.md` §6 (Phase 0).
 
-- Pin a commit of the inkle/ink repository and transcribe the relevant runtime tests from `tests/Tests.cs` into `test/ground_truth/<name>.ink` plus `<name>.expected` (line-by-line output, tags, choices, and, where the test checks them, variables, errors and warnings). This happens once. The tool is a `tools/` program where possible, otherwise the transcription is done by hand and reviewed.
-- Compile each case with inklecate into `<name>.ink.json`.
-- Priority coverage: S1–S9, threads, choices in threads, flows, evaluate-function side effects, glue and newline lookahead, visit and turn counts, shuffles and `RANDOM` with a seed, list ops, int and float edge cases, save/load.
+- Each case is `test/ground_truth/<name>.ink`, its inklecate-compiled `<name>.ink.json`, `<name>.actions.zon`, and `<name>.expected`.
+- **Action script** (`.actions.zon`): an ordered list of host actions: `cont`, `continue_maximally`, `choose`, `choose_path_string`, `evaluate_function`, `get_variable`/`set_variable`, `observe` (expected notifications), `bind_external` (with scripted returns), `save`, `load`, `switch_flow`, `remove_flow`, `seed`. This covers the many `Tests.cs` cases that use the API.
+- **Expected file** (`.expected`): written by the harness (P0.0). It records, after every action, the line text, tags, choices, errors/warnings, observer notifications and requested variables.
+- **Sources:**
+  - Port the relevant tests from ink's `tests/Tests.cs` at the pinned commit into cases.
+  - Generate expectations for the existing compiled fixtures under `test/fixture/original/runtime/` (mirroring the `Tests.cs` categories) with default action scripts.
+- The Zig runner (`tools/ground_truth.zig`, a build step) replays action scripts through the P0.11 layer.
+- Priority coverage: S1–S11, threads, choices in threads, flows, evaluate-function side effects, glue and newline lookahead, visit and turn counts, shuffles and `RANDOM` with a seed, list ops, int and float edge cases, save/load.
 
 Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 assertions per function, ≤ 70-line functions, snake_case.
 

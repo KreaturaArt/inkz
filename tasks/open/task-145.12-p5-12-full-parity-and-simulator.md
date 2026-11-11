@@ -3,9 +3,9 @@
 - Status: To Do
 - Priority: high
 - Labels: dod, runtime, vm
-- Dependencies: TASK-144 (runtime state), TASK-140.12 (heuristic report)
+- Dependencies: TASK-145.1–145.11 (all VM items)
 - Parent: TASK-145
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
@@ -17,7 +17,7 @@ Follow `TIGER_STYLE.md` and plan §3: no recursion, explicit limits, ≥ 2 asser
 - [ ] Every ground-truth case passes.
 - [ ] The oracle passes on every fixture modulo the ledger.
 - [ ] All runtime tests run on the new engine through P0.11.
-- [ ] `simulate` runs 10k seeds (including compact-always mode) with no verify failure.
+- [ ] The simulator's full action mix (P0.9) is enabled, and `simulate` runs 10k seeds (including compact-always mode) with no verify failure.
 - [ ] Validated by unit tests; `zig build lint` passes on the new code.
 
 ## Implementation Notes

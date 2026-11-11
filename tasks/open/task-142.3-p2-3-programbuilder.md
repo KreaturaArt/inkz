@@ -5,7 +5,7 @@
 - Labels: dod, core, program
 - Dependencies: TASK-141 (core primitives)
 - Parent: TASK-142
-- Created: 2026-10-24 · Updated: 2026-10-24
+- Created: 2026-10-24 · Updated: 2026-11-11
 
 ## Description
 
