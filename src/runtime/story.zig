@@ -137,6 +137,8 @@ pub const Story = struct {
         loop_back_gather_tail: u32 = 0,
         divert_ancestor_of_choice_source: u32 = 0,
     } = .{},
+    /// Calls to step(), for `zig build bench` (plan P0.6).
+    steps_count: u64 = 0,
     /// Flat array of all containers; root is containers[0]. Arena-owned.
     containers: []Container,
     /// Global named-child table; each Container holds a slice range. Arena-owned.
@@ -1349,6 +1351,7 @@ pub const Story = struct {
 
     /// Execute one step. Returns .ok to continue or .stopped to halt.
     pub fn step(self: *Story) !StepResult {
+        self.steps_count += 1;
         const elem = self.state.call_stack.currentElement();
         const ptr = elem.current_pointer;
 

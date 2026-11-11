@@ -90,6 +90,25 @@ pub fn build(b: *std.Build) void {
     const heuristics_step = b.step("heuristics-report", "Count weave-heuristic firings (P0.12)");
     heuristics_step.dependOn(&run_heuristics.step);
 
+    // Benchmarks in both release modes, one after the other (they write the same report).
+    const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast (P0.6)");
+    var previous_bench: ?*std.Build.Step = null;
+    for ([_]std.builtin.OptimizeMode{ .ReleaseSafe, .ReleaseFast }) |mode| {
+        const bench = b.addExecutable(.{
+            .name = b.fmt("bench_{t}", .{mode}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bench.zig"),
+                .target = target,
+                .optimize = mode,
+            }),
+        });
+        const run_bench = b.addRunArtifact(bench);
+        run_bench.setCwd(b.path("."));
+        if (previous_bench) |previous| run_bench.step.dependOn(previous);
+        previous_bench = &run_bench.step;
+        bench_step.dependOn(&run_bench.step);
+    }
+
     const lint = b.addExecutable(.{
         .name = "lint",
         .root_module = b.createModule(.{
@@ -118,7 +137,6 @@ pub fn build(b: *std.Build) void {
 
     // Tool steps that fail with a pointer to their issue until the tool exists.
     const pending = [_]PendingTool{
-        .{ .step = "bench", .description = "Run benchmarks", .issue = "TASK-140.6" },
         .{ .step = "fuzz", .description = "Run fuzz targets", .issue = "TASK-140.9" },
         .{ .step = "simulate", .description = "Run the story simulator", .issue = "TASK-140.9" },
     };
