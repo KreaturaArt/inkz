@@ -9,6 +9,7 @@ pub const extra = @import("extra.zig");
 pub const bounded_stack = @import("bounded_stack.zig");
 pub const work_stack = @import("work_stack.zig");
 pub const tag_set = @import("tag_set.zig");
+pub const dotnet_random = @import("dotnet_random.zig");
 
 test {
     _ = fault;
@@ -20,5 +21,6 @@ test {
     _ = bounded_stack;
     _ = work_stack;
     _ = tag_set;
+    _ = dotnet_random;
     _ = @import("sizes_test.zig");
 }
