@@ -9,6 +9,23 @@ const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
 const Story = @import("../runtime/story.zig").Story;
 
+/// Weave-heuristic firings of every old engine in this process (plan P0.12), added when an
+/// engine is deinitialized or replaced.
+pub var heuristic_totals: HeuristicCounts = .{};
+
+pub const HeuristicCounts = struct {
+    loop_back_gather_tail: u32 = 0,
+    divert_ancestor_of_choice_source: u32 = 0,
+
+    fn add(total: *HeuristicCounts, story: *const Story) void {
+        const counts = story.heuristic_counts;
+        total.loop_back_gather_tail += counts.loop_back_gather_tail;
+        total.divert_ancestor_of_choice_source += counts.divert_ancestor_of_choice_source;
+        assert(total.loop_back_gather_tail >= counts.loop_back_gather_tail);
+        assert(total.divert_ancestor_of_choice_source >= counts.divert_ancestor_of_choice_source);
+    }
+};
+
 pub const OldEngine = struct {
     pub const tags_per_line = false;
 
@@ -49,6 +66,7 @@ pub const OldEngine = struct {
         engine.gpa.free(engine.saved);
         engine.gpa.free(engine.tags);
         engine.gpa.free(engine.names);
+        heuristic_totals.add(&engine.story);
         engine.story.deinit();
         engine.* = undefined;
     }
@@ -217,6 +235,7 @@ pub const OldEngine = struct {
         errdefer fresh.deinit();
         fresh.state.story_seed = 0;
         try fresh.loadStateFromJson(engine.saved);
+        heuristic_totals.add(&engine.story);
         engine.story.deinit();
         engine.story = fresh;
         engine.discard_turn();
@@ -351,4 +370,15 @@ test "layer: a turn is split into lines and choices come after the last one" {
     defer gpa.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "> continue\ntext: \"one\\n\"\n") != null);
     try std.testing.expect(std.mem.endsWith(u8, text, "> choices\nchoices: 1\n  0: \"two\"\n"));
+}
+
+test "layer: weave heuristic firings are counted (P0.12)" {
+    // Goal: the instrumentation behind `zig build heuristics-report`. Method: play a weave
+    // fixture where the divert-to-ancestor heuristic is known to fire and check the total.
+    const gpa = std.testing.allocator;
+    const before = heuristic_totals.divert_ancestor_of_choice_source;
+    const fixture = fixtures ++ "weaves/conditional_choice_in_weave.ink.json";
+    const text = try replay_fixture(gpa, fixture, "play");
+    defer gpa.free(text);
+    try std.testing.expect(heuristic_totals.divert_ancestor_of_choice_source > before);
 }

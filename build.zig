@@ -76,6 +76,20 @@ pub fn build(b: *std.Build) void {
     const transcripts_step = b.step("transcripts", "Regenerate test/transcripts (old runtime)");
     transcripts_step.dependOn(&run_transcripts.step);
 
+    const heuristics = b.addExecutable(.{
+        .name = "heuristics_report",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/heuristics_report.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    heuristics.root_module.addOptions("build_options", build_options);
+    const run_heuristics = b.addRunArtifact(heuristics);
+    run_heuristics.setCwd(b.path("."));
+    const heuristics_step = b.step("heuristics-report", "Count weave-heuristic firings (P0.12)");
+    heuristics_step.dependOn(&run_heuristics.step);
+
     const lint = b.addExecutable(.{
         .name = "lint",
         .root_module = b.createModule(.{

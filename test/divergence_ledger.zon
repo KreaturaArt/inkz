@@ -11,6 +11,7 @@
     .{ .case = "audit/save_divert_target", .engine = "old", .corpus = .ground_truth, .kind = .s9, .reason = "S9: divert-target values are saved as null; loading crashes", .fix = "TASK-146.1" },
     .{ .case = "audit/save_long_string", .engine = "old", .corpus = .ground_truth, .kind = .s9, .reason = "S9: saved strings are truncated at 2048 bytes; loading crashes", .fix = "TASK-146.1" },
     .{ .case = "audit/visits_on_divert_into_nested", .engine = "old", .corpus = .ground_truth, .kind = .s3, .reason = "S3: a divert into a stitch counts only the target, not the newly entered knot", .fix = "TASK-145.6" },
+    .{ .case = "crime_scene", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected choices: 3 | got text: \"\\n\"" },
     .{ .case = "runtime/bindings/external_binding", .engine = "old", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind" },
     .{ .case = "runtime/bindings/game_ink_back_and_forth", .engine = "old", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind" },
     .{ .case = "runtime/bindings/lookup_safe_or_not", .engine = "old", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind" },
@@ -114,6 +115,7 @@
     .{ .case = "audit/save_divert_target", .engine = "old_compiler", .corpus = .ground_truth, .kind = .s9, .reason = "S9: divert-target values are saved as null; loading crashes", .fix = "TASK-146.1" },
     .{ .case = "audit/save_long_string", .engine = "old_compiler", .corpus = .ground_truth, .kind = .s9, .reason = "S9: saved strings are truncated at 2048 bytes; loading crashes", .fix = "TASK-146.1" },
     .{ .case = "audit/visits_on_divert_into_nested", .engine = "old_compiler", .corpus = .ground_truth, .kind = .s3, .reason = "S3: a divert into a stitch counts only the target, not the newly entered knot", .fix = "TASK-145.6" },
+    .{ .case = "crime_scene", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected choices: 3 | got text: \"\\n\"" },
     .{ .case = "runtime/bindings/external_binding", .engine = "old_compiler", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind" },
     .{ .case = "runtime/bindings/game_ink_back_and_forth", .engine = "old_compiler", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind" },
     .{ .case = "runtime/bindings/lookup_safe_or_not", .engine = "old_compiler", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind" },
@@ -187,5 +189,6 @@
     .{ .case = "runtime/weaves/conditional_choice_in_weave", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"gather should be seen\\n\" | got choices: 1" },
     .{ .case = "runtime/weaves/conditional_choice_in_weave_2", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 2, line 7: expected text: \"the main gather\\n\" | got text: \"\\n\"" },
     .{ .case = "runtime/weaves/weave_within_sequence", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 2: expected text: \"\" | got text: \"\\n\"" },
+    .{ .case = "simple_taster_tutorial", .engine = "old_compiler", .corpus = .ground_truth, .kind = .whitespace, .reason = "only whitespace inside lines differs" },
     .{ .case = "smoke", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"Hello, world.\\n\" | got text: \"Hello, world. \\n\"" },
 }

@@ -132,6 +132,11 @@ fn writeRtObjJson(w: *std.Io.Writer, obj: RuntimeObject) !void {
 const ListItemEntry = struct { origin: []const u8, value: i32 };
 
 pub const Story = struct {
+    /// How often each weave heuristic changed control flow (plan P0.12, for P5.2).
+    heuristic_counts: struct {
+        loop_back_gather_tail: u32 = 0,
+        divert_ancestor_of_choice_source: u32 = 0,
+    } = .{},
     /// Flat array of all containers; root is containers[0]. Arena-owned.
     containers: []Container,
     /// Global named-child table; each Container holds a slice range. Arena-owned.
@@ -1010,6 +1015,7 @@ pub const Story = struct {
                 if (!cur.isNull()) {
                     if (self.currentObject()) |next_obj| {
                         if (self.loopBackDivertAfterChoices(cur, next_obj)) {
+                            self.heuristic_counts.loop_back_gather_tail += 1;
                             // Match normal choice stops: pointer null while choices are visible so
                             // `canContinue()` is false (see conditional_choices test / compileAndRun).
                             self.state.call_stack.currentElement().current_pointer = Pointer.null_value;
@@ -2071,6 +2077,7 @@ pub const Story = struct {
             self.state.current_choices.items.len > 0 and
             self.divertTargetsAncestorOfAnyChoiceSource(target_ptr.container_idx))
         {
+            self.heuristic_counts.divert_ancestor_of_choice_source += 1;
             elem.current_pointer = Pointer.null_value;
             return .ok;
         }
