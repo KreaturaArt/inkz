@@ -356,7 +356,7 @@ fn readOriginalFixture(alloc: std.mem.Allocator, comptime rel: []const u8) ![:0]
     const io = std.testing.io;
     const data = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
     defer alloc.free(data);
-    return alloc.dupeZ(u8, data);
+    return alloc.dupeSentinel(u8, data, 0);
 }
 
 /// Collect all tokens from a null-terminated source string (caller frees).

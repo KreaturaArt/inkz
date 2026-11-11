@@ -22,7 +22,7 @@ const Tokenizer = tok_mod.Tokenizer;
 /// Only `error.OutOfMemory` can be returned; syntax errors go into `story.errors`.
 pub fn parse(alloc: std.mem.Allocator, src: []const u8) error{OutOfMemory}!Parsed.Story {
     // Null-terminate so the tokenizer can use the NUL sentinel for EOF.
-    const srcZ = try alloc.dupeZ(u8, src);
+    const srcZ = try alloc.dupeSentinel(u8, src, 0);
     // Tokenise the whole source up front.
     var tokens = std.ArrayList(Token).empty;
     var t = Tokenizer.init(srcZ);
@@ -1635,7 +1635,7 @@ pub const Parser = struct {
     }
 
     fn parseStandaloneFlowItems(self: *Parser, text: []const u8) error{OutOfMemory}![]Parsed.FlowItem {
-        const owned = try self.alloc.dupeZ(u8, text);
+        const owned = try self.alloc.dupeSentinel(u8, text, 0);
         var tokens = std.ArrayList(Token).empty;
         var t = Tokenizer.init(owned);
         while (true) {
