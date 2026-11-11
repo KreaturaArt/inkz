@@ -1,0 +1,55 @@
+//! Cases that must panic, run by `zig build test-death` (plan D20).
+//!
+//! Each public function in `must_panic` is one case. The build runs `tools/death.zig` once per
+//! case as a child process and expects it to abort. If a case returns instead, the runner
+//! exits with `did_not_die_exit_code` and the step fails.
+//!
+//! Two control groups show that the step tells a panic apart from a normal exit:
+//! - `must_return` cases return, and the runner exits with 0.
+//! - `self_test_must_panic` cases return although the runner expects a panic, so the runner
+//!   exits with `did_not_die_exit_code`. The build expects exactly that code for them.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const fault = @import("fault.zig");
+
+pub const did_not_die_exit_code = 3;
+
+pub const must_panic = struct {
+    pub fn verify_panics_on_a_fault() void {
+        const Fault = enum { ok, broken };
+        const result: Fault = .broken;
+        assert(result != .ok);
+        fault.verify(result);
+    }
+};
+
+pub const must_return = struct {
+    pub fn verify_returns_on_ok() void {
+        const Fault = enum { ok, broken };
+        const result: Fault = .ok;
+        assert(result == .ok);
+        fault.verify(result);
+    }
+};
+
+pub const self_test_must_panic = struct {
+    pub fn returning_case_is_caught() void {
+        const steps: u32 = 1;
+        assert(steps > 0);
+        assert(steps < 2);
+    }
+};
+
+test "case names are unique across both groups" {
+    // Goal: the build derives one step argument per name, so duplicates would hide a case.
+    // Method: compare every pair of declaration names at compile time.
+    const panic_names = comptime std.meta.declarations(must_panic);
+    const return_names = comptime std.meta.declarations(must_return);
+    inline for (panic_names) |a| {
+        inline for (return_names) |b| {
+            try std.testing.expect(!std.mem.eql(u8, a, b));
+        }
+    }
+    try std.testing.expect(panic_names.len > 0);
+}

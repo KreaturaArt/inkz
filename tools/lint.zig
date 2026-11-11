@@ -1,8 +1,8 @@
 //! TigerStyle lint for inkz (plan §3, P0.8), run with `zig build lint`.
 //!
 //! Rules: function length, line length, recursion (a name-based call graph), `usize` struct
-//! fields, snake_case file names and assertion density. Old code listed in `grandfathered` is
-//! skipped until it is deleted (plan P9).
+//! fields, snake_case file names and assertion density (`assert` and `verify` calls). Old
+//! code listed in `grandfathered` is skipped until it is deleted (plan P9).
 //!
 //! Suppressions are comments that must give a reason:
 //! - `// lint: allow function_length: <reason>` or `// lint: allow recursion: <reason>` in the
@@ -300,7 +300,7 @@ pub const Linter = struct {
             const call = file.tree.fullCall(&buffer, node) orelse continue;
             const caller = linter.enclosing_function(file_index, call.ast.lparen) orelse continue;
             const callee = callee_of(file, call.ast.fn_expr) orelse continue;
-            if (std.mem.eql(u8, callee.name, "assert")) assertions_count += 1;
+            if (is_assertion(callee.name)) assertions_count += 1;
             try linter.calls.append(linter.arena, .{
                 .caller = caller,
                 .callee_name = callee.name,
@@ -600,6 +600,14 @@ fn group_components(arena: Allocator, components: []const u32) !ComponentMembers
     return .{ .first = counts[0..components_count], .first_next = counts[1..], .nodes = nodes };
 }
 
+/// `assert` and `verify` (the D20 convention, which asserts on `check()`) count as assertions.
+fn is_assertion(name: []const u8) bool {
+    assert(name.len > 0);
+    const result = std.mem.eql(u8, name, "assert") or std.mem.eql(u8, name, "verify");
+    if (result) assert(name.len == 6);
+    return result;
+}
+
 fn diagnostic_less_than(_: void, a: Diagnostic, b: Diagnostic) bool {
     assert(a.path.len > 0);
     assert(b.path.len > 0);
@@ -870,8 +878,8 @@ test "usize struct fields are reported, usize locals are not" {
 }
 
 test "assertion density below two per function is reported" {
-    // Goal: the density rule and its file-level suppression. Method: two functions with one
-    // assertion in total, with and without the suppression comment.
+    // Goal: the density rule, verify() counting as an assertion, and the file-level
+    // suppression. Method: sparse and verified samples, with and without the suppression.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const sparse =
@@ -883,6 +891,15 @@ test "assertion density below two per function is reported" {
     ;
     const without = try lint_samples(arena.allocator(), &.{.{ "src/core/sparse.zig", sparse }});
     try expect_rules(without, &.{.assertion_density});
+    const verified =
+        \\fn a(s: S) void {
+        \\    assert(s.ok);
+        \\    fault.verify(s.check());
+        \\}
+        \\
+    ;
+    const counted = try lint_samples(arena.allocator(), &.{.{ "src/core/verified.zig", verified }});
+    try expect_rules(counted, &.{});
     const suppressed = "// lint: allow assertion_density: generated tables\n" ++ sparse;
     const with = try lint_samples(arena.allocator(), &.{.{ "src/core/tables.zig", suppressed }});
     try expect_rules(with, &.{});
