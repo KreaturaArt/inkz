@@ -20,4 +20,5 @@ test {
     _ = bounded_stack;
     _ = work_stack;
     _ = tag_set;
+    _ = @import("sizes_test.zig");
 }
