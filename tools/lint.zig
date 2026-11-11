@@ -61,6 +61,10 @@ const Function = struct {
     token_last: Ast.TokenIndex,
     line: u32,
     allow_recursion: bool,
+    /// Returns `type`, like `fn BoundedStack(T) type { return struct { ... } }`. Its body is a
+    /// type definition whose methods are checked one by one, so it is exempt from the length
+    /// and density rules.
+    returns_type: bool,
 };
 
 const Import = struct {
@@ -231,7 +235,8 @@ pub const Linter = struct {
         const line_last = token_line(&file.tree, token_last);
         const name = file.tree.tokenSlice(name_token);
         const lines_count = line_last - line_first + 1;
-        if (lines_count > function_lines_max and
+        const returns_type = is_type_expression(&file.tree, prototype.ast.return_type);
+        if (lines_count > function_lines_max and !returns_type and
             !comment_block_has(file, line_first, "lint: allow function_length:"))
         {
             const message = try std.fmt.allocPrint(
@@ -248,6 +253,7 @@ pub const Linter = struct {
             .token_last = token_last,
             .line = line_first,
             .allow_recursion = comment_block_has(file, line_first, "lint: allow recursion:"),
+            .returns_type = returns_type,
         });
     }
 
@@ -323,14 +329,17 @@ pub const Linter = struct {
     fn check_assertion_density(linter: *Linter, file_index: u32, assertions_count: u32) !void {
         const file = &linter.files.items[file_index];
         assert(file.functions_first <= linter.functions.items.len);
-        if (file.functions_count == 0) return;
-        const required = file.functions_count * assertions_per_function_min;
+        var functions_count: u32 = 0;
+        const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
+        for (functions) |function| functions_count += @intFromBool(!function.returns_type);
+        if (functions_count == 0) return;
+        const required = functions_count * assertions_per_function_min;
         if (assertions_count >= required) return;
         if (std.mem.indexOf(u8, file.source, "lint: allow assertion_density:") != null) return;
         const message = try std.fmt.allocPrint(
             linter.arena,
             "{d} assertions in {d} functions; at least {d} per function on average",
-            .{ assertions_count, file.functions_count, assertions_per_function_min },
+            .{ assertions_count, functions_count, assertions_per_function_min },
         );
         assert(required > assertions_count);
         try linter.report(file.path, 1, .assertion_density, message);
@@ -457,6 +466,15 @@ fn callee_of(file: *const SourceFile, expression: Ast.Node.Index) ?Callee {
         },
         else => return null,
     }
+}
+
+fn is_type_expression(tree: *const Ast, node: Ast.Node.OptionalIndex) bool {
+    const expression = node.unwrap() orelse return false;
+    assert(tree.errors.len == 0);
+    if (tree.nodeTag(expression) != .identifier) return false;
+    const name = tree.tokenSlice(tree.nodeMainToken(expression));
+    assert(name.len > 0);
+    return std.mem.eql(u8, name, "type");
 }
 
 /// The string argument of `@import("...")`, without quotes.
@@ -984,6 +1002,30 @@ test "direct, mutual and cross-file recursion are reported" {
     try expect_rules(diagnostics, &.{ .recursion, .recursion, .recursion });
     try std.testing.expectEqualStrings("src/a/a.zig", diagnostics[0].path);
     try std.testing.expectEqualStrings("src/local.zig", diagnostics[1].path);
+}
+
+test "type-returning functions are exempt from length and density" {
+    // Goal: the generic-type idiom isn't one long function. Method: a 72-line type function
+    // whose methods each follow the rules.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    var source: std.ArrayList(u8) = .empty;
+    try source.appendSlice(arena.allocator(), "fn Stack(comptime T: type) type {\n");
+    try source.appendSlice(arena.allocator(), "    return struct {\n");
+    for (0..14) |_| {
+        try source.appendSlice(arena.allocator(),
+            \\        fn m() void {
+            \\            assert(true);
+            \\            assert(true);
+            \\        }
+            \\
+            \\
+        );
+    }
+    try source.appendSlice(arena.allocator(), "    };\n}\n");
+    const text = try arena.allocator().dupeSentinel(u8, source.items, 0);
+    const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/core/stack.zig", text }});
+    try expect_rules(diagnostics, &.{});
 }
 
 test "calls into std and through field chains are not recursion" {
