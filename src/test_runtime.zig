@@ -14,4 +14,5 @@ test {
     _ = @import("runtime/story.zig");
     _ = @import("runtime/lists.zig");
     _ = @import("test/helpers.zig");
+    _ = @import("testing/root.zig");
 }

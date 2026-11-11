@@ -53,6 +53,19 @@ pub fn build(b: *std.Build) void {
     run_lint.addArgs(&.{ "src", "tools" });
     b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
 
+    const inventory = b.addExecutable(.{
+        .name = "test_inventory",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/test_inventory.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_inventory = b.addRunArtifact(inventory);
+    run_inventory.setCwd(b.path("."));
+    const inventory_step = b.step("test-inventory", "Count old-runtime tests that use internals");
+    inventory_step.dependOn(&run_inventory.step);
+
     // Tool steps that fail with a pointer to their issue until the tool exists.
     const pending = [_]PendingTool{
         .{ .step = "bench", .description = "Run benchmarks", .issue = "TASK-140.6" },
