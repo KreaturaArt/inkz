@@ -622,12 +622,12 @@ Phase 0 has a real internal order:
     - `compile()` ignores errors
   - ✅ Every listed bug has a failing test, marked skipped with the id of the task that fixes it. A test lists all skipped tests with their task ids, so none can be forgotten before P9.
 - **P0.8 TigerStyle lint tool** (`tools/lint.zig`, `zig build lint`). It checks:
-  - function length ≤ 70 lines, with allowlist entries for `vm.run` and the tokenizer state machine (D10)
+  - function length ≤ 70 lines; `vm.run` and the tokenizer state machine (D10) carry a `// lint: allow function_length: <reason>` comment
   - line length ≤ 100 columns
-  - no recursion: a name-based call-graph cycle check using `std.zig.Ast` over `src/`, with `// lint: not-recursive <reason>` suppressions for false positives, plus a per-directory allowlist so old code can be grandfathered until it is deleted
+  - no recursion: a name-based call-graph cycle check using `std.zig.Ast` over `src/` and `tools/`, with `// lint: allow recursion: <reason>` suppressions for false positives, plus a list of grandfathered paths for old code until it is deleted
   - no `usize` struct fields
   - snake_case file names
-  - an assertion-density report (asserts per function) that fails new modules averaging below 2
+  - an assertion-density check (assert calls per function) that fails new files averaging below 2, with a file-level `// lint: allow assertion_density: <reason>`
   - ✅ The lint passes on `src/core/` from day one. A tests-for-the-linter suite shows each rule firing on sample inputs, including a suppressed false positive.
 - **P0.9 Fuzz and simulation harness.**
   - `zig build fuzz` targets: tokenizer, parser, JSON loader, save load, and the save/load round trip.
