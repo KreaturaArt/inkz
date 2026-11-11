@@ -2,6 +2,7 @@
 //
 //   compile <story.ink> <story.ink.json> [--count-all-visits]   compile like inklecate
 //   random <count> <seed>...                 System.Random(seed).Next() sequences
+//   paths <story.ink.json>                   every container: path, shuffle hash, flags
 //   run <story.ink.json> <case.actions> <name>  replay host actions, print the transcript;
 //                                            a missing .actions file means `play`
 //
@@ -35,6 +36,8 @@ static class Program
                 return Compile(arguments[1], arguments[2], true);
             case "random" when arguments.Length >= 3:
                 return RandomSequences(arguments);
+            case "paths" when arguments.Length == 2:
+                return Paths(arguments[1]);
             case "run" when arguments.Length == 4:
                 return Run(arguments[1], arguments[2], arguments[3]);
             default:
@@ -101,6 +104,48 @@ static class Program
             output.Append("seed ").Append(seed).Append(':');
             for (var n = 0; n < count; n += 1) output.Append(' ').Append(random.Next());
             output.Append('\n');
+        }
+        Console.Out.Write(output.ToString());
+        return 0;
+    }
+
+    // Every container in depth-first order (content first, then named-only children by name),
+    // with its path, the shuffle hash ink computes from it, its counting flags and how many
+    // content items it has.
+    static int Paths(string storyPath)
+    {
+        var story = new Story(File.ReadAllText(storyPath));
+        var output = new StringBuilder();
+        var name = Path.GetFileName(storyPath).Replace(".ink.json", "");
+        output.Append(Provenance($"mise run reference:paths -- {name}"));
+        var pending = new Stack<Ink.Runtime.Container>();
+        pending.Push(story.mainContentContainer);
+        while (pending.Count > 0)
+        {
+            var container = pending.Pop();
+            var path = container.path.ToString();
+            var hash = 0;
+            foreach (var character in path) hash += character;
+            output.Append(Transcript.Json(path)).Append(' ').Append(hash)
+                .Append(container.visitsShouldBeCounted ? " visits" : "")
+                .Append(container.turnIndexShouldBeCounted ? " turns" : "")
+                .Append(container.countingAtStartOnly ? " start_only" : "")
+                .Append(" content ").Append(container.content.Count).Append('\n');
+            var children = new List<Ink.Runtime.Container>();
+            foreach (var item in container.content)
+            {
+                if (item is Ink.Runtime.Container child) children.Add(child);
+            }
+            if (container.namedOnlyContent != null)
+            {
+                var names = new List<string>(container.namedOnlyContent.Keys);
+                names.Sort(StringComparer.Ordinal);
+                foreach (var key in names)
+                {
+                    if (container.namedOnlyContent[key] is Ink.Runtime.Container child) children.Add(child);
+                }
+            }
+            for (var index = children.Count - 1; index >= 0; index -= 1) pending.Push(children[index]);
         }
         Console.Out.Write(output.ToString());
         return 0;

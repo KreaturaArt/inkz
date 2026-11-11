@@ -35,23 +35,27 @@ test "has_provenance_header accepts the pinned header only" {
 
 test "every generated ground-truth file has a provenance header" {
     // Goal: no checked-in reference data of unknown origin (P0.0). Method: read every
-    // .expected file in test/ground_truth and check its first line.
+    // .expected and .paths file below test/ground_truth and check its first line.
     const io = std.testing.io;
     const gpa = std.testing.allocator;
     var cases = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
     defer cases.close(io);
-    var iterator = cases.iterate();
+    var walker = try cases.walk(gpa);
+    defer walker.deinit();
     var checked: u32 = 0;
-    while (try iterator.next(io)) |entry| {
+    while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".expected")) continue;
-        const text = try cases.readFileAlloc(io, entry.name, gpa, .limited(file_bytes_max));
+        const generated = std.mem.endsWith(u8, entry.path, ".expected") or
+            std.mem.endsWith(u8, entry.path, ".paths");
+        if (!generated) continue;
+        const text = try cases.readFileAlloc(io, entry.path, gpa, .limited(file_bytes_max));
         defer gpa.free(text);
         if (!has_provenance_header(text)) {
-            std.debug.print("missing provenance header: {s}/{s}\n", .{ directory, entry.name });
+            std.debug.print("missing provenance header: {s}/{s}\n", .{ directory, entry.path });
             return error.MissingProvenance;
         }
         checked += 1;
     }
-    try std.testing.expect(checked >= 2);
+    // The corpus has well over a hundred cases.
+    try std.testing.expect(checked >= 100);
 }

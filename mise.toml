@@ -14,3 +14,7 @@ run = "tools/ink_harness/reference.sh expected"
 [tasks."reference:random"]
 description = "Regenerate the .NET System.Random reference sequences"
 run = "tools/ink_harness/reference.sh random"
+
+[tasks."reference:paths"]
+description = "Regenerate container paths and shuffle hashes from ink (P2.4)"
+run = "tools/ink_harness/reference.sh paths"
