@@ -6,6 +6,7 @@ pub const native = @import("native.zig");
 pub const lists = @import("lists.zig");
 pub const heap = @import("heap.zig");
 pub const call_stack = @import("call_stack.zig");
+pub const output = @import("output.zig");
 
 test {
     _ = value;
@@ -13,4 +14,5 @@ test {
     _ = lists;
     _ = heap;
     _ = call_stack;
+    _ = output;
 }
