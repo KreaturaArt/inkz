@@ -86,6 +86,32 @@ pub const ErrorHandler = *const fn (
 /// A variable observer (ink's VariableObserver): the global's name and new value.
 pub const Observer = *const fn (context: ?*anyopaque, name: []const u8, value: HostValue) void;
 
+/// ink's host events (D22), each optional, each called with `context`, at ink's points:
+/// after each Continue, before a choice is taken, around evaluate_function and at the start
+/// of choose_path_string.
+pub const Events = struct {
+    context: ?*anyopaque = null,
+    on_did_continue: ?*const fn (context: ?*anyopaque) void = null,
+    on_make_choice: ?*const fn (context: ?*anyopaque, text: []const u8, position: u32) void = null,
+    on_evaluate_function: ?*const fn (
+        context: ?*anyopaque,
+        name: []const u8,
+        arguments: []const HostValue,
+    ) void = null,
+    on_complete_evaluate_function: ?*const fn (
+        context: ?*anyopaque,
+        name: []const u8,
+        arguments: []const HostValue,
+        text: []const u8,
+        result: HostValue,
+    ) void = null,
+    on_choose_path_string: ?*const fn (
+        context: ?*anyopaque,
+        path: []const u8,
+        arguments: []const HostValue,
+    ) void = null,
+};
+
 /// The most arguments an external function can take.
 pub const external_arguments_max = 32;
 
@@ -123,6 +149,7 @@ pub const Story = struct {
     callback_depth: u32 = 0,
     /// evaluate_function calls running now.
     evaluate_depth: u32 = 0,
+    events: Events = .{},
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
@@ -358,6 +385,11 @@ pub const Story = struct {
             story.state.did_safe_exit = false;
             story.saw_lookahead_unsafe_function_after_newline = false;
             if (story.continue_depth == 1) story.batching_observers = false;
+            if (story.events.on_did_continue) |event| {
+                story.callback_depth += 1;
+                defer story.callback_depth -= 1;
+                event(story.events.context);
+            }
         }
         const length = try story.write_current_text();
         try story.report_diagnostics();
@@ -395,6 +427,15 @@ pub const Story = struct {
             story.notify_global(story.state.observer_events.buffer[position]);
         }
         story.state.observer_events.clear();
+    }
+
+    /// Whether any observer watches global `slot` (only those are queued).
+    pub fn is_observed(story: *const Story, slot: index.GlobalSlot) bool {
+        assert(story.observers_count <= story.state.observers.len);
+        for (story.state.observers[0..story.observers_count]) |record| {
+            if (record.slot == slot) return true;
+        }
+        return false;
     }
 
     /// Calls the observers of global `slot` with its value now.
@@ -592,6 +633,12 @@ pub const Story = struct {
     /// ink's ChooseChoiceIndex.
     pub fn choose_choice_index(story: *Story, position: u32) Error!void {
         if (story.callback_depth > 0) return error.Reentrant;
+        if (story.events.on_make_choice) |event| {
+            const text = story.text_of(story.visible_choice(position).text);
+            story.callback_depth += 1;
+            defer story.callback_depth -= 1;
+            event(story.events.context, text, position);
+        }
         assert(!story.can_continue());
         const choice = story.visible_choice(position);
         story.state.choices.restore(&story.state.call_stack, choice) catch return error.FrameLimit;

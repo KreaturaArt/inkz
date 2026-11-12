@@ -601,7 +601,7 @@ pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     const stored = try retain_list_origins(story, old, value);
     lookahead.set_global(&story.state, slot, stored) catch return error.LookaheadLogLimit;
     assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored));
-    if (same_value(old, stored)) return;
+    if (same_value(old, stored) or !story.is_observed(slot)) return;
     if (!story.batching_observers) return story.notify_global(slot);
     const queue = &story.state.observer_events;
     if (std.mem.indexOfScalar(GlobalSlot, queue.slice(), slot) != null) return;

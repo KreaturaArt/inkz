@@ -36,6 +36,11 @@ pub fn evaluate_function(
     text_writer: *std.Io.Writer,
 ) Error!HostValue {
     assert(name.len > 0);
+    if (story.events.on_evaluate_function) |event| {
+        story.callback_depth += 1;
+        defer story.callback_depth -= 1;
+        event(story.events.context, name, arguments);
+    }
     const program = story.program;
     const container = program.named_child(program.root_container(), name) orelse
         return error.FunctionNotFound;
@@ -63,13 +68,24 @@ pub fn evaluate_function(
         story.evaluate_depth -= 1;
         story.callback_depth = callback_depth;
     }
+    const text_start = text_writer.end;
     while (story.can_continue()) {
         const line = try story.next_line();
         text_writer.writeAll(line) catch return error.OutputLimit;
     }
     stashed = false;
     unstash_output(story);
-    return complete_function_evaluation(story);
+    const result = try complete_function_evaluation(story);
+    if (story.events.on_complete_evaluate_function) |event| {
+        // The text is what the writer still buffers (all of it for a fixed or allocating
+        // writer).
+        const buffered = text_writer.buffered();
+        const text = if (text_start <= buffered.len) buffered[text_start..] else "";
+        story.callback_depth += 1;
+        defer story.callback_depth -= 1;
+        event(story.events.context, name, arguments, text, result);
+    }
+    return result;
 }
 
 /// ink's CompleteFunctionEvaluationFromGame: the first value above the frame's height is

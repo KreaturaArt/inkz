@@ -52,6 +52,8 @@ pub const Kind = enum {
     visit_count,
     tags_at,
     global_tags,
+    /// Records the host events as `event:` lines (P6.3).
+    events,
 };
 
 /// One action: its kind and the rest of the line, trimmed.
@@ -201,6 +203,7 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
         .remove_flow,
         .default_flow,
         .reset,
+        .events,
         .bind,
         .unbind,
         .fallbacks,

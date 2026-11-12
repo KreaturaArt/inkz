@@ -29,3 +29,7 @@ pub const RuntimeObject = value.RuntimeObject;
 pub const Value = value.RuntimeObject;
 
 pub const core = @import("core/root.zig");
+
+/// The new runtime's public API (plan §4.7); it becomes the top-level API when the old
+/// runtime is removed (P9.1).
+pub const vm = @import("vm/api.zig");
