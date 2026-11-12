@@ -15,6 +15,7 @@ const Tree = sema.Tree;
 const ObjectIndex = sema.ObjectIndex;
 const Flags = sema.Flags;
 const NodeIndex = ast_module.NodeIndex;
+const values = @import("values.zig");
 
 // Preparation: ink's ExportRuntime prelude and ResolveWeavePointNaming.
 
@@ -26,12 +27,14 @@ pub fn prepare(context: *Context) !void {
     @memset(context.targets, .none);
     context.references = try gpa.alloc(Reference, count);
     @memset(context.references, .none);
+    context.item_values = try gpa.alloc(i32, count);
+    @memset(context.item_values, 0);
     context.root_weaves = try gpa.alloc(ObjectIndex, count);
     @memset(context.root_weaves, .none);
     context.variable_diverts = try .initEmpty(gpa, count);
     context.skipped = try .initEmpty(gpa, count);
     context.had_error = try .initEmpty(gpa, count);
-    // ink's FindAll order: pre-order (objects are numbered breadth-first).
+    // ink's FindAll order: pre-order (objects are numbered in creation order).
     var stack: std.ArrayList(ObjectIndex) = .empty;
     defer stack.deinit(gpa);
     try stack.append(gpa, Tree.root);
@@ -61,20 +64,65 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
                 }
             }
         },
-        .constant_declaration => {
-            const name = context.leaf_text(context.ast().child(tree.node(object), 0));
-            try context.constants.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
-        },
+        .constant_declaration => try prepare_constant(context, object),
         .list_definition => {
             // The name is the LIST declaration's.
             const declaration = tree.node(tree.parent(object));
             const name = context.leaf_text(context.ast().child(declaration, 0));
             try context.lists.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
             try context.list_order.append(context.gpa, object);
+            values.number_list(context.parsed, tree, object, context.item_values);
+            try check_duplicate_items(context, object);
         },
         else => {},
     }
     assert(object.to_int() < tree.count());
+}
+
+/// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
+fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    const tree = context.tree;
+    const name = context.leaf_text(context.ast().child(tree.node(constant), 0));
+    const entry = try context.constants.getOrPut(context.gpa, .{
+        .scope = Tree.root,
+        .name = name,
+    });
+    defer entry.value_ptr.* = constant;
+    if (!entry.found_existing) return;
+    const earlier = constant_literal(context, entry.value_ptr.*) catch null;
+    const later = constant_literal(context, constant) catch {
+        return context.report(.unsupported_fold, constant);
+    };
+    if (earlier == null or later == null or !values.equal(earlier.?, later.?)) {
+        try context.report(.constant_redefined, constant);
+    }
+}
+
+fn constant_literal(context: *const Context, constant: ObjectIndex) values.Error!?values.Literal {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    const children = context.tree.children_of(constant);
+    if (children.len == 0) return null;
+    return values.literal(context.parsed, context.tree, children[0]);
+}
+
+/// ListDefinition.runtimeListDefinition: duplicate item names are an error on the list.
+fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    const elements = context.tree.children_of(definition);
+    for (elements, 0..) |element, position| {
+        const name = context.leaf_text(context.ast().child(context.tree.node(element), 0));
+        for (elements[position + 1 ..]) |later| {
+            const other = context.leaf_text(context.ast().child(context.tree.node(later), 0));
+            if (std.mem.eql(u8, name, other)) return context.report(
+                .duplicate_list_item,
+                definition,
+            );
+        }
+    }
 }
 
 /// Weave.ResolveWeavePointNaming: every labelled choice and gather under a root weave.

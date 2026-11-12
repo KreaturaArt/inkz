@@ -70,7 +70,7 @@ pub const Builder = struct {
         return &builder.parsed.tree;
     }
 
-    /// Creates the story and expands every object, breadth-first.
+    /// Creates the story and expands every object from a work list.
     pub fn run(builder: *Builder) !void {
         assert(builder.kinds.items.len == 0);
         const story = try builder.create(.story, 0, .none, builder.tree().root);

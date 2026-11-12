@@ -8,9 +8,10 @@
 //!
 //! An object is a row of parallel arrays: its kind, kind-specific flags, its parent, the syntax
 //! node it came from (or none for the objects ink synthesizes), and its children, a contiguous
-//! run of `children`. The tree is built breadth-first with a work list, without recursion:
-//! creating an object creates its children (shallowly) at once, so each child run is final as
-//! soon as it is written.
+//! run of `children`. The tree is built with a work list, without recursion: expanding an
+//! object creates all its children (shallowly) at once, so each child run is final as soon as
+//! it is written. Objects are numbered in creation order, which is not tree order; passes that
+//! need ink's order walk the tree.
 
 const std = @import("std");
 const assert = std.debug.assert;
