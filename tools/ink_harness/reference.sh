@@ -3,6 +3,7 @@
 #   setup               fetch ink at the pinned commit and build the harness
 #   expected [case...]  regenerate test/ground_truth/<case>.{ink.json,expected} (all by default)
 #   random              regenerate test/ground_truth/dotnet_random.expected
+#   floats              regenerate test/ground_truth/dotnet_floats.expected
 #   paths [case...]     regenerate test/ground_truth/<case>.paths (container paths and hashes)
 set -euo pipefail
 
@@ -75,6 +76,11 @@ random() {
     echo "expected: dotnet_random"
 }
 
+floats() {
+    harness floats > "$cases/dotnet_floats.expected"
+    echo "expected: dotnet_floats"
+}
+
 paths() {
     local ids=("$@")
     [ "${#ids[@]}" -gt 0 ] || ids=(crime_scene simple_taster_tutorial audit/unicode_paths)
@@ -91,5 +97,6 @@ case "$command" in
     expected) setup; expected "$@" ;;
     random) setup; random ;;
     paths) setup; paths "$@" ;;
+    floats) setup; floats ;;
     *) echo "usage: reference.sh setup|expected [case...]|random|paths [case...]" >&2; exit 2 ;;
 esac

@@ -3,6 +3,7 @@
 //   compile <story.ink> <story.ink.json> [--count-all-visits]   compile like inklecate
 //   random <count> <seed>...                 System.Random(seed).Next() sequences
 //   paths <story.ink.json>                   every container: path, shuffle hash, flags
+//   floats                                   float.ToString() for a fixed set of values
 //   run <story.ink.json> <case.actions> <name>  replay host actions, print the transcript;
 //                                            a missing .actions file means `play`
 //
@@ -36,6 +37,8 @@ static class Program
                 return Compile(arguments[1], arguments[2], true);
             case "random" when arguments.Length >= 3:
                 return RandomSequences(arguments);
+            case "floats" when arguments.Length == 1:
+                return Floats();
             case "paths" when arguments.Length == 2:
                 return Paths(arguments[1]);
             case "run" when arguments.Length == 4:
@@ -146,6 +149,30 @@ static class Program
                 }
             }
             for (var index = children.Count - 1; index >= 0; index -= 1) pending.Push(children[index]);
+        }
+        Console.Out.Write(output.ToString());
+        return 0;
+    }
+
+    // How .NET 8 prints floats, which ink uses for float output and string conversion: each
+    // line is the value's bits in hex and its InvariantCulture string.
+    static int Floats()
+    {
+        var values = new List<float> {
+            0f, -0f, 1f, -1f, 0.5f, 0.1f, 0.2f, 0.3f, 1f / 3f, 2f / 3f, 7f / 3f, 3.3f, 1000000f * 3.3f,
+            10f, 100f, 1234567f, 12345678f, 123456789f, 1e7f, 1e8f, 1e14f, 1e15f, 1e16f, 1e20f,
+            1e-4f, 1e-5f, 1e-6f, 0.000123f, 1.5e-7f, 3.4028235e38f, 1.17549435e-38f, 1e-45f,
+            float.NaN, float.PositiveInfinity, float.NegativeInfinity, 16777216f, 16777217f,
+            2.5f, -2.5f, 0.15f, 123.456f, 99999.99f, 0.0001f, 4.2e15f, 4.25e-5f, 255f / 256f,
+            1e9f, 1e10f, 1e11f, 1e12f, 1e13f, 1.5e9f, 123456789012f, 9.99e13f, 1.25e-4f,
+        };
+        var output = new StringBuilder();
+        output.Append(Provenance("mise run reference:floats"));
+        foreach (var value in values)
+        {
+            var bits = BitConverter.SingleToInt32Bits(value);
+            output.Append(bits.ToString("x8")).Append(' ')
+                .Append(value.ToString(CultureInfo.InvariantCulture)).Append('\n');
         }
         Console.Out.Write(output.ToString());
         return 0;

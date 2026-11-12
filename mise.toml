@@ -18,3 +18,7 @@ run = "tools/ink_harness/reference.sh random"
 [tasks."reference:paths"]
 description = "Regenerate container paths and shuffle hashes from ink (P2.4)"
 run = "tools/ink_harness/reference.sh paths"
+
+[tasks."reference:floats"]
+description = "Regenerate .NET float formatting ground truth (P4.1)"
+run = "tools/ink_harness/reference.sh floats"
