@@ -79,6 +79,39 @@ fn resolve(story: *Story, pointer: Pointer) ?Instruction {
 /// What a step did with its instruction, for the Continue loop.
 pub const Signal = enum { none, output, choice, ended };
 
+/// Why `run` returned.
+pub const RunResult = enum {
+    /// The output stream changed, or a choice was generated: the Continue loop looks at it.
+    output,
+    /// The flow ended or the pointer ran out (`can_continue` may now be false).
+    ended,
+    budget_exhausted,
+};
+
+/// Steps until something the Continue loop must look at happens, at most `budget` steps.
+/// `steps` counts the steps taken. Between those points, ink's per-step checks in
+/// ContinueSingleStep can't change anything: they depend on the output, the choices and
+/// whether the story can continue.
+pub fn run(story: *Story, budget: u32, steps: *u32) Error!RunResult {
+    assert(budget > 0);
+    var taken: u32 = 0;
+    defer steps.* += taken;
+    while (taken < budget) {
+        const output_count = story.state.output.items.count;
+        const signal = try step(story);
+        taken += 1;
+        switch (signal) {
+            .ended => return .ended,
+            .output, .choice => return .output,
+            .none => {},
+        }
+        if (story.state.output.items.count != output_count) return .output;
+        if (current_pointer(story).is_null()) return .ended;
+    }
+    assert(taken == budget);
+    return .budget_exhausted;
+}
+
 /// ink's Step.
 pub fn step(story: *Story) Error!Signal {
     assert(story.state.call_stack.depth() > 0);
