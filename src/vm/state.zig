@@ -107,6 +107,9 @@ pub const FlowRecord = struct {
 
 pub const flow_name_bytes_max = 50;
 
+/// A turn index for a container that has never been visited.
+pub const never_visited: i32 = std.math.minInt(i32);
+
 comptime {
     assert(@sizeOf(Diagnostic) == element_bytes.diagnostic);
     assert(@sizeOf(PatchEntry) == element_bytes.patch_entry);
@@ -145,6 +148,8 @@ pub const State = struct {
     globals: []Value,
     global_defaults: []Value,
     visit_counts: []u32,
+    /// The turn each container was last visited in, or `never_visited` (ink keeps only
+    /// visited ones; turn -1 is a real turn, before the first choice).
     turn_indices: []i32,
     turn_index: i32 = -1,
     story_seed: i32 = 0,
@@ -230,7 +235,7 @@ pub const State = struct {
         @memset(state.globals, .null);
         @memset(state.global_defaults, .null);
         @memset(state.visit_counts, 0);
-        @memset(state.turn_indices, -1);
+        @memset(state.turn_indices, never_visited);
         state.turn_index = -1;
         state.previous_random = 0;
         state.strings.used = 0;
