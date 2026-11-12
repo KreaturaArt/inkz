@@ -137,3 +137,28 @@ test "P5.5: line-based cont with glue, newlines, tags and default choices" {
         .{ .id = "crime_scene" },
     });
 }
+
+test "P5.6: visit counts and turn indices" {
+    // Goal: P5.6; ink's VisitChangedContainersDueToDivert and VisitContainer: diverts into
+    // nested stitches and gathers, count_start_only (re-entering from inside), turn indices,
+    // and returns from functions and tunnels that must not count. Method: replay.
+    try expect_cases_match(&.{
+        .{ .id = "audit/visits_on_divert_into_nested" },
+        .{ .id = "audit/visits_count_start_only" },
+        .{ .id = "audit/visits_function_return" },
+        .{ .id = "audit/labels_per_knot" },
+        .{ .id = "runtime/builtins/visit_counts_when_choosing" },
+        .{ .id = "runtime/builtins/visit_count_bug_due_to_nested_containers" },
+        .{ .id = "runtime/builtins/read_count_across_callstack" },
+        .{ .id = "runtime/builtins/read_count_across_threads" },
+        .{ .id = "runtime/builtins/read_count_dot_separated_path" },
+        .{ .id = "runtime/builtins/read_count_variable_target" },
+        .{ .id = "runtime/builtins/turns" },
+        .{ .id = "runtime/builtins/turns_since" },
+        .{ .id = "runtime/builtins/turns_since_nested" },
+        .{ .id = "runtime/builtins/turns_since_with_variable_target" },
+        .{ .id = "runtime/knots/knot_stitch_gather_counts" },
+        .{ .id = "runtime/sequences/gather_read_count_with_initial_sequence" },
+        .{ .id = "runtime/choices/once_only_choices_can_link_back_to_self" },
+    });
+}
