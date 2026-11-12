@@ -86,15 +86,18 @@ fn step(
             }
             try add_item(lowered, layout, builder, item_id, value, path);
         }
+        frame.next_named = 0;
+    }
+    const position = frame.next_named.?;
+    if (position == container.named.items.len) {
+        // The final dictionary: named content first, then "#f" and "#n", as the loader reads it.
         if (container.name) |name| {
             if (!is_named_only(lowered, frame.container)) try builder.set_name(name);
         }
         const flags = count_flags(container.flags);
         if (flags != 0) builder.set_flags(@bitCast(flags));
-        frame.next_named = 0;
+        return null;
     }
-    const position = frame.next_named.?;
-    if (position == container.named.items.len) return null;
     frame.next_named = position + 1;
     const named = container.named.items[position];
     _ = try builder.begin_container(.{ .name = ir.container(named).name.?, .named_only = true });
