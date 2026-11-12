@@ -37,13 +37,16 @@ pub fn build(b: *std.Build) void {
     const replay_step = b.step("replay", "Install replay_case (replay one case on an engine)");
     replay_step.dependOn(&b.addInstallArtifact(replay_case, .{}).step);
 
+    // The library's module, for packages that depend on inkz (`b.dependency("inkz", ...)
+    // .module("inkz")`) and for the doctests.
+    const inkz_module = b.addModule("inkz", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
     const lib = b.addLibrary(.{
         .name = "inkz",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
+        .root_module = inkz_module,
         .linkage = .static,
     });
     b.installArtifact(lib);
@@ -77,6 +80,7 @@ pub fn build(b: *std.Build) void {
     }
 
     test_all.dependOn(add_death_tests(b, target));
+    test_all.dependOn(add_doctests(b, inkz_module, test_options));
 
     // Fuzz targets (P0.9): each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
     // Zig's fuzzer writes its log to <cache>/tmp and fails if that directory is missing.
@@ -148,6 +152,46 @@ pub fn build(b: *std.Build) void {
     run_lint.addArgs(&.{ "src", "tools" });
     b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
 
+}
+
+/// The docs whose ```zig blocks are compiled by `zig build doctest` (tools/doctest.zig).
+const doctest_docs = [_][]const u8{
+    "docs/RunningYourInk.md",
+    "docs/ArchitectureAndDevOverview.md",
+    "docs/Guidelines.md",
+    "docs/Architecture.md",
+};
+
+/// `zig build doctest` (plan P9.3): extracts the docs' Zig samples into a generated test
+/// root and compiles it against the library module.
+fn add_doctests(
+    b: *std.Build,
+    inkz_module: *std.Build.Module,
+    options: TestOptions,
+) *std.Build.Step {
+    const generator = b.addExecutable(.{
+        .name = "doctest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/doctest.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const generate = b.addRunArtifact(generator);
+    const directory = generate.addOutputDirectoryArg("doctest");
+    for (doctest_docs) |doc| generate.addFileArg(b.path(doc));
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = directory.path(b, "root.zig"),
+            .target = options.target,
+            .optimize = options.optimize,
+            .imports = &.{.{ .name = "inkz", .module = inkz_module }},
+        }),
+        .filters = options.filters,
+    });
+    const run = b.addRunArtifact(tests);
+    const step = b.step("doctest", "Compile the Zig samples in docs/*.md against the library");
+    step.dependOn(&run.step);
+    return &run.step;
 }
 
 const death_cases = @import("src/death_cases.zig");

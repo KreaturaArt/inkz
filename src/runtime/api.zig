@@ -115,8 +115,9 @@ pub const Story = struct {
 
     /// A story that owns the program it loads from ink's JSON.
     pub fn init_from_json(story: *Story, gpa: Allocator, json: []const u8, options: Options) !void {
-        assert(story.core.state.memory.len > 0);
+        // `story` is usually undefined here, so only the arguments are checked.
         assert(json.len > 0);
+        assert(json.len < std.math.maxInt(u32));
         const program = try gpa.create(Program);
         errdefer gpa.destroy(program);
         program.* = try ink_json.load(gpa, json);
