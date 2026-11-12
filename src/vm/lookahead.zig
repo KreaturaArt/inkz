@@ -214,6 +214,40 @@ pub fn set_turn_index(state: *State, slot: u32, turn: i32) Error!void {
     assert(state.visit_counts.len == state.turn_indices.len);
 }
 
+pub const Fault = enum { ok, inactive_with_log, count_exceeds_buffer, heap_top_past_used };
+
+/// Checks the snapshot's lengths against its buffers and the heap.
+pub fn check(state: *const State) Fault {
+    const snapshot = &state.snapshot;
+    assert(state.patch.len > 0);
+    if (!snapshot.active) {
+        return if (snapshot.patch_count == 0) .ok else .inactive_with_log;
+    }
+    const copy = &state.lookahead;
+    const pairs = [_][2]usize{
+        .{ snapshot.evaluation, copy.evaluation.len },
+        .{ snapshot.frames, copy.frames.len },
+        .{ snapshot.threads, copy.threads.len },
+        .{ snapshot.temps, copy.temps.len },
+        .{ snapshot.items, copy.items.len },
+        .{ snapshot.marks, copy.marks.len },
+        .{ snapshot.choices, copy.choices.len },
+        .{ snapshot.tags, copy.tags.len },
+        .{ snapshot.snapshots, copy.snapshots.len },
+        .{ snapshot.patch_count, state.patch.len },
+        .{ snapshot.snapshot_frames, copy.snapshot_frames.len },
+        .{ snapshot.snapshot_temps, copy.snapshot_temps.len },
+        .{ snapshot.errors, state.errors.buffer.len },
+        .{ snapshot.warnings, state.warnings.buffer.len },
+        .{ snapshot.observer_events, state.observer_events.buffer.len },
+    };
+    assert(pairs.len == 15);
+    for (pairs) |pair| if (pair[0] > pair[1]) return .count_exceeds_buffer;
+    if (snapshot.strings_top > state.strings.used) return .heap_top_past_used;
+    if (snapshot.lists_top > state.lists.used) return .heap_top_past_used;
+    return .ok;
+}
+
 /// The heap references held by the snapshot copies and by logged globals: compaction roots.
 pub fn visit(state: *State, visitor: anytype) void {
     assert(@typeInfo(@TypeOf(visitor)) == .pointer);

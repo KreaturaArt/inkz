@@ -77,6 +77,19 @@ pub const ListSlab = struct {
         slab.used = top;
     }
 
+    /// Whether `list` can be a list's start: its header fits, counts fit the used words.
+    /// Not proof that it is one; a full walk would be (heap.zig's compaction does that).
+    pub fn check_reference(slab: *const ListSlab, list: ListReference) bool {
+        assert(slab.used <= slab.words.len);
+        const at: u64 = @backingInt(list);
+        if (at + header_words > slab.used) return false;
+        const index_at: u32 = @intCast(at);
+        if (slab.words[index_at] != unmarked) return false;
+        const total = header_words + @as(u64, slab.words[index_at + 1]) + slab.words[index_at + 2];
+        assert(total >= header_words);
+        return at + total <= slab.used;
+    }
+
     /// The words the list at `at` takes, header included.
     pub fn object_words(slab: *const ListSlab, at: u32) u32 {
         assert(at + header_words <= slab.used);

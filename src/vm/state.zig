@@ -148,6 +148,9 @@ pub const State = struct {
         evaluation,
         counts_length,
         string_reference,
+        list_reference,
+        flows,
+        lookahead,
     };
 
     pub fn shape_of(program: *const Program) Limits.ProgramShape {
@@ -323,9 +326,12 @@ pub const State = struct {
         if (state.strings.check() != .ok) return .strings;
         if (state.evaluation.check() != .ok) return .evaluation;
         if (state.visit_counts.len != state.program.count_slots_count) return .counts_length;
-        var checker: ReferenceChecker = .{ .strings = &state.strings };
+        if (flows.check(state) != .ok) return .flows;
+        if (lookahead_module.check(state) != .ok) return .lookahead;
+        var checker: ReferenceChecker = .{ .strings = &state.strings, .lists = &state.lists };
         state.visit(&checker);
-        if (!checker.ok) return .string_reference;
+        if (!checker.strings_ok) return .string_reference;
+        if (!checker.lists_ok) return .list_reference;
         assert(state.turn_indices.len == state.visit_counts.len);
         return .ok;
     }
@@ -400,19 +406,21 @@ fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
 /// Checks that every heap string reference is valid (State.check).
 const ReferenceChecker = struct {
     strings: *const heap.StringHeap,
-    ok: bool = true,
+    lists: *const lists_module.ListSlab,
+    strings_ok: bool = true,
+    lists_ok: bool = true,
 
     pub fn string(checker: *ReferenceChecker, reference: *StringReference) void {
         assert(@sizeOf(StringReference) == 4);
         assert(checker.strings.used <= checker.strings.bytes.len);
         if (!reference.is_heap()) return;
-        if (checker.strings.check_reference(reference.*) != .ok) checker.ok = false;
+        if (checker.strings.check_reference(reference.*) != .ok) checker.strings_ok = false;
     }
 
     pub fn list(checker: *ReferenceChecker, reference: *value_module.ListReference) void {
         assert(@sizeOf(value_module.ListReference) == 4);
-        assert(checker.strings.used <= checker.strings.bytes.len);
-        _ = reference;
+        assert(checker.lists.used <= checker.lists.words.len);
+        if (!checker.lists.check_reference(reference.*)) checker.lists_ok = false;
     }
 };
 
