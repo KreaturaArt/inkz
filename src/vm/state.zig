@@ -20,6 +20,7 @@ const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
 const flows = @import("flows.zig");
+const lookahead_module = @import("lookahead.zig");
 const Limits = limits_module.Limits;
 const element_bytes = limits_module.element_bytes;
 const Value = value_module.Value;
@@ -131,6 +132,7 @@ pub const State = struct {
     flows: []FlowRecord,
     parking: []u32,
     current_flow: u32 = 0,
+    snapshot: lookahead_module.Snapshot = .{},
 
     pub const Fault = enum {
         ok,
@@ -192,6 +194,7 @@ pub const State = struct {
         state.observer_events.clear();
         state.errors.clear();
         state.warnings.clear();
+        state.snapshot = .{};
         flows.reset(state);
         state.verify();
     }
@@ -214,7 +217,60 @@ pub const State = struct {
         for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         flows.visit_parked(state, visitor);
-        // The lookahead snapshot adds its own references (P4.9).
+        lookahead_module.visit(state, visitor);
+    }
+
+    /// Compacts the heap; the lookahead snapshot's heap tops follow their objects.
+    pub fn compact(state: *State) void {
+        assert(state.strings.used <= state.strings.bytes.len);
+        var string_tops = [1]u32{state.snapshot.strings_top};
+        var list_tops = [1]u32{state.snapshot.lists_top};
+        const marks: heap.Marks = if (state.snapshot.active)
+            .{ .strings = &string_tops, .lists = &list_tops }
+        else
+            .{};
+        _ = heap.compact(&state.strings, &state.lists, state, marks);
+        assert(state.lists.used <= state.lists.words.len);
+        if (state.snapshot.active) {
+            state.snapshot.strings_top = string_tops[0];
+            state.snapshot.lists_top = list_tops[0];
+        }
+        assert(state.snapshot.strings_top <= state.strings.used or !state.snapshot.active);
+    }
+
+    /// A hash of everything a story can observe or that later steps depend on: the live
+    /// flow, the shared arrays and scalars, and the used heap. Values hash by tag and payload,
+    /// so padding never counts. For tests of take and restore, and of determinism.
+    pub fn hash(state: *const State) u64 {
+        assert(state.memory.len > 0);
+        var hasher: std.hash.Wyhash = .init(0);
+        hash_values(&hasher, state.evaluation.slice());
+        hash_values(&hasher, state.globals);
+        hash_records(&hasher, state.call_stack.frames.slice());
+        hash_records(&hasher, state.call_stack.threads.slice());
+        hash_temps(&hasher, state.call_stack.temps.slice());
+        hash_records(&hasher, state.output.items.slice());
+        hash_records(&hasher, state.output.string_marks.slice());
+        hash_records(&hasher, state.choices.records.slice());
+        hash_records(&hasher, state.choices.tags.slice());
+        hash_records(&hasher, state.choices.snapshots.slice());
+        hash_records(&hasher, state.choices.frames.slice());
+        hash_temps(&hasher, state.choices.temps.slice());
+        hash_records(&hasher, state.visit_counts);
+        hash_records(&hasher, state.turn_indices);
+        hash_records(&hasher, state.observer_events.slice());
+        hash_records(&hasher, state.errors.slice());
+        hash_records(&hasher, state.warnings.slice());
+        hasher.update(state.strings.bytes[0..state.strings.used]);
+        hash_records(&hasher, state.lists.words[0..state.lists.used]);
+        const scalars = [_]i32{
+            state.turn_index,             @bitCast(state.call_stack.thread_counter),
+            state.story_seed,             state.previous_random,
+            @bitCast(state.current_flow), @intFromBool(state.snapshot.active),
+        };
+        hash_records(&hasher, &scalars);
+        assert(state.lists.used <= state.lists.words.len);
+        return hasher.final();
     }
 
     pub fn check(state: *State) Fault {
@@ -238,7 +294,7 @@ pub const State = struct {
     }
 };
 
-fn visit_values(values: []Value, visitor: anytype) void {
+pub fn visit_values(values: []Value, visitor: anytype) void {
     assert(@TypeOf(visitor) != void);
     assert(values.len < std.math.maxInt(u32));
     for (values) |*value| {
@@ -251,7 +307,7 @@ fn visit_values(values: []Value, visitor: anytype) void {
     }
 }
 
-fn visit_temps(temps: []Temp, visitor: anytype) void {
+pub fn visit_temps(temps: []Temp, visitor: anytype) void {
     assert(@TypeOf(visitor) != void);
     assert(temps.len < std.math.maxInt(u32));
     for (temps) |*temp| {
@@ -262,6 +318,41 @@ fn visit_temps(temps: []Temp, visitor: anytype) void {
             else => {},
         }
     }
+}
+
+fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
+    assert(values.len < std.math.maxInt(u32));
+    for (values) |value| hash_value(hasher, value);
+    assert(@typeInfo(@TypeOf(hasher)) == .pointer);
+}
+
+fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
+    assert(@sizeOf(Value) == 12);
+    hasher.update(&.{@backingInt(value)});
+    switch (value) {
+        .null => {},
+        .variable_pointer => |pointer| {
+            std.hash.autoHash(hasher, pointer.name);
+            std.hash.autoHash(hasher, pointer.context);
+        },
+        inline else => |payload| hasher.update(std.mem.asBytes(&payload)),
+    }
+}
+
+fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
+    assert(temps.len < std.math.maxInt(u32));
+    for (temps) |temp| {
+        std.hash.autoHash(hasher, temp.name);
+        hash_value(hasher, temp.value);
+    }
+    assert(@sizeOf(Temp) == element_bytes.temp);
+}
+
+/// Field by field, so struct padding never counts.
+fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
+    assert(records.len < std.math.maxInt(u32));
+    for (records) |record| std.hash.autoHash(hasher, record);
+    assert(@typeInfo(@TypeOf(records)) == .pointer);
 }
 
 /// Checks that every heap string reference is valid (State.check).

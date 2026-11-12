@@ -10,6 +10,7 @@ pub const output = @import("output.zig");
 pub const choices = @import("choices.zig");
 pub const state = @import("state.zig");
 pub const flows = @import("flows.zig");
+pub const lookahead = @import("lookahead.zig");
 
 test {
     _ = value;
@@ -21,4 +22,5 @@ test {
     _ = choices;
     _ = state;
     _ = flows;
+    _ = lookahead;
 }
