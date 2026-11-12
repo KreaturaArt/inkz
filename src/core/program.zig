@@ -123,11 +123,15 @@ pub const Program = struct {
         container: ContainerIndex,
         position: u32,
     ) Instruction {
-        const info = program.table().get(container);
-        assert(position < info.instruction_count);
-        const at = info.instruction_first.to_int() + position;
+        // Single-field reads: the VM calls this every step.
+        const slot = container.to_int();
+        assert(position < program.containers.items(.instruction_count)[slot]);
+        const at = program.containers.items(.instruction_first)[slot].to_int() + position;
         assert(at < program.instructions.len);
-        return program.instructions.get(at);
+        return .{
+            .opcode = program.instructions.items(.opcode)[at],
+            .operand = program.instructions.items(.operand)[at],
+        };
     }
 
     // The container-table interface of `path.zig`.
@@ -158,10 +162,21 @@ pub const Program = struct {
     }
 
     pub fn content_count(program: *const Program, container: ContainerIndex) u32 {
-        const info = program.table().get(container);
-        assert(info.instruction_count <= program.instructions.len);
-        assert(info.instruction_first.to_int() <= program.instructions.len);
-        return info.instruction_count;
+        const count = program.containers.items(.instruction_count)[container.to_int()];
+        assert(count <= program.instructions.len);
+        assert(container.to_int() < program.containers.len);
+        return count;
+    }
+
+    /// One field of a container's record, without reading the others (for the VM).
+    pub fn container_field(
+        program: *const Program,
+        container: ContainerIndex,
+        comptime field: std.meta.FieldEnum(ContainerInfo),
+    ) @FieldType(ContainerInfo, @tagName(field)) {
+        assert(container.to_int() < program.containers.len);
+        assert(program.containers.len > 0);
+        return program.containers.items(field)[container.to_int()];
     }
 
     pub fn container_at(

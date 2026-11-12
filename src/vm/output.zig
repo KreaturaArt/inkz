@@ -447,23 +447,55 @@ pub const Cleaner = struct {
 
     pub fn write(cleaner: *Cleaner, text: []const u8) !void {
         assert(cleaner.position >= cleaner.line_start);
-        for (text) |character| {
-            const is_inline_whitespace = character == ' ' or character == '\t';
-            if (is_inline_whitespace and cleaner.whitespace_start == null) {
-                cleaner.whitespace_start = cleaner.position;
-            }
-            if (!is_inline_whitespace) {
-                if (cleaner.whitespace_start) |start| {
-                    if (character != '\n' and start > 0 and start != cleaner.line_start) {
-                        try cleaner.writer.writeByte(' ');
-                    }
+        var at: usize = 0;
+        while (at < text.len) {
+            // A run of ordinary characters with no whitespace pending goes out at once.
+            if (cleaner.whitespace_start == null) {
+                const end = std.mem.indexOfAnyPos(u8, text, at, " \t\n") orelse text.len;
+                if (end > at) {
+                    try cleaner.put(text[at..end]);
+                    cleaner.position += end - at;
+                    at = end;
+                    continue;
                 }
-                cleaner.whitespace_start = null;
-                try cleaner.writer.writeByte(character);
             }
-            if (character == '\n') cleaner.line_start = cleaner.position + 1;
-            cleaner.position += 1;
+            try cleaner.write_character(text[at]);
+            at += 1;
         }
+        assert(cleaner.line_start <= cleaner.position);
+    }
+
+    /// Copies into the writer's buffer directly when it has room (the callers' writers are
+    /// fixed buffers), else writes through it.
+    fn put(cleaner: *Cleaner, bytes: []const u8) !void {
+        const writer = cleaner.writer;
+        assert(writer.end <= writer.buffer.len);
+        assert(bytes.len > 0);
+        if (writer.buffer.len - writer.end >= bytes.len) {
+            @memcpy(writer.buffer[writer.end..][0..bytes.len], bytes);
+            writer.end += bytes.len;
+            return;
+        }
+        try writer.writeAll(bytes);
+    }
+
+    fn write_character(cleaner: *Cleaner, character: u8) !void {
+        assert(cleaner.position >= cleaner.line_start);
+        const is_inline_whitespace = character == ' ' or character == '\t';
+        if (is_inline_whitespace and cleaner.whitespace_start == null) {
+            cleaner.whitespace_start = cleaner.position;
+        }
+        if (!is_inline_whitespace) {
+            if (cleaner.whitespace_start) |start| {
+                if (character != '\n' and start > 0 and start != cleaner.line_start) {
+                    try cleaner.put(" ");
+                }
+            }
+            cleaner.whitespace_start = null;
+            try cleaner.put((&character)[0..1]);
+        }
+        if (character == '\n') cleaner.line_start = cleaner.position + 1;
+        cleaner.position += 1;
         assert(cleaner.line_start <= cleaner.position);
     }
 };
