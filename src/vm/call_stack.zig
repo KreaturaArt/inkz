@@ -150,11 +150,13 @@ pub const CallStack = struct {
         return frames;
     }
 
+    /// The current thread is the last one and its frames end the stack (`check` holds it),
+    /// so the current frame is the stack's top: the VM asks for it every step.
     pub fn current_frame(call_stack: *CallStack) *Frame {
-        assert(call_stack.frames.count <= call_stack.frames.buffer.len);
-        const frames = call_stack.current_frames();
-        assert(frames.len > 0);
-        return &frames[frames.len - 1];
+        const count = call_stack.frames.count;
+        assert(count > 0 and count <= call_stack.frames.buffer.len);
+        assert(call_stack.threads.count > 0);
+        return &call_stack.frames.buffer[count - 1];
     }
 
     /// Frames in the current thread: ink's `depth`.

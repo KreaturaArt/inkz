@@ -40,7 +40,7 @@ const Diagnostic = state_module.Diagnostic;
 pub const Error = story_module.Error;
 
 pub fn current_pointer(story: *Story) Pointer {
-    assert(story.state.call_stack.depth() > 0);
+    assert(story.state.call_stack.frames.count > 0);
     const frame = story.state.call_stack.current_frame();
     const containers_count = story.program.containers.len;
     assert(frame.pointer.is_null() or frame.pointer.container.to_int() < containers_count);
@@ -48,20 +48,20 @@ pub fn current_pointer(story: *Story) Pointer {
 }
 
 fn set_current_pointer(story: *Story, pointer: Pointer) void {
-    assert(story.state.call_stack.depth() > 0);
+    assert(story.state.call_stack.frames.count > 0);
     assert(pointer.is_null() or pointer.container.to_int() < story.program.containers.len);
     story.state.call_stack.current_frame().pointer = pointer;
 }
 
 fn in_expression(story: *Story) bool {
-    assert(story.state.call_stack.depth() > 0);
+    assert(story.state.call_stack.frames.count > 0);
     const frame = story.state.call_stack.current_frame();
     assert(frame.kind != .tunnel or frame.temps_count <= story.state.limits.temps_per_frame_max);
     return frame.in_expression_evaluation;
 }
 
 fn set_in_expression(story: *Story, value: bool) void {
-    assert(story.state.call_stack.depth() > 0);
+    assert(story.state.call_stack.frames.count > 0);
     const frame = story.state.call_stack.current_frame();
     frame.in_expression_evaluation = value;
     assert(in_expression(story) == value);
@@ -114,7 +114,7 @@ pub fn run(story: *Story, budget: u32, steps: *u32) Error!RunResult {
 
 /// ink's Step.
 pub fn step(story: *Story) Error!Signal {
-    assert(story.state.call_stack.depth() > 0);
+    assert(story.state.call_stack.frames.count > 0);
     var pointer = current_pointer(story);
     if (pointer.is_null()) return .ended;
     pointer = try enter_containers(story, pointer);
@@ -153,26 +153,28 @@ fn enter_containers(story: *Story, start: Pointer) Error!Pointer {
 /// ink's VisitContainer.
 pub fn visit_container(story: *Story, container: ContainerIndex, at_start: bool) Error!void {
     assert(container.to_int() < story.program.containers.len);
-    const info = story.program.table().get(container);
-    if (info.flags.count_start_only and !at_start) return;
-    if (info.count_slot == container_module.no_count_slot) return;
-    assert(info.count_slot < story.state.visit_counts.len);
+    const program = story.program;
+    const flags = program.container_field(container, .flags);
+    if (flags.count_start_only and !at_start) return;
+    const slot = program.container_field(container, .count_slot);
+    if (slot == container_module.no_count_slot) return;
+    assert(slot < story.state.visit_counts.len);
     const state = &story.state;
-    if (info.flags.visits_counted) {
-        const count = state.visit_counts[info.count_slot] +% 1;
-        try lookahead.set_visit_count(state, info.count_slot, count);
+    if (flags.visits_counted) {
+        const count = state.visit_counts[slot] +% 1;
+        try lookahead.set_visit_count(state, slot, count);
     }
-    if (info.flags.turns_counted) {
-        try lookahead.set_turn_index(state, info.count_slot, state.turn_index);
+    if (flags.turns_counted) {
+        try lookahead.set_turn_index(state, slot, state.turn_index);
     }
 }
 
 pub fn visit_count(story: *Story, container: ContainerIndex) u32 {
     assert(container.to_int() < story.program.containers.len);
-    const info = story.program.table().get(container);
-    if (info.count_slot == container_module.no_count_slot) return 0;
-    assert(info.count_slot < story.state.visit_counts.len);
-    return story.state.visit_counts[info.count_slot];
+    const slot = story.program.container_field(container, .count_slot);
+    if (slot == container_module.no_count_slot) return 0;
+    assert(slot < story.state.visit_counts.len);
+    return story.state.visit_counts[slot];
 }
 
 /// ink's VisitChangedContainersDueToDivert, after a divert, a choice or choose_path_string.
@@ -221,7 +223,7 @@ fn previous_ancestors(story: *Story, previous: Pointer) []const ContainerIndex {
 
 /// ink's NextContent, with its tail call made a loop.
 pub fn next_content(story: *Story) Error!void {
-    assert(story.state.call_stack.depth() > 0);
+    assert(story.state.call_stack.frames.count > 0);
     var rounds: u32 = 0;
     while (true) : (rounds += 1) {
         assert(rounds <= story.state.limits.frames_max + story.state.limits.threads_max);
@@ -265,13 +267,14 @@ fn increment_pointer(story: *Story) bool {
     var climbed: u32 = 0;
     while (pointer.index >= story.program.content_count(pointer.container)) : (climbed += 1) {
         assert(climbed <= story.program.containers.len);
-        const info = story.program.table().get(pointer.container);
+        const parent = story.program.container_field(pointer.container, .parent);
+        const position = story.program.container_field(pointer.container, .index_in_parent);
         // Named-only containers (knots, stitches) aren't in their parent's content.
-        if (info.parent.is_none() or info.index_in_parent == container_module.named_only) {
+        if (parent.is_none() or position == container_module.named_only) {
             set_current_pointer(story, .null);
             return false;
         }
-        pointer = .{ .container = info.parent, .index = info.index_in_parent + 1 };
+        pointer = .{ .container = parent, .index = position + 1 };
     }
     set_current_pointer(story, pointer);
     return true;
