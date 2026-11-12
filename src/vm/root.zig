@@ -14,6 +14,7 @@ pub const lookahead = @import("lookahead.zig");
 pub const vm = @import("vm.zig");
 pub const ops = @import("ops.zig");
 pub const story = @import("story.zig");
+pub const messages = @import("messages.zig");
 const state_test = @import("state_test.zig");
 
 test {
@@ -30,5 +31,6 @@ test {
     _ = vm;
     _ = ops;
     _ = story;
+    _ = messages;
     _ = state_test;
 }

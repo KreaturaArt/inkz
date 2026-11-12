@@ -47,11 +47,11 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copy + undo log) | 197,120 | 31,872 |
-| Shared | 1,475,200 | 115,056 |
-| **Total per story** | **1,853,056** (1.77 MiB) | **174,704** (171 KiB) |
+| Shared | 1,475,968 | 115,248 |
+| **Total per story** | **1,853,824** (1.77 MiB) | **174,896** (171 KiB) |
 
-The whole game, one main story and four side stories, needs 1,853,056 + 4 × 174,704 =
-2,551,872 bytes (2.43 MiB), fixed at load time. In the main story the 1 MiB string heap is
+The whole game, one main story and four side stories, needs 1,853,824 + 4 × 174,896 =
+2,553,408 bytes (2.44 MiB), fixed at load time. In the main story the 1 MiB string heap is
 more than half of the total. It is the first limit to tune: measure the heap's high-water
 mark over a full playthrough, double it, and round up.
 

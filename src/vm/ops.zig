@@ -68,26 +68,41 @@ fn lists_of(story: *Story) lists_module.Lists {
 
 /// Records a story error and returns `error.StoryError` (ink's Error, which throws).
 pub fn fail(story: *Story, code: Code) Error {
+    assert(story.state.memory.len > 0);
+    assert(story.state.memory.len > 0);
     assert(@backingInt(code) > 0 or code == .story_error);
-    story.state.add_diagnostic(.{
-        .argument = .none,
-        .number = 0,
-        .code = code,
-        .severity = .@"error",
-    });
-    assert(story.state.has_error());
-    return error.StoryError;
+    return report_error(story, .{ .argument = .none, .code = code, .severity = .@"error" });
 }
 
 pub fn fail_name(story: *Story, code: Code, name: StringId) Error {
+    assert(story.state.memory.len > 0);
+    assert(story.state.memory.len > 0);
     assert(!name.is_none());
     const argument: StringReference = .program(name);
-    story.state.add_diagnostic(.{
-        .argument = argument,
-        .number = 0,
+    return report_error(story, .{ .argument = argument, .code = code, .severity = .@"error" });
+}
+
+pub fn fail_numbers(story: *Story, code: Code, number: i32, other_number: i32) Error {
+    assert(story.state.memory.len > 0);
+    assert(story.state.memory.len > 0);
+    assert(@backingInt(code) > 0);
+    return report_error(story, .{
+        .argument = .none,
+        .number = number,
+        .other_number = other_number,
         .code = code,
         .severity = .@"error",
     });
+}
+
+/// ink's AddError for an error: records it where the story is, then ends the flow (ink's
+/// ForceEnd: "in a broken state don't need to know about any other errors").
+fn report_error(story: *Story, diagnostic: state_module.Diagnostic) Error {
+    assert(diagnostic.severity == .@"error");
+    var placed = diagnostic;
+    placed.pointer = vm.current_pointer(story);
+    story.state.add_diagnostic(placed);
+    force_end(story);
     assert(story.state.has_error());
     return error.StoryError;
 }
@@ -97,7 +112,7 @@ pub fn warn_name(story: *Story, code: Code, name: StringId) void {
     const argument: StringReference = .program(name);
     story.state.add_diagnostic(.{
         .argument = argument,
-        .number = 0,
+        .pointer = vm.current_pointer(story),
         .code = code,
         .severity = .warning,
     });
@@ -743,7 +758,9 @@ pub fn random(story: *Story) Error!void {
     if (maximum != .integer) return fail(story, .random_invalid_maximum);
     const range_wide = @as(i64, maximum.integer) - minimum.integer + 1;
     if (range_wide > std.math.maxInt(i32)) return fail(story, .random_range_too_large);
-    if (range_wide <= 0) return fail(story, .random_range_empty);
+    if (range_wide <= 0) {
+        return fail_numbers(story, .random_range_empty, minimum.integer, maximum.integer);
+    }
     const range: i32 = @intCast(range_wide);
     const state = &story.state;
     var generator = DotnetRandom.init(state.story_seed +% state.previous_random);

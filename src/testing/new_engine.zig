@@ -9,6 +9,7 @@ const Program = @import("../core/program.zig").Program;
 const story_module = @import("../vm/story.zig");
 const Story = story_module.Story;
 const value_module = @import("../vm/value.zig");
+const Severity = @import("../vm/state.zig").Diagnostic.Severity;
 
 pub const NewEngine = struct {
     pub const tags_per_line = true;
@@ -25,8 +26,8 @@ pub const NewEngine = struct {
     /// Text for the last `get` and the global names, owned until the next call.
     scratch: std.ArrayList(u8) = .empty,
     names: std.ArrayList([]const u8) = .empty,
-    /// Host events since the last action (`external: ...` lines), written by `write_messages`.
-    events: std.ArrayList(u8) = .empty,
+    /// What `write_messages` writes; heap-allocated as the story's error handler context.
+    messages: *Messages,
     bindings: std.ArrayList(*Bound) = .empty,
 
     pub fn open(gpa: std.mem.Allocator, json: []const u8) !NewEngine {
@@ -38,12 +39,24 @@ pub const NewEngine = struct {
         const story = try gpa.create(Story);
         errdefer gpa.destroy(story);
         try story.init(gpa, program, .{});
-        const engine: NewEngine = .{ .gpa = gpa, .program = program, .story = story };
+        errdefer story.deinit(gpa);
+        const messages = try gpa.create(Messages);
+        messages.* = .{ .gpa = gpa };
+        story.on_error = Messages.on_error;
+        story.on_error_context = messages;
+        const engine: NewEngine = .{
+            .gpa = gpa,
+            .program = program,
+            .story = story,
+            .messages = messages,
+        };
         assert(engine.story.program == program);
         return engine;
     }
 
     pub fn deinit(engine: *NewEngine) void {
+        assert(messages.errors.items.len < 1 << 31);
+        assert(messages.errors.items.len < 1 << 31);
         assert(engine.story.state.memory.len > 0);
         assert(engine.story.program == engine.program);
         engine.tags.deinit(engine.gpa);
@@ -51,7 +64,8 @@ pub const NewEngine = struct {
         if (engine.exception) |text| engine.gpa.free(text);
         engine.scratch.deinit(engine.gpa);
         engine.names.deinit(engine.gpa);
-        engine.events.deinit(engine.gpa);
+        engine.messages.deinit(engine.gpa);
+        engine.gpa.destroy(engine.messages);
         for (engine.bindings.items) |bound| bound.release(engine.gpa);
         engine.bindings.deinit(engine.gpa);
         engine.story.deinit(engine.gpa);
@@ -278,9 +292,14 @@ pub const NewEngine = struct {
 
     pub fn write_messages(engine: *NewEngine, writer: *std.Io.Writer) !void {
         assert(engine.story.state.memory.len > 0);
-        assert(engine.events.items.len < 1 << 24);
-        try writer.writeAll(engine.events.items);
-        engine.events.clearRetainingCapacity();
+        assert(engine.messages.events.items.len < 1 << 24);
+        const messages = engine.messages;
+        try writer.writeAll(messages.events.items);
+        try writer.writeAll(messages.errors.items);
+        try writer.writeAll(messages.warnings.items);
+        messages.events.clearRetainingCapacity();
+        messages.errors.clearRetainingCapacity();
+        messages.warnings.clearRetainingCapacity();
     }
 
     pub fn reset(engine: *NewEngine, argument: []const u8) !void {
@@ -398,8 +417,9 @@ const Bound = struct {
     fn record(bound: *Bound, arguments: []const story_module.HostValue) !void {
         assert(bound.name.len > 0);
         const engine = bound.engine;
-        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.events);
-        defer engine.events = writer.toArrayList();
+        const events = &engine.messages.events;
+        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, events);
+        defer events.* = writer.toArrayList();
         try writer.writer.print("external: {s}(", .{bound.name});
         for (arguments, 0..) |argument, position| {
             if (position > 0) try writer.writer.writeAll(", ");
@@ -450,5 +470,34 @@ const NameList = struct {
         if (names.count > 0) try names.list.appendSlice(names.engine.gpa, "', '");
         try names.list.appendSlice(names.engine.gpa, text);
         names.count += 1;
+    }
+};
+
+/// Host events since the last action (`external: ...` lines) and the story's error and
+/// warning messages, as the harness collects them.
+const Messages = struct {
+    gpa: std.mem.Allocator,
+    events: std.ArrayList(u8) = .empty,
+    errors: std.ArrayList(u8) = .empty,
+    warnings: std.ArrayList(u8) = .empty,
+
+    fn deinit(messages: *Messages, gpa: std.mem.Allocator) void {
+        assert(messages.events.items.len < 1 << 31);
+        messages.events.deinit(gpa);
+        messages.errors.deinit(gpa);
+        messages.warnings.deinit(gpa);
+    }
+
+    fn on_error(context: ?*anyopaque, message: []const u8, severity: Severity) void {
+        assert(message.len < 1 << 20);
+        assert(message.len < 1 << 20);
+        const messages: *Messages = @ptrCast(@alignCast(context.?));
+        assert(message.len > 0);
+        const list = if (severity == .@"error") &messages.errors else &messages.warnings;
+        var writer: std.Io.Writer.Allocating = .fromArrayList(messages.gpa, list);
+        defer list.* = writer.toArrayList();
+        writer.writer.writeAll(if (severity == .@"error") "error: " else "warning: ") catch return;
+        transcript.write_json_string(&writer.writer, message) catch return;
+        writer.writer.writeByte('\n') catch return;
     }
 };
