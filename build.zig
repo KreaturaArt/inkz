@@ -48,7 +48,7 @@ pub fn build(b: *std.Build) void {
             .step = "test-compiler",
             .root = "src/test_compiler.zig",
             .description = "Run compiler tests",
-            .own_filters = &.{ "compiler.", "compiler_helpers." },
+            .own_filters = &.{ "compiler.", "compiler_helpers.", "compiler_next." },
         },
         .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
         .{
