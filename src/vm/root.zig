@@ -8,6 +8,7 @@ pub const heap = @import("heap.zig");
 pub const call_stack = @import("call_stack.zig");
 pub const output = @import("output.zig");
 pub const choices = @import("choices.zig");
+pub const state = @import("state.zig");
 
 test {
     _ = value;
@@ -17,4 +18,5 @@ test {
     _ = call_stack;
     _ = output;
     _ = choices;
+    _ = state;
 }

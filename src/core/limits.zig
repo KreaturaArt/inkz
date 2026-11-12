@@ -18,16 +18,16 @@ pub const element_bytes = struct {
     pub const string_mark = 4;
     pub const choice = 40; // text, target, source, threads, tags, snapshot, flags
     pub const tag = 4; // StringReference
-    pub const list_word = 8;
+    pub const list_word = 4;
     pub const patch_entry = 16;
     pub const flow = 64; // name, directory ranges into the parking region
-    pub const observer = 16;
+    pub const observer = 24; // global slot, callback, context
     pub const observer_event = 4; // GlobalSlot
-    pub const diagnostic = 16;
+    pub const diagnostic = 12; // kind, code, argument
     pub const count_slot = 8; // visit count u32 + turn index i32
     pub const global = value * 2; // current value + default value (§4.10)
     pub const ancestor = 4; // ContainerIndex, for the visit-counting walk (§4.6)
-    pub const path_component = 8; // parsed component of a path string (§4.1 path.zig)
+    pub const snapshot = 24; // a choice's stored thread: frame and temp ranges, previous pointer
 };
 
 /// Bounds for one story instance. Every field is a maximum count unless its name says bytes.
@@ -132,13 +132,13 @@ pub const Limits = struct {
         total += @as(u64, limits.threads_max) * bytes.thread;
         total += @as(u64, limits.temps_max) * bytes.temp;
         total += @as(u64, limits.output_items_max) * bytes.output_item;
-        total += limits.output_bytes_max;
         total += @as(u64, limits.string_marks_max) * bytes.string_mark;
         total += @as(u64, limits.choices_max) * bytes.choice;
         total += @as(u64, limits.tags_max) * bytes.tag;
+        total += @as(u64, limits.choices_max) * bytes.snapshot;
         total += @as(u64, limits.choice_snapshot_frames_max) * bytes.frame;
         total += @as(u64, limits.choice_snapshot_temps_max) * bytes.temp;
-        assert(total > limits.output_bytes_max);
+        assert(total > limits.evaluation_values_max);
         assert(total < std.math.maxInt(u64) / 4);
         return total;
     }
@@ -149,6 +149,7 @@ pub const Limits = struct {
         var total: u64 = 0;
         total += @as(u64, shape.globals_count) * bytes.global;
         total += @as(u64, shape.count_slots) * bytes.count_slot;
+        total += limits.output_bytes_max;
         total += limits.heap_bytes_max;
         total += @as(u64, limits.list_words_max) * bytes.list_word;
         total += @as(u64, limits.flows_max) * bytes.flow;
@@ -157,7 +158,6 @@ pub const Limits = struct {
         total += @as(u64, limits.observer_events_max) * bytes.observer_event;
         total += @as(u64, limits.errors_max + limits.warnings_max) * bytes.diagnostic;
         total += @as(u64, limits.container_depth_max) * bytes.ancestor;
-        total += @as(u64, limits.path_components_max) * bytes.path_component;
         assert(total >= limits.heap_bytes_max);
         assert(total < std.math.maxInt(u64) / 4);
         return total;
@@ -235,7 +235,7 @@ test "the default byte budget is pinned" {
     // Method: compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 1_954_048), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 1_825_792), limits.bytes_total(shape));
 }
 
 test "the budget grows with the program and with every buffer" {
@@ -263,6 +263,7 @@ fn is_not_a_buffer(comptime name: []const u8) bool {
         "temps_per_frame_max",
         "steps_per_continue_max",
         "evaluate_depth_max",
+        "path_components_max",
     };
     inline for (names) |candidate| {
         if (comptime std.mem.eql(u8, candidate, name)) return true;
