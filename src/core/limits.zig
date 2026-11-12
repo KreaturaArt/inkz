@@ -12,7 +12,7 @@ const fault = @import("fault.zig");
 pub const element_bytes = struct {
     pub const value = 12;
     pub const frame = 24;
-    pub const thread = 16;
+    pub const thread = 20; // frame range, counter, previous pointer
     pub const temp = 16; // name: StringId + Value
     pub const output_item = 12;
     pub const string_mark = 4;
@@ -235,7 +235,7 @@ test "the default byte budget is pinned" {
     // Method: compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 1_954_560), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 1_955_072), limits.bytes_total(shape));
 }
 
 test "the budget grows with the program and with every buffer" {
