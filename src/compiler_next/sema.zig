@@ -18,6 +18,7 @@ const Allocator = std.mem.Allocator;
 const ast_module = @import("ast.zig");
 const grammar = @import("grammar.zig");
 const build = @import("sema_build.zig");
+const source_space = @import("source_space.zig");
 const index = @import("../core/index.zig");
 const Ast = ast_module.Ast;
 const NodeIndex = ast_module.NodeIndex;
@@ -183,11 +184,72 @@ pub const Tree = struct {
     }
 };
 
+/// Where an object starts in the source: its syntax node's first token (the object's
+/// parent's, for objects ink synthesizes).
+pub fn object_offset(
+    parsed: *const grammar.Parsed,
+    tree: *const Tree,
+    object_initial: ObjectIndex,
+) u32 {
+    assert(object_initial.to_int() < tree.count());
+    assert(tree.nodes.len == tree.kinds.len);
+    var object = object_initial;
+    while (tree.node(object).is_none()) object = tree.parent(object);
+    const ast = &parsed.tree;
+    var stack: [64]NodeIndex = undefined;
+    var depth: u32 = 1;
+    stack[0] = tree.node(object);
+    while (depth > 0) {
+        depth -= 1;
+        const node = stack[depth];
+        switch (ast_module.shape(ast.tag(node))) {
+            .leaf => if (has_token(ast.tag(node))) {
+                return parsed.workspace.token_starts[ast.data[node.to_int()]];
+            },
+            .fixed => |count| {
+                var position: u32 = count;
+                while (position > 0 and depth < stack.len) : (depth += 1) {
+                    position -= 1;
+                    stack[depth] = ast.child(node, position);
+                }
+            },
+            .list => {
+                var position = ast.list(node).count;
+                while (position > 0 and depth < stack.len) : (depth += 1) {
+                    position -= 1;
+                    stack[depth] = ast.item(node, position);
+                }
+            },
+        }
+    }
+    return 0;
+}
+
+fn has_token(tag: Tag) bool {
+    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
+    assert(ast_module.shape(tag) == .leaf);
+    return switch (tag) {
+        .none, .missing, .count, .header, .newline, .tag_end => false,
+        .empty_divert, .sequence_kind => false,
+        else => true,
+    };
+}
+
 /// Builds the object tree of a parsed story.
 pub fn build_tree(gpa: Allocator, parsed: *const grammar.Parsed) !Tree {
     assert(parsed.tree.tags.len == parsed.tree.data.len);
     assert(parsed.tree.tag(parsed.tree.root) == .story);
     var builder: build.Builder = .{ .gpa = gpa, .parsed = parsed };
+    defer builder.deinit();
+    try builder.run();
+    return builder.finish();
+}
+
+/// Builds the object tree of a compilation with INCLUDEs (plan P8.2).
+pub fn build_space_tree(gpa: Allocator, space: *const source_space.Space) !Tree {
+    assert(space.files.len > 0);
+    assert(space.parsed.tree.tag(space.parsed.tree.root) == .story);
+    var builder: build.Builder = .{ .gpa = gpa, .parsed = &space.parsed, .space = space };
     defer builder.deinit();
     try builder.run();
     return builder.finish();
@@ -374,4 +436,61 @@ test "expressions keep ink's shape: calls hold a proxy divert, {x} is the expres
         \\    divert
         \\
     );
+}
+
+fn expect_space_tree(comptime name: []const u8, expected: []const u8) !void {
+    assert(name.len > 0);
+    assert(expected.len > 0);
+    const gpa = std.testing.allocator;
+    var directory = try std.Io.Dir.cwd().openDir(
+        std.testing.io,
+        "test/fixture/original/runtime/misc",
+        .{},
+    );
+    defer directory.close(std.testing.io);
+    var space = try source_space.load(gpa, std.testing.io, directory, name, .{});
+    defer space.deinit(gpa);
+    var tree = try build_space_tree(gpa, &space);
+    defer tree.deinit(gpa);
+    const text = try render(gpa, &space.parsed, &tree);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings(expected, text);
+}
+
+test "include.ink: each included story's weave and a newline where its INCLUDE was" {
+    try expect_space_tree("include.ink",
+        \\story
+        \\  weave
+        \\    weave
+        \\      text "This is include 1."
+        \\      text
+        \\    text
+        \\    weave
+        \\      text "This is include 2."
+        \\      text
+        \\    text
+        \\    text "This is the main file."
+        \\    text
+        \\    gather
+        \\    divert
+        \\
+    );
+}
+
+test "nested_include.ink: an include's include nests, and its knot moves to the story" {
+    const gpa = std.testing.allocator;
+    var directory = try std.Io.Dir.cwd().openDir(
+        std.testing.io,
+        "test/fixture/original/runtime/misc",
+        .{},
+    );
+    defer directory.close(std.testing.io);
+    var space = try source_space.load(gpa, std.testing.io, directory, "nested_include.ink", .{});
+    defer space.deinit(gpa);
+    var tree = try build_space_tree(gpa, &space);
+    defer tree.deinit(gpa);
+    const text = try render(gpa, &space.parsed, &tree);
+    defer gpa.free(text);
+    // The included knot is a child of the story, after its weave.
+    try std.testing.expect(std.mem.indexOf(u8, text, "\n  knot \"knot_in_2\"\n") != null);
 }

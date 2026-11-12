@@ -9,6 +9,8 @@ const Allocator = std.mem.Allocator;
 const sema = @import("sema.zig");
 const ast_module = @import("ast.zig");
 const grammar = @import("grammar.zig");
+const source_space = @import("source_space.zig");
+const includes = @import("sema_includes.zig");
 const Ast = ast_module.Ast;
 const NodeIndex = ast_module.NodeIndex;
 const Tag = ast_module.Tag;
@@ -19,10 +21,16 @@ const Flags = sema.Flags;
 /// The story's closing `- ` gather and `-> DONE`, which have no syntax node.
 const item_gather: u32 = std.math.maxInt(u32) - 1;
 const item_done: u32 = std.math.maxInt(u32) - 2;
+/// The "\n" ink adds after an included story's content.
+const item_newline: u32 = std.math.maxInt(u32) - 3;
+/// An INCLUDE node with this bit set stands for the included story's weave.
+const item_included_weave: u32 = 1 << 31;
 
 pub const Builder = struct {
     gpa: Allocator,
     parsed: *const grammar.Parsed,
+    /// The files of the compilation, for INCLUDE (none: a single file).
+    space: ?*const source_space.Space = null,
     kinds: std.ArrayList(Kind) = .empty,
     flags: std.ArrayList(u16) = .empty,
     parents: std.ArrayList(ObjectIndex) = .empty,
@@ -160,17 +168,15 @@ pub const Builder = struct {
     fn expand_flow(builder: *Builder, flow: ObjectIndex, node: NodeIndex) !void {
         assert(builder.kinds.items.len == builder.parents.items.len);
         const ast = builder.tree();
-        const statements = if (ast.tag(node) == .story)
-            ast.list(node).first
-        else
-            ast.child(node, 2);
+        const is_story = ast.tag(node) == .story;
+        const statements = if (is_story) ast.item(node, 0) else ast.child(node, 2);
         assert(ast.tag(statements) == .statements);
         const items_first: u32 = @intCast(builder.items.items.len);
-        try builder.append_items(statements, .weave_content);
-        if (builder.kinds.items[flow.to_int()] == .story) {
+        if (is_story) {
+            try builder.append_story_items(statements);
             try builder.items.append(builder.gpa, item_gather);
             try builder.items.append(builder.gpa, item_done);
-        }
+        } else try builder.append_items(statements, .weave_content);
         const items_count = @as(u32, @intCast(builder.items.items.len)) - items_first;
         if (items_count > 0) {
             try builder.adopt(try builder.create_weave(flow, items_first, items_count, 0));
@@ -180,6 +186,52 @@ pub const Builder = struct {
             const item: NodeIndex = at(listed, position);
             if (is_flow_tag(ast.tag(item))) try builder.add_child(flow, item);
         }
+        if (!is_story) return;
+        const space = builder.space orelse return;
+        var hoisted: std.ArrayList(NodeIndex) = .empty;
+        defer hoisted.deinit(builder.gpa);
+        try includes.hoisted_flows(builder.gpa, space, node, &hoisted);
+        for (hoisted.items) |included_flow| try builder.add_child(flow, included_flow);
+    }
+
+    /// A story's top-level items: its own non-flow statements, with each INCLUDE replaced by
+    /// what ink's PreProcessTopLevelObjects inserts for it.
+    fn append_story_items(builder: *Builder, statements: NodeIndex) !void {
+        const ast = builder.tree();
+        assert(ast.tag(statements) == .statements);
+        for (0..ast.list(statements).count) |position| {
+            const item = ast.item(statements, position);
+            if (ast.tag(item) != .include) {
+                if (is_flow_tag(ast.tag(item))) continue;
+                try builder.items.append(builder.gpa, item.to_int());
+                continue;
+            }
+            const space = builder.space orelse continue;
+            assert(item.to_int() < item_included_weave);
+            switch (includes.contribution(space, item)) {
+                .nothing => {},
+                .newline => try builder.items.append(builder.gpa, item_newline),
+                .weave_and_newline => {
+                    try builder.items.append(builder.gpa, item.to_int() | item_included_weave);
+                    try builder.items.append(builder.gpa, item_newline);
+                },
+            }
+        }
+    }
+
+    /// The included story's weave, from its own top-level items.
+    fn create_included_weave(
+        builder: *Builder,
+        parent: ObjectIndex,
+        include: NodeIndex,
+    ) !ObjectIndex {
+        const space = builder.space.?;
+        const story = space.included_story(include).?;
+        const first: u32 = @intCast(builder.items.items.len);
+        try builder.append_story_items(includes.statements_of(builder.tree(), story));
+        const count = @as(u32, @intCast(builder.items.items.len)) - first;
+        assert(count > 0);
+        return builder.create_weave(parent, first, count, 0);
     }
 
     const Filter = enum { weave_content, all };
@@ -239,7 +291,8 @@ pub const Builder = struct {
     fn weave_point_depth(builder: *const Builder, item: u32) ?u32 {
         assert(builder.kinds.items.len == builder.parents.items.len);
         if (item == item_gather) return 1;
-        if (item == item_done) return null;
+        if (item == item_done or item == item_newline) return null;
+        if (item & item_included_weave != 0) return null;
         const ast = builder.tree();
         const node: NodeIndex = .from_int(item);
         switch (ast.tag(node)) {
@@ -288,6 +341,10 @@ pub const Builder = struct {
         assert(parent.to_int() < builder.kinds.items.len);
         if (item == item_gather) return builder.create(.gather, 0, parent, .none);
         if (item == item_done) return builder.create(.divert, Flags.done, parent, .none);
+        if (item == item_newline) return builder.create(.text, Flags.newline, parent, .none);
+        if (item & item_included_weave != 0) {
+            return builder.create_included_weave(parent, .from_int(item & ~item_included_weave));
+        }
         return builder.create_from_node(parent, .from_int(item));
     }
 
