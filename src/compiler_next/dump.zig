@@ -50,7 +50,7 @@ pub fn write(parsed: *const grammar.Parsed, out: *std.Io.Writer) !void {
 
 /// Writes the diagnostics, one per line: `! line:column code detail`.
 pub fn write_diagnostics(parsed: *const grammar.Parsed, out: *std.Io.Writer) !void {
-    assert(parsed.tokens_count <= parsed.workspace.token_tags.len);
+    assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
     assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
     for (parsed.diagnostics()) |diagnostic| {
         const position = line_and_column(parsed.source, diagnostic.offset);

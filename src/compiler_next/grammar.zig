@@ -498,8 +498,19 @@ pub const Parsed = struct {
         return parsed.workspace.diagnostics[0..parsed.diagnostics_count];
     }
 
+    /// Frees the syntax tree and the tokens once the IR is lowered (plan P8.6), keeping the
+    /// source (the IR's names are slices of it) and the diagnostics.
+    pub fn release_syntax(parsed: *Parsed, gpa: std.mem.Allocator) void {
+        assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
+        assert(parsed.tree.tags.ptr == parsed.workspace.node_tags.ptr);
+        parsed.workspace.release_syntax(gpa);
+        parsed.tree.tags = &.{};
+        parsed.tree.data = &.{};
+        parsed.tokens_count = 0;
+    }
+
     pub fn deinit(parsed: *Parsed, gpa: std.mem.Allocator) void {
-        assert(parsed.tokens_count <= parsed.workspace.token_tags.len);
+        assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
         assert(parsed.buffer.len >= parsed.source.len);
         parsed.workspace.deinit(gpa);
         gpa.free(parsed.buffer);
@@ -532,7 +543,10 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
             error.WorkspaceFull => core.Outcome.failed,
         };
         if (!machine.workspace_full and outcome == .succeeded) {
-            const tree = try machine.finish();
+            var tree = try machine.finish();
+            try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
+            tree.tags = workspace.node_tags;
+            tree.data = workspace.node_data;
             return .{
                 .source = clean,
                 .tree = tree,
@@ -573,9 +587,13 @@ pub fn parse_space(
         errdefer workspace.deinit(gpa);
         var machine: Machine = .init(buffer, &workspace, frames);
         if (try parse_regions(&machine, buffer, regions, roots)) {
+            var tree = machine.finish_regions(roots[0]);
+            try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
+            tree.tags = workspace.node_tags;
+            tree.data = workspace.node_data;
             return .{
                 .source = buffer,
-                .tree = machine.finish_regions(roots[0]),
+                .tree = tree,
                 .workspace = workspace,
                 .tokens_count = machine.tokens_count,
                 .diagnostics_count = machine.diagnostics_count,

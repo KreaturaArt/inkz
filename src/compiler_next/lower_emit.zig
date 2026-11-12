@@ -12,7 +12,7 @@ const ir_module = @import("lower_ir.zig");
 const ink_json = @import("../core/ink_json.zig");
 const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
 const Program = @import("../core/program.zig").Program;
-const Lowering = lower.Lowering;
+const Lowered = lower.Lowered;
 const Layout = layout_module.Layout;
 const ContainerId = ir_module.ContainerId;
 const ItemId = ir_module.ItemId;
@@ -36,10 +36,10 @@ fn native_word(name: []const u8) []const u8 {
 const Frame = struct { container: ContainerId, next: u32 = 0, next_named: ?u32 = null };
 
 /// The program, through ProgramBuilder.
-pub fn emit_program(lowering: *Lowering, layout: *const Layout) !Program {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
-    const gpa = lowering.gpa;
+pub fn emit_program(lowered: *Lowered, layout: *const Layout) !Program {
+    assert(lowered.ir.items.items.len == layout.item_container.len);
+    assert(!lowered.root.is_none());
+    const gpa = lowered.ir.gpa;
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
     builder.ink_version = 21;
@@ -48,45 +48,46 @@ pub fn emit_program(lowering: *Lowering, layout: *const Layout) !Program {
     var path: std.ArrayList(u8) = .empty;
     defer path.deinit(gpa);
     _ = try builder.begin_container(.{});
-    try frames.append(gpa, .{ .container = lowering.root });
+    try frames.append(gpa, .{ .container = lowered.root });
     while (frames.items.len > 0) {
         const frame = &frames.items[frames.items.len - 1];
-        const child = try step(lowering, layout, &builder, frame, &path) orelse {
+        const child = try step(lowered, layout, &builder, frame, &path) orelse {
             try builder.end_container();
             _ = frames.pop();
             continue;
         };
         try frames.append(gpa, .{ .container = child });
     }
-    try add_lists(lowering, &builder);
+    try add_lists(lowered, &builder);
     return builder.finish();
 }
 
 /// The frame's next content item or named child; returns a container begun (to fill next).
 fn step(
-    lowering: *Lowering,
+    lowered: *Lowered,
     layout: *const Layout,
     builder: *ProgramBuilder,
     frame: *Frame,
     path: *std.ArrayList(u8),
 ) !?ContainerId {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
-    const ir = &lowering.ir;
+    assert(lowered.ir.items.items.len == layout.item_container.len);
+    assert(!lowered.root.is_none());
+    const ir = &lowered.ir;
     const container = ir.container(frame.container);
     if (frame.next_named == null) {
-        while (frame.next < container.content.items.len) {
-            const item_id = container.content.items[frame.next];
+        const content = ir.content_of(frame.container);
+        while (frame.next < content.len) {
+            const item_id = content[frame.next];
             frame.next += 1;
             const value = ir.item(item_id);
             if (value == .container) {
                 _ = try builder.begin_container(.{});
                 return value.container;
             }
-            try add_item(lowering, layout, builder, item_id, value, path);
+            try add_item(lowered, layout, builder, item_id, value, path);
         }
         if (container.name) |name| {
-            if (!is_named_only(lowering, frame.container)) try builder.set_name(name);
+            if (!is_named_only(lowered, frame.container)) try builder.set_name(name);
         }
         const flags = count_flags(container.flags);
         if (flags != 0) builder.set_flags(@bitCast(flags));
@@ -100,10 +101,10 @@ fn step(
     return named;
 }
 
-fn is_named_only(lowering: *Lowering, id: ContainerId) bool {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
-    const ir = &lowering.ir;
+fn is_named_only(lowered: *Lowered, id: ContainerId) bool {
+    assert(id.to_int() < lowered.ir.containers.items.len);
+    assert(!lowered.root.is_none());
+    const ir = &lowered.ir;
     const parent = ir.container(id).parent;
     if (parent.is_none()) return false;
     for (ir.container(parent).named.items) |named| {
@@ -113,15 +114,15 @@ fn is_named_only(lowering: *Lowering, id: ContainerId) bool {
 }
 
 fn add_item(
-    lowering: *Lowering,
+    lowered: *Lowered,
     layout: *const Layout,
     builder: *ProgramBuilder,
     item_id: ItemId,
     value: Item,
     path: *std.ArrayList(u8),
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowered.ir.items.items.len == layout.item_container.len);
+    assert(!lowered.root.is_none());
     path.clearRetainingCapacity();
     switch (value) {
         .container => unreachable,
@@ -134,13 +135,13 @@ fn add_item(
         .integer => |integer| try builder.add(.integer, integer),
         .float => |float| try builder.add(.float, float),
         .boolean => |boolean| try builder.add(.bool, boolean),
-        .divert => |divert| try add_divert(lowering, layout, builder, item_id, divert, path),
+        .divert => |divert| try add_divert(lowered, layout, builder, item_id, divert, path),
         .divert_target => |target| {
-            try layout_module.target_path(lowering, layout, target, path);
+            try layout_module.target_path(&lowered.ir, layout, target, path);
             try builder.add_container_operand(.divert_target, path.items);
         },
         .read_count => |target| {
-            try layout_module.compact_path(lowering, layout, item_id, target, path);
+            try layout_module.compact_path(&lowered.ir, layout, item_id, target, path);
             try builder.add_container_operand(.read_count, path.items);
         },
         .variable_reference => |name| try builder.add_variable_get(name),
@@ -149,23 +150,23 @@ fn add_item(
             try ink_json.add_variable_pointer_to(builder, pointer.name, pointer.context);
         },
         .choice_point => |choice| {
-            try layout_module.compact_path(lowering, layout, item_id, choice.target, path);
+            try layout_module.compact_path(&lowered.ir, layout, item_id, choice.target, path);
             try builder.add_choice_point(path.items, @bitCast(@as(u32, choice.flags)));
         },
-        .list => |list| try add_list(lowering, builder, list.items, list.origins),
+        .list => |list| try add_list(lowered, builder, list.items, list.origins),
     }
 }
 
 fn add_divert(
-    lowering: *Lowering,
+    lowered: *Lowered,
     layout: *const Layout,
     builder: *ProgramBuilder,
     item_id: ItemId,
     divert: ir_module.Divert,
     path: *std.ArrayList(u8),
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowered.ir.items.items.len == layout.item_container.len);
+    assert(!lowered.root.is_none());
     var object: ink_json.DivertObject = .{
         .key = "->",
         .target = "",
@@ -186,7 +187,7 @@ fn add_divert(
         object.target = name;
         object.variable = true;
     } else {
-        try layout_module.compact_path(lowering, layout, item_id, divert.target, path);
+        try layout_module.compact_path(&lowered.ir, layout, item_id, divert.target, path);
         object.target = path.items;
     }
     try ink_json.add_divert_object_to(builder, object);
@@ -203,14 +204,14 @@ fn add_assignment(builder: *ProgramBuilder, name: []const u8, global: bool, new:
 }
 
 fn add_list(
-    lowering: *Lowering,
+    lowered: *Lowered,
     builder: *ProgramBuilder,
     items: []const ir_module.ListItem,
     origins: []const []const u8,
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
-    const arena = lowering.ir.arena.allocator();
+    assert(origins.len < std.math.maxInt(u32));
+    assert(!lowered.root.is_none());
+    const arena = lowered.ir.arena.allocator();
     const names = try arena.alloc([]const u8, items.len);
     for (items, names) |item, *name| name.* = try std.fmt.allocPrint(arena, "{s}.{s}", .{
         item.origin,
@@ -221,23 +222,15 @@ fn add_list(
 }
 
 /// listDefs: each list with its items' values.
-fn add_lists(lowering: *Lowering, builder: *ProgramBuilder) !void {
-    assert(lowering.results.len == lowering.tree.count());
+fn add_lists(lowered: *Lowered, builder: *ProgramBuilder) !void {
+    assert(!lowered.root.is_none());
+    const gpa = lowered.ir.gpa;
     var items: std.ArrayList(ProgramBuilder.ListItemDeclaration) = .empty;
-    defer items.deinit(lowering.gpa);
-    for (lowering.resolution.lists) |definition| {
+    defer items.deinit(gpa);
+    for (lowered.lists) |list| {
         items.clearRetainingCapacity();
-        for (lowering.tree.children_of(definition)) |element| {
-            const value = lowering.resolution.item_values[element.to_int()];
-            try items.append(lowering.gpa, .{
-                .name = lowering.child_name(element, 0),
-                .value = value,
-            });
-        }
-        _ = try builder.list_origin(
-            lowering.child_name(lowering.tree.parent(definition), 0),
-            items.items,
-        );
+        for (list.items) |item| try items.append(gpa, .{ .name = item.name, .value = item.value });
+        _ = try builder.list_origin(list.name, items.items);
     }
     assert(items.items.len < std.math.maxInt(u32));
 }

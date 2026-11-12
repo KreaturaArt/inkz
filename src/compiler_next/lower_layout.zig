@@ -14,6 +14,7 @@ const ink_json = @import("../core/ink_json.zig");
 const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
 const Program = @import("../core/program.zig").Program;
 const Lowering = lower.Lowering;
+const Lowered = lower.Lowered;
 const ObjectIndex = sema.ObjectIndex;
 const Ir = ir_module.Ir;
 const ContainerId = ir_module.ContainerId;
@@ -65,10 +66,10 @@ fn flag(lowering: *Lowering, object: ObjectIndex, flags: u8) void {
 /// TryFlattenContainer's test: no name and no named content (named-only or in content).
 fn flattenable(ir: *Ir, id: ContainerId) bool {
     assert(ir.items.items.len < std.math.maxInt(u32));
-    assert(ir.containers.items.len < std.math.maxInt(u32));
     const container = ir.container(id);
     if (container.name != null or container.named.items.len > 0) return false;
-    for (container.content.items) |item_id| {
+    var item_id = container.first;
+    while (!item_id.is_none()) : (item_id = ir.next.items[item_id.to_int()]) {
         const value = ir.item(item_id);
         if (value == .container and ir.container(value.container).name != null) return false;
     }
@@ -76,47 +77,43 @@ fn flattenable(ir: *Ir, id: ContainerId) bool {
 }
 
 /// FlattenContainersIn from the root: every flattenable container's content moves into its
-/// nearest unflattened ancestor, in place.
+/// nearest unflattened ancestor, in place. Each kept container's final content becomes one
+/// run of `Ir.flat`.
 pub fn flatten(lowering: *Lowering) !void {
     assert(lowering.results.len == lowering.tree.count());
     const gpa = lowering.gpa;
     const ir = &lowering.ir;
     var pending: std.ArrayList(ContainerId) = .empty;
     defer pending.deinit(gpa);
-    var expanded: std.ArrayList(ItemId) = .empty;
-    defer expanded.deinit(gpa);
-    var work: std.ArrayList(ItemId) = .empty;
-    defer work.deinit(gpa);
+    // Cursors into the linked contents being expanded, innermost last.
+    var cursors: std.ArrayList(ItemId) = .empty;
+    defer cursors.deinit(gpa);
+    try ir.flat.ensureTotalCapacityPrecise(gpa, ir.items.items.len);
     try pending.append(gpa, lowering.root);
     while (pending.pop()) |id| {
-        expanded.clearRetainingCapacity();
-        work.clearRetainingCapacity();
-        try push_reversed(gpa, &work, ir.container(id).content.items);
-        while (work.pop()) |item_id| {
-            const value = ir.item(item_id);
-            if (value == .container and flattenable(ir, value.container)) {
-                try push_reversed(gpa, &work, ir.container(value.container).content.items);
+        const first: u32 = @intCast(ir.flat.items.len);
+        try cursors.append(gpa, ir.container(id).first);
+        while (cursors.items.len > 0) {
+            const top = &cursors.items[cursors.items.len - 1];
+            const item_id = top.*;
+            if (item_id.is_none()) {
+                _ = cursors.pop();
                 continue;
             }
-            try expanded.append(gpa, item_id);
+            top.* = ir.next.items[item_id.to_int()];
+            const value = ir.item(item_id);
+            if (value == .container and flattenable(ir, value.container)) {
+                try cursors.append(gpa, ir.container(value.container).first);
+                continue;
+            }
+            try ir.flat.append(gpa, item_id);
             if (value == .container) try pending.append(gpa, value.container);
         }
-        const content = &ir.container(id).content;
-        content.clearRetainingCapacity();
-        try content.appendSlice(gpa, expanded.items);
+        ir.container(id).flat_first = first;
+        ir.container(id).flat_count = @as(u32, @intCast(ir.flat.items.len)) - first;
         for (ir.container(id).named.items) |named| try pending.append(gpa, named);
     }
     assert(pending.items.len == 0);
-}
-
-fn push_reversed(gpa: Allocator, stack: *std.ArrayList(ItemId), items: []const ItemId) !void {
-    assert(items.len < std.math.maxInt(u32));
-    var position = items.len;
-    while (position > 0) {
-        position -= 1;
-        try stack.append(gpa, items[position]);
-    }
-    assert(stack.items.len >= items.len);
 }
 
 /// Where each item and container ended up, for paths.
@@ -167,25 +164,26 @@ pub const Layout = struct {
 };
 
 /// Sets each container's parent and records every position.
-pub fn lay_out(lowering: *Lowering) !Layout {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
-    const gpa = lowering.gpa;
-    const ir = &lowering.ir;
+pub fn lay_out(lowered: *Lowered) !Layout {
+    assert(!lowered.root.is_none());
+    assert(lowered.ir.flat.items.len <= lowered.ir.items.items.len);
+    const ir = &lowered.ir;
+    const gpa = ir.gpa;
     var layout: Layout = .{
         .gpa = gpa,
         .item_container = try gpa.alloc(ContainerId, ir.items.items.len),
         .item_position = try gpa.alloc(u32, ir.items.items.len),
         .container_position = try gpa.alloc(u32, ir.containers.items.len),
     };
+    errdefer layout.deinit();
     @memset(layout.item_container, .none);
     @memset(layout.item_position, 0);
     @memset(layout.container_position, 0);
     var pending: std.ArrayList(ContainerId) = .empty;
     defer pending.deinit(gpa);
-    try pending.append(gpa, lowering.root);
+    try pending.append(gpa, lowered.root);
     while (pending.pop()) |id| {
-        for (ir.container(id).content.items, 0..) |item_id, position| {
+        for (ir.content_of(id), 0..) |item_id, position| {
             layout.item_container[item_id.to_int()] = id;
             layout.item_position[item_id.to_int()] = @intCast(position);
             const value = ir.item(item_id);
@@ -202,22 +200,14 @@ pub fn lay_out(lowering: *Lowering) !Layout {
     return layout;
 }
 
-/// A target's absolute runtime path.
-pub fn target_path(
-    lowering: *Lowering,
-    layout: *const Layout,
-    target: Target,
-    out: *std.ArrayList(u8),
-) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    const ir = &lowering.ir;
+/// A target's absolute runtime path (object targets are resolved to containers by now).
+pub fn target_path(ir: *Ir, layout: *const Layout, target: Target, out: *std.ArrayList(u8)) !void {
+    assert(ir.items.items.len == layout.item_container.len);
+    assert(target != .object);
     switch (target) {
         .none => {},
         .container => |id| try layout.container_path(ir, id, out),
-        .object => |object| {
-            const container = lowering.runtime_containers[object.to_int()];
-            if (!container.is_none()) try layout.container_path(ir, container, out);
-        },
+        .object => unreachable,
         .item => |item_id| {
             const holder = layout.item_container[item_id.to_int()];
             assert(!holder.is_none());
@@ -228,54 +218,51 @@ pub fn target_path(
     }
 }
 
-/// The components of a target's runtime path.
+/// The components of a target's runtime path, slices of its text (written to `text`).
 fn target_components(
-    lowering: *Lowering,
+    ir: *Ir,
     layout: *const Layout,
     target: Target,
+    text: *std.ArrayList(u8),
     out: *std.ArrayList([]const u8),
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
-    var text: std.ArrayList(u8) = .empty;
-    defer text.deinit(layout.gpa);
-    try target_path(lowering, layout, target, &text);
+    assert(ir.items.items.len == layout.item_container.len);
+    assert(out.items.len == 0 and text.items.len == 0);
+    try target_path(ir, layout, target, text);
     if (text.items.len == 0) return;
-    const arena = lowering.ir.arena.allocator();
-    var parts = std.mem.splitScalar(u8, try arena.dupe(u8, text.items), '.');
+    var parts = std.mem.splitScalar(u8, text.items, '.');
     while (parts.next()) |part| try out.append(layout.gpa, part);
 }
 
 /// Object.CompactPathString: the path from the item `from` to `target`, relative when that
 /// is shorter (as ink writes diverts, choices and read counts).
 pub fn compact_path(
-    lowering: *Lowering,
+    ir: *Ir,
     layout: *const Layout,
     from: ItemId,
     target: Target,
     out: *std.ArrayList(u8),
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(ir.items.items.len == layout.item_container.len);
+    assert(from.to_int() < ir.items.items.len);
     const gpa = layout.gpa;
+    var own_text: std.ArrayList(u8) = .empty;
+    defer own_text.deinit(gpa);
     var own: std.ArrayList([]const u8) = .empty;
     defer own.deinit(gpa);
-    try target_components(lowering, layout, .{ .item = from }, &own);
+    try target_components(ir, layout, .{ .item = from }, &own_text, &own);
+    var other_text: std.ArrayList(u8) = .empty;
+    defer other_text.deinit(gpa);
     var other: std.ArrayList([]const u8) = .empty;
     defer other.deinit(gpa);
-    try target_components(lowering, layout, target, &other);
-    var global: std.ArrayList(u8) = .empty;
-    defer global.deinit(gpa);
-    for (other.items, 0..) |component, position| {
-        if (position > 0) try global.append(gpa, '.');
-        try global.appendSlice(gpa, component);
-    }
+    try target_components(ir, layout, target, &other_text, &other);
+    const global = other_text.items;
     var shared: ?usize = null;
     for (0..@min(own.items.len, other.items.len)) |position| {
         if (!std.mem.eql(u8, own.items[position], other.items[position])) break;
         shared = position;
     }
-    const last_shared = shared orelse return out.appendSlice(gpa, global.items);
+    const last_shared = shared orelse return out.appendSlice(gpa, global);
     var relative: std.ArrayList(u8) = .empty;
     defer relative.deinit(gpa);
     for (0..own.items.len - 1 - last_shared) |_| try relative.appendSlice(gpa, ".^");
@@ -283,6 +270,6 @@ pub fn compact_path(
         try relative.append(gpa, '.');
         try relative.appendSlice(gpa, component);
     }
-    const shorter = if (relative.items.len < global.items.len) relative.items else global.items;
+    const shorter = if (relative.items.len < global.len) relative.items else global;
     try out.appendSlice(gpa, shorter);
 }

@@ -75,13 +75,15 @@ pub fn generate_divert(lowering: *Lowering, divert: ObjectIndex) !Result {
     const tree = lowering.tree;
     if (tree.has(divert, Flags.empty)) return .none;
     if (lowering.resolution_skipped(divert)) return .none;
-    if (end_or_done(lowering, divert)) |command| return .{ .item = .{ .command = command } };
+    if (end_or_done(lowering, divert)) |command| {
+        return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
+    }
     const arguments = tree.children_of(divert);
     const is_call = tree.has(divert, Flags.function_call);
     const is_thread = tree.has(divert, Flags.thread);
     const runtime = divert_item(lowering, divert);
     if (arguments.len == 0 and !is_call and !tree.has(divert, Flags.tunnel) and !is_thread) {
-        return .{ .item = .{ .divert = runtime } };
+        return .{ .item = try lowering.ir.new_item(.{ .divert = runtime }) };
     }
     const ir = &lowering.ir;
     const container = try ir.new_container();
@@ -263,8 +265,7 @@ pub fn generate_conditional(lowering: *Lowering, conditional: ObjectIndex) !Resu
     const rejoin = try ir.add_command(container, .no_op);
     for (branches) |branch| {
         const content = ir.container(lowering.result(branch).container).named.items[0];
-        const items = ir.container(content).content.items;
-        ir.items.items[items[items.len - 1].to_int()].divert.target = .{ .item = rejoin };
+        ir.divert_of(ir.container(content).last).target = .{ .item = rejoin };
     }
     return .{ .container = container };
 }
@@ -302,7 +303,7 @@ pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
     for (0..@intCast(branch_count)) |position| {
         try add_sequence_branch(lowering, container, elements, position, after);
     }
-    try ir.container(container).content.append(lowering.gpa, after);
+    try ir.attach(container, after);
     return .{ .container = container };
 }
 
@@ -325,7 +326,7 @@ fn add_shuffle(lowering: *Lowering, container: ContainerId, kind: u32, count: i3
     const shuffled = if (kind & stopping != 0) count - 1 else count;
     _ = try ir.add(container, .{ .integer = shuffled });
     _ = try ir.add_command(container, .sequence_shuffle_index);
-    if (skips) try ir.container(container).content.append(lowering.gpa, after_shuffle);
+    if (skips) try ir.attach(container, after_shuffle);
 }
 
 fn add_sequence_branch(

@@ -12,6 +12,7 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Story = @import("runtime/story.zig").Story;
 const old_compiler = @import("compiler/compiler.zig");
+const new_compiler = @import("compiler_next/compile.zig");
 const CountingAllocator = @import("core/counting_allocator.zig").CountingAllocator;
 const DotnetRandom = @import("core/dotnet_random.zig").DotnetRandom;
 
@@ -114,6 +115,57 @@ fn measure_compile(gpa: std.mem.Allocator, io: std.Io, source: []const u8) !f64 
     const nanoseconds = elapsed_nanoseconds(io, start);
     assert(nanoseconds > 0);
     return @as(f64, @floatFromInt(nanoseconds)) / compiles_count / 1e6;
+}
+
+/// The new compiler's source to JSON (as the old compiler's `compile`).
+fn compile_new(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
+    assert(source.len > 0);
+    var program = try new_compiler.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    errdefer out.deinit();
+    try ink_json.serialize(gpa, &program, &out.writer);
+    const json = try out.toOwnedSlice();
+    assert(json.len > 0);
+    return json;
+}
+
+const CompilerMeasurement = struct {
+    name: []const u8,
+    old_milliseconds: f64,
+    new_milliseconds: f64,
+    old_peak_bytes: u64,
+    new_peak_bytes: u64,
+};
+
+/// Both compilers from source to JSON: mean time over `compiles_count` runs, and peak bytes.
+fn measure_compilers(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    name: []const u8,
+    source: []const u8,
+) !CompilerMeasurement {
+    assert(name.len > 0);
+    assert(source.len > 0);
+    var result: CompilerMeasurement = .{
+        .name = name,
+        .old_milliseconds = try measure_compile(gpa, io, source),
+        .new_milliseconds = 0,
+        .old_peak_bytes = 0,
+        .new_peak_bytes = 0,
+    };
+    const start = std.Io.Timestamp.now(io, .awake);
+    for (0..compiles_count) |_| gpa.free(try compile_new(gpa, source));
+    const nanoseconds: f64 = @floatFromInt(elapsed_nanoseconds(io, start));
+    result.new_milliseconds = nanoseconds / compiles_count / 1e6;
+    var old_counting = CountingAllocator.init(gpa);
+    old_counting.allocator().free(try old_compiler.compile(old_counting.allocator(), source));
+    result.old_peak_bytes = old_counting.bytes_peak;
+    var new_counting = CountingAllocator.init(gpa);
+    new_counting.allocator().free(try compile_new(new_counting.allocator(), source));
+    result.new_peak_bytes = new_counting.bytes_peak;
+    assert(new_counting.bytes_live == 0);
+    return result;
 }
 
 fn measure_story(
@@ -281,12 +333,17 @@ pub fn main(init: std.process.Init) !void {
         try measure_story_new(gpa, io, "crime_scene", crime_json),
         try measure_story_new(gpa, io, "generated (1000 knots)", generated_json),
     };
+    const compiler_measurements = [_]CompilerMeasurement{
+        try measure_compilers(gpa, io, "crime_scene", crime_source),
+        try measure_compilers(gpa, io, "generated (1000 knots)", generated),
+    };
     const usage = std.posix.getrusage(std.c.rusage.SELF);
     // macOS reports bytes, Linux kilobytes.
     const rss_unit: u64 = if (builtin.os.tag == .linux) 1024 else 1;
     const rss_bytes: u64 = @as(u64, @intCast(usage.maxrss)) * rss_unit;
     try write_report(init.arena.allocator(), io, &measurements, rss_bytes);
     try write_new_report(init.arena.allocator(), io, &new_measurements);
+    try write_compiler_report(init.arena.allocator(), io, &compiler_measurements);
     assert(measurements.len == 2);
 }
 
@@ -360,6 +417,36 @@ fn write_new_report(arena: std.mem.Allocator, io: std.Io, measurements: []const 
         "\nThe state is the default limits' fixed budget, allocated once.\n{s}\n",
         .{end_marker},
     );
+    try write_section(arena, io, section.written(), start_marker, end_marker);
+}
+
+fn write_compiler_report(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    measurements: []const CompilerMeasurement,
+) !void {
+    assert(measurements.len > 0);
+    assert(measurements.len <= 8);
+    const mode = mode_name();
+    var section: std.Io.Writer.Allocating = .init(arena);
+    const writer = &section.writer;
+    const start_marker = try std.fmt.allocPrint(arena, "<!-- bench-compile:{s}:start -->", .{mode});
+    const end_marker = try std.fmt.allocPrint(arena, "<!-- bench-compile:{s}:end -->", .{mode});
+    try writer.print("{s}\n### Compilers, {s}\n\n", .{ start_marker, mode });
+    try writer.writeAll("| Story | Old compile (ms) | New compile (ms) | Old peak bytes | " ++
+        "New peak bytes | Old/new peak |\n|---|---|---|---|---|---|\n");
+    for (measurements) |m| {
+        const ratio = @as(f64, @floatFromInt(m.old_peak_bytes)) /
+            @as(f64, @floatFromInt(m.new_peak_bytes));
+        try writer.print("| {s} | {d:.2} | {d:.2} | {d} | {d} | {d:.2} |\n", .{
+            m.name,           m.old_milliseconds, m.new_milliseconds,
+            m.old_peak_bytes, m.new_peak_bytes,   ratio,
+        });
+    }
+    try writer.print("\nSource to JSON, both; the time is the mean of {d} compiles.\n{s}\n", .{
+        compiles_count,
+        end_marker,
+    });
     try write_section(arena, io, section.written(), start_marker, end_marker);
 }
 

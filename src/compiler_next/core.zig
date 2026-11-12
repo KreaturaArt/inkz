@@ -58,28 +58,63 @@ pub const Workspace = struct {
     token_ends: []u32,
     diagnostics: []Diagnostic,
 
-    /// Capacities proportional to the source; `scale` grows on retry.
+    /// Capacities proportional to the source, from what ink stories use (about 0.17 nodes
+    /// and 0.04 stored tokens per byte; dense inline logic needs more); `scale` doubles on
+    /// each retry (plan T15).
     pub fn init(gpa: Allocator, source_length: u32, diagnostics_max: u32, scale: u32) !Workspace {
         assert(scale >= 1);
-        const capacity: usize = (@as(usize, source_length) + 64) * 2 * scale;
+        const length: usize = source_length;
+        const nodes: usize = (length / 4 + 256) * scale;
+        const tokens: usize = (length / 8 + 256) * scale;
         var workspace: Workspace = undefined;
-        workspace.node_tags = try gpa.alloc(ast.Tag, capacity);
+        workspace.node_tags = try gpa.alloc(ast.Tag, nodes);
         errdefer gpa.free(workspace.node_tags);
-        workspace.node_data = try gpa.alloc(u32, capacity);
+        workspace.node_data = try gpa.alloc(u32, nodes);
         errdefer gpa.free(workspace.node_data);
-        workspace.scratch_tags = try gpa.alloc(ast.Tag, capacity);
+        workspace.scratch_tags = try gpa.alloc(ast.Tag, nodes);
         errdefer gpa.free(workspace.scratch_tags);
-        workspace.scratch_data = try gpa.alloc(u32, capacity);
+        workspace.scratch_data = try gpa.alloc(u32, nodes);
         errdefer gpa.free(workspace.scratch_data);
-        workspace.token_tags = try gpa.alloc(tokenizer_module.Tag, capacity);
+        workspace.token_tags = try gpa.alloc(tokenizer_module.Tag, tokens);
         errdefer gpa.free(workspace.token_tags);
-        workspace.token_starts = try gpa.alloc(u32, capacity);
+        workspace.token_starts = try gpa.alloc(u32, tokens);
         errdefer gpa.free(workspace.token_starts);
-        workspace.token_ends = try gpa.alloc(u32, capacity);
+        workspace.token_ends = try gpa.alloc(u32, tokens);
         errdefer gpa.free(workspace.token_ends);
         workspace.diagnostics = try gpa.alloc(Diagnostic, diagnostics_max);
-        assert(workspace.node_tags.len == capacity);
+        assert(workspace.node_tags.len == nodes);
         return workspace;
+    }
+
+    /// After a parse: drops the scratch stack and the token tags (only the parse uses them)
+    /// and shrinks the node and token arrays to what was used (plan P8.6).
+    pub fn settle(workspace: *Workspace, gpa: Allocator, nodes: u32, tokens: u32) !void {
+        assert(nodes <= workspace.node_tags.len);
+        assert(tokens <= workspace.token_starts.len);
+        gpa.free(workspace.scratch_tags);
+        gpa.free(workspace.scratch_data);
+        gpa.free(workspace.token_tags);
+        workspace.scratch_tags = &.{};
+        workspace.scratch_data = &.{};
+        workspace.token_tags = &.{};
+        workspace.node_tags = try gpa.realloc(workspace.node_tags, nodes);
+        workspace.node_data = try gpa.realloc(workspace.node_data, nodes);
+        workspace.token_starts = try gpa.realloc(workspace.token_starts, tokens);
+        workspace.token_ends = try gpa.realloc(workspace.token_ends, tokens);
+    }
+
+    /// Frees the nodes and the tokens, keeping the diagnostics.
+    pub fn release_syntax(workspace: *Workspace, gpa: Allocator) void {
+        assert(workspace.node_tags.len == workspace.node_data.len);
+        assert(workspace.token_starts.len == workspace.token_ends.len);
+        gpa.free(workspace.node_tags);
+        gpa.free(workspace.node_data);
+        gpa.free(workspace.token_starts);
+        gpa.free(workspace.token_ends);
+        workspace.node_tags = &.{};
+        workspace.node_data = &.{};
+        workspace.token_starts = &.{};
+        workspace.token_ends = &.{};
     }
 
     pub fn deinit(workspace: *Workspace, gpa: Allocator) void {
