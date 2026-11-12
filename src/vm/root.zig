@@ -9,6 +9,7 @@ pub const call_stack = @import("call_stack.zig");
 pub const output = @import("output.zig");
 pub const choices = @import("choices.zig");
 pub const state = @import("state.zig");
+pub const flows = @import("flows.zig");
 
 test {
     _ = value;
@@ -19,4 +20,5 @@ test {
     _ = output;
     _ = choices;
     _ = state;
+    _ = flows;
 }
