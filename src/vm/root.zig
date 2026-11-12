@@ -4,9 +4,11 @@
 pub const value = @import("value.zig");
 pub const native = @import("native.zig");
 pub const lists = @import("lists.zig");
+pub const heap = @import("heap.zig");
 
 test {
     _ = value;
     _ = native;
     _ = lists;
+    _ = heap;
 }
