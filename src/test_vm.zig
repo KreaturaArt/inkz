@@ -2,4 +2,5 @@
 
 test {
     _ = @import("vm/root.zig");
+    _ = @import("death_cases.zig");
 }

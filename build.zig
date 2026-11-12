@@ -55,7 +55,7 @@ pub fn build(b: *std.Build) void {
             .step = "test-vm",
             .root = "src/test_vm.zig",
             .description = "Run new runtime tests",
-            .own_filters = &.{"vm."},
+            .own_filters = &.{ "vm.", "death_cases." },
         },
         .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
     };
@@ -169,9 +169,9 @@ pub fn build(b: *std.Build) void {
     inventory_step.dependOn(&run_inventory.step);
 }
 
-const death_cases = @import("src/core/death_cases.zig");
+const death_cases = @import("src/death_cases.zig");
 
-/// `zig build test-death` (plan D20): runs each case in `src/core/death_cases.zig` as its own
+/// `zig build test-death` (plan D20): runs each case in `src/death_cases.zig` as its own
 /// child process and checks how it ends. Always built in Debug, so assertions are on.
 fn add_death_tests(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
     const runner = b.addExecutable(.{
@@ -183,7 +183,7 @@ fn add_death_tests(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.S
         }),
     });
     runner.root_module.addAnonymousImport("death_cases", .{
-        .root_source_file = b.path("src/core/death_cases.zig"),
+        .root_source_file = b.path("src/death_cases.zig"),
     });
     const step = b.step("test-death", "Run cases that must panic, one process each");
     const Expected = std.process.Child.Term;

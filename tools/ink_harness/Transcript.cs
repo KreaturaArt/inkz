@@ -76,6 +76,7 @@ sealed class Transcript
             case "play": Play(output); break;
             case "play_seeded": PlaySeeded(ParseInt(argument), output); break;
             case "globals": Globals(output); break;
+            case "events": RecordEvents(); break;
             case "choose_path": story.ChoosePathString(argument); break;
             case "evaluate": Evaluate(argument, output); break;
             case "get": Line(output, "value", Value(story.variablesState[argument])); break;
@@ -175,6 +176,28 @@ sealed class Transcript
             story.ChooseChoiceIndex(index);
         }
         output.Append("turns_max reached\n");
+    }
+
+    // Records ink's host events (onDidContinue, onMakeChoice, onEvaluateFunction,
+    // onCompleteEvaluateFunction, onChoosePathString) as `event:` lines.
+    void RecordEvents()
+    {
+        story.onDidContinue += () => events.Add("event: did_continue");
+        story.onMakeChoice += choice => events.Add($"event: make_choice {Json(choice.text)}");
+        story.onEvaluateFunction += (name, arguments) =>
+            events.Add($"event: evaluate_function {name}({Arguments(arguments)})");
+        story.onCompleteEvaluateFunction += (name, arguments, text, result) =>
+            events.Add($"event: complete_evaluate_function {name}({Arguments(arguments)}) " +
+                $"{Json(text)} {Value(result)}");
+        story.onChoosePathString += (path, arguments) =>
+            events.Add($"event: choose_path_string {path}({Arguments(arguments)})");
+    }
+
+    static string Arguments(object[] arguments)
+    {
+        var rendered = new List<string>();
+        if (arguments != null) foreach (var value in arguments) rendered.Add(Value(value));
+        return string.Join(", ", rendered);
     }
 
     // Every global variable, sorted by name (ordinal), with its value.

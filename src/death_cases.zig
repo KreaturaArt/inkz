@@ -11,9 +11,9 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const fault = @import("fault.zig");
-const index = @import("index.zig");
-const string_pool = @import("string_pool.zig");
+const fault = @import("core/fault.zig");
+const index = @import("core/index.zig");
+const string_pool = @import("core/string_pool.zig");
 
 pub const did_not_die_exit_code = 3;
 
