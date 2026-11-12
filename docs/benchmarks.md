@@ -101,10 +101,10 @@ What it means for P5.2 (measured 2026-11-11):
 
 | Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | Runtime objects | Bytes/object | Compile (ms) |
 |---|---|---|---|---|---|---|---|---|
-| crime_scene | 392.4 | 20849 | 55125 | 2069167 | 736736 | 1366 | 539.3 | 0.25 |
-| generated (1000 knots) | 8169.3 | 23658 | 47315 | 675002 | 14480976 | 35010 | 413.6 | 4.48 |
+| crime_scene | 415.6 | 18625 | 49243 | 1848392 | 736736 | 1366 | 539.3 | 0.28 |
+| generated (1000 knots) | 8357.8 | 22578 | 45156 | 644201 | 14480976 | 35010 | 413.6 | 4.49 |
 
-Peak RSS of the whole run: 17088 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
+Peak RSS of the whole run: 17024 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseSafe:end -->
 
 <!-- bench:ReleaseFast:start -->
@@ -112,10 +112,10 @@ Peak RSS of the whole run: 17088 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | Runtime objects | Bytes/object | Compile (ms) |
 |---|---|---|---|---|---|---|---|---|
-| crime_scene | 256.6 | 29947 | 79179 | 2972052 | 930122 | 1366 | 680.9 | 0.17 |
-| generated (1000 knots) | 5032.6 | 37096 | 74192 | 1058433 | 19846150 | 35010 | 566.9 | 2.80 |
+| crime_scene | 245.5 | 31686 | 83776 | 3144612 | 930122 | 1366 | 680.9 | 0.18 |
+| generated (1000 knots) | 4967.6 | 37647 | 75295 | 1074161 | 19846150 | 35010 | 566.9 | 2.82 |
 
-Peak RSS of the whole run: 28496 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
+Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseFast:end -->
 
 <!-- bench-new:ReleaseSafe:start -->
@@ -123,8 +123,8 @@ Peak RSS of the whole run: 28496 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 631.7 | 61031 | 78646 | 7946067 | 2139646 | 1513 | 1414.2 |
-| generated (1000 knots) | 6349.5 | 310228 | 310228 | 8382364 | 2801359 | 32010 | 87.5 |
+| crime_scene | 632.5 | 52456 | 67597 | 6829667 | 2139646 | 1513 | 1414.2 |
+| generated (1000 knots) | 6645.7 | 308945 | 308945 | 8347694 | 2801359 | 32010 | 87.5 |
 
 The state is the default limits' fixed budget, allocated once.
 <!-- bench-new:ReleaseSafe:end -->
@@ -134,8 +134,8 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 280.4 | 118992 | 153337 | 15492437 | 2139646 | 1513 | 1414.2 |
-| generated (1000 knots) | 4367.2 | 639163 | 639163 | 17270176 | 2801359 | 32010 | 87.5 |
+| crime_scene | 298.8 | 117746 | 151732 | 15330290 | 2139646 | 1513 | 1414.2 |
+| generated (1000 knots) | 4633.9 | 619406 | 619406 | 16736361 | 2801359 | 32010 | 87.5 |
 
 The state is the default limits' fixed budget, allocated once.
 <!-- bench-new:ReleaseFast:end -->
@@ -145,10 +145,10 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.27 | 1.52 | 535918 | 261308 | 2.05 |
-| generated (1000 knots) | 4.53 | 25.08 | 13067678 | 4751989 | 2.75 |
+| crime_scene | 0.27 | 1.96 | 535918 | 246873 | 2.17 |
+| generated (1000 knots) | 4.53 | 34.03 | 13067678 | 4753137 | 2.75 |
 
-Source to JSON, both; the time is the mean of 20 compiles.
+Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseSafe:end -->
 
 <!-- bench-compile:ReleaseFast:start -->
@@ -156,8 +156,58 @@ Source to JSON, both; the time is the mean of 20 compiles.
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.17 | 0.91 | 513047 | 247159 | 2.08 |
-| generated (1000 knots) | 3.15 | 14.47 | 12680076 | 4368982 | 2.90 |
+| crime_scene | 0.17 | 0.94 | 513047 | 223231 | 2.30 |
+| generated (1000 knots) | 3.15 | 15.94 | 12680076 | 4292970 | 2.95 |
 
-Source to JSON, both; the time is the mean of 20 compiles.
+Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseFast:end -->
+
+## Final report (P9.4)
+
+The generated sections above hold the latest run. On this machine, run-to-run variation is large: the same commit measured up to 1.7× apart on different runs of the same day. So the ratios below compare the old and new runtimes measured **in the same run** (the last bench run before P9.1 deleted the old runtime, commit 2091249). The P0.6 baseline sections (commit 88ae377) are kept above unchanged.
+
+### Plan §9 benchmark targets (ReleaseSafe)
+
+| Target | crime_scene | generated (1000 knots) | Result |
+|---|---|---|---|
+| `cont()` throughput ≥ 3× (turns/s; the old `cont()` returned a whole turn) | 20,849 → 61,031 (2.9×) | 23,658 → 310,228 (13.1×) | met on the large story; just short on crime_scene |
+| Load ≥ 2× faster | 392 µs → 632 µs (0.6×) | 8,169 µs → 6,350 µs (1.3×) | not met |
+| Compiler peak memory ≥ 2× lower | 535,918 → 246,873 B (2.17×) | 13,067,678 → 4,753,137 B (2.75×) | met |
+
+The same comparisons in ReleaseFast:
+
+| Measurement | crime_scene | generated (1000 knots) |
+|---|---|---|
+| Turns/s | 3.97× | 17.2× |
+| Lines/s | 1.94× | 8.6× |
+| Load time | 0.92× (slower) | 1.15× faster |
+| Compiler peak memory | 2.30× lower | 2.95× lower |
+
+**Shortfalls and their causes**
+
+- **Load.** Measured in ReleaseSafe, with 200 runs each:
+
+  | Step | crime_scene | generated |
+  |---|---|---|
+  | `ink_json.load` (JSON to Program) | 401 µs | 6,199 µs |
+  | `Story.init` | 315 µs | 282 µs |
+
+  - `ink_json.load` alone takes as long as the old runtime's whole load. It validates the JSON, builds the program image and computes paths and hashes, where the old runtime built its object tree directly.
+  - `Story.init` allocates the state's fixed budget once (2.1 MB with the default `Limits`, plan §4.6). That cost doesn't grow with the story, so it dominates small stories.
+  - A smaller `Limits`, sized from the story (see "Memory budget sizing" above), shrinks the init cost.
+  - The loader was not optimised for speed, beyond the peak memory checked in P3.
+- **`cont()` on crime_scene: 2.9× instead of 3×.** `cont()` now returns one line at a time with ink's newline lookahead (D12). Each line needs a snapshot and a check of the next content for glue, which the old turn-based `cont()` didn't do. On a short-lined story like crime_scene, that per-line work weighs most. This was not profiled further; on the large story the same code is 13× faster.
+- **Compile time** has no target. The new compiler is 7–8× slower than the old one, which skipped most of ink's semantics (TASK-148.6).
+
+### Other plan §9 criteria
+
+| Criterion | Status |
+|---|---|
+| Ledger contains only deliberate differences | 1 entry: the structural difference in `runtime/lists/more_list_operations`, with its reason. Its output matches ink. |
+| 0 allocations after init in `cont`, `choose_choice_index`, `evaluate_function`, `set_variable`, `switch_flow`, `load_json` | Test-enforced in `src/testing/zero_allocation.zig`. The `load_json` test was added in P9.4. |
+| `Story.init` allocates exactly `Limits.bytes_total()` | Test-enforced (`src/runtime/state.zig`) |
+| No recursion, functions ≤ 70 lines, lines ≤ 100 columns, ≥ 2 asserts per function; `zig build lint` passes with an empty allowlist | Met. The allowlist was removed in P9.1. |
+| No path resolution, string hashing or `mem.eql` in the VM hot path | Lint gate on `src/runtime/vm.zig`, added in P9.4 |
+| Memory bounded over 10k turns | Test-enforced: heap compaction over 10,000 rounds, and flow switching |
+| Size guards: `Value` 12 B, `Frame` ≤ 24 B, `Instruction` and `Node` 5 B SoA, `Token` 9 B SoA | Comptime asserts and size tests |
+| Simulation, 10k seeds, including compact-always | Met. `zig build simulate -Doptimize=ReleaseSafe -- --seeds 10000`, plain and with `--compact-always on`: 1,830,000 runs each (183 cases × 10,000 seeds), 0 failures |

@@ -34,7 +34,13 @@ pub const Rule = enum {
     usize_field,
     assertion_density,
     recursion,
+    /// Path-string resolution, string hashing or `mem.eql` in the VM's hot path (plan §9).
+    hot_path,
 };
+
+/// The VM's dispatch loop, which must not resolve paths or compare or hash strings.
+pub const hot_path_file = "src/runtime/vm.zig";
+const hot_path_forbidden = [_][]const u8{ "mem.eql", "hash", "resolve_path", "path_string" };
 
 pub const Diagnostic = struct {
     path: []const u8,
@@ -175,6 +181,25 @@ pub const Linter = struct {
                 );
                 try linter.report(file.path, @intCast(line_index + 1), .line_length, message);
             }
+            if (std.mem.endsWith(u8, file.path, hot_path_file)) {
+                try linter.check_hot_path(file.path, file.source[start..end], line_index + 1);
+            }
+        }
+    }
+
+    /// The hot-path gate on one line of code (comments may name what is forbidden).
+    fn check_hot_path(linter: *Linter, path: []const u8, text: []const u8, line: usize) !void {
+        assert(line > 0);
+        assert(std.mem.endsWith(u8, path, hot_path_file));
+        const code_end = std.mem.indexOf(u8, text, "//") orelse text.len;
+        for (hot_path_forbidden) |forbidden| {
+            if (std.mem.indexOf(u8, text[0..code_end], forbidden) == null) continue;
+            const message = try std.fmt.allocPrint(
+                linter.arena,
+                "'{s}' in the VM's hot path",
+                .{forbidden},
+            );
+            try linter.report(path, @intCast(line), .hot_path, message);
         }
     }
 
@@ -859,6 +884,19 @@ test "long lines and long functions are reported" {
     try expect_rules(diagnostics, &.{ .line_length, .function_length });
 }
 
+test "the VM's hot path may not compare or hash strings" {
+    // Goal: plan §9's grep gate. Method: the same line in the VM and in another file, and in
+    // a comment.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const text = "fn f(a: []const u8) bool {\n    assert(a.len > 0);\n    assert(true);\n" ++
+        "    // mem.eql is named here only\n    return std.mem.eql(u8, a, \"x\");\n}\n";
+    const in_vm = try lint_samples(arena.allocator(), &.{.{ "src/runtime/vm.zig", text }});
+    try expect_rules(in_vm, &.{.hot_path});
+    const elsewhere = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", text }});
+    try expect_rules(elsewhere, &.{});
+}
+
 test "a suppression comment allows a long function" {
     // Goal: suppressions need the comment block above the function. Method: the same long
     // function with a reasoned suppression and a doc comment in between.
@@ -870,7 +908,7 @@ test "a suppression comment allows a long function" {
     for (0..70) |_| try source.appendSlice(arena.allocator(), "    assert(true);\n");
     try source.appendSlice(arena.allocator(), "}\n");
     const text = try arena.allocator().dupeSentinel(u8, source.items, 0);
-    const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/vm/vm.zig", text }});
+    const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/runtime/vm.zig", text }});
     try expect_rules(diagnostics, &.{});
 }
 
