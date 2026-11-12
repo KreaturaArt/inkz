@@ -10,8 +10,10 @@
 //! `visit_count`, `switch_flow`, ...; see `apply_optional`). When an engine lacks one, the
 //! transcript records `unsupported: <action>` and stops, so gaps show up in comparisons.
 //! An engine error is recorded as `exception: "<name>"` and stops the transcript too, like an
-//! ink exception in the harness. Slices returned by an engine are valid until its next
-//! mutating call.
+//! ink exception in the harness; an engine with `exception_message() ?[]const u8` gives ink's
+//! message instead. An engine with `write_messages(writer)` writes its host events, errors
+//! and warnings after each action, like the harness's FlushMessages. Slices returned by an
+//! engine are valid until its next mutating call.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -64,6 +66,8 @@ pub const Value = union(enum) {
     null,
     int: i64,
     float: f64,
+    /// A float already formatted as .NET formats it (the new engine's f32).
+    float_text: []const u8,
     bool: bool,
     string: []const u8,
     list: []const u8,
@@ -77,6 +81,7 @@ pub fn write_value(writer: *std.Io.Writer, value: Value) !void {
         .null => try writer.writeAll("null"),
         .int => |number| try writer.print("int {d}", .{number}),
         .float => |number| try writer.print("float {d}", .{number}),
+        .float_text => |text| try writer.print("float {s}", .{text}),
         .bool => |flag| try writer.writeAll(if (flag) "bool true" else "bool false"),
         .string => |text| {
             try writer.writeAll("string ");
@@ -143,6 +148,7 @@ const Outcome = enum { next, stop };
 fn apply(engine: anytype, action: Action, writer: *std.Io.Writer) !Outcome {
     comptime assert(@typeInfo(@TypeOf(engine)) == .pointer);
     comptime assert(@hasDecl(@typeInfo(@TypeOf(engine)).pointer.child, "tags_per_line"));
+    const Engine = @typeInfo(@TypeOf(engine)).pointer.child;
     apply_required(engine, action, writer) catch |err| switch (err) {
         error.WriteFailed, error.OutOfMemory => |fatal| return fatal,
         error.Unsupported => {
@@ -150,12 +156,18 @@ fn apply(engine: anytype, action: Action, writer: *std.Io.Writer) !Outcome {
             return .stop;
         },
         else => {
+            if (@hasDecl(Engine, "write_messages")) try engine.write_messages(writer);
             try writer.writeAll("exception: ");
-            try write_json_string(writer, @errorName(err));
+            var message: []const u8 = @errorName(err);
+            if (@hasDecl(Engine, "exception_message")) {
+                if (engine.exception_message()) |text| message = text;
+            }
+            try write_json_string(writer, message);
             try writer.writeByte('\n');
             return .stop;
         },
     };
+    if (@hasDecl(Engine, "write_messages")) try engine.write_messages(writer);
     return .next;
 }
 
@@ -198,6 +210,14 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
         .visit_count => {
             if (!@hasDecl(Engine, "visit_count")) return error.Unsupported;
             try writer.print("visit_count: {d}\n", .{try engine.visit_count(action.argument)});
+        },
+        .set => {
+            if (!@hasDecl(Engine, "set")) return error.Unsupported;
+            const space = std.mem.indexOfScalar(u8, action.argument, ' ') orelse
+                return error.BadActionArgument;
+            var buffer: [4096]u8 = undefined;
+            const value = try parse_typed(action.argument[space + 1 ..], &buffer);
+            try engine.set(action.argument[0..space], value);
         },
         .get => {
             if (!@hasDecl(Engine, "get")) return error.Unsupported;
@@ -305,6 +325,24 @@ fn pick(random: *DotnetRandom, count: u32) u32 {
     const index: u32 = @intCast(@mod(random.next(), @as(i32, @intCast(count))));
     assert(index < count);
     return index;
+}
+
+/// A typed value as the harness reads one: `int 5`, `float 2.5`, `bool true` or
+/// `string "text"` (JSON-escaped; unescaped into `buffer`).
+pub fn parse_typed(text_raw: []const u8, buffer: []u8) !Value {
+    const text = std.mem.trim(u8, text_raw, " ");
+    const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadActionArgument;
+    const kind = text[0..space];
+    const rest = std.mem.trim(u8, text[space + 1 ..], " ");
+    assert(rest.len <= text.len);
+    if (std.mem.eql(u8, kind, "int")) return .{ .int = try std.fmt.parseInt(i32, rest, 10) };
+    if (std.mem.eql(u8, kind, "float")) return .{ .float = try std.fmt.parseFloat(f32, rest) };
+    if (std.mem.eql(u8, kind, "bool")) return .{ .bool = std.mem.eql(u8, rest, "true") };
+    if (!std.mem.eql(u8, kind, "string")) return error.BadActionArgument;
+    var fixed: std.heap.FixedBufferAllocator = .init(buffer);
+    const unescaped = std.json.parseFromSliceLeaky([]const u8, fixed.allocator(), rest, .{}) catch
+        return error.BadActionArgument;
+    return .{ .string = unescaped };
 }
 
 /// Escapes like the harness: `"`, `\`, `\n`, `\r`, `\t`, other control bytes as `\u00xx`,

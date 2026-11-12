@@ -10,6 +10,7 @@ pub const simulation = @import("simulation.zig");
 pub const loader_comparison = @import("loader_comparison.zig");
 pub const transcripts = @import("transcripts.zig");
 pub const weave_reproductions = @import("weave_reproductions.zig");
+pub const new_engine_cases = @import("new_engine_cases.zig");
 
 test {
     _ = transcript;
@@ -21,4 +22,5 @@ test {
     _ = simulation;
     _ = loader_comparison;
     _ = weave_reproductions;
+    _ = new_engine_cases;
 }
