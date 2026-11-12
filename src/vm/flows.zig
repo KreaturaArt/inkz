@@ -23,8 +23,9 @@ pub const Error = error{ FlowLimit, FlowNameTooLong, FlowParkingLimit, CannotRem
 
 const header_words = 11;
 
-/// The counts that start a parked flow, in the order its arrays follow.
-const Header = struct {
+/// The counts that start a parked flow, in the order its arrays follow. `extern` keeps the
+/// field order, so the first ten words are the array lengths in order.
+const Header = extern struct {
     frames: u32,
     threads: u32,
     temps: u32,
@@ -317,6 +318,78 @@ pub fn alive_flow_names(state: *const State, sink: anytype) !void {
         assert(name.len > 0);
         try sink.name(name);
     }
+}
+
+pub const Fault = enum {
+    ok,
+    default_flow,
+    current_flow,
+    current_parked,
+    parked_out_of_range,
+    parked_overlap,
+    parked_shape,
+    name_too_long,
+};
+
+/// Checks the flow directory and the parking region: the default flow is record 0 and in
+/// use, the current flow isn't parked, and parked regions are in range, disjoint, packed and
+/// shaped as their headers say.
+pub fn check(state: *const State) Fault {
+    assert(state.flows.len > 0);
+    const default = &state.flows[0];
+    if (!default.in_use) return .default_flow;
+    if (!std.mem.eql(u8, default.name[0..default.name_length], default_name)) return .default_flow;
+    if (state.current_flow >= state.flows.len) return .current_flow;
+    if (!state.flows[state.current_flow].in_use) return .current_flow;
+    if (state.flows[state.current_flow].parked_words != 0) return .current_parked;
+    var parked_total: u64 = 0;
+    var parked_end: u64 = 0;
+    for (state.flows) |*record| {
+        if (!record.in_use) continue;
+        if (record.name_length > state_module.flow_name_bytes_max) return .name_too_long;
+        if (record.parked_words == 0) continue;
+        const end = @as(u64, record.parked_first) + record.parked_words;
+        if (end > state.parking.len) return .parked_out_of_range;
+        if (!parked_shape_ok(state, record)) return .parked_shape;
+        parked_total += record.parked_words;
+        parked_end = @max(parked_end, end);
+    }
+    // Disjoint regions packed from the start cover exactly [0, end).
+    if (parked_total != parked_end) return .parked_overlap;
+    assert(parked_end <= state.parking.len);
+    return .ok;
+}
+
+fn parked_shape_ok(state: *const State, record: *const FlowRecord) bool {
+    assert(record.parked_words > 0);
+    if (record.parked_words < header_words) return false;
+    const words = state.parking[record.parked_first..][0..header_words];
+    const header = std.mem.bytesToValue(Header, std.mem.sliceAsBytes(words));
+    const capacities = [_]u32{
+        state.call_stack.frames.capacity(),
+        state.call_stack.threads.capacity(),
+        state.call_stack.temps.capacity(),
+        state.output.items.capacity(),
+        state.output.string_marks.capacity(),
+        state.choices.records.capacity(),
+        state.choices.tags.capacity(),
+        state.choices.snapshots.capacity(),
+        state.choices.frames.capacity(),
+        state.choices.temps.capacity(),
+    };
+    const counts = words[0..capacities.len];
+    for (counts, capacities) |count, capacity| if (count > capacity) return false;
+    assert(counts[1] == header.threads);
+    if (header.threads == 0) return false;
+    const expected = header_words + words_of(call_stack_module.Frame, header.frames) +
+        words_of(call_stack_module.Thread, header.threads) +
+        words_of(call_stack_module.Temp, header.temps) +
+        words_of(output_module.Item, header.items) + header.marks +
+        words_of(choices_module.Choice, header.choices) + header.tags +
+        words_of(choices_module.Snapshot, header.snapshots) +
+        words_of(call_stack_module.Frame, header.snapshot_frames) +
+        words_of(call_stack_module.Temp, header.snapshot_temps);
+    return expected == record.parked_words;
 }
 
 /// Visits the heap references of every parked flow, for compaction.
