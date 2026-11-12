@@ -12,4 +12,5 @@ test {
     _ = @import("compiler_next/spike.zig");
     _ = @import("compiler_next/tokenizer.zig");
     _ = @import("compiler_next/ast.zig");
+    _ = @import("compiler_next/core.zig");
 }

@@ -1,0 +1,480 @@
+//! The parser core (plan §4.11, P7.3, D9): an explicit-stack machine that runs backtracking
+//! grammar rules the way ink's StringParser does, without recursion.
+//!
+//! A rule is a step function with phases. A step returns an `Action`: call another rule,
+//! succeed, fail, or go on with its next phase. A call pushes a frame holding a checkpoint
+//! (the input position and the token, node and scratch counts); a failed rule restores its
+//! checkpoint, which gives StringParser's BeginRule/FailRule/SucceedRule and so OneOf,
+//! Optional and Interleave. The caller reads the callee's outcome in its next phase.
+//!
+//! Nodes are built with zirp's scratch stack (T4): finished nodes are values on the scratch
+//! stack, and `wrap` moves a parent's children into one contiguous run of the node arrays.
+//! Diagnostics survive backtracking, as ink's errors do.
+//!
+//! Bounds: frames are limited by `parse_depth_max` (deeper input gets one diagnostic and the
+//! parse unwinds, it doesn't crash); a gas counter bounds the steps by the input length, so a
+//! grammar bug that stops making progress ends with a diagnostic too.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const tokenizer_module = @import("tokenizer.zig");
+const ast = @import("ast.zig");
+const Tokenizer = tokenizer_module.Tokenizer;
+const Token = tokenizer_module.Token;
+const Mode = tokenizer_module.Mode;
+
+pub const Diagnostic = struct {
+    code: Code,
+    /// Byte offset in the (comment-free) source where it was raised.
+    offset: u32,
+    /// A code-specific number (such as the expected token tag).
+    extra: u32 = 0,
+
+    pub const Code = enum(u8) {
+        too_deep,
+        no_progress,
+        expected,
+        _,
+    };
+};
+
+pub const Error = error{
+    /// The workspace is too small for this source: retry with more (plan T15).
+    WorkspaceFull,
+};
+
+/// Fixed-capacity arrays, sized once from the source length (T15).
+pub const Workspace = struct {
+    node_tags: []ast.Tag,
+    node_data: []u32,
+    scratch_tags: []ast.Tag,
+    scratch_data: []u32,
+    token_tags: []tokenizer_module.Tag,
+    token_starts: []u32,
+    token_ends: []u32,
+    diagnostics: []Diagnostic,
+
+    /// Capacities proportional to the source; `scale` grows on retry.
+    pub fn init(gpa: Allocator, source_length: u32, diagnostics_max: u32, scale: u32) !Workspace {
+        assert(scale >= 1);
+        const capacity: usize = (@as(usize, source_length) + 64) * 2 * scale;
+        var workspace: Workspace = undefined;
+        workspace.node_tags = try gpa.alloc(ast.Tag, capacity);
+        errdefer gpa.free(workspace.node_tags);
+        workspace.node_data = try gpa.alloc(u32, capacity);
+        errdefer gpa.free(workspace.node_data);
+        workspace.scratch_tags = try gpa.alloc(ast.Tag, capacity);
+        errdefer gpa.free(workspace.scratch_tags);
+        workspace.scratch_data = try gpa.alloc(u32, capacity);
+        errdefer gpa.free(workspace.scratch_data);
+        workspace.token_tags = try gpa.alloc(tokenizer_module.Tag, capacity);
+        errdefer gpa.free(workspace.token_tags);
+        workspace.token_starts = try gpa.alloc(u32, capacity);
+        errdefer gpa.free(workspace.token_starts);
+        workspace.token_ends = try gpa.alloc(u32, capacity);
+        errdefer gpa.free(workspace.token_ends);
+        workspace.diagnostics = try gpa.alloc(Diagnostic, diagnostics_max);
+        assert(workspace.node_tags.len == capacity);
+        return workspace;
+    }
+
+    pub fn deinit(workspace: *Workspace, gpa: Allocator) void {
+        assert(workspace.diagnostics.len > 0);
+        assert(workspace.node_tags.len == workspace.node_data.len);
+        gpa.free(workspace.node_tags);
+        gpa.free(workspace.node_data);
+        gpa.free(workspace.scratch_tags);
+        gpa.free(workspace.scratch_data);
+        gpa.free(workspace.token_tags);
+        gpa.free(workspace.token_starts);
+        gpa.free(workspace.token_ends);
+        gpa.free(workspace.diagnostics);
+        workspace.* = undefined;
+    }
+};
+
+/// What a rule step does next.
+pub fn Action(comptime Rule: type) type {
+    comptime assert(@typeInfo(Rule) == .@"enum");
+    comptime assert(@sizeOf(Rule) <= 4);
+    return union(enum) {
+        /// Run `rule`, then come back to this frame's next phase.
+        call: Rule,
+        /// This rule matched; its nodes are on the scratch stack.
+        succeed,
+        /// This rule didn't match: everything since its call is undone.
+        fail,
+        /// Run this frame again (its phase changed).
+        again,
+    };
+}
+
+pub const Outcome = enum { none, succeeded, failed };
+
+/// The machine for a grammar, which provides `Rule` (an enum) and
+/// `step(machine: *Machine(Grammar), frame: *Frame(Rule)) Action(Rule)`.
+pub fn Machine(comptime Grammar: type) type {
+    return struct {
+        const Self = @This();
+        pub const Rule = Grammar.Rule;
+
+        pub const Frame = struct {
+            rule: Rule,
+            phase: u8 = 0,
+            checkpoint: Checkpoint,
+            /// Rule-specific scratch: counts, saved positions.
+            locals: [3]u32 = .{ 0, 0, 0 },
+        };
+
+        pub const Checkpoint = struct {
+            at: u32,
+            tokens: u32,
+            nodes: u32,
+            scratch: u32,
+        };
+
+        source: []const u8,
+        tokenizer: Tokenizer,
+        workspace: *Workspace,
+        frames: []Frame,
+        frames_count: u32 = 0,
+        nodes_count: u32 = 0,
+        scratch_count: u32 = 0,
+        tokens_count: u32 = 0,
+        diagnostics_count: u32 = 0,
+        /// The outcome of the frame that just returned.
+        outcome: Outcome = .none,
+        /// Set when the input is too deep or stopped progressing: every frame fails.
+        abandoned: bool = false,
+        /// Rule-specific flags (ink's parsingChoice, parsingStringExpression).
+        flags: u32 = 0,
+
+        pub fn init(source: []const u8, workspace: *Workspace, frames: []Frame) Self {
+            assert(frames.len > 0);
+            assert(source.len < std.math.maxInt(u32));
+            return .{
+                .source = source,
+                .tokenizer = .init(source),
+                .workspace = workspace,
+                .frames = frames,
+            };
+        }
+
+        pub fn checkpoint(machine: *const Self) Checkpoint {
+            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.nodes_count <= machine.workspace.node_tags.len);
+            return .{
+                .at = machine.tokenizer.at,
+                .tokens = machine.tokens_count,
+                .nodes = machine.nodes_count,
+                .scratch = machine.scratch_count,
+            };
+        }
+
+        pub fn restore(machine: *Self, saved: Checkpoint) void {
+            assert(saved.at <= machine.source.len);
+            assert(saved.tokens <= machine.workspace.token_tags.len);
+            machine.tokenizer.at = saved.at;
+            machine.tokens_count = saved.tokens;
+            machine.nodes_count = saved.nodes;
+            machine.scratch_count = saved.scratch;
+        }
+
+        /// Runs `start` to the end; returns its outcome.
+        pub fn run(machine: *Self, start: Rule) Error!Outcome {
+            assert(machine.frames_count == 0);
+            const gas_max: u64 = 64 * (@as(u64, machine.source.len) + 64);
+            var gas: u64 = 0;
+            try machine.push(start);
+            while (machine.frames_count > 0) : (gas += 1) {
+                if (gas == gas_max) {
+                    machine.report(.no_progress, machine.tokenizer.at, 0);
+                    machine.abandoned = true;
+                }
+                const frame = &machine.frames[machine.frames_count - 1];
+                const action = if (machine.abandoned) Action(Rule).fail else Grammar.step(
+                    machine,
+                    frame,
+                );
+                try machine.apply(action);
+            }
+            assert(machine.outcome != .none);
+            return machine.outcome;
+        }
+
+        fn apply(machine: *Self, action: Action(Rule)) Error!void {
+            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.frames_count > 0);
+            switch (action) {
+                .call => |rule| {
+                    machine.outcome = .none;
+                    try machine.push(rule);
+                },
+                .succeed => {
+                    machine.frames_count -= 1;
+                    machine.outcome = .succeeded;
+                },
+                .fail => {
+                    machine.restore(machine.frames[machine.frames_count - 1].checkpoint);
+                    machine.frames_count -= 1;
+                    machine.outcome = .failed;
+                },
+                .again => {},
+            }
+        }
+
+        fn push(machine: *Self, rule: Rule) Error!void {
+            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.frames_count <= machine.frames.len);
+            if (machine.frames_count == machine.frames.len) {
+                // Too deep: one diagnostic, then everything unwinds.
+                if (!machine.abandoned) machine.report(.too_deep, machine.tokenizer.at, 0);
+                machine.abandoned = true;
+                machine.outcome = .failed;
+                return;
+            }
+            const saved = machine.checkpoint();
+            machine.frames[machine.frames_count] = .{ .rule = rule, .checkpoint = saved };
+            machine.frames_count += 1;
+        }
+
+        pub fn report(machine: *Self, code: Diagnostic.Code, offset: u32, extra: u32) void {
+            assert(machine.diagnostics_count <= machine.workspace.diagnostics.len);
+            assert(offset <= machine.source.len);
+            if (machine.diagnostics_count == machine.workspace.diagnostics.len) return;
+            const diagnostic: Diagnostic = .{ .code = code, .offset = offset, .extra = extra };
+            machine.workspace.diagnostics[machine.diagnostics_count] = diagnostic;
+            machine.diagnostics_count += 1;
+        }
+
+        // Tokens.
+
+        /// The next token in `mode`, without consuming it.
+        pub fn peek(machine: *const Self, mode: Mode) Token {
+            assert(machine.tokenizer.at <= machine.source.len);
+            var copy = machine.tokenizer;
+            const token = copy.next(mode);
+            assert(token.start == machine.tokenizer.at);
+            return token;
+        }
+
+        /// Consumes the next token in `mode` if it has `tag`; returns its index.
+        pub fn accept(machine: *Self, mode: Mode, tag: tokenizer_module.Tag) Error!?ast.TokenIndex {
+            assert(machine.tokenizer.at <= machine.source.len);
+            assert(@backingInt(tag) < 256);
+            const token = machine.peek(mode);
+            if (token.tag != tag) return null;
+            return try machine.consume(mode);
+        }
+
+        /// Consumes the next token in `mode` and stores it.
+        pub fn consume(machine: *Self, mode: Mode) Error!ast.TokenIndex {
+            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.tokens_count <= machine.workspace.token_tags.len);
+            const token = machine.tokenizer.next(mode);
+            const workspace = machine.workspace;
+            if (machine.tokens_count == workspace.token_tags.len) return error.WorkspaceFull;
+            workspace.token_tags[machine.tokens_count] = token.tag;
+            workspace.token_starts[machine.tokens_count] = token.start;
+            workspace.token_ends[machine.tokens_count] = token.end;
+            machine.tokens_count += 1;
+            return .from_int(machine.tokens_count - 1);
+        }
+
+        // Nodes.
+
+        /// Pushes a finished node value on the scratch stack.
+        pub fn push_node(machine: *Self, tag: ast.Tag, data: u32) Error!void {
+            assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
+            assert(@backingInt(tag) < 256);
+            const workspace = machine.workspace;
+            if (machine.scratch_count == workspace.scratch_tags.len) return error.WorkspaceFull;
+            workspace.scratch_tags[machine.scratch_count] = tag;
+            workspace.scratch_data[machine.scratch_count] = data;
+            machine.scratch_count += 1;
+        }
+
+        /// zirp's wrap: the values above `marker` become `tag`'s children, in one contiguous
+        /// run of the node arrays (a list gets its count node first), and `tag` is pushed.
+        pub fn wrap(machine: *Self, tag: ast.Tag, marker: u32) Error!void {
+            assert(marker <= machine.scratch_count);
+            const workspace = machine.workspace;
+            const count = machine.scratch_count - marker;
+            const is_list = ast.shape(tag) == .list;
+            const total = count + @intFromBool(is_list);
+            if (machine.nodes_count + total > workspace.node_tags.len) return error.WorkspaceFull;
+            const first = machine.nodes_count;
+            if (is_list) {
+                workspace.node_tags[first] = .count;
+                workspace.node_data[first] = count;
+            }
+            const into = first + @intFromBool(is_list);
+            @memcpy(
+                workspace.node_tags[into..][0..count],
+                workspace.scratch_tags[marker..][0..count],
+            );
+            @memcpy(
+                workspace.node_data[into..][0..count],
+                workspace.scratch_data[marker..][0..count],
+            );
+            machine.nodes_count += total;
+            machine.scratch_count = marker;
+            if (ast.shape(tag) == .fixed) assert(count == ast.shape(tag).fixed);
+            try machine.push_node(tag, first);
+        }
+
+        /// The finished tree: the one value left on the scratch stack becomes the root.
+        pub fn finish(machine: *Self) Error!ast.Ast {
+            assert(machine.frames_count == 0);
+            assert(machine.scratch_count == 1);
+            const workspace = machine.workspace;
+            if (machine.nodes_count == workspace.node_tags.len) return error.WorkspaceFull;
+            const root = machine.nodes_count;
+            workspace.node_tags[root] = workspace.scratch_tags[0];
+            workspace.node_data[root] = workspace.scratch_data[0];
+            machine.nodes_count += 1;
+            return .{
+                .tags = workspace.node_tags[0..machine.nodes_count],
+                .data = workspace.node_data[0..machine.nodes_count],
+                .root = .from_int(root),
+            };
+        }
+    };
+}
+
+/// A toy grammar for the core's tests: `expression = term ('+' term)*`,
+/// `term = word | '(' expression ')'`.
+const Toy = struct {
+    pub const Rule = enum { expression, term, stall };
+    const M = Machine(Toy);
+
+    pub fn step(machine: *M, frame: *M.Frame) Action(Rule) {
+        assert(machine.frames_count > 0);
+        assert(frame.phase < 8);
+        return switch (frame.rule) {
+            .expression => expression(machine, frame),
+            .term => term(machine, frame),
+            // A broken rule that never makes progress.
+            .stall => .again,
+        } catch return .fail;
+    }
+
+    fn expression(machine: *M, frame: *M.Frame) Error!Action(Rule) {
+        assert(frame.rule == .expression);
+        assert(machine.tokenizer.at <= machine.source.len);
+        switch (frame.phase) {
+            0 => {
+                frame.locals[0] = machine.scratch_count;
+                frame.phase = 1;
+                return .{ .call = .term };
+            },
+            1 => {
+                if (machine.outcome == .failed) return .fail;
+                frame.locals[1] += 1;
+                _ = try machine.accept(.expression, .whitespace);
+                if (try machine.accept(.expression, .plus) == null) {
+                    frame.phase = 2;
+                    return .again;
+                }
+                _ = try machine.accept(.expression, .whitespace);
+                return .{ .call = .term };
+            },
+            else => {
+                try machine.wrap(.path, frame.locals[0]);
+                return .succeed;
+            },
+        }
+    }
+
+    fn term(machine: *M, frame: *M.Frame) Error!Action(Rule) {
+        assert(frame.rule == .term);
+        assert(machine.tokenizer.at <= machine.source.len);
+        switch (frame.phase) {
+            0 => {
+                if (try machine.accept(.expression, .word)) |token| {
+                    try machine.push_node(.identifier, token.to_int());
+                    return .succeed;
+                }
+                if (try machine.accept(.expression, .paren_open) == null) return .fail;
+                frame.phase = 1;
+                return .{ .call = .expression };
+            },
+            else => {
+                if (machine.outcome == .failed) return .fail;
+                if (try machine.accept(.expression, .paren_close) == null) {
+                    machine.report(
+                        .expected,
+                        machine.tokenizer.at,
+                        @backingInt(tokenizer_module.Tag.paren_close),
+                    );
+                    return .fail;
+                }
+                return .succeed;
+            },
+        }
+    }
+};
+
+const ToyResult = struct {
+    outcome: Outcome,
+    diagnostics: u32,
+    first: ?Diagnostic.Code,
+    nodes: u32,
+};
+
+fn parse_toy(source: []const u8, depth_max: u32, start: Toy.Rule) !ToyResult {
+    assert(source.len > 0);
+    assert(depth_max > 0);
+    const gpa = std.testing.allocator;
+    var workspace = try Workspace.init(gpa, @intCast(source.len), 16, 1);
+    defer workspace.deinit(gpa);
+    const frames = try gpa.alloc(Toy.M.Frame, depth_max);
+    defer gpa.free(frames);
+    var machine: Toy.M = .init(source, &workspace, frames);
+    const outcome = try machine.run(start);
+    const first = if (machine.diagnostics_count > 0) workspace.diagnostics[0].code else null;
+    return .{
+        .outcome = outcome,
+        .diagnostics = machine.diagnostics_count,
+        .first = first,
+        .nodes = machine.nodes_count,
+    };
+}
+
+test "the core runs nested rules without recursion" {
+    // Goal: P7.3. Method: a toy grammar with parentheses; the result keeps its shape.
+    const result = try parse_toy("a + (b + (c)) + d", 64, .expression);
+    try std.testing.expectEqual(Outcome.succeeded, result.outcome);
+    try std.testing.expectEqual(@as(u32, 0), result.diagnostics);
+    try std.testing.expect(result.nodes > 4);
+}
+
+test "10k-deep nesting yields a diagnostic, not a crash" {
+    // Goal: P7.3 bound. Method: 10,000 opening parentheses with parse_depth_max 256.
+    var source: [20_001]u8 = undefined;
+    @memset(source[0..10_000], '(');
+    source[10_000] = 'x';
+    @memset(source[10_001..], ')');
+    const result = try parse_toy(&source, 256, .expression);
+    try std.testing.expectEqual(Outcome.failed, result.outcome);
+    try std.testing.expectEqual(Diagnostic.Code.too_deep, result.first.?);
+    try std.testing.expectEqual(@as(u32, 1), result.diagnostics);
+}
+
+test "a failed rule undoes everything since its call" {
+    // Goal: P7.3 backtracking. Method: an unclosed parenthesis fails the term, leaving the
+    // expression's earlier terms as they were, and records one diagnostic.
+    const result = try parse_toy("(a + b", 64, .expression);
+    try std.testing.expectEqual(Outcome.failed, result.outcome);
+    try std.testing.expectEqual(Diagnostic.Code.expected, result.first.?);
+    try std.testing.expectEqual(@as(u32, 0), result.nodes);
+}
+
+test "a rule that stops making progress runs out of gas" {
+    // Goal: P7.3 progress invariant: steps are bounded by the input length. Method: a rule
+    // that repeats forever ends with a no_progress diagnostic.
+    const result = try parse_toy("anything", 8, .stall);
+    try std.testing.expectEqual(Outcome.failed, result.outcome);
+    try std.testing.expectEqual(Diagnostic.Code.no_progress, result.first.?);
+}
