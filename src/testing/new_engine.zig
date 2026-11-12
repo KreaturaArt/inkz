@@ -55,8 +55,6 @@ pub const NewEngine = struct {
     }
 
     pub fn deinit(engine: *NewEngine) void {
-        assert(messages.errors.items.len < 1 << 31);
-        assert(messages.errors.items.len < 1 << 31);
         assert(engine.story.state.memory.len > 0);
         assert(engine.story.program == engine.program);
         engine.tags.deinit(engine.gpa);
@@ -483,6 +481,7 @@ const Messages = struct {
 
     fn deinit(messages: *Messages, gpa: std.mem.Allocator) void {
         assert(messages.events.items.len < 1 << 31);
+        assert(messages.errors.items.len < 1 << 31);
         messages.events.deinit(gpa);
         messages.errors.deinit(gpa);
         messages.warnings.deinit(gpa);
