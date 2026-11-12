@@ -158,7 +158,8 @@ pub const ContainerTable = struct {
                 if (entry.child.is_none() or entry.child.to_int() >= slice.len) {
                     return .named_child_out_of_range;
                 }
-                if (slice.items(.parent)[entry.child.to_int()].to_int() != position) {
+                const child_parent = slice.items(.parent)[entry.child.to_int()];
+                if (child_parent != ContainerIndex.from_int(@intCast(position))) {
                     return .named_child_has_other_parent;
                 }
             }

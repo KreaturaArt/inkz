@@ -25,6 +25,9 @@ const turns_max = 200;
 const Measurement = struct {
     name: []const u8,
     load_microseconds: f64,
+    /// The same load from the binary program image (P10.5), and the image's size.
+    image_load_microseconds: f64 = 0,
+    image_bytes: u64 = 0,
     play_turns_per_second: f64,
     play_lines_per_second: f64,
     play_steps_per_second: f64,
@@ -128,6 +131,7 @@ fn generate_story(gpa: std.mem.Allocator) ![]u8 {
 }
 
 const ink_json = @import("core/ink_json.zig");
+const program_image = @import("core/program_image.zig");
 const limits_module = @import("core/limits.zig");
 const Limits = limits_module.Limits;
 const Program = @import("core/program.zig").Program;
@@ -215,9 +219,14 @@ fn measure_story_new(
     const program_bytes = counting.bytes_live;
     const state_bytes = limits.bytes_total(@import("runtime/state.zig").State.shape_of(&program));
     const rate = try measure_play_new(gpa, io, &program, limits);
+    var image: std.Io.Writer.Allocating = .init(gpa);
+    defer image.deinit();
+    try program_image.write(&program, &image.writer);
     const measurement: Measurement = .{
         .name = name,
         .load_microseconds = load_microseconds,
+        .image_load_microseconds = try measure_image_load(gpa, io, image.written(), limits),
+        .image_bytes = image.written().len,
         .play_turns_per_second = rate.turns,
         .play_lines_per_second = rate.lines,
         .play_steps_per_second = rate.steps,
@@ -227,6 +236,23 @@ fn measure_story_new(
     };
     assert(measurement.loaded_bytes > program_bytes);
     return measurement;
+}
+
+/// Loading from the binary image: `program_image.load` and `Story.init`, as the JSON load is
+/// timed.
+fn measure_image_load(gpa: std.mem.Allocator, io: std.Io, image: []const u8, limits: Limits) !f64 {
+    assert(image.len > 0);
+    const start = std.Io.Timestamp.now(io, .awake);
+    for (0..loads_count) |_| {
+        var program = try program_image.load(gpa, image);
+        var story: NewStory = undefined;
+        try story.init(gpa, &program, limits);
+        story.deinit(gpa);
+        program.deinit(gpa);
+    }
+    const nanoseconds: f64 = @floatFromInt(elapsed_nanoseconds(io, start));
+    assert(nanoseconds > 0);
+    return nanoseconds / loads_count / 1000.0;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -288,16 +314,19 @@ fn write_new_report(arena: std.mem.Allocator, io: std.Io, measurements: []const 
     const start_marker = try std.fmt.allocPrint(arena, "<!-- bench-new:{s}:start -->", .{mode});
     const end_marker = try std.fmt.allocPrint(arena, "<!-- bench-new:{s}:end -->", .{mode});
     try writer.print("{s}\n### New runtime, {s}\n\n", .{ start_marker, mode });
-    try writer.writeAll("| Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes " ++
-        "(program + state) | Instructions | Bytes/instruction |\n" ++
-        "|---|---|---|---|---|---|---|---|\n");
+    try writer.writeAll("| Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | " ++
+        "Instructions/s | Bytes (program + state) | Image bytes | Instructions | " ++
+        "Bytes/instruction |\n|---|---|---|---|---|---|---|---|---|---|\n");
     for (measurements) |m| {
         const per_object = @as(f64, @floatFromInt(m.loaded_bytes)) /
             @as(f64, @floatFromInt(m.runtime_objects_count));
-        try writer.print("| {s} | {d:.1} | {d:.0} | {d:.0} | {d:.0} | {d} | {d} | {d:.1} |\n", .{
-            m.name,                  m.load_microseconds,     m.play_turns_per_second,
-            m.play_lines_per_second, m.play_steps_per_second, m.loaded_bytes,
-            m.runtime_objects_count, per_object,
+        const row = "| {s} | {d:.1} | {d:.1} | {d:.0} | {d:.0} | {d:.0} | {d} | {d} | {d} " ++
+            "| {d:.1} |\n";
+        try writer.print(row, .{
+            m.name,                  m.load_microseconds,     m.image_load_microseconds,
+            m.play_turns_per_second, m.play_lines_per_second, m.play_steps_per_second,
+            m.loaded_bytes,          m.image_bytes,           m.runtime_objects_count,
+            per_object,
         });
     }
     try writer.print(

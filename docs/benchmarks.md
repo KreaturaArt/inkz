@@ -147,12 +147,12 @@ Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Rand
 <!-- bench-new:ReleaseSafe:start -->
 ### New runtime, ReleaseSafe
 
-| Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
-|---|---|---|---|---|---|---|---|
-| crime_scene | 634.3 | 102762 | 132423 | 13379360 | 2254334 | 1513 | 1490.0 |
-| crime_scene, fitted limits | 396.1 | 103151 | 132924 | 13430023 | 86494 | 1513 | 57.2 |
-| generated (1000 knots) | 5766.8 | 473849 | 473849 | 12803393 | 2916047 | 32010 | 91.1 |
-| generated, fitted limits | 5553.0 | 475625 | 475625 | 12851393 | 738199 | 32010 | 23.1 |
+| Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
+|---|---|---|---|---|---|---|---|---|---|
+| crime_scene | 625.9 | 241.3 | 101617 | 130947 | 13230307 | 2254334 | 39536 | 1513 | 1490.0 |
+| crime_scene, fitted limits | 389.4 | 63.4 | 101971 | 131403 | 13276340 | 86494 | 39536 | 1513 | 57.2 |
+| generated (1000 knots) | 5756.4 | 1000.7 | 464247 | 464247 | 12543958 | 2916047 | 505080 | 32010 | 91.1 |
+| generated, fitted limits | 5605.3 | 764.3 | 470560 | 470560 | 12714540 | 738199 | 505080 | 32010 | 23.1 |
 
 The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
 <!-- bench-new:ReleaseSafe:end -->
@@ -160,12 +160,12 @@ The state is the limits' fixed budget, allocated once: the defaults, or limits f
 <!-- bench-new:ReleaseFast:start -->
 ### New runtime, ReleaseFast
 
-| Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
-|---|---|---|---|---|---|---|---|
-| crime_scene | 302.6 | 217698 | 280534 | 28343793 | 2254334 | 1513 | 1490.0 |
-| crime_scene, fitted limits | 267.8 | 219745 | 283171 | 28610199 | 86494 | 1513 | 57.2 |
-| generated (1000 knots) | 4226.9 | 1100072 | 1100072 | 29723951 | 2916047 | 32010 | 91.1 |
-| generated, fitted limits | 4193.8 | 1096861 | 1096861 | 29637178 | 738199 | 32010 | 23.1 |
+| Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
+|---|---|---|---|---|---|---|---|---|---|
+| crime_scene | 304.4 | 44.1 | 216102 | 278477 | 28135949 | 2254334 | 39536 | 1513 | 1490.0 |
+| crime_scene, fitted limits | 267.8 | 43.7 | 218298 | 281307 | 28421902 | 86494 | 39536 | 1513 | 57.2 |
+| generated (1000 knots) | 4295.5 | 665.2 | 1100289 | 1100289 | 29729811 | 2916047 | 505080 | 32010 | 91.1 |
+| generated, fitted limits | 4272.9 | 648.1 | 1103084 | 1103084 | 29805340 | 738199 | 505080 | 32010 | 23.1 |
 
 The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
 <!-- bench-new:ReleaseFast:end -->
@@ -175,8 +175,8 @@ The state is the limits' fixed budget, allocated once: the defaults, or limits f
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.27 | 1.53 | 535918 | 246873 | 2.17 |
-| generated (1000 knots) | 4.53 | 26.15 | 13067678 | 4753137 | 2.75 |
+| crime_scene | 0.27 | 1.56 | 535918 | 246873 | 2.17 |
+| generated (1000 knots) | 4.53 | 26.38 | 13067678 | 4753137 | 2.75 |
 
 Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseSafe:end -->
@@ -187,7 +187,7 @@ Source to JSON, both; the time is the mean of 20 compiles. The old compiler's nu
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
 | crime_scene | 0.17 | 0.87 | 513047 | 223231 | 2.30 |
-| generated (1000 knots) | 3.15 | 15.22 | 12680076 | 4292970 | 2.95 |
+| generated (1000 knots) | 3.15 | 14.78 | 12680076 | 4292970 | 2.95 |
 
 Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseFast:end -->

@@ -13,6 +13,7 @@ pub const zero_allocation = @import("zero_allocation.zig");
 pub const save_load_test = @import("save_load_test.zig");
 pub const text_cache_test = @import("text_cache_test.zig");
 pub const fitted_limits_test = @import("fitted_limits_test.zig");
+pub const program_image_test = @import("program_image_test.zig");
 
 test {
     _ = transcript;
@@ -27,4 +28,5 @@ test {
     _ = save_load_test;
     _ = text_cache_test;
     _ = fitted_limits_test;
+    _ = program_image_test;
 }
