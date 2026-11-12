@@ -232,9 +232,18 @@ fn value_text(story: *Story, value: Value) Error![]const u8 {
     return writer.buffered();
 }
 
-/// Copies `text` (not in the heap) into a new heap string.
-fn store_string(story: *Story, text: []const u8, keep: []Value) Error!StringReference {
-    assert(text.len < 1 << 31);
+/// Copies `text` into a new heap string. Text inside the heap is copied out first, since
+/// the allocation may compact.
+fn store_string(story: *Story, text_raw: []const u8, keep: []Value) Error!StringReference {
+    assert(text_raw.len < 1 << 31);
+    var text = text_raw;
+    const heap_bytes = story.state.strings.bytes;
+    const start = @intFromPtr(heap_bytes.ptr);
+    if (@intFromPtr(text.ptr) >= start and @intFromPtr(text.ptr) < start + heap_bytes.len) {
+        if (text.len > story.state.line_bytes.len) return error.OutputLimit;
+        @memcpy(story.state.line_bytes[0..text.len], text);
+        text = story.state.line_bytes[0..text.len];
+    }
     const reference = story.state.allocate_string(@intCast(text.len), keep) catch
         return error.HeapLimit;
     @memcpy(story.state.strings.get(reference), text);
@@ -900,10 +909,103 @@ fn reserve_list(story: *Story, keep: []Value) Error!void {
     assert(state.lists.used + words <= state.lists.words.len);
 }
 
+/// ink's CallExternalFunction (with the conditional divert check before it).
 pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {
-    assert(story.state.memory.len > 0);
+    assert(story.bindings.len == story.program.externals.len);
     assert(instruction.opcode == .call_external);
-    return fail(story, .unsupported);
+    const at = @backingInt(instruction.get(.call_external));
+    const record = extra.get(instruction_module.ExternalCall, story.program.extra, at).data;
+    if (record.conditional) {
+        if (!try truth_of(story, try vm.pop_evaluation(story))) return .none;
+    }
+    const external = record.external.to_int();
+    const binding = story.bindings[external];
+    if (binding.function != null and !binding.lookahead_safe) {
+        if (story.state.output.in_string_evaluation()) {
+            return fail_name(
+                story,
+                .external_unsafe_in_string,
+                story.program.externals[external].name,
+            );
+        }
+        if (lookahead.active(&story.state)) {
+            // The line ends at the snapshot; the call runs on the next `cont`.
+            story.saw_lookahead_unsafe_function_after_newline = true;
+            return .output;
+        }
+    }
+    const function = binding.function orelse return call_fallback(story, external);
+    try call_bound(story, function, binding.context, record.arguments_count);
+    return .none;
+}
+
+fn call_fallback(story: *Story, external: u32) Error!vm.Signal {
+    assert(story.bindings[external].function == null);
+    assert(external < story.program.externals.len);
+    const info = story.program.externals[external];
+    if (!story.allow_external_function_fallbacks) {
+        return fail_name(story, .external_not_bound, info.name);
+    }
+    if (info.fallback.is_none()) return fail_name(story, .external_fallback_missing, info.name);
+    const state = &story.state;
+    state.call_stack.push(.function, state.evaluation.count, state.output.items.count) catch
+        return error.FrameLimit;
+    story.diverted_pointer = .start_of(info.fallback);
+    return .none;
+}
+
+/// Calls a bound external with the top `count` values as arguments (a view of the stack),
+/// then replaces them with its result.
+fn call_bound(
+    story: *Story,
+    function: story_module.ExternalFunction,
+    context: ?*anyopaque,
+    count: u32,
+) Error!void {
+    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
+    const state = &story.state;
+    if (count > story_module.external_arguments_max) return fail(story, .too_many_arguments);
+    if (state.evaluation.count < count) return fail(story, .evaluation_stack_empty);
+    var arguments: [story_module.external_arguments_max]story_module.HostValue = undefined;
+    const first = state.evaluation.count - count;
+    for (state.evaluation.slice()[first..], 0..) |value, position| {
+        arguments[position] = host_value(story, value);
+    }
+    const result = function(context, story, arguments[0..count]) catch
+        return error.ExternalFunctionFailed;
+    assert(state.evaluation.count >= first + count);
+    state.evaluation.count = first;
+    try vm.push_evaluation(story, try value_of_host(story, result));
+}
+
+/// A value as the host sees it (ink's valueObject).
+pub fn host_value(story: *Story, value: Value) story_module.HostValue {
+    assert(story.state.memory.len > 0);
+    assert(@sizeOf(Value) == 12);
+    return switch (value) {
+        .null, .variable_pointer, .tag => .null,
+        .integer => |number| .{ .integer = number },
+        .float => |number| .{ .float = number },
+        .bool => |flag| .{ .bool = flag },
+        .string => |reference| .{ .string = strings_of(story).get(reference) },
+        .list => |list| .{ .list = list },
+        .divert_target => |target| .{ .divert_target = target },
+    };
+}
+
+/// A host value as an ink value; strings are copied into the heap.
+pub fn value_of_host(story: *Story, host: story_module.HostValue) Error!Value {
+    assert(@sizeOf(story_module.HostValue) > 0);
+    assert(story.state.memory.len > 0);
+    return switch (host) {
+        .null => .null,
+        .integer => |number| .{ .integer = number },
+        .float => |number| .{ .float = number },
+        .bool => |flag| .{ .bool = flag },
+        .string => |text| .{ .string = try store_string(story, text, &.{}) },
+        .list => |list| .{ .list = list },
+        .divert_target => |target| .{ .divert_target = target },
+    };
 }
 
 comptime {

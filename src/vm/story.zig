@@ -36,7 +36,41 @@ pub const Error = error{
     SnapshotLimit,
     LookaheadLogLimit,
     StepLimit,
+    /// An external function the story calls has no binding (and no fallback); see
+    /// `Story.missing_externals` (ink's ValidateExternalBindings, at the first `cont`).
+    MissingExternalBinding,
+    /// A bound external function returned an error.
+    ExternalFunctionFailed,
 };
+
+/// A value as a host sees it: strings are slices, valid only until the story's next
+/// mutating call (and, in a callback, only during the callback).
+pub const HostValue = union(enum) {
+    null,
+    integer: i32,
+    float: f32,
+    bool: bool,
+    string: []const u8,
+    list: value_module.ListReference,
+    divert_target: ContainerIndex,
+};
+
+/// An external function (plan §4.7, D22). It may call `evaluate_function` on `story`.
+pub const ExternalFunction = *const fn (
+    context: ?*anyopaque,
+    story: *Story,
+    arguments: []const HostValue,
+) anyerror!HostValue;
+
+pub const Binding = struct {
+    function: ?ExternalFunction = null,
+    context: ?*anyopaque = null,
+    /// ink's lookaheadSafe: whether calling it during the newline lookahead is harmless.
+    lookahead_safe: bool = true,
+};
+
+/// The most arguments an external function can take.
+pub const external_arguments_max = 32;
 
 pub const SetError = Error || error{VariableNotDeclared};
 
@@ -51,17 +85,83 @@ pub const Story = struct {
     snapshot_tags_count: u32 = 0,
     /// The last line returned by `cont`, in `state.line_bytes`.
     line_length: u32 = 0,
+    /// One per program external, by ExternalIndex.
+    bindings: []Binding,
+    /// ink's allowExternalFunctionFallbacks.
+    allow_external_function_fallbacks: bool = false,
+    /// ink's _hasValidatedExternals: bindings are checked once, at the first `cont`.
+    has_validated_externals: bool = false,
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
-        story.* = .{ .program = program, .state = undefined };
+        const bindings = try gpa.alloc(Binding, program.externals.len);
+        errdefer gpa.free(bindings);
+        @memset(bindings, .{});
+        story.* = .{ .program = program, .state = undefined, .bindings = bindings };
         try story.state.init(gpa, program, limits);
         errdefer story.state.deinit(gpa);
         try story.reset_globals();
         assert(story.state.call_stack.depth() == 1);
     }
 
+    /// ink's ResetState: a fresh state, with the global declaration run again.
+    pub fn reset_state(story: *Story) Error!void {
+        assert(story.state.memory.len > 0);
+        story.state.reset();
+        story.diverted_pointer = .null;
+        try story.reset_globals();
+        assert(story.state.call_stack.depth() == 1);
+    }
+
+    /// ink's BindExternalFunctionGeneral. Names the story never calls are ignored.
+    pub fn bind_external_function(
+        story: *Story,
+        name: []const u8,
+        function: ExternalFunction,
+        context: ?*anyopaque,
+        lookahead_safe: bool,
+    ) error{AlreadyBound}!void {
+        assert(name.len > 0);
+        const external = story.program.external_by_name(name) orelse return;
+        const binding = &story.bindings[external.to_int()];
+        if (binding.function != null) return error.AlreadyBound;
+        binding.* = .{ .function = function, .context = context, .lookahead_safe = lookahead_safe };
+        assert(story.bindings[external.to_int()].function != null);
+    }
+
+    /// ink's UnbindExternalFunction.
+    pub fn unbind_external_function(story: *Story, name: []const u8) error{NotBound}!void {
+        assert(name.len > 0);
+        const external = story.program.external_by_name(name) orelse return error.NotBound;
+        const binding = &story.bindings[external.to_int()];
+        if (binding.function == null) return error.NotBound;
+        binding.* = .{};
+        assert(story.bindings[external.to_int()].function == null);
+    }
+
+    /// Calls `sink.name(text)` for each external with no binding and no usable fallback, in
+    /// the order the story first uses them (ink's missingExternals).
+    pub fn missing_externals(story: *const Story, sink: anytype) !void {
+        assert(@typeInfo(@TypeOf(sink)) == .pointer);
+        assert(story.bindings.len == story.program.externals.len);
+        for (story.program.externals, story.bindings) |external, binding| {
+            if (binding.function != null) continue;
+            if (story.allow_external_function_fallbacks and !external.fallback.is_none()) continue;
+            try sink.name(story.program.strings.get(external.name));
+        }
+    }
+
+    fn validate_external_bindings(story: *Story) Error!void {
+        assert(!story.has_validated_externals);
+        assert(story.bindings.len == story.program.externals.len);
+        story.has_validated_externals = true;
+        var counter: NameCounter = .{};
+        story.missing_externals(&counter) catch unreachable;
+        if (counter.count > 0) return error.MissingExternalBinding;
+    }
+
     pub fn deinit(story: *Story, gpa: Allocator) void {
+        gpa.free(story.bindings);
         const shape = State.shape_of(story.program);
         assert(story.state.memory.len == story.state.limits.bytes_total(shape));
         assert(story.state.memory.len > 0);
@@ -100,6 +200,7 @@ pub const Story = struct {
     pub fn cont(story: *Story) Error![]const u8 {
         assert(story.state.line_bytes.len > 0);
         assert(story.can_continue());
+        if (!story.has_validated_externals) try story.validate_external_bindings();
         story.state.did_safe_exit = false;
         story.state.output.clear();
         const length = try story.continue_internal();
@@ -369,6 +470,16 @@ pub const Story = struct {
         assert(story.state.memory.len > 0);
         assert(reference != StringReference.none);
         return ops.strings_of(story).get(reference);
+    }
+};
+
+const NameCounter = struct {
+    count: u32 = 0,
+
+    pub fn name(counter: *NameCounter, text: []const u8) !void {
+        assert(counter.count < 1 << 16);
+        assert(text.len > 0);
+        counter.count += 1;
     }
 };
 

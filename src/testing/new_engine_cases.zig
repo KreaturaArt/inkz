@@ -61,3 +61,34 @@ test "P5.3: variables, scoping and pointers to temps passed into functions" {
         .{ .id = "runtime/lists/empty_list_origin_after_assignment" },
     });
 }
+
+test "P5.4: functions, tunnels, threads and externals" {
+    // Goal: P5.4; ink's call stack semantics, bound externals with arguments as a stack
+    // view, fallbacks, and a lookahead-unsafe external not called during the newline
+    // lookahead (lookup_safe_or_not). Method: replay.
+    try expect_cases_match(&.{
+        .{ .id = "runtime/bindings/external_binding" },
+        .{ .id = "runtime/bindings/lookup_safe_or_not" },
+        .{ .id = "runtime/bindings/lookup_safe_or_not_with_post_glue" },
+        .{ .id = "runtime/newlines/newlines_trimming_with_func_external_fallback" },
+        .{ .id = "runtime/callstack/callstack_evaluation" },
+        .{ .id = "runtime/evaluation/factorial_recursive" },
+        .{ .id = "runtime/diverts/basic_tunnel" },
+        .{ .id = "runtime/diverts/complex_tunnels" },
+        .{ .id = "runtime/diverts/tunnel_onwards_after_tunnel" },
+        .{ .id = "runtime/diverts/tunnel_onwards_divert_after_with_arg" },
+        .{ .id = "runtime/diverts/tunnel_onwards_divert_override" },
+        .{ .id = "runtime/diverts/tunnel_onwards_to_variable_divert_target" },
+        .{ .id = "runtime/diverts/tunnel_onwards_with_param_default_choice" },
+        .{ .id = "runtime/diverts/tunnel_vs_thread_behaviour" },
+        .{ .id = "runtime/diverts/done_stops_thread" },
+        .{ .id = "runtime/threads/multi_thread" },
+        .{ .id = "runtime/threads/thread_done" },
+        .{ .id = "runtime/threads/thread_in_logic" },
+        .{ .id = "runtime/threads/top_flow_terminator_should_not_kill_thread_choices" },
+        .{ .id = "runtime/knots/knot_thread_interaction" },
+        .{ .id = "runtime/knots/knot_thread_interaction_2" },
+        .{ .id = "runtime/glue/implicit_inline_glue_c" },
+        .{ .id = "runtime/logic/print_num" },
+    });
+}
