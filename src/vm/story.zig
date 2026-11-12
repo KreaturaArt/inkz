@@ -111,9 +111,15 @@ pub const Story = struct {
         story.saw_lookahead_unsafe_function_after_newline = false;
         var ends_in_newline = false;
         var steps: u32 = 0;
-        while (true) : (steps += 1) {
-            if (steps == story.state.limits.steps_per_continue_max) return error.StepLimit;
-            ends_in_newline = story.continue_single_step() catch |err| switch (err) {
+        const steps_max = story.state.limits.steps_per_continue_max;
+        while (true) {
+            if (steps == steps_max) return error.StepLimit;
+            const result = vm.run(story, steps_max - steps, &steps) catch |err| switch (err) {
+                error.StoryError => break,
+                else => |other| return other,
+            };
+            if (result == .budget_exhausted) return error.StepLimit;
+            ends_in_newline = story.after_steps() catch |err| switch (err) {
                 error.StoryError => break,
                 else => |other| return other,
             };
@@ -128,11 +134,11 @@ pub const Story = struct {
         return story.write_current_text();
     }
 
-    /// ink's ContinueSingleStep; returns whether the line is known to have ended.
-    fn continue_single_step(story: *Story) Error!bool {
+    /// The checks of ink's ContinueSingleStep after `vm.run` returns; returns whether the
+    /// line is known to have ended.
+    fn after_steps(story: *Story) Error!bool {
         assert(story.state.memory.len > 0);
         assert(story.state.call_stack.depth() > 0);
-        _ = try vm.step(story);
         const state = &story.state;
         const from_game = state.call_stack.current_frame().kind == .function_evaluation_from_game;
         if (!story.can_continue() and !from_game) {
@@ -326,4 +332,33 @@ pub const try_exit_function_evaluation_from_game = ops.try_exit_function_evaluat
 
 comptime {
     _ = output_module;
+}
+
+const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
+
+test "a step budget stops a story that loops without output" {
+    // Goal: P5.1; `steps_per_continue_max` is a hard limit. Method: a container that diverts
+    // to itself forever; run reports the exhausted budget and cont returns StepLimit.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.text, try builder.intern("start"));
+    try builder.add(.newline, {});
+    _ = try builder.begin_container(.{ .name = "spin" });
+    try builder.add(.nop, {});
+    try builder.add_divert("spin", .{ .kind = .plain, .conditional = false, .variable = false });
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{ .steps_per_continue_max = 100 });
+    defer story.deinit(gpa);
+    var steps: u32 = 0;
+    try std.testing.expectEqual(vm.RunResult.output, try vm.run(&story, 100, &steps));
+    try std.testing.expectError(error.StepLimit, story.cont());
+    var more: u32 = 0;
+    try std.testing.expectEqual(vm.RunResult.budget_exhausted, try vm.run(&story, 50, &more));
+    try std.testing.expectEqual(@as(u32, 50), more);
 }
