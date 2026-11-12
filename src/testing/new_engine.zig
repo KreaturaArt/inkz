@@ -391,6 +391,24 @@ pub const NewEngine = struct {
         messages.warnings.clearRetainingCapacity();
     }
 
+    pub fn switch_flow(engine: *NewEngine, name: []const u8) !void {
+        assert(name.len > 0);
+        try engine.story.switch_flow(name);
+        assert(engine.story.state.flows.len > 0);
+    }
+
+    pub fn remove_flow(engine: *NewEngine, name: []const u8) !void {
+        assert(name.len > 0);
+        try engine.story.remove_flow(name);
+        assert(engine.story.state.flows.len > 0);
+    }
+
+    pub fn default_flow(engine: *NewEngine, argument: []const u8) !void {
+        assert(argument.len == 0);
+        try engine.story.switch_to_default_flow();
+        assert(engine.story.state.current_flow == 0);
+    }
+
     pub fn reset(engine: *NewEngine, argument: []const u8) !void {
         assert(argument.len == 0);
         try engine.story.reset_state();
