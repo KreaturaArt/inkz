@@ -2,6 +2,7 @@
 //! Continue loop around the VM. The public API (P6) wraps this.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Program = @import("../core/program.zig").Program;
@@ -307,7 +308,7 @@ pub const Story = struct {
         story.state.output.clear();
         const length = try story.continue_internal();
         story.line_length = length;
-        return story.state.line_bytes[0..length];
+        return story.line_text(length);
     }
 
     /// ink's ContinueMaximally: every line until the story can't continue, written to
@@ -501,7 +502,7 @@ pub const Story = struct {
         assert(story.snapshot_text_length <= story.state.line_bytes.len);
         const previous = story.snapshot_text_length;
         const length = try story.write_current_text();
-        const text = story.state.line_bytes[0..length];
+        const text = story.line_text(length);
         const tags = try story.current_tags_count();
         const newline_still_exists =
             length >= previous and previous > 0 and text[previous - 1] == '\n';
@@ -522,17 +523,35 @@ pub const Story = struct {
         assert(story.state.output.items.count <= story.state.output.items.capacity());
         assert(story.state.line_bytes.len > 0);
         const length = try story.write_current_text();
-        return story.state.line_bytes[0..length];
+        return story.line_text(length);
     }
 
-    /// The current text, cleaned, into `line_bytes`; returns its length.
+    /// The current text, cleaned, in the text cache (P10.1); returns its length.
     fn write_current_text(story: *Story) Error!u32 {
-        assert(story.state.line_bytes.len > 0);
+        const state = &story.state;
+        assert(state.line_bytes.len > 0);
+        const strings = ops.strings_of(story);
+        const text = try state.text_cache.update(&state.output, strings, state.strings.generation);
+        if (builtin.mode == .debug) story.expect_full_clean(text);
+        assert(text.len <= state.text_cache.text.len);
+        return @intCast(text.len);
+    }
+
+    /// Debug: the cache's text is what cleaning the whole output gives (cleaned into
+    /// `line_bytes`, which is only scratch here).
+    fn expect_full_clean(story: *Story, text: []const u8) void {
+        assert(builtin.mode == .debug);
+        assert(text.len <= story.state.text_cache.text.len);
         var writer: std.Io.Writer = .fixed(story.state.line_bytes);
-        story.state.output.write_text(ops.strings_of(story), &writer) catch
-            return error.OutputLimit;
-        assert(writer.end <= story.state.line_bytes.len);
-        return @intCast(writer.end);
+        story.state.output.write_text(ops.strings_of(story), &writer) catch unreachable;
+        assert(std.mem.eql(u8, writer.buffered(), text));
+    }
+
+    /// The current line's text after `write_current_text` returned `length`.
+    fn line_text(story: *const Story, length: u32) []const u8 {
+        assert(length <= story.state.text_cache.end);
+        assert(story.state.text_cache.end <= story.state.text_cache.text.len);
+        return story.state.text_cache.text[0..length];
     }
 
     fn current_tags_count(story: *Story) Error!u32 {

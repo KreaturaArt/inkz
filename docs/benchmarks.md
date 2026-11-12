@@ -35,7 +35,8 @@ that. The total has three parts:
 - **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6),
   plus the undo log (`patch_entries_max` × 16 bytes).
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
-  (8 bytes per counted container), the line buffer (`output_bytes_max`), the string heap, the
+  (8 bytes per counted container), the line buffer (`output_bytes_max`), the cleaned-text
+  cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
   list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
   observer queue, errors and warnings, the ancestor scratch for visit counting, and the
   scratch `load_json` tokenizes a save into (16 bytes per token, `load_nodes_max`).
@@ -62,8 +63,8 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copy + undo log) | 197,120 | 31,872 |
-| Shared | 1,738,112 | 180,784 |
-| **Total per story** | **2,115,968** (2.02 MiB) | **240,432** (235 KiB) |
+| Shared | 1,852,800 | 195,120 |
+| **Total per story** | **2,230,656** (2.13 MiB) | **254,768** (249 KiB) |
 
 The whole game, one main story and four side stories, needs 2,115,968 + 4 × 240,432 =
 3,077,696 bytes (2.94 MiB), fixed at load time. In the main story the 1 MiB string heap is
@@ -123,8 +124,8 @@ Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 632.5 | 52456 | 67597 | 6829667 | 2139646 | 1513 | 1414.2 |
-| generated (1000 knots) | 6645.7 | 308945 | 308945 | 8347694 | 2801359 | 32010 | 87.5 |
+| crime_scene | 582.5 | 101806 | 131191 | 13254896 | 2254334 | 1513 | 1490.0 |
+| generated (1000 knots) | 5834.0 | 472654 | 472654 | 12771105 | 2916047 | 32010 | 91.1 |
 
 The state is the default limits' fixed budget, allocated once.
 <!-- bench-new:ReleaseSafe:end -->
@@ -134,8 +135,8 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 298.8 | 117746 | 151732 | 15330290 | 2139646 | 1513 | 1414.2 |
-| generated (1000 knots) | 4633.9 | 619406 | 619406 | 16736361 | 2801359 | 32010 | 87.5 |
+| crime_scene | 287.2 | 213583 | 275230 | 27807968 | 2254334 | 1513 | 1490.0 |
+| generated (1000 knots) | 4341.9 | 1058699 | 1058699 | 28606057 | 2916047 | 32010 | 91.1 |
 
 The state is the default limits' fixed budget, allocated once.
 <!-- bench-new:ReleaseFast:end -->
@@ -145,8 +146,8 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.27 | 1.96 | 535918 | 246873 | 2.17 |
-| generated (1000 knots) | 4.53 | 34.03 | 13067678 | 4753137 | 2.75 |
+| crime_scene | 0.27 | 1.54 | 535918 | 246873 | 2.17 |
+| generated (1000 knots) | 4.53 | 26.25 | 13067678 | 4753137 | 2.75 |
 
 Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseSafe:end -->
@@ -156,8 +157,8 @@ Source to JSON, both; the time is the mean of 20 compiles. The old compiler's nu
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.17 | 0.94 | 513047 | 223231 | 2.30 |
-| generated (1000 knots) | 3.15 | 15.94 | 12680076 | 4292970 | 2.95 |
+| crime_scene | 0.17 | 0.88 | 513047 | 223231 | 2.30 |
+| generated (1000 knots) | 3.15 | 15.32 | 12680076 | 4292970 | 2.95 |
 
 Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseFast:end -->

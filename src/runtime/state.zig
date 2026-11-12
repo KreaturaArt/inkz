@@ -22,6 +22,7 @@ const choices_module = @import("choices.zig");
 const flows = @import("flows.zig");
 const json_tree = @import("json_tree.zig");
 const lookahead_module = @import("lookahead.zig");
+const text_cache_module = @import("text_cache.zig");
 const Limits = limits_module.Limits;
 const element_bytes = limits_module.element_bytes;
 const Value = value_module.Value;
@@ -178,8 +179,10 @@ pub const State = struct {
     previous_random: i32 = 0,
     strings: heap.StringHeap,
     lists: lists_module.ListSlab,
-    /// The current line's text and tags, assembled by `cont()`.
+    /// Scratch for text being assembled (`/str`, tags) and for Debug checks.
     line_bytes: []u8,
+    /// The current line's cleaned text, kept between calls (P10.1).
+    text_cache: text_cache_module.TextCache,
     observers: []Observer,
     observer_events: BoundedStack(GlobalSlot),
     /// ink's currentErrors and currentWarnings (P4.10). They are not saved (ink doesn't
@@ -270,6 +273,8 @@ pub const State = struct {
         state.turn_index = -1;
         state.previous_random = 0;
         state.strings.used = 0;
+        state.strings.generation +%= 1;
+        state.text_cache.clear();
         state.lists.used = 0;
         state.observer_events.clear();
         state.errors.clear();
@@ -581,7 +586,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     const observers = carver.take(Observer, limits.observers_max);
     const live = carve_flow(carver, limits);
     const lookahead = carve_flow(carver, limits);
-    const result: State = .{
+    var result: State = .{
         .program = program,
         .limits = limits,
         .memory = memory,
@@ -609,10 +614,17 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .patch = carver.take(PatchEntry, limits.patch_entries_max),
         .flows = carver.take(FlowRecord, limits.flows_max),
         .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
+        // The cache's items here, for alignment; its bytes after `line_bytes`.
+        .text_cache = .{
+            .items = carver.take(output_module.Item, limits.output_items_max),
+            .text = &.{},
+        },
         .strings = .init(carver.take(u8, limits.heap_bytes_max)),
         .line_bytes = carver.take(u8, limits.output_bytes_max),
         .observers = observers,
     };
+    result.text_cache.text = carver.take(u8, limits.output_bytes_max);
+    assert(result.text_cache.check() == .ok);
     assert(result.globals.len == program.globals.len);
     return result;
 }
