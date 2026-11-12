@@ -48,6 +48,12 @@ pub fn build(b: *std.Build) void {
             .own_filters = &.{ "compiler.", "compiler_helpers." },
         },
         .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
+        .{
+            .step = "test-vm",
+            .root = "src/test_vm.zig",
+            .description = "Run new runtime tests",
+            .own_filters = &.{"vm."},
+        },
         .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
     };
     const test_options: TestOptions = .{
