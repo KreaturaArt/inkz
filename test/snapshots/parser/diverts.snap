@@ -1,0 +1,22 @@
+(story
+  (statements
+    (divert (path identifier"knot") none)
+    (divert (path identifier"knot" identifier"stitch") none)
+    (divert (path identifier"knot") (arguments integer"1" (string
+          text"two")))
+    (tunnel (path identifier"tunnel") none)
+    (tunnel (path identifier"tunnel") none)
+    (divert (path identifier"other") none)
+    (tunnel (path identifier"first") none)
+    (tunnel (path identifier"second") none)
+    (tunnel_onwards none)
+    (tunnel_onwards (divert (path identifier"override") none))
+    (tunnel (path identifier"tunnel") none)
+    (tunnel_onwards none)
+    (thread (path identifier"thread") none)
+    (thread (path identifier"thread") (arguments (variable_reference (path identifier"x"))))
+    text_space"Text"
+    (thread (path identifier"not_a_thread") none)
+    newline
+    (divert (path identifier"END") none)
+    (divert (path identifier"DONE") none)))

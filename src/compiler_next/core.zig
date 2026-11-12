@@ -34,7 +34,10 @@ pub const Diagnostic = struct {
     pub const Code = enum(u8) {
         too_deep,
         no_progress,
+        /// `extra` is an Expectation of grammar.zig.
         expected,
+        /// ink's other parse errors and warnings; `extra` is a grammar.zig Message.
+        message,
         _,
     };
 };
@@ -101,6 +104,9 @@ pub fn Action(comptime Rule: type) type {
     return union(enum) {
         /// Run `rule`, then come back to this frame's next phase.
         call: Rule,
+        /// Run `rule` and come back, but undo what it consumed even if it matched (ink's
+        /// Peek).
+        peek: Rule,
         /// This rule matched; its nodes are on the scratch stack.
         succeed,
         /// This rule didn't match: everything since its call is undone.
@@ -122,6 +128,8 @@ pub fn Machine(comptime Grammar: type) type {
         pub const Frame = struct {
             rule: Rule,
             phase: u8 = 0,
+            /// Undo the rule's input even when it succeeds.
+            peek: bool = false,
             checkpoint: Checkpoint,
             /// Rule-specific scratch: counts, saved positions.
             locals: [3]u32 = .{ 0, 0, 0 },
@@ -132,6 +140,8 @@ pub fn Machine(comptime Grammar: type) type {
             tokens: u32,
             nodes: u32,
             scratch: u32,
+            /// The flags restored on failure (ink keeps its custom flags in the parser state).
+            flags: u32,
         };
 
         source: []const u8,
@@ -147,8 +157,17 @@ pub fn Machine(comptime Grammar: type) type {
         outcome: Outcome = .none,
         /// Set when the input is too deep or stopped progressing: every frame fails.
         abandoned: bool = false,
-        /// Rule-specific flags (ink's parsingChoice, parsingStringExpression).
+        /// Set when the workspace ran out: the parse must be retried with more room.
+        workspace_full: bool = false,
+        /// Grammar flags that backtracking restores (ink's ParsingString and TagActive).
         flags: u32 = 0,
+        /// Grammar flags that backtracking keeps (ink's _parsingChoice field).
+        plain_flags: u32 = 0,
+        /// A value the caller passes to the rule it calls (ink's rule parameters, such as a
+        /// statement level), read in the callee's first phase.
+        argument: u32 = 0,
+        /// A value a rule returns besides its nodes (such as whether a knot is a function).
+        result: u32 = 0,
 
         pub fn init(source: []const u8, workspace: *Workspace, frames: []Frame) Self {
             assert(frames.len > 0);
@@ -169,6 +188,7 @@ pub fn Machine(comptime Grammar: type) type {
                 .tokens = machine.tokens_count,
                 .nodes = machine.nodes_count,
                 .scratch = machine.scratch_count,
+                .flags = machine.flags,
             };
         }
 
@@ -179,6 +199,7 @@ pub fn Machine(comptime Grammar: type) type {
             machine.tokens_count = saved.tokens;
             machine.nodes_count = saved.nodes;
             machine.scratch_count = saved.scratch;
+            machine.flags = saved.flags;
         }
 
         /// Runs `start` to the end; returns its outcome.
@@ -211,7 +232,15 @@ pub fn Machine(comptime Grammar: type) type {
                     machine.outcome = .none;
                     try machine.push(rule);
                 },
+                .peek => |rule| {
+                    machine.outcome = .none;
+                    try machine.push(rule);
+                    const callee = &machine.frames[machine.frames_count - 1];
+                    if (machine.outcome == .none) callee.peek = true;
+                },
                 .succeed => {
+                    const frame = machine.frames[machine.frames_count - 1];
+                    if (frame.peek) machine.restore(frame.checkpoint);
                     machine.frames_count -= 1;
                     machine.outcome = .succeeded;
                 },
@@ -278,6 +307,23 @@ pub fn Machine(comptime Grammar: type) type {
             workspace.token_tags[machine.tokens_count] = token.tag;
             workspace.token_starts[machine.tokens_count] = token.start;
             workspace.token_ends[machine.tokens_count] = token.end;
+            machine.tokens_count += 1;
+            return .from_int(machine.tokens_count - 1);
+        }
+
+        /// Stores a token for a range the grammar scanned itself (character-level rules).
+        pub fn add_token(
+            machine: *Self,
+            tag: tokenizer_module.Tag,
+            start: u32,
+            end: u32,
+        ) Error!ast.TokenIndex {
+            assert(start <= end and end <= machine.source.len);
+            const workspace = machine.workspace;
+            if (machine.tokens_count == workspace.token_tags.len) return error.WorkspaceFull;
+            workspace.token_tags[machine.tokens_count] = tag;
+            workspace.token_starts[machine.tokens_count] = start;
+            workspace.token_ends[machine.tokens_count] = end;
             machine.tokens_count += 1;
             return .from_int(machine.tokens_count - 1);
         }

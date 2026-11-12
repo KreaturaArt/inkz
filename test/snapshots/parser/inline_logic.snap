@@ -1,0 +1,60 @@
+(story
+  (statements
+    text"Value "
+    (content_list
+      (inline_value (variable_reference (path identifier"x"))))
+    text" and "
+    (content_list
+      (inline_value (add (variable_reference (path identifier"x")) integer"1")))
+    text" and "
+    (content_list
+      (inline_value (function_call identifier"f" (arguments (variable_reference (path identifier"x"))))))
+    text"."
+    newline
+    (content_list
+      (inline_conditional (variable_reference (path identifier"x")) (branches
+          (conditional_branch none (content_list
+              text" yes"))
+          (conditional_branch none (content_list
+              text"no")))))
+    text" and "
+    (content_list
+      (inline_conditional (variable_reference (path identifier"x")) (branches
+          (conditional_branch none (content_list
+              text"only yes")))))
+    newline
+    (content_list
+      (inline_conditional (equal (variable_reference (path identifier"x")) integer"1") (branches
+          (conditional_branch none (content_list
+              text" one"))
+          (conditional_branch none (content_list
+              text"other")))))
+    newline
+    (content_list
+      (inline_value (variable_reference (path identifier"x"))))
+    (content_list
+      (inline_value (variable_reference (path identifier"y"))))
+    newline
+    text"A "
+    (content_list
+      (sequence sequence_kind:1 (branches
+          (content_list
+            text"red "
+            tag_start"#"
+            text"red")
+          (content_list
+            text"blue "
+            (content_list
+              tag_end
+              tag_start"#")
+            text"blue")))
+      tag_end)
+    text" sequence."
+    newline
+    text"A thing "
+    tag_start"#"
+    (content_list
+      (inline_value (variable_reference (path identifier"image"))))
+    text".jpg"
+    tag_end
+    newline))

@@ -171,7 +171,8 @@ pub const Limits = struct {
 /// Bounds for one compilation.
 pub const CompilerLimits = struct {
     source_bytes_max: u32 = 16 * 1024 * 1024,
-    parse_depth_max: u32 = 256,
+    /// Rule frames; ink's grammar takes about ten per level of brace nesting.
+    parse_depth_max: u32 = 2048,
     diagnostics_max: u32 = 256,
     include_depth_max: u32 = 16,
     include_files_max: u32 = 256,

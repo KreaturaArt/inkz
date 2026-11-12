@@ -13,4 +13,7 @@ test {
     _ = @import("compiler_next/tokenizer.zig");
     _ = @import("compiler_next/ast.zig");
     _ = @import("compiler_next/core.zig");
+    _ = @import("compiler_next/grammar.zig");
+    _ = @import("compiler_next/dump.zig");
+    _ = @import("compiler_next/grammar_snapshots.zig");
 }

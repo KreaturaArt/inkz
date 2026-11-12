@@ -1,0 +1,55 @@
+(story
+  (statements
+    (knot identifier"first" none (statements
+        (content_list)
+        (variable_declaration missing integer"1")
+        text"Text"
+        newline
+        (choice header:1 none (variable_reference (path identifier"cond")) (content_list
+            text"choice ") none (content_list
+            newline))
+        (divert (path identifier"knot") (arguments integer"1"))
+        (assignment identifier"x" missing)
+        (add integer"5" integer"4")
+        (return none)
+        (list_declaration missing (list_items
+            (list_item identifier"a" none)))
+        (content_list
+          (conditional (variable_reference (path identifier"x")) (branches
+              (conditional_branch integer"1" (statements
+                  text"one"
+                  newline))
+              (else_branch (statements
+                  text"two"
+                  newline))
+              (conditional_branch integer"3" (statements
+                  text"three"
+                  newline)))))
+        newline
+        text"Fine."
+        newline))
+    (knot identifier"second" none (statements
+        text"Still parsed."
+        newline))
+    (knot identifier"empty" none (statements
+        error_text""))
+    (knot identifier"third" none (statements
+        text"Also parsed."
+        newline
+        (stitch identifier"stitch" none (statements
+            text"In a stitch."
+            newline))))))
+! 3:8 expected variable_name
+! 3:3 expected expression
+! 4:5 expected variable_name
+! 5:8 expected inner_logic
+! 5:6 expected end_of_line
+! 6:9 expected closing_brace
+! 7:11 expected closing_parenthesis
+! 8:11 expected right_operand
+! 8:6 expected expression
+! 8:6 expected end_of_line
+! 9:9 message logic_line_expression
+! 11:6 expected variable_name
+! 16:1 message only_final_branch_else
+! 21:1 expected knot_content
