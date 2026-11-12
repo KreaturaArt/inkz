@@ -95,6 +95,7 @@ fn find(state: *const State, name: []const u8) ?u32 {
 pub fn switch_flow(state: *State, name: []const u8) Error!void {
     if (name.len > state_module.flow_name_bytes_max) return error.FlowNameTooLong;
     if (std.mem.eql(u8, name, current_name(state))) return;
+    assert(!state.snapshot.active);
     const target = find(state, name) orelse try create(state, name);
     assert(target != state.current_flow);
     try park_current(state);

@@ -69,6 +69,14 @@ pub const ListSlab = struct {
         return @fromBackingInt(@intCast(at));
     }
 
+    /// Drops every list from `top` on; `top` must be an object boundary.
+    pub fn truncate(slab: *ListSlab, top: u32) void {
+        assert(top <= slab.used);
+        assert(slab.used <= slab.words.len);
+        if (std.debug.runtime_safety) @memset(slab.words[top..slab.used], unmarked);
+        slab.used = top;
+    }
+
     /// The words the list at `at` takes, header included.
     pub fn object_words(slab: *const ListSlab, at: u32) u32 {
         assert(at + header_words <= slab.used);

@@ -94,7 +94,7 @@ fn to_text(context: anytype, value: Value, buffer: *[32]u8) Error![]const u8 {
 /// A binary native function: arithmetic, comparison, logic, MIN/MAX/POW, and list and
 /// string membership.
 pub fn binary(context: anytype, opcode: Opcode, a: Value, b: Value) Error!Value {
-    assert(@intFromEnum(opcode) >= @intFromEnum(Opcode.add));
+    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     if (a == .null or b == .null) return error.VoidOperand;
     if (a == .list or b == .list) {
         // Lists aren't coerced the normal way; `&&` and `||` with a non-list use truth values.
@@ -130,7 +130,7 @@ fn to_truth(context: anytype, value: Value) Error!bool {
 }
 
 fn integer_binary(opcode: Opcode, a: i32, b: i32) Error!Value {
-    assert(@intFromEnum(opcode) >= @intFromEnum(Opcode.add));
+    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     const result: Value = switch (opcode) {
         .add => .{ .integer = a +% b },
         .subtract => .{ .integer = a -% b },
@@ -183,7 +183,7 @@ fn pow(x: f32, y: f32) f32 {
 }
 
 fn float_binary(opcode: Opcode, a: f32, b: f32) Error!Value {
-    assert(@intFromEnum(opcode) >= @intFromEnum(Opcode.add));
+    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     const result: Value = switch (opcode) {
         .add => .{ .float = a + b },
         .subtract => .{ .float = a - b },
@@ -260,7 +260,7 @@ fn divert_binary(opcode: Opcode, a: Value, b: Value) Error!Value {
 
 /// A unary native function: negate, not, FLOOR, CEILING, INT, FLOAT and the list functions.
 pub fn unary(context: anytype, opcode: Opcode, a: Value) Error!Value {
-    assert(@intFromEnum(opcode) >= @intFromEnum(Opcode.add));
+    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     if (a == .null) return error.VoidOperand;
     if (a == .list) return context.list_unary(opcode, a);
     const result: Value = switch (a) {
@@ -273,7 +273,7 @@ pub fn unary(context: anytype, opcode: Opcode, a: Value) Error!Value {
 }
 
 fn integer_unary(opcode: Opcode, a: i32) Error!Value {
-    assert(@intFromEnum(opcode) >= @intFromEnum(Opcode.add));
+    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     const result: Value = switch (opcode) {
         .negate => .{ .integer = -%a },
         .not => .{ .bool = a == 0 },
@@ -286,7 +286,7 @@ fn integer_unary(opcode: Opcode, a: i32) Error!Value {
 }
 
 fn float_unary(opcode: Opcode, a: f32) Error!Value {
-    assert(@intFromEnum(opcode) >= @intFromEnum(Opcode.add));
+    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     const result: Value = switch (opcode) {
         .negate => .{ .float = -a },
         .not => .{ .bool = a == 0 },
@@ -344,19 +344,19 @@ const TestContext = struct {
     // This context has no lists: list operations are P4.2.
     fn list_count(context: *TestContext, list: value_module.ListReference) u32 {
         assert(context.strings.items.len < 1 << 20);
-        assert(@intFromEnum(list) < 1 << 31);
+        assert(@backingInt(list) < 1 << 31);
         return 0;
     }
 
     fn list_binary(context: *TestContext, opcode: Opcode, a: Value, b: Value) Error!Value {
         assert(a == .list or b == .list);
-        assert(@intFromEnum(opcode) > 0 and context.strings.items.len < 1 << 20);
+        assert(@backingInt(opcode) > 0 and context.strings.items.len < 1 << 20);
         return error.UnsupportedOperation;
     }
 
     fn list_unary(context: *TestContext, opcode: Opcode, a: Value) Error!Value {
         assert(a == .list);
-        assert(@intFromEnum(opcode) > 0 and context.strings.items.len < 1 << 20);
+        assert(@backingInt(opcode) > 0 and context.strings.items.len < 1 << 20);
         return error.UnsupportedOperation;
     }
 };

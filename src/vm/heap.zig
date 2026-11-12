@@ -59,6 +59,15 @@ pub const StringHeap = struct {
         return .heap(at);
     }
 
+    /// Drops every object from `top` on; `top` must be an object boundary, such as a
+    /// relocated lookahead mark.
+    pub fn truncate(heap: *StringHeap, top: u32) void {
+        assert(top <= heap.used);
+        assert(top % 4 == 0);
+        if (std.debug.runtime_safety) @memset(heap.bytes[top..heap.used], poison);
+        heap.used = top;
+    }
+
     fn length_at(heap: *const StringHeap, at: u32) u32 {
         assert(at + header_bytes <= heap.used);
         const raw = std.mem.readInt(u32, heap.bytes[at..][0..4], .little);
@@ -111,19 +120,28 @@ pub const StringHeap = struct {
     }
 };
 
+/// Heap positions that must follow compaction, such as the lookahead snapshot's heap tops:
+/// string byte offsets and list word offsets.
+pub const Marks = struct {
+    strings: []u32 = &.{},
+    lists: []u32 = &.{},
+
+    pub const count_max = 16;
+};
+
 /// Marks from the roots, computes new offsets, rewrites the roots and `marks`, and slides
 /// live objects down, for strings and lists both. Returns the bytes and words reclaimed.
 pub fn compact(
     strings: *StringHeap,
     lists: *ListSlab,
     roots: anytype,
-    marks: []u32,
+    marks: Marks,
 ) struct { bytes: u32, words: u32 } {
     strings.verify();
     var marker: Marker = .{ .strings = strings, .lists = lists };
     roots.visit(&marker);
-    plan_strings(strings, marks);
-    plan_lists(lists);
+    plan_strings(strings, marks.strings);
+    plan_lists(lists, marks.lists);
     var updater: Updater = .{ .strings = strings, .lists = lists };
     roots.visit(&updater);
     const bytes_before = strings.used;
@@ -164,15 +182,10 @@ fn plan_strings(heap: *StringHeap, marks: []u32) void {
     var at: u32 = 0;
     var next: u32 = 0;
     for (marks) |*mark| assert(mark.* <= heap.used);
-    var relocated: [16]bool = @splat(false);
+    var relocated: [Marks.count_max]bool = @splat(false);
     assert(marks.len <= relocated.len);
     while (at < heap.used) {
-        for (marks, 0..) |*mark, position| {
-            if (!relocated[position] and mark.* <= at) {
-                mark.* = next;
-                relocated[position] = true;
-            }
-        }
+        relocate(marks, &relocated, at, next);
         const raw = std.mem.readInt(u32, heap.bytes[at..][0..4], .little);
         const total = StringHeap.object_bytes(raw & ~mark_bit);
         if (raw & mark_bit != 0) {
@@ -181,16 +194,31 @@ fn plan_strings(heap: *StringHeap, marks: []u32) void {
         }
         at += total;
     }
-    for (marks, 0..) |*mark, position| {
-        if (!relocated[position]) mark.* = next;
-    }
+    relocate(marks, &relocated, at, next);
     assert(next <= heap.used);
 }
 
-fn plan_lists(slab: *ListSlab) void {
+/// Moves every mark not yet moved that lies at or before `at` (an old object start, or the
+/// old end) to `next`, where the first live object from `at` on goes.
+fn relocate(marks: []u32, relocated: *[Marks.count_max]bool, at: u32, next: u32) void {
+    assert(marks.len <= Marks.count_max);
+    assert(next <= at);
+    for (marks, 0..) |*mark, position| {
+        if (!relocated[position] and mark.* <= at) {
+            mark.* = next;
+            relocated[position] = true;
+        }
+    }
+}
+
+fn plan_lists(slab: *ListSlab, marks: []u32) void {
     var at: u32 = 0;
     var next: u32 = 0;
+    for (marks) |*mark| assert(mark.* <= slab.used);
+    var relocated: [Marks.count_max]bool = @splat(false);
+    assert(marks.len <= relocated.len);
     while (at < slab.used) {
+        relocate(marks, &relocated, at, next);
         const total = slab.object_words(at);
         if (slab.words[at] != ListSlab.unmarked) {
             slab.words[at] = next;
@@ -198,6 +226,7 @@ fn plan_lists(slab: *ListSlab) void {
         }
         at += total;
     }
+    relocate(marks, &relocated, at, next);
     assert(at == slab.used);
     assert(next <= slab.used);
 }
@@ -307,7 +336,9 @@ test "live strings and lists survive compaction and keep their order" {
     values[3] = .{ .string = store_text(&strings, "last").? };
     var roots: TestRoots = .{ .values = &values };
     var marks = [_]u32{8};
-    const reclaimed = compact(&strings, &lists, &roots, &marks);
+    var list_marks = [_]u32{lists.used};
+    const marks_all: Marks = .{ .strings = &marks, .lists = &list_marks };
+    const reclaimed = compact(&strings, &lists, &roots, marks_all);
     try std.testing.expect(reclaimed.bytes > 0 and reclaimed.words > 0);
     try std.testing.expectEqualStrings("first", strings.get(values[0].string));
     try std.testing.expectEqualStrings("a tag", strings.get(values[1].tag));
@@ -316,6 +347,8 @@ test "live strings and lists survive compaction and keep their order" {
     try std.testing.expect(values[0].string.heap_offset() < values[1].tag.heap_offset());
     // The mark was inside the dead string, so it moves to where the first live one went.
     try std.testing.expectEqual(@as(u32, 0), marks[0]);
+    // A mark at the old end moves to the new end.
+    try std.testing.expectEqual(lists.used, list_marks[0]);
 }
 
 test "a loop that builds garbage stays bounded through compaction" {
@@ -335,7 +368,7 @@ test "a loop that builds garbage stays bounded through compaction" {
         buffer[keep.len] = '0' + @as(u8, @intCast(round % 10));
         const text = buffer[0 .. keep.len + 1];
         const reference = store_text(&strings, text) orelse retry: {
-            _ = compact(&strings, &lists, &roots, &.{});
+            _ = compact(&strings, &lists, &roots, .{});
             break :retry store_text(&strings, text).?;
         };
         values[0] = .{ .string = reference };
@@ -356,7 +389,7 @@ test "a heap full of live data still fails" {
     };
     var roots: TestRoots = .{ .values = &values };
     try std.testing.expectEqual(@as(?StringReference, null), strings.try_allocate(32));
-    const reclaimed = compact(&strings, &lists, &roots, &.{});
+    const reclaimed = compact(&strings, &lists, &roots, .{});
     try std.testing.expectEqual(@as(u32, 0), reclaimed.bytes);
     try std.testing.expectEqual(@as(?StringReference, null), strings.try_allocate(32));
 }
@@ -374,7 +407,7 @@ test "a stale reference after compaction is caught" {
     const forgotten = store_text(&strings, "forgotten").?;
     var values = [_]value_module.Value{.{ .string = kept }};
     var roots: TestRoots = .{ .values = &values };
-    _ = compact(&strings, &lists, &roots, &.{});
+    _ = compact(&strings, &lists, &roots, .{});
     try std.testing.expectEqual(StringHeap.Fault.ok, strings.check_reference(values[0].string));
     try std.testing.expectEqual(
         StringHeap.Fault.object_out_of_bounds,
