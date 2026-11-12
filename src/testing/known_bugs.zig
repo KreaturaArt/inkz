@@ -11,6 +11,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const oracle = @import("oracle.zig");
 const old_compiler = @import("../compiler/compiler.zig");
+const new_grammar = @import("../compiler_next/grammar.zig");
 
 pub const Status = enum {
     /// The case's divergence is in the ledger.
@@ -104,13 +105,25 @@ test "every audit bug and audit divergence names its fixing issue" {
     try std.testing.expect(audit_entries > 0);
 }
 
-test "old compiler accepts broken source (skipped until TASK-147.8)" {
+test "old compiler accepts broken source (skipped until TASK-149.2 removes it)" {
     // Goal: P0.7 records that compile() ignores errors. Method: compile source with an
     // unclosed brace, which ink rejects. While the old compiler accepts it, this skips; once
-    // it rejects it, the test fails so the registry entry gets updated.
+    // it rejects it, the test fails so the registry entry gets updated. The new front end's
+    // fix (TASK-147.8) is the next test.
     const gpa = std.testing.allocator;
     const json = old_compiler.compile(gpa, "Hello {unclosed\n") catch return;
     gpa.free(json);
     std.debug.print("skipped: the old compiler accepts '{{unclosed' (fix: TASK-147.8)\n", .{});
     return error.SkipZigTest;
+}
+
+test "the new front end reports an unclosed brace (TASK-147.8)" {
+    // Goal: P7.8 fixes "compile() ignores errors" in the new front end. Method: parse the
+    // same source; it gets ink's diagnostics (the inner logic, then the line end).
+    const gpa = std.testing.allocator;
+    var parsed = try new_grammar.parse(gpa, "Hello {unclosed\n", .{});
+    defer parsed.deinit(gpa);
+    try std.testing.expect(parsed.diagnostics_count > 0);
+    const expected: u32 = @backingInt(new_grammar.Expectation.inner_logic);
+    try std.testing.expectEqual(expected, parsed.diagnostics()[0].extra);
 }

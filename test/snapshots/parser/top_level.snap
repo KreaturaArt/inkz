@@ -1,0 +1,28 @@
+(story
+  (statements
+    include"other.ink"
+    include"sub/third file.ink"
+    (variable_declaration identifier"count" integer"5")
+    (variable_declaration identifier"price" float"1.5")
+    (variable_declaration identifier"flag" true"true")
+    (variable_declaration identifier"off" false"false")
+    (variable_declaration identifier"name" (string
+        text"Ink"))
+    (variable_declaration identifier"target" (divert_target (divert (path identifier"start") none)))
+    (variable_declaration identifier"copy" (variable_reference (path identifier"count")))
+    (variable_declaration identifier"negative" (negate integer"3"))
+    (variable_declaration identifier"items" (list_literal identifier"a" identifier"b"))
+    (const_declaration identifier"LIMIT" integer"10")
+    (const_declaration identifier"GREETING" (string
+        text"hello"))
+    (list_declaration identifier"colours" (list_items
+        (list_item identifier"red" none)
+        (selected_list_item identifier"green" none)
+        (list_item identifier"blue" integer"5")))
+    (list_declaration identifier"sizes" (list_items
+        (list_item identifier"small" none)
+        (selected_list_item identifier"medium" integer"2")))
+    (external_declaration identifier"beep" (parameters))
+    (external_declaration identifier"add" (parameters parameter"a" parameter"b"))
+    author_warning"write the rest"
+    (divert (path identifier"start") none)))

@@ -1,0 +1,49 @@
+(story
+  (statements
+    text"Hello, world."
+    newline
+    text"Leading whitespace goes, trailing too."
+    newline
+    text"Escaped \{ braces \} and \| pipe and \# hash."
+    newline
+    text"Glue "
+    glue"<>"
+    text" here."
+    newline
+    glue"<>"
+    text" glue first"
+    newline
+    text"A line "
+    tag_start"#"
+    text"a tag"
+    tag_end
+    newline
+    tag_start"#"
+    text"a tag on its own"
+    tag_end
+    text"A line "
+    tag_start"#"
+    text"one "
+    (content_list
+      tag_end
+      tag_start"#")
+    text"two"
+    tag_end
+    newline
+    text"Tag "
+    tag_start"#"
+    text"with "
+    (content_list
+      (inline_value (variable_reference (path identifier"inline"))))
+    text" logic"
+    tag_end
+    newline
+    text_space"Text"
+    (divert (path identifier"divert_target") none)
+    newline
+    text_space"Text with trailing space"
+    (divert (path identifier"divert_target") none)
+    newline
+    text"return is a word here"
+    newline))
+! 13:23 message return_without_tilde

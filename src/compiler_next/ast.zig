@@ -26,98 +26,103 @@ pub const Tag = enum(u8) {
     missing,
     /// A list's length.
     count,
+    /// A choice's or gather's indentation depth (the word's low 16 bits); for choices, bit 16
+    /// says it has weave-style `[` brackets and bit 17 that it is an invisible default.
+    header,
 
-    // Files and flows.
+    // Files and flows (ink's Story, Knot, Stitch, FlowBase).
     /// The whole story: its top-level statements.
     story,
     /// `INCLUDE path`: the path's token.
     include,
-    /// `== name(params) ==` and its body: name, parameters, body.
+    /// `== name(params) ==` and its body: name, parameters, statements.
     knot,
-    /// `== function name(params) ==`: name, parameters, body.
+    /// `== function name(params) ==`: name, parameters, statements.
     function,
-    /// `= name(params)`: name, parameters, body.
+    /// `= name(params)`: name, parameters, statements; `function_stitch` is `= function name`.
     stitch,
-    /// A name token: knot, stitch, label, variable or parameter.
+    function_stitch,
+    /// A name token: knot, stitch, label, variable, parameter or list member (`a.b`).
     identifier,
-    /// A parameter: its name; `reference_parameter` is `ref name`; a divert parameter is
-    /// `-> name`.
+    /// A parameter's name; `ref name` and `-> name` have their own tags.
     parameter,
     reference_parameter,
     divert_parameter,
-    /// Parameters, arguments, statements: a list.
     parameters,
     statements,
 
-    // Weave.
-    /// Statements at one weave level.
-    weave,
-    /// `*` or `+`: label, condition, start content, choice-only content, inner content, body.
+    // Weave (ink's Choice and Gather; nesting is built later, from the depths).
+    /// `*`: header, label, condition, start content, choice-only content, inner content.
     choice,
+    /// `+`: the same.
     sticky_choice,
-    /// `-`: label, content.
+    /// `-`: header, label.
     gather,
-    /// `(name)` before a choice's or gather's content: the name.
-    label,
 
     // Content.
-    /// A line of text and logic.
-    line,
-    /// A text run token.
+    /// ink's ContentList. A `statements` item in it (a multiline branch's body) is spliced.
+    content_list,
+    /// A text run: the token's text with `\` escapes still in it.
     text,
-    /// `\x`: the escape token.
-    escape,
+    /// A text run with one space appended (ink's TrimEndWhitespace before a divert).
+    text_space,
+    /// The "\n" ink appends to lines and choices.
+    newline,
+    /// ink's "<ERROR IN FLOW>" recovery text.
+    error_text,
     glue,
-    /// `#` and the tag's content (text and logic) until the next tag or the line's end.
-    tag,
-    /// `{expression}` printed inline.
+    /// `#` starts a tag; the end marker comes from ink's EndTagIfNecessary.
+    tag_start,
+    tag_end,
+    /// `{expression}`: the expression, output when complete.
     inline_value,
-    /// `{condition: then|else}`: condition, then, else.
+    /// `{condition: ...}` over lines (`conditional`) or on one line (`inline_conditional`):
+    /// the initial expression (or none) and the branches.
+    conditional,
     inline_conditional,
-    /// `{&a|b}` and the other kinds: the kind's token, then the branches as a list.
-    sequence,
-    /// A branch of an inline construct or a sequence: content.
-    branch,
-    /// `{ condition: ... }` or `{ value: - case: ... }` over lines: the initial expression
-    /// (or none) and the branches as a list.
-    block_conditional,
-    /// `- condition:` in a block: condition and body. `else_branch`: body only.
-    block_branch,
+    /// A branch: its own expression (or none) and its content.
+    conditional_branch,
+    /// `- else:`: its content.
     else_branch,
+    branches,
+    /// `{&a|b}` and the other kinds: the kind, and the elements (`branches` of content lists).
+    sequence,
+    /// A sequence's kind: ink's SequenceType flags in the word.
+    sequence_kind,
 
     // Diverts.
-    /// `-> target(arguments)`: target and arguments.
+    /// `-> target(arguments)`, `-> target ->` (a tunnel) and `<- target(arguments)`: the path
+    /// and the arguments (or none).
     divert,
-    /// `-> target ->`: target and arguments.
     tunnel,
-    /// `<- target(arguments)`: target and arguments.
     thread,
-    /// `->->`, optionally followed by a divert: the divert or none.
+    /// A bare `->` on a choice.
+    empty_divert,
+    /// `->->`: the divert after it, or none.
     tunnel_onwards,
-    /// A dotted path of identifiers: a list.
+    /// Dotted path components: identifiers.
     path,
+    arguments,
 
     // Logic.
-    /// `~ expression` on its own line.
-    logic_line,
-    /// `~ temp name = expression`: name and expression.
+    /// `~ temp name = expression`, `~ name = expression`, `+=`, `-=`: name and expression.
     temp_declaration,
-    /// `~ name = expression`, `+=`, `-=`: name and expression.
     assignment,
     add_assignment,
     subtract_assignment,
     /// `~ return expression` (or none).
     @"return",
-    /// `VAR name = expression`: name and expression.
+    /// `~ f()` on its own: the call, whose result is dropped.
+    call_statement,
+    /// `VAR name = expression`, `CONST name = expression`: name and expression.
     variable_declaration,
-    /// `CONST name = expression`: name and expression.
     const_declaration,
-    /// `LIST name = items`: name and items (a list of list_item).
+    /// `LIST name = items`: name and items.
     list_declaration,
-    /// An item of a LIST declaration: name, value (or none); `selected_list_item` is in
-    /// parentheses.
+    /// A LIST item: name and value (or none); `selected_list_item` is in parentheses.
     list_item,
     selected_list_item,
+    list_items,
     /// `EXTERNAL name(params)`: name and parameters.
     external_declaration,
     /// `TODO: text`: the text token.
@@ -132,12 +137,14 @@ pub const Tag = enum(u8) {
     string,
     /// A name or a dotted path read as a variable: the path.
     variable_reference,
-    /// `name(arguments)`: path and arguments.
+    /// `name(arguments)`: name and arguments.
     function_call,
-    /// `-> target` as a value: the path.
+    /// `-> target` as a value: the divert.
     divert_target,
-    /// `(a, b.c)`: items (a list of paths).
+    /// `(a, b.c)`: identifiers.
     list_literal,
+    /// Several choice conditions `{a} {b}` (ink's MultipleConditionExpression).
+    conditions,
     add,
     subtract,
     multiply,
@@ -156,7 +163,7 @@ pub const Tag = enum(u8) {
     intersect,
     negate,
     not,
-    /// `name++` and `name--`: the path.
+    /// `name++` and `name--`: the name.
     increment,
     decrement,
 };
@@ -172,23 +179,26 @@ pub fn shape(tag: Tag) Shape {
     assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     assert(@sizeOf(Shape) <= 2);
     return switch (tag) {
-        .none, .missing, .count => .leaf,
-        .include, .identifier, .parameter, .reference_parameter, .divert_parameter => .leaf,
-        .label, .text, .escape, .glue, .author_warning => .leaf,
+        .none, .missing, .count, .header, .include, .identifier => .leaf,
+        .parameter, .reference_parameter, .divert_parameter => .leaf,
+        .text, .text_space, .newline, .error_text, .glue, .tag_start, .tag_end => .leaf,
+        .sequence_kind, .empty_divert, .author_warning => .leaf,
         .integer, .float, .true, .false => .leaf,
-        .story, .parameters, .statements, .weave, .line, .tag, .branch, .path => .list,
-        .string, .list_literal => .list,
-        .knot, .function, .stitch => .{ .fixed = 3 },
+        .story, .parameters, .statements, .content_list, .branches, .path => .list,
+        .arguments, .list_items, .string, .list_literal, .conditions => .list,
+        .knot, .function, .stitch, .function_stitch => .{ .fixed = 3 },
         .choice, .sticky_choice => .{ .fixed = 6 },
-        .gather, .inline_conditional => .{ .fixed = if (tag == .gather) 2 else 3 },
-        .sequence, .block_conditional, .block_branch, .divert, .tunnel, .thread => .{ .fixed = 2 },
-        .variable_declaration, .const_declaration, .list_declaration => .{ .fixed = 2 },
+        .gather, .conditional, .inline_conditional, .conditional_branch => .{ .fixed = 2 },
+        .sequence => .{ .fixed = 2 },
+        .divert, .tunnel, .thread, .function_call => .{ .fixed = 2 },
         .temp_declaration, .assignment, .add_assignment, .subtract_assignment => .{ .fixed = 2 },
-        .list_item, .selected_list_item, .external_declaration, .function_call => .{ .fixed = 2 },
+        .variable_declaration, .const_declaration, .list_declaration => .{ .fixed = 2 },
+        .list_item, .selected_list_item, .external_declaration => .{ .fixed = 2 },
         .add, .subtract, .multiply, .divide, .modulo, .equal, .not_equal => .{ .fixed = 2 },
         .less, .greater, .less_equal, .greater_equal, .@"and", .@"or" => .{ .fixed = 2 },
         .has, .hasnt, .intersect => .{ .fixed = 2 },
-        .inline_value, .else_branch, .tunnel_onwards, .logic_line, .@"return" => .{ .fixed = 1 },
+        .inline_value, .else_branch, .tunnel_onwards, .@"return" => .{ .fixed = 1 },
+        .call_statement => .{ .fixed = 1 },
         .variable_reference, .divert_target, .negate, .not => .{ .fixed = 1 },
         .increment, .decrement => .{ .fixed = 1 },
     };
@@ -296,17 +306,19 @@ comptime {
 test "views follow each tag's shape" {
     // Goal: P7.2 coverage check: every tag has a typed view of its shape. Method: build a
     // tiny tree by hand (a choice with a list child) and read it back typed.
-    // Nodes: 0 count(2), 1 text, 2 text, 3 line(list at 0), then the choice's six children
-    // 4..9 and the choice 10.
+    // Nodes: 0 count(2), 1 text, 2 text, 3 content_list (list at 0), then the choice's six
+    // children 4..9 and the choice 10.
     const tags = [_]Tag{
-        .count, .text, .text, .line, .none, .none, .line, .none, .none, .weave, .choice,
+        .count,        .text,   .text, .content_list, .header, .none, .none, .content_list, .none,
+        .content_list, .choice,
     };
     const data = [_]u32{ 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 4 };
     const ast: Ast = .{ .tags = &tags, .data = &data, .root = .from_int(10) };
     const choice = ast.to_typed(ast.root).choice;
     try std.testing.expectEqual(@as(u32, 6), @as(u32, @intCast(choice.children.len)));
-    try std.testing.expectEqual(Tag.line, ast.tag(choice.children[2]));
-    const line = ast.to_typed(.from_int(3)).line;
+    try std.testing.expectEqual(Tag.none, ast.tag(choice.children[2]));
+    try std.testing.expectEqual(Tag.content_list, ast.tag(choice.children[3]));
+    const line = ast.to_typed(.from_int(3)).content_list;
     try std.testing.expectEqual(@as(usize, 2), line.items.len);
     try std.testing.expectEqual(@as(u32, 1), ast.to_typed(.from_int(2)).text.token.to_int());
     inline for (@typeInfo(Tag).@"enum".field_names) |name| {

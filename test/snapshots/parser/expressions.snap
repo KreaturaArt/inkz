@@ -1,0 +1,35 @@
+(story
+  (statements
+    (temp_declaration identifier"a" (add integer"1" (multiply integer"2" integer"3")))
+    (assignment identifier"a" (add integer"1" (subtract integer"2" integer"3")))
+    (assignment identifier"a" (add (subtract integer"1" integer"2") integer"3"))
+    (assignment identifier"a" (multiply (divide integer"6" integer"3") integer"2"))
+    (assignment identifier"a" (modulo (modulo integer"7" integer"3") integer"2"))
+    (assignment identifier"a" (multiply (add integer"1" integer"2") integer"3"))
+    (assignment identifier"a" (or (and (variable_reference (path identifier"x")) (variable_reference (path identifier"y"))) (variable_reference (path identifier"z"))))
+    (assignment identifier"a" (or (and (variable_reference (path identifier"x")) (variable_reference (path identifier"y"))) (variable_reference (path identifier"z"))))
+    (assignment identifier"a" (equal (not (variable_reference (path identifier"x"))) (variable_reference (path identifier"y"))))
+    (assignment identifier"a" (not (variable_reference (path identifier"x"))))
+    (assignment identifier"a" (negate integer"- 1"))
+    (assignment identifier"a" (negate (variable_reference (path identifier"x"))))
+    (assignment identifier"a" (and (less (variable_reference (path identifier"x")) integer"1") (greater_equal (variable_reference (path identifier"y")) integer"2")))
+    (assignment identifier"a" (not_equal (variable_reference (path identifier"x")) (variable_reference (path identifier"y"))))
+    (assignment identifier"a" (has (variable_reference (path identifier"l")) (variable_reference (path identifier"item"))))
+    (assignment identifier"a" (has (variable_reference (path identifier"l")) (variable_reference (path identifier"item"))))
+    (assignment identifier"a" (hasnt (variable_reference (path identifier"l")) (variable_reference (path identifier"item"))))
+    (assignment identifier"a" (hasnt (variable_reference (path identifier"l")) (variable_reference (path identifier"item"))))
+    (assignment identifier"a" (intersect (variable_reference (path identifier"l")) (variable_reference (path identifier"m"))))
+    (assignment identifier"a" (list_literal identifier"one" identifier"list.two"))
+    (assignment identifier"a" (list_literal))
+    (assignment identifier"a" (variable_reference (path identifier"list" identifier"item")))
+    (assignment identifier"a" (divert_target (divert (path identifier"knot") none)))
+    (assignment identifier"a" (string
+        text"string "
+        (content_list
+          (inline_value (variable_reference (path identifier"with"))))
+        text" logic"))
+    (assignment identifier"a" (string
+        text""))
+    (assignment identifier"a" (add float"1.5" integer"2"))
+    (assignment identifier"a" (variable_reference (path identifier"orange")))
+    (assignment identifier"a" (or (variable_reference (path identifier"x")) (variable_reference (path identifier"y"))))))

@@ -1,0 +1,26 @@
+(story
+  (statements
+    text"Before the first knot."
+    newline
+    (knot identifier"start" none (statements
+        text"Knot text."
+        newline
+        (divert (path identifier"start" identifier"second") none)
+        (stitch identifier"second" none (statements
+            text"Stitch text."
+            newline))))
+    (knot identifier"heading" none (statements
+        (stitch identifier"first" none (statements
+            text"One."
+            newline))
+        (stitch identifier"second" (parameters parameter"x" reference_parameter"y" divert_parameter"back") (statements
+            text"Two."
+            newline))))
+    (function identifier"double" (parameters parameter"x") (statements
+        (return (multiply (variable_reference (path identifier"x")) integer"2"))))
+    (function identifier"shout" none (statements
+        (return none)
+        (function_stitch identifier"helper" (parameters parameter"a") (statements
+            (return (variable_reference (path identifier"a")))))))
+    (knot identifier"start_with_params" (parameters parameter"a" parameter"b") (statements
+        (divert (path identifier"DONE") none)))))
