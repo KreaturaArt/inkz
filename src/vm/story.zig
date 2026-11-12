@@ -17,6 +17,8 @@ const ops = @import("ops.zig");
 const State = state_module.State;
 const Pointer = call_stack_module.Pointer;
 const StringReference = value_module.StringReference;
+const ContainerIndex = @import("../core/index.zig").ContainerIndex;
+const Lists = @import("lists.zig").Lists;
 
 pub const Error = error{
     /// A story error was recorded (ink's StoryException); see `State.errors`.
@@ -35,6 +37,8 @@ pub const Error = error{
     LookaheadLogLimit,
     StepLimit,
 };
+
+pub const SetError = Error || error{VariableNotDeclared};
 
 pub const Story = struct {
     program: *const Program,
@@ -308,6 +312,57 @@ pub const Story = struct {
         story.state.choices.restore(&story.state.call_stack, choice) catch return error.FrameLimit;
         try story.choose_pointer(choice.target, true);
         assert(story.state.choices.count() == 0);
+    }
+
+    /// ink's `variablesState[name]` getter: a global's value, or null if there is no such
+    /// global.
+    pub fn get_variable(story: *Story, name: []const u8) ?value_module.Value {
+        assert(name.len > 0);
+        const slot = story.program.global_by_name(name) orelse return null;
+        assert(slot.to_int() < story.state.globals.len);
+        assert(story.state.globals.len == story.program.globals.len);
+        return story.state.globals[slot.to_int()];
+    }
+
+    /// ink's `variablesState[name]` setter. Only declared globals can be set; strings must
+    /// already be references (see `set_variable_text`).
+    pub fn set_variable(story: *Story, name: []const u8, value: value_module.Value) SetError!void {
+        assert(name.len > 0);
+        assert(value != .tag and value != .variable_pointer);
+        const slot = story.program.global_by_name(name) orelse return error.VariableNotDeclared;
+        try ops.set_global(story, slot, value);
+        assert(story.state.globals[slot.to_int()] == std.meta.activeTag(value) or value == .list);
+    }
+
+    /// `set_variable` with a string value, copied into the heap.
+    pub fn set_variable_text(story: *Story, name: []const u8, text: []const u8) SetError!void {
+        assert(name.len > 0);
+        if (story.program.global_by_name(name) == null) return error.VariableNotDeclared;
+        const reference = story.state.allocate_string(@intCast(text.len), &.{}) catch
+            return error.HeapLimit;
+        @memcpy(story.state.strings.get(reference), text);
+        assert(reference.is_heap());
+        try story.set_variable(name, .{ .string = reference });
+    }
+
+    /// A container's path, as ink prints a divert target's path.
+    pub fn path_of(story: *const Story, container: ContainerIndex) []const u8 {
+        assert(container.to_int() < story.program.containers.len);
+        const path = story.program.table().get(container).path;
+        assert(!path.is_none());
+        return story.program.strings.get(path);
+    }
+
+    /// A list's text as ink's InkList.ToString writes it.
+    pub fn write_list(
+        story: *Story,
+        list: value_module.ListReference,
+        writer: *std.Io.Writer,
+    ) !void {
+        assert(story.state.lists.check_reference(list));
+        assert(story.state.lists.used <= story.state.lists.words.len);
+        const lists: Lists = .{ .program = story.program, .slab = &story.state.lists };
+        try lists.write(list, writer);
     }
 
     pub fn text_of(story: *const Story, reference: StringReference) []const u8 {

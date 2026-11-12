@@ -570,7 +570,7 @@ fn assign_existing(
 }
 
 /// ink's SetGlobal. Observers are queued in P5.7.
-fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
+pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.state.globals.len);
     const stored = try retain_list_origins(story, story.state.globals[slot.to_int()], value);
     lookahead.set_global(&story.state, slot, stored) catch return error.LookaheadLogLimit;

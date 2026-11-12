@@ -212,6 +212,5 @@
     .{ .case = "runtime/multiflow/multi_flow_save_load_threads", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
     .{ .case = "runtime/newlines/newlines_trimming_with_func_external_fallback", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: fallbacks", .fix = "TASK-145.4" },
     .{ .case = "runtime/tags/tags", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: global_tags", .fix = "TASK-146.3" },
-    .{ .case = "runtime/variables/set_non_existant_variable", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: set", .fix = "TASK-145.3" },
     .{ .case = "runtime/variables/temp_not_found", .engine = "new", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected warning: \"RUNTIME WARNING: (0.1): Variable not found: 'x'. Using default value o | got text: \"hello\\n\"", .fix = "TASK-145.10" },
 }
