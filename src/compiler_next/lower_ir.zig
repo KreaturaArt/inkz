@@ -98,11 +98,39 @@ pub const Item = union(enum) {
     divert_target: Target,
     variable_reference: []const u8,
     read_count: Target,
-    assignment: struct { name: []const u8, global: bool, new: bool },
-    variable_pointer: struct { name: []const u8, context: i32 },
-    choice_point: struct { target: Target, flags: u8 },
-    list: struct { items: []const ListItem, origins: []const []const u8 },
+    assignment: Assignment,
+    variable_pointer: VariablePointer,
+    choice_point: ChoicePoint,
+    list: List,
 };
+
+pub const ChoicePoint = struct { target: Target, flags: u8 };
+pub const Assignment = struct { name: []const u8, global: bool, new: bool };
+pub const VariablePointer = struct { name: []const u8, context: i32 };
+pub const List = struct { items: []const ListItem, origins: []const []const u8 };
+
+/// How an item is stored: 24 bytes, the larger payloads in side arrays (plan P8.6).
+const Stored = union(enum) {
+    container: ContainerId,
+    command: Command,
+    native: []const u8,
+    text: []const u8,
+    integer: i32,
+    float: f32,
+    boolean: bool,
+    divert: u32,
+    divert_target: Target,
+    variable_reference: []const u8,
+    read_count: Target,
+    assignment: u32,
+    variable_pointer: u32,
+    choice_point: ChoicePoint,
+    list: u32,
+};
+
+comptime {
+    assert(@sizeOf(Stored) <= 24);
+}
 
 /// ink's container flags (Runtime.Container.CountFlags).
 pub const count_visits: u8 = 1;
@@ -112,7 +140,12 @@ pub const count_start_only: u8 = 4;
 pub const Container = struct {
     name: ?[]const u8 = null,
     flags: u8 = 0,
-    content: std.ArrayList(ItemId) = .empty,
+    /// While generating, the content is a list linked through `Ir.next` (no buffer per
+    /// container); after flattening it is `Ir.flat[flat_first..][0..flat_count]`.
+    first: ItemId = .none,
+    last: ItemId = .none,
+    flat_first: u32 = 0,
+    flat_count: u32 = 0,
     /// Named children that aren't in `content` (ink's named-only content), in order.
     named: std.ArrayList(ContainerId) = .empty,
     /// After layout: the container holding it (as content or named), or none for the root.
@@ -124,7 +157,17 @@ pub const Ir = struct {
     /// Names, texts and list literals.
     arena: std.heap.ArenaAllocator,
     containers: std.ArrayList(Container) = .empty,
-    items: std.ArrayList(Item) = .empty,
+    items: std.ArrayList(Stored) = .empty,
+    /// The next item in the same container (none at the end).
+    next: std.ArrayList(ItemId) = .empty,
+    /// Whether an item is in a container (an item is in at most one).
+    placed: std.ArrayList(bool) = .empty,
+    /// Every kept container's content after flattening, one run per container.
+    flat: std.ArrayList(ItemId) = .empty,
+    diverts: std.ArrayList(Divert) = .empty,
+    assignments: std.ArrayList(Assignment) = .empty,
+    pointers: std.ArrayList(VariablePointer) = .empty,
+    lists: std.ArrayList(List) = .empty,
 
     pub fn init(gpa: Allocator) Ir {
         assert(@sizeOf(Container) > 0);
@@ -136,12 +179,16 @@ pub const Ir = struct {
         assert(ir.items.items.len < std.math.maxInt(u32));
         const gpa = ir.gpa;
         assert(ir.containers.items.len < std.math.maxInt(u32));
-        for (ir.containers.items) |*entry| {
-            entry.content.deinit(gpa);
-            entry.named.deinit(gpa);
-        }
+        for (ir.containers.items) |*entry| entry.named.deinit(gpa);
+        ir.next.deinit(gpa);
+        ir.placed.deinit(gpa);
+        ir.flat.deinit(gpa);
         ir.containers.deinit(gpa);
         ir.items.deinit(gpa);
+        ir.diverts.deinit(gpa);
+        ir.assignments.deinit(gpa);
+        ir.pointers.deinit(gpa);
+        ir.lists.deinit(gpa);
         ir.arena.deinit();
         ir.* = undefined;
     }
@@ -155,7 +202,46 @@ pub const Ir = struct {
     pub fn item(ir: *const Ir, id: ItemId) Item {
         assert(id.to_int() < ir.items.items.len);
         assert(ir.items.items.len > 0);
-        return ir.items.items[id.to_int()];
+        return switch (ir.items.items[id.to_int()]) {
+            .divert => |at| .{ .divert = ir.diverts.items[at] },
+            .assignment => |at| .{ .assignment = ir.assignments.items[at] },
+            .variable_pointer => |at| .{ .variable_pointer = ir.pointers.items[at] },
+            .list => |at| .{ .list = ir.lists.items[at] },
+            inline else => |payload, tag| @unionInit(Item, @tagName(tag), payload),
+        };
+    }
+
+    /// A divert item's divert, to set its target later.
+    pub fn divert_of(ir: *Ir, id: ItemId) *Divert {
+        assert(id.to_int() < ir.items.items.len);
+        const at = ir.items.items[id.to_int()].divert;
+        assert(at < ir.diverts.items.len);
+        return &ir.diverts.items[at];
+    }
+
+    fn store(ir: *Ir, value: Item) !Stored {
+        const gpa = ir.gpa;
+        assert(ir.diverts.items.len < std.math.maxInt(u32));
+        assert(ir.lists.items.len < std.math.maxInt(u32));
+        switch (value) {
+            .divert => |divert| {
+                try ir.diverts.append(gpa, divert);
+                return .{ .divert = @intCast(ir.diverts.items.len - 1) };
+            },
+            .assignment => |assignment| {
+                try ir.assignments.append(gpa, assignment);
+                return .{ .assignment = @intCast(ir.assignments.items.len - 1) };
+            },
+            .variable_pointer => |pointer| {
+                try ir.pointers.append(gpa, pointer);
+                return .{ .variable_pointer = @intCast(ir.pointers.items.len - 1) };
+            },
+            .list => |list| {
+                try ir.lists.append(gpa, list);
+                return .{ .list = @intCast(ir.lists.items.len - 1) };
+            },
+            inline else => |payload, tag| return @unionInit(Stored, @tagName(tag), payload),
+        }
     }
 
     pub fn new_container(ir: *Ir) !ContainerId {
@@ -169,7 +255,9 @@ pub const Ir = struct {
     pub fn new_item(ir: *Ir, value: Item) !ItemId {
         assert(ir.items.items.len < std.math.maxInt(u32));
         const id: ItemId = .from_int(@intCast(ir.items.items.len));
-        try ir.items.append(ir.gpa, value);
+        try ir.items.append(ir.gpa, try ir.store(value));
+        try ir.next.append(ir.gpa, .none);
+        try ir.placed.append(ir.gpa, false);
         assert(ir.items.items.len == id.to_int() + 1);
         return id;
     }
@@ -177,9 +265,9 @@ pub const Ir = struct {
     /// Container.AddContent.
     pub fn add(ir: *Ir, to: ContainerId, value: Item) !ItemId {
         assert(ir.items.items.len < std.math.maxInt(u32));
+        assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
-        try ir.container(to).content.append(ir.gpa, id);
-        assert(ir.container(to).content.items.len > 0);
+        try ir.attach(to, id);
         return id;
     }
 
@@ -196,12 +284,16 @@ pub const Ir = struct {
         return ir.add(to, .{ .container = child });
     }
 
-    /// Container.InsertContent at `position`.
+    /// Container.InsertContent at the start (the only position ink inserts at).
     pub fn insert(ir: *Ir, to: ContainerId, position: usize, value: Item) !ItemId {
-        assert(ir.items.items.len < std.math.maxInt(u32));
+        assert(position == 0);
+        assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
-        try ir.container(to).content.insert(ir.gpa, position, id);
-        assert(position < ir.container(to).content.items.len);
+        ir.placed.items[id.to_int()] = true;
+        const container_entry = ir.container(to);
+        ir.next.items[id.to_int()] = container_entry.first;
+        container_entry.first = id;
+        if (container_entry.last.is_none()) container_entry.last = id;
         return id;
     }
 
@@ -215,18 +307,95 @@ pub const Ir = struct {
     /// Container.AddContentsOfContainer: moves `from`'s content into `to`.
     pub fn add_contents_of(ir: *Ir, to: ContainerId, from: ContainerId) !void {
         assert(to != from);
-        const moved = ir.container(from).content.items;
-        try ir.container(to).content.appendSlice(ir.gpa, moved);
-        ir.container(from).content.clearRetainingCapacity();
-        assert(ir.container(from).content.items.len == 0);
+        const source = ir.container(from);
+        if (source.first.is_none()) return;
+        const first = source.first;
+        const last = source.last;
+        source.first = .none;
+        source.last = .none;
+        const target = ir.container(to);
+        if (target.last.is_none()) {
+            target.first = first;
+        } else ir.next.items[target.last.to_int()] = first;
+        target.last = last;
+        assert(!ir.container(to).first.is_none());
     }
 
+    /// Adds an item made earlier; one already in a container is copied (as ink copies a
+    /// constant's runtime objects each time it is used).
+    pub fn attach_or_copy(ir: *Ir, to: ContainerId, id: ItemId) !void {
+        assert(id.to_int() < ir.items.items.len);
+        assert(to.to_int() < ir.containers.items.len);
+        if (!ir.placed.items[id.to_int()]) return ir.attach(to, id);
+        _ = try ir.add(to, ir.item(id));
+    }
+
+    /// The content of a container after flattening.
+    pub fn content_of(ir: *const Ir, id: ContainerId) []const ItemId {
+        assert(id.to_int() < ir.containers.items.len);
+        const entry = ir.containers.items[id.to_int()];
+        assert(entry.flat_first + entry.flat_count <= ir.flat.items.len);
+        return ir.flat.items[entry.flat_first..][0..entry.flat_count];
+    }
+
+    /// A name or text for an item: names are slices of the source, which outlives the IR,
+    /// so nothing is copied.
     pub fn text(ir: *Ir, value: []const u8) ![]const u8 {
         assert(ir.items.items.len < std.math.maxInt(u32));
         assert(value.len < std.math.maxInt(u32));
-        return ir.arena.allocator().dupe(u8, value);
+        return value;
+    }
+
+    /// Adds an existing (unplaced) item to the end of a container's content.
+    pub fn attach(ir: *Ir, to: ContainerId, id: ItemId) !void {
+        assert(id.to_int() < ir.items.items.len);
+        assert(!ir.placed.items[id.to_int()]);
+        ir.placed.items[id.to_int()] = true;
+        ir.next.items[id.to_int()] = .none;
+        const entry = ir.container(to);
+        if (entry.last.is_none()) entry.first = id else ir.next.items[entry.last.to_int()] = id;
+        entry.last = id;
+    }
+
+    /// Each target that is a parsed object becomes that object's runtime container (from
+    /// `containers`, by object), so emission needs nothing from the object tree.
+    pub fn resolve_objects(ir: *Ir, containers: []const ContainerId) void {
+        assert(ir.items.items.len < std.math.maxInt(u32));
+        assert(ir.diverts.items.len <= ir.items.items.len);
+        for (ir.diverts.items) |*divert| divert.target = resolved(divert.target, containers);
+        for (ir.items.items) |*stored| switch (stored.*) {
+            .divert_target, .read_count => |*target| target.* = resolved(target.*, containers),
+            .choice_point => |*choice| choice.target = resolved(choice.target, containers),
+            else => {},
+        };
+    }
+
+    /// Frees the generation links (unused once the content is flattened) and shrinks the
+    /// other arrays to their sizes.
+    pub fn release_links(ir: *Ir) void {
+        assert(ir.next.items.len == ir.items.items.len);
+        assert(ir.flat.items.len <= ir.items.items.len);
+        const gpa = ir.gpa;
+        ir.next.clearAndFree(gpa);
+        ir.placed.clearAndFree(gpa);
+        ir.items.shrinkAndFree(gpa, ir.items.items.len);
+        ir.flat.shrinkAndFree(gpa, ir.flat.items.len);
+        ir.containers.shrinkAndFree(gpa, ir.containers.items.len);
+        ir.diverts.shrinkAndFree(gpa, ir.diverts.items.len);
+        for (ir.containers.items) |*entry| {
+            entry.first = .none;
+            entry.last = .none;
+        }
     }
 };
+
+fn resolved(target: Target, containers: []const ContainerId) Target {
+    assert(containers.len < std.math.maxInt(u32));
+    if (target != .object) return target;
+    assert(target.object.to_int() < containers.len);
+    const container = containers[target.object.to_int()];
+    return if (container.is_none()) .none else .{ .container = container };
+}
 
 test "commands have ink's words" {
     try std.testing.expectEqualStrings("ev", Command.eval_start.word());

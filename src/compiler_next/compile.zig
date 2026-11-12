@@ -36,10 +36,11 @@ pub const Options = struct {
     count_all_visits: bool = false,
 };
 
-/// The stages after parsing, on a parsed story (one file, or a space's).
+/// The stages after parsing, on a parsed story (one file, or a space's). The object tree,
+/// the resolution and the syntax are freed once lowered, before layout and emission.
 fn compile_parsed(
     gpa: Allocator,
-    parsed: *const grammar.Parsed,
+    parsed: *grammar.Parsed,
     space: ?*const source_space.Space,
     options: Options,
 ) !Program {
@@ -48,6 +49,23 @@ fn compile_parsed(
     for (parsed.diagnostics()) |diagnostic| {
         if (!is_warning(diagnostic)) return error.CompileFailed;
     }
+    var lowered = try lower_parsed(gpa, parsed, space, options);
+    defer lowered.deinit();
+    parsed.release_syntax(gpa);
+    var layout = try layout_module.lay_out(&lowered);
+    defer layout.deinit();
+    return emit.emit_program(&lowered, &layout);
+}
+
+/// Object tree, resolution and lowering, up to flattening.
+fn lower_parsed(
+    gpa: Allocator,
+    parsed: *const grammar.Parsed,
+    space: ?*const source_space.Space,
+    options: Options,
+) !lower.Lowered {
+    assert(parsed.tree.tags.len > 0);
+    assert(space == null or space.?.files.len > 0);
     var tree = if (space) |files| try sema.build_space_tree(gpa, files) else try sema.build_tree(
         gpa,
         parsed,
@@ -57,15 +75,13 @@ fn compile_parsed(
     defer resolution.deinit(gpa);
     if (resolution.diagnostics.len > 0) return error.CompileFailed;
     var lowering = try lower.Lowering.init(gpa, parsed, &tree, &resolution);
-    defer lowering.deinit();
+    errdefer lowering.deinit();
     lowering.count_all_visits = options.count_all_visits;
     try lowering.generate_all();
     try lowering.finish_story();
     layout_module.set_count_flags(&lowering);
     try layout_module.flatten(&lowering);
-    var layout = try layout_module.lay_out(&lowering);
-    defer layout.deinit();
-    return emit.emit_program(&lowering, &layout);
+    return lowering.into_lowered();
 }
 
 /// Compiles one ink file's text (INCLUDE needs `compile_file`).
@@ -118,4 +134,45 @@ test "hello world compiles to inklecate's JSON" {
     const expected = "{\"inkVersion\":21,\"root\":[[\"^Hello, world.\",\"\\n\"," ++
         "[\"done\",{\"#n\":\"g-0\"}],null],\"done\",null],\"listDefs\":{}}";
     try std.testing.expectEqualStrings(expected, text);
+}
+
+/// The old compiler's peak bytes compiling test/fixture/crime_scene.ink to JSON in a Debug
+/// build (the P8.6 baseline; `zig build bench` measures both compilers in release builds).
+const old_compiler_peak_bytes_crime_scene = 535_946;
+
+test "the compiler peaks at no more than half the old compiler's memory (P8.6)" {
+    // Goal: P8.6's memory criterion. Method: crime_scene compiled with a counting
+    // allocator; the peak, with the object tree, resolution and syntax freed before
+    // emission, is at most half the old compiler's.
+    const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllocator;
+    const io = std.testing.io;
+    const path = "test/fixture/crime_scene.ink";
+    const limit: std.Io.Limit = .limited(1 << 20);
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, path, std.testing.allocator, limit);
+    defer std.testing.allocator.free(source);
+    var counting: CountingAllocator = .init(std.testing.allocator);
+    const gpa = counting.allocator();
+    var program = try compile_source(gpa, source);
+    defer program.deinit(gpa);
+    try std.testing.expect(program.instructions_count() > 1000);
+    try std.testing.expect(counting.bytes_peak * 2 <= old_compiler_peak_bytes_crime_scene);
+}
+
+test "the parse workspace is sized from the source and retries at most compile_retries_max times" {
+    // Goal: P8.6's sizing criterion. Method: dense arithmetic (more nodes and tokens per byte
+    // than the first workspace has room for) needs two doublings: with one retry allowed the
+    // parse fails with WorkspaceFull, with two it succeeds, settled to the nodes it used.
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa, "~ temp x = 1");
+    for (0..2000) |_| try text.appendSlice(gpa, "+1");
+    try text.appendSlice(gpa, "\n{x}\n");
+    try std.testing.expectError(
+        error.WorkspaceFull,
+        grammar.parse(gpa, text.items, .{ .compile_retries_max = 1 }),
+    );
+    var parsed = try grammar.parse(gpa, text.items, .{ .compile_retries_max = 2 });
+    defer parsed.deinit(gpa);
+    try std.testing.expect(parsed.workspace.node_tags.len == parsed.tree.tags.len);
 }

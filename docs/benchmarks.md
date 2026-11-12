@@ -15,6 +15,15 @@ seeded choices, so turns/s and lines/s compare with the old runtime's; its memor
 program plus the state's fixed budget at the default limits, so bytes per instruction is high
 for a small story and falls as stories grow.
 
+The compiler sections (`bench-compile`, P8.6) compile both stories from source to JSON with
+the old compiler and with the new one (`src/compiler_next`, a faithful port of ink's
+compiler): mean time and peak allocated bytes. The new compiler peaks at less than half the
+old one's memory: its parse workspace is sized from the source length (doubled on at most
+`compile_retries_max` retries) and settled to what the parse used, and the object tree, the
+resolution and the syntax are freed once the IR is lowered, before layout and emission. It is
+slower than the old compiler, which skips most of ink's semantics (weave, resolution and
+validation passes); compile speed is not a P8.6 target.
+
 ## Memory budget sizing (P4.12)
 
 A story's runtime state is one allocation of exactly `Limits.bytes_total(shape)` bytes, made by
@@ -92,10 +101,10 @@ What it means for P5.2 (measured 2026-11-11):
 
 | Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | Runtime objects | Bytes/object | Compile (ms) |
 |---|---|---|---|---|---|---|---|---|
-| crime_scene | 286.1 | 28362 | 74988 | 2814739 | 736736 | 1366 | 539.3 | 0.19 |
-| generated (1000 knots) | 5473.9 | 33510 | 67021 | 956125 | 14480976 | 35010 | 413.6 | 3.19 |
+| crime_scene | 392.4 | 20849 | 55125 | 2069167 | 736736 | 1366 | 539.3 | 0.25 |
+| generated (1000 knots) | 8169.3 | 23658 | 47315 | 675002 | 14480976 | 35010 | 413.6 | 4.48 |
 
-Peak RSS of the whole run: 17024 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
+Peak RSS of the whole run: 17088 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseSafe:end -->
 
 <!-- bench:ReleaseFast:start -->
@@ -103,10 +112,10 @@ Peak RSS of the whole run: 17024 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | Runtime objects | Bytes/object | Compile (ms) |
 |---|---|---|---|---|---|---|---|---|
-| crime_scene | 183.0 | 36631 | 96850 | 3635372 | 930122 | 1366 | 680.9 | 0.12 |
-| generated (1000 knots) | 3480.1 | 53810 | 107619 | 1535309 | 19846150 | 35010 | 566.9 | 1.99 |
+| crime_scene | 256.6 | 29947 | 79179 | 2972052 | 930122 | 1366 | 680.9 | 0.17 |
+| generated (1000 knots) | 5032.6 | 37096 | 74192 | 1058433 | 19846150 | 35010 | 566.9 | 2.80 |
 
-Peak RSS of the whole run: 23072 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
+Peak RSS of the whole run: 28496 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseFast:end -->
 
 <!-- bench-new:ReleaseSafe:start -->
@@ -114,8 +123,8 @@ Peak RSS of the whole run: 23072 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 406.3 | 103121 | 132886 | 13426131 | 2139358 | 1513 | 1414.0 |
-| generated (1000 knots) | 3978.3 | 515654 | 515654 | 13932960 | 2801359 | 32010 | 87.5 |
+| crime_scene | 631.7 | 61031 | 78646 | 7946067 | 2139646 | 1513 | 1414.2 |
+| generated (1000 knots) | 6349.5 | 310228 | 310228 | 8382364 | 2801359 | 32010 | 87.5 |
 
 The state is the default limits' fixed budget, allocated once.
 <!-- bench-new:ReleaseSafe:end -->
@@ -125,8 +134,30 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 184.7 | 169068 | 217866 | 22012177 | 2139358 | 1513 | 1414.0 |
-| generated (1000 knots) | 2927.0 | 927041 | 927041 | 25048645 | 2801359 | 32010 | 87.5 |
+| crime_scene | 280.4 | 118992 | 153337 | 15492437 | 2139646 | 1513 | 1414.2 |
+| generated (1000 knots) | 4367.2 | 639163 | 639163 | 17270176 | 2801359 | 32010 | 87.5 |
 
 The state is the default limits' fixed budget, allocated once.
 <!-- bench-new:ReleaseFast:end -->
+
+<!-- bench-compile:ReleaseSafe:start -->
+### Compilers, ReleaseSafe
+
+| Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
+|---|---|---|---|---|---|
+| crime_scene | 0.27 | 1.52 | 535918 | 261308 | 2.05 |
+| generated (1000 knots) | 4.53 | 25.08 | 13067678 | 4751989 | 2.75 |
+
+Source to JSON, both; the time is the mean of 20 compiles.
+<!-- bench-compile:ReleaseSafe:end -->
+
+<!-- bench-compile:ReleaseFast:start -->
+### Compilers, ReleaseFast
+
+| Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
+|---|---|---|---|---|---|
+| crime_scene | 0.17 | 0.91 | 513047 | 247159 | 2.08 |
+| generated (1000 knots) | 3.15 | 14.47 | 12680076 | 4368982 | 2.90 |
+
+Source to JSON, both; the time is the mean of 20 compiles.
+<!-- bench-compile:ReleaseFast:end -->

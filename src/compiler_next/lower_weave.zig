@@ -137,7 +137,7 @@ fn add_general(lowering: *Lowering, generation: *Generation, content: Result) !v
     assert(!into.is_none());
     switch (content) {
         .none => {},
-        .item => |value| _ = try lowering.ir.add(into, value),
+        .item => |id| try lowering.ir.attach_or_copy(into, id),
         .container => |child| _ = try lowering.ir.add_container(into, child),
     }
 }

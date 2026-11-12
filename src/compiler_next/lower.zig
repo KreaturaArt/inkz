@@ -33,8 +33,26 @@ const Item = ir_module.Item;
 /// container.
 pub const Result = union(enum) {
     none,
-    item: Item,
+    /// An item not yet in any container.
+    item: ir_module.ItemId,
     container: ContainerId,
+};
+
+pub const ListDefinition = struct { name: []const u8, items: []const ir_module.ListItem };
+
+/// The lowered story, free of the object tree: what lay_out and emission read.
+pub const Lowered = struct {
+    ir: Ir,
+    root: ContainerId,
+    /// ink's listDefs: each list with its items' values (in the IR's arena).
+    lists: []const ListDefinition,
+
+    pub fn deinit(lowered: *Lowered) void {
+        assert(!lowered.root.is_none());
+        assert(lowered.lists.len < std.math.maxInt(u32));
+        lowered.ir.deinit();
+        lowered.* = undefined;
+    }
 };
 
 pub const Lowering = struct {
@@ -107,6 +125,34 @@ pub const Lowering = struct {
         lowering.* = undefined;
     }
 
+    /// The IR on its own, once flattened (plan P8.6): object targets become containers and the
+    /// list definitions are copied out, so the object tree, the resolution and the syntax can
+    /// be freed before emission. Everything but the IR is freed; on error nothing is.
+    pub fn into_lowered(lowering: *Lowering) !Lowered {
+        assert(lowering.results.len == lowering.tree.count());
+        assert(!lowering.root.is_none());
+        const arena = lowering.ir.arena.allocator();
+        const resolution = lowering.resolution;
+        const lists = try arena.alloc(ListDefinition, resolution.lists.len);
+        for (resolution.lists, lists) |definition, *list| {
+            const elements = lowering.tree.children_of(definition);
+            const items = try arena.alloc(ir_module.ListItem, elements.len);
+            const name = lowering.child_name(lowering.tree.parent(definition), 0);
+            list.* = .{ .name = name, .items = items };
+            for (elements, items) |element, *entry| entry.* = .{
+                .origin = list.name,
+                .name = lowering.child_name(element, 0),
+                .value = resolution.item_values[element.to_int()],
+            };
+        }
+        lowering.ir.resolve_objects(lowering.runtime_containers);
+        lowering.ir.release_links();
+        const lowered: Lowered = .{ .ir = lowering.ir, .root = lowering.root, .lists = lists };
+        lowering.ir = .init(lowering.gpa);
+        lowering.deinit();
+        return lowered;
+    }
+
     pub fn ast(lowering: *const Lowering) *const ast_module.Ast {
         assert(lowering.results.len == lowering.tree.count());
         assert(lowering.parsed.tree.tags.len > 0);
@@ -160,7 +206,7 @@ pub const Lowering = struct {
         assert(lowering.results.len == lowering.tree.count());
         switch (lowering.result(object)) {
             .none => {},
-            .item => |value| _ = try lowering.ir.add(container, value),
+            .item => |id| try lowering.ir.attach_or_copy(container, id),
             .container => |child| _ = try lowering.ir.add_container(container, child),
         }
         assert(container.to_int() < lowering.ir.containers.items.len);
@@ -187,7 +233,7 @@ pub const Lowering = struct {
         assert(lowering.results.len == lowering.tree.count());
         switch (try lowering.content_result(object)) {
             .none => {},
-            .item => |value| _ = try lowering.ir.add(container, value),
+            .item => |id| try lowering.ir.attach_or_copy(container, id),
             .container => |child| _ = try lowering.ir.add_container(container, child),
         }
         assert(object.to_int() < lowering.tree.count());
@@ -228,11 +274,14 @@ pub const Lowering = struct {
             .choice => weave.generate_choice(lowering, object),
             .gather => weave.generate_gather(lowering, object),
             .content_list => lowering.generate_content_list(object),
-            .text => .{ .item = .{ .text = try lowering.text_of(object) } },
-            .glue => .{ .item = .{ .command = .glue } },
+            .text => .{
+                .item = try lowering.ir.new_item(.{ .text = try lowering.text_of(object) }),
+            },
+            .glue => .{ .item = try lowering.ir.new_item(.{ .command = .glue }) },
             .tag => {
                 const is_start = tree.has(object, Flags.tag_start);
-                return .{ .item = .{ .command = if (is_start) .begin_tag else .end_tag } };
+                const command: ir_module.Command = if (is_start) .begin_tag else .end_tag;
+                return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
             },
             .divert => logic.generate_divert(lowering, object),
             .tunnel_onwards => logic.generate_tunnel_onwards(lowering, object),
@@ -267,6 +316,13 @@ pub const Lowering = struct {
         const tag = lowering.ast().tag(node);
         if (tag == .error_text) return "<ERROR IN FLOW>";
         const raw = lowering.token_text(node);
+        if (std.mem.indexOfScalar(u8, raw, '\\') == null) {
+            // Without escapes the text is the source itself; text_space's space usually is too.
+            if (tag != .text_space) return raw;
+            const source = lowering.parsed.source;
+            const end = @intFromPtr(raw.ptr) - @intFromPtr(source.ptr) + raw.len;
+            if (end < source.len and source[end] == ' ') return source[end - raw.len .. end + 1];
+        }
         var buffer: std.ArrayList(u8) = .empty;
         const arena = lowering.ir.arena.allocator();
         var position: usize = 0;
