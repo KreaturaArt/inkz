@@ -61,7 +61,7 @@ pub fn compileAndRun(
 ) ![]u8 {
     const output = try compileAndRunOld(alloc, ink_source, choices);
     errdefer alloc.free(output);
-    try e2e_new_vm.check(alloc, null, ink_source, choices, output);
+    try e2e_new_vm.check(alloc, null, null, ink_source, choices, output);
     return output;
 }
 
@@ -127,7 +127,7 @@ pub fn compileFixtureRootAndRun(
     defer alloc.free(src);
     const output = try compileAndRunOld(alloc, src, choices);
     errdefer alloc.free(output);
-    try e2e_new_vm.check(alloc, rel_path, src, choices, output);
+    try e2e_new_vm.check(alloc, rel_path, "test/fixture/" ++ rel_path, src, choices, output);
     return output;
 }
 
@@ -144,7 +144,7 @@ pub fn compileFixtureAndRun(
     const path = "test/fixture/original/" ++ rel_path;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
-    try e2e_new_vm.check(alloc, rel_path, src, choices, output);
+    try e2e_new_vm.check(alloc, rel_path, path, src, choices, output);
     return output;
 }
 

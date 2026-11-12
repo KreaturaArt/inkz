@@ -1,12 +1,12 @@
 //! The e2e tests that drive the old runtime's API directly (src/test/compiler_helpers.zig),
-//! ported to the new VM's API on the old front end's Program (plan P8.0). The old `cont()`
+//! ported to the new VM's API on the new compiler's Program (plan P8.0, P8.4). The old `cont()`
 //! ran a whole turn; here that is `continue_maximally`. Each test keeps the old one's
 //! assertions. A story the old codegen can't compile into a valid Program is skipped only
 //! if the ledger lists it (corpus `e2e`, case `e2e/api/<path>`).
 
 const std = @import("std");
 const assert = std.debug.assert;
-const codegen_to_program = @import("../compiler/codegen_to_program.zig");
+const compile = @import("../compiler_next/compile.zig");
 const oracle = @import("oracle.zig");
 const e2e_new_vm = @import("e2e_new_vm.zig");
 const vm = @import("../vm/api.zig");
@@ -28,7 +28,11 @@ const Fixture = struct {
         const limit: std.Io.Limit = .limited(4 * 1024 * 1024);
         const source = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, limit);
         defer gpa.free(source);
-        fixture.program = codegen_to_program.compile(gpa, source) catch |err| {
+        const directory_path = std.fs.path.dirname(path) orelse ".";
+        var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{});
+        defer directory.close(io);
+        const name = std.fs.path.basename(path);
+        fixture.program = compile.compile_file(gpa, io, directory, name) catch |err| {
             if (try ledgered("e2e/api/" ++ path)) return error.SkipZigTest;
             return err;
         };
