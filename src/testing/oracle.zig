@@ -48,6 +48,8 @@ pub const Corpus = enum {
     ground_truth,
     /// `test/transcripts`: compared with what the old runtime produced (P0.3).
     transcripts,
+    /// The old compiler's e2e tests on the new VM, compared with the old runtime (P8.0).
+    e2e,
 };
 
 pub const Entry = struct {
