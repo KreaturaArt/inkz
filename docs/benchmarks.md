@@ -149,10 +149,12 @@ Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 582.5 | 101806 | 131191 | 13254896 | 2254334 | 1513 | 1490.0 |
-| generated (1000 knots) | 5834.0 | 472654 | 472654 | 12771105 | 2916047 | 32010 | 91.1 |
+| crime_scene | 634.3 | 102762 | 132423 | 13379360 | 2254334 | 1513 | 1490.0 |
+| crime_scene, fitted limits | 396.1 | 103151 | 132924 | 13430023 | 86494 | 1513 | 57.2 |
+| generated (1000 knots) | 5766.8 | 473849 | 473849 | 12803393 | 2916047 | 32010 | 91.1 |
+| generated, fitted limits | 5553.0 | 475625 | 475625 | 12851393 | 738199 | 32010 | 23.1 |
 
-The state is the default limits' fixed budget, allocated once.
+The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
 <!-- bench-new:ReleaseSafe:end -->
 
 <!-- bench-new:ReleaseFast:start -->
@@ -160,10 +162,12 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|
-| crime_scene | 287.2 | 213583 | 275230 | 27807968 | 2254334 | 1513 | 1490.0 |
-| generated (1000 knots) | 4341.9 | 1058699 | 1058699 | 28606057 | 2916047 | 32010 | 91.1 |
+| crime_scene | 302.6 | 217698 | 280534 | 28343793 | 2254334 | 1513 | 1490.0 |
+| crime_scene, fitted limits | 267.8 | 219745 | 283171 | 28610199 | 86494 | 1513 | 57.2 |
+| generated (1000 knots) | 4226.9 | 1100072 | 1100072 | 29723951 | 2916047 | 32010 | 91.1 |
+| generated, fitted limits | 4193.8 | 1096861 | 1096861 | 29637178 | 738199 | 32010 | 23.1 |
 
-The state is the default limits' fixed budget, allocated once.
+The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
 <!-- bench-new:ReleaseFast:end -->
 
 <!-- bench-compile:ReleaseSafe:start -->
@@ -171,8 +175,8 @@ The state is the default limits' fixed budget, allocated once.
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.27 | 1.54 | 535918 | 246873 | 2.17 |
-| generated (1000 knots) | 4.53 | 26.25 | 13067678 | 4753137 | 2.75 |
+| crime_scene | 0.27 | 1.53 | 535918 | 246873 | 2.17 |
+| generated (1000 knots) | 4.53 | 26.15 | 13067678 | 4753137 | 2.75 |
 
 Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseSafe:end -->
@@ -182,8 +186,8 @@ Source to JSON, both; the time is the mean of 20 compiles. The old compiler's nu
 
 | Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
 |---|---|---|---|---|---|
-| crime_scene | 0.17 | 0.88 | 513047 | 223231 | 2.30 |
-| generated (1000 knots) | 3.15 | 15.32 | 12680076 | 4292970 | 2.95 |
+| crime_scene | 0.17 | 0.87 | 513047 | 223231 | 2.30 |
+| generated (1000 knots) | 3.15 | 15.22 | 12680076 | 4292970 | 2.95 |
 
 Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
 <!-- bench-compile:ReleaseFast:end -->
@@ -237,3 +241,49 @@ The same comparisons in ReleaseFast:
 | Memory bounded over 10k turns | Test-enforced: heap compaction over 10,000 rounds, and flow switching |
 | Size guards: `Value` 12 B, `Frame` ≤ 24 B, `Instruction` and `Node` 5 B SoA, `Token` 9 B SoA | Comptime asserts and size tests |
 | Simulation, 10k seeds, including compact-always | Met. `zig build simulate -Doptimize=ReleaseSafe -- --seeds 10000`, plain and with `--compact-always on`: 1,830,000 runs each (183 cases × 10,000 seeds), 0 failures |
+
+## Phase 10: option 3 (P10.1–P10.3)
+
+### Benchmark round across past states (2026-11-12)
+
+Each state was benchmarked twice, back to back in worktrees, so that all of them share the
+machine's conditions. The figures are the mean of the two passes, as turns/s · load in µs;
+the large story is the generated 1000-knot one.
+
+| State | Safe crime_scene | Safe large story | Fast crime_scene | Fast large story |
+|---|---|---|---|---|
+| P0.6 baseline, old runtime (88ae377) | 17,724 · 440 | 20,795 · 9,049 | 33,353 · 248 | 37,548 · 4,976 |
+| First new-runtime bench (308a1f9) | 45,173 · 691 | 211,538 · 6,333 | 127,674 · 275 | 693,540 · 4,325 |
+| After the perf commit (32c5d36) | 60,752 · 739 | 312,129 · 6,549 | 115,470 · 281 | 619,967 · 4,401 |
+| P8.6 (2091249) | 58,306 · 712 | 302,324 · 6,901 | 116,063 · 291 | 630,778 · 4,412 |
+| P9 complete (ddbe8c8) | 60,829 · 672 | 312,047 · 6,473 | 116,398 · 284 | 632,185 · 4,386 |
+| P10.1 text cache (this bench) | 102,762 · 634 | 473,849 · 5,767 | 217,698 · 303 | 1,100,072 · 4,227 |
+| P10.2 fitted limits (this bench) | 103,151 · 396 | 475,625 · 5,553 | 219,745 · 268 | 1,096,861 · 4,194 |
+
+Against the P0.6 baseline:
+
+| | ReleaseSafe crime_scene | ReleaseSafe large story | ReleaseFast crime_scene | ReleaseFast large story |
+|---|---|---|---|---|
+| Play | 5.8× | 22.8× | 6.5× | 29.3× |
+| Load, with fitted limits | 1.1× | 1.6× | 0.93× | 1.19× |
+
+Plan §9's 3× `cont()` target is now met on both stories. Load is still dominated by
+`ink_json.load`; the binary program image (P10.4–P10.6) is for that.
+
+### The limits sweep
+
+Play speed doesn't depend on the state budget. With crime_scene, the budget was varied from
+4× the defaults (8.35 MB) down to 1/32 of them (66 KB, plus 16 choices so that it runs).
+Throughput stayed within noise: about 60k turns/s in ReleaseSafe and 115k in ReleaseFast,
+before the text cache. The budget only changes `Story.init` in ReleaseSafe, where Zig's
+safety fill writes every byte: 1,250 µs at 8 MB, 255 µs at 2 MB, 28 µs at 238 KB. Fitted
+limits are therefore free in speed. They cost only headroom (see "Fitted limits" above).
+
+### The text cache
+
+Profiling play showed text cleaning at about 45% of samples (ReleaseSafe, crime_scene): the
+current line was cleaned again after every output item. The cache (P10.1) cleans each item
+once. It costs `output_items_max` × 12 + `output_bytes_max` bytes: 114,688 at the defaults,
+14,336 at `small_story_limits`, a few hundred with fitted limits. Same-session gains:
+1.67× and 1.51× (crime_scene, generated) in ReleaseSafe, 1.83× and 1.67× in ReleaseFast.
+With the cache, VM dispatch (`perform`, `next_content`) is the largest cost in play.
