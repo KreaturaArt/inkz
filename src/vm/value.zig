@@ -15,6 +15,9 @@ pub const StringReference = enum(u32) {
 
     const heap_bit: u32 = 1 << 31;
 
+    /// No string: not a heap reference, and past every program string id.
+    pub const none: StringReference = @fromBackingInt(heap_bit - 1);
+
     pub fn program(id: StringId) StringReference {
         const raw = id.to_int();
         assert(raw & heap_bit == 0);
