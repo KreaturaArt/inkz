@@ -42,7 +42,7 @@ pub const NewEngine = struct {
         try story.init(gpa, program, .{});
         errdefer story.deinit(gpa);
         const messages = try gpa.create(Messages);
-        messages.* = .{ .gpa = gpa };
+        messages.* = .{ .gpa = gpa, .story = story };
         story.on_error = Messages.on_error;
         story.on_error_context = messages;
         const engine: NewEngine = .{
@@ -213,6 +213,12 @@ pub const NewEngine = struct {
     }
 
     /// A host value as the harness renders one.
+    pub fn observe(engine: *NewEngine, name: []const u8) !void {
+        assert(name.len > 0);
+        assert(engine.story.observers_count < engine.story.state.observers.len);
+        try engine.story.observe_variable(name, Messages.observed, engine.messages);
+    }
+
     fn write_host_value(
         engine: *NewEngine,
         writer: *std.Io.Writer,
@@ -220,30 +226,7 @@ pub const NewEngine = struct {
     ) !void {
         assert(@sizeOf(story_module.HostValue) > 0);
         assert(engine.story.state.memory.len > 0);
-        switch (value) {
-            .null => try writer.writeAll("null"),
-            .integer => |number| try writer.print("int {d}", .{number}),
-            .float => |number| {
-                var buffer: [value_module.float_text_bytes_max]u8 = undefined;
-                try writer.print("float {s}", .{value_module.format_float(number, &buffer)});
-            },
-            .bool => |flag| try writer.writeAll(if (flag) "bool true" else "bool false"),
-            .string => |text| {
-                try writer.writeAll("string ");
-                try transcript.write_json_string(writer, text);
-            },
-            .list => |list| {
-                var text: std.Io.Writer.Allocating = .init(engine.gpa);
-                defer text.deinit();
-                try engine.story.write_list(list, &text.writer);
-                try writer.writeAll("list ");
-                try transcript.write_json_string(writer, text.written());
-            },
-            .divert_target => |target| {
-                try writer.writeAll("other ");
-                try transcript.write_json_string(writer, engine.story.path_of(target));
-            },
-        }
+        try write_host_value_of(engine.gpa, engine.story, writer, value);
     }
 
     fn list_text(engine: *NewEngine, list: value_module.ListReference) ![]const u8 {
@@ -519,6 +502,7 @@ const NameList = struct {
 /// warning messages, as the harness collects them.
 const Messages = struct {
     gpa: std.mem.Allocator,
+    story: *Story,
     events: std.ArrayList(u8) = .empty,
     errors: std.ArrayList(u8) = .empty,
     warnings: std.ArrayList(u8) = .empty,
@@ -531,8 +515,19 @@ const Messages = struct {
         messages.warnings.deinit(gpa);
     }
 
+    /// `observed: name = value`, as the harness's observer records it.
+    fn observed(context: ?*anyopaque, name: []const u8, value: story_module.HostValue) void {
+        const messages: *Messages = @ptrCast(@alignCast(context.?));
+        assert(messages.events.items.len < 1 << 24);
+        assert(name.len > 0);
+        var writer: std.Io.Writer.Allocating = .fromArrayList(messages.gpa, &messages.events);
+        defer messages.events = writer.toArrayList();
+        writer.writer.print("observed: {s} = ", .{name}) catch return;
+        write_host_value_of(messages.gpa, messages.story, &writer.writer, value) catch return;
+        writer.writer.writeByte('\n') catch return;
+    }
+
     fn on_error(context: ?*anyopaque, message: []const u8, severity: Severity) void {
-        assert(message.len < 1 << 20);
         assert(message.len < 1 << 20);
         const messages: *Messages = @ptrCast(@alignCast(context.?));
         assert(message.len > 0);
@@ -544,3 +539,38 @@ const Messages = struct {
         writer.writer.writeByte('\n') catch return;
     }
 };
+
+/// A host value as the harness renders one.
+fn write_host_value_of(
+    gpa: std.mem.Allocator,
+    story: *Story,
+    writer: *std.Io.Writer,
+    value: story_module.HostValue,
+) !void {
+    assert(story.state.memory.len > 0);
+    assert(@sizeOf(story_module.HostValue) > 0);
+    switch (value) {
+        .null => try writer.writeAll("null"),
+        .integer => |number| try writer.print("int {d}", .{number}),
+        .float => |number| {
+            var buffer: [value_module.float_text_bytes_max]u8 = undefined;
+            try writer.print("float {s}", .{value_module.format_float(number, &buffer)});
+        },
+        .bool => |flag| try writer.writeAll(if (flag) "bool true" else "bool false"),
+        .string => |text| {
+            try writer.writeAll("string ");
+            try transcript.write_json_string(writer, text);
+        },
+        .list => |list| {
+            var text: std.Io.Writer.Allocating = .init(gpa);
+            defer text.deinit();
+            try story.write_list(list, &text.writer);
+            try writer.writeAll("list ");
+            try transcript.write_json_string(writer, text.written());
+        },
+        .divert_target => |target| {
+            try writer.writeAll("other ");
+            try transcript.write_json_string(writer, story.path_of(target));
+        },
+    }
+}

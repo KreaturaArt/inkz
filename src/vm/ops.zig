@@ -596,9 +596,35 @@ fn assign_existing(
 /// ink's SetGlobal. Observers are queued in P5.7.
 pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.state.globals.len);
-    const stored = try retain_list_origins(story, story.state.globals[slot.to_int()], value);
+    const old = story.state.globals[slot.to_int()];
+    const stored = try retain_list_origins(story, old, value);
     lookahead.set_global(&story.state, slot, stored) catch return error.LookaheadLogLimit;
     assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored));
+    if (same_value(old, stored)) return;
+    if (!story.batching_observers) return story.notify_global(slot);
+    const queue = &story.state.observer_events;
+    if (std.mem.indexOfScalar(GlobalSlot, queue.slice(), slot) != null) return;
+    queue.push(slot) catch return error.ObserverQueueLimit;
+}
+
+/// ink compares the old and new value objects by reference; by value is the closest a
+/// value representation gets (a reassigned literal is the same object in ink too).
+fn same_value(a: Value, b: Value) bool {
+    assert(@sizeOf(Value) == 12);
+    assert(@typeInfo(Value).@"union".field_names.len == 9);
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .integer => |number| number == b.integer,
+        .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
+        .bool => |flag| flag == b.bool,
+        .string => |reference| reference == b.string,
+        .divert_target => |target| target == b.divert_target,
+        .variable_pointer => |pointer| pointer.name == b.variable_pointer.name and
+            pointer.context == b.variable_pointer.context,
+        .list => |list| list == b.list,
+        .tag => |reference| reference == b.tag,
+    };
 }
 
 /// ink's RetainListOriginsForAssignment: an empty list assigned over a list keeps the old
