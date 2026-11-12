@@ -162,3 +162,13 @@ test "P5.6: visit counts and turn indices" {
         .{ .id = "runtime/choices/once_only_choices_can_link_back_to_self" },
     });
 }
+
+test "P5.7: observers batched per cont, immediate outside it" {
+    // Goal: P5.7; each observer fires once per variable per cont, after the line, with the
+    // latest value; changes in a discarded lookahead aren't notified; a host set outside
+    // cont fires at once. Method: replay.
+    try expect_cases_match(&.{
+        .{ .id = "audit/observers_batched" },
+        .{ .id = "runtime/bindings/variable_observer" },
+    });
+}

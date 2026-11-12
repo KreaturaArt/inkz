@@ -196,6 +196,7 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
     assert(action.argument.len < 4096);
     switch (action.kind) {
         inline .choose_path,
+        .observe,
         .switch_flow,
         .remove_flow,
         .default_flow,

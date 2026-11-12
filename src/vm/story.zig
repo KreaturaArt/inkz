@@ -18,7 +18,8 @@ const messages = @import("messages.zig");
 const State = state_module.State;
 const Pointer = call_stack_module.Pointer;
 const StringReference = value_module.StringReference;
-const ContainerIndex = @import("../core/index.zig").ContainerIndex;
+const index = @import("../core/index.zig");
+const ContainerIndex = index.ContainerIndex;
 const Lists = @import("lists.zig").Lists;
 
 pub const Error = error{
@@ -40,6 +41,8 @@ pub const Error = error{
     /// An external function the story calls has no binding (and no fallback); see
     /// `Story.missing_externals` (ink's ValidateExternalBindings, at the first `cont`).
     MissingExternalBinding,
+    /// More globals changed in one `cont` than `observer_events_max`.
+    ObserverQueueLimit,
     /// A bound external function returned an error.
     ExternalFunctionFailed,
 };
@@ -77,6 +80,9 @@ pub const ErrorHandler = *const fn (
     severity: state_module.Diagnostic.Severity,
 ) void;
 
+/// A variable observer (ink's VariableObserver): the global's name and new value.
+pub const Observer = *const fn (context: ?*anyopaque, name: []const u8, value: HostValue) void;
+
 /// The most arguments an external function can take.
 pub const external_arguments_max = 32;
 
@@ -103,6 +109,13 @@ pub const Story = struct {
     /// recorded an error or warning, and keeps them in `state` (ink throws instead).
     on_error: ?ErrorHandler = null,
     on_error_context: ?*anyopaque = null,
+    /// How many observers `state.observers` holds; they survive `reset_state`, as in ink.
+    observers_count: u32 = 0,
+    /// Nesting of ContinueInternal (evaluate_function from an external function nests).
+    continue_depth: u32 = 0,
+    /// ink's batchObservingVariableChanges: inside the outermost ContinueInternal, changed
+    /// globals are queued in `state.observer_events` and notified at its end.
+    batching_observers: bool = false,
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
@@ -217,7 +230,6 @@ pub const Story = struct {
         story.state.output.clear();
         const length = try story.continue_internal();
         story.line_length = length;
-        try story.report_diagnostics();
         return story.state.line_bytes[0..length];
     }
 
@@ -236,6 +248,7 @@ pub const Story = struct {
     /// The end of ink's ContinueInternal: each error, then each warning, to the handler,
     /// then ResetErrors.
     fn report_diagnostics(story: *Story) Error!void {
+        assert(story.state.memory.len > 0);
         const state = &story.state;
         if (!state.has_error() and !state.has_warning()) return;
         const handler = story.on_error orelse return error.StoryError;
@@ -264,6 +277,12 @@ pub const Story = struct {
     fn continue_internal(story: *Story) Error!u32 {
         assert(story.state.call_stack.depth() > 0);
         assert(story.state.limits.steps_per_continue_max > 0);
+        story.continue_depth += 1;
+        defer story.continue_depth -= 1;
+        if (story.continue_depth == 1) {
+            story.batching_observers = true;
+            story.state.observer_events.clear();
+        }
         story.saw_lookahead_unsafe_function_after_newline = false;
         var ends_in_newline = false;
         var steps: u32 = 0;
@@ -286,8 +305,57 @@ pub const Story = struct {
             if (!story.can_continue()) story.check_end_of_content();
             story.state.did_safe_exit = false;
             story.saw_lookahead_unsafe_function_after_newline = false;
+            if (story.continue_depth == 1) story.batching_observers = false;
         }
-        return story.write_current_text();
+        const length = try story.write_current_text();
+        try story.report_diagnostics();
+        // Last, since observers may run more ink.
+        if (story.continue_depth == 1 and !story.batching_observers) story.notify_observers();
+        return length;
+    }
+
+    /// ink's ObserveVariable. Observers of a global are called in the order they were added.
+    pub fn observe_variable(
+        story: *Story,
+        name: []const u8,
+        observer: Observer,
+        context: ?*anyopaque,
+    ) error{ VariableNotDeclared, ObserverLimit }!void {
+        assert(name.len > 0);
+        const slot = story.program.global_by_name(name) orelse return error.VariableNotDeclared;
+        if (story.observers_count == story.state.observers.len) return error.ObserverLimit;
+        story.state.observers[story.observers_count] = .{
+            .callback = observer,
+            .context = context,
+            .slot = slot,
+        };
+        story.observers_count += 1;
+        assert(story.observers_count <= story.state.observers.len);
+    }
+
+    /// ink's NotifyObservers for the queued globals, with their current values.
+    fn notify_observers(story: *Story) void {
+        assert(story.continue_depth == 1);
+        assert(!story.batching_observers);
+        const queued = story.state.observer_events.count;
+        var position: u32 = 0;
+        while (position < queued) : (position += 1) {
+            story.notify_global(story.state.observer_events.buffer[position]);
+        }
+        story.state.observer_events.clear();
+    }
+
+    /// Calls the observers of global `slot` with its value now.
+    pub fn notify_global(story: *Story, slot: index.GlobalSlot) void {
+        assert(story.observers_count <= story.state.observers.len);
+        assert(slot.to_int() < story.state.globals.len);
+        const name = story.program.strings.get(story.program.globals[slot.to_int()].name);
+        for (story.state.observers[0..story.observers_count]) |record| {
+            if (record.slot != slot) continue;
+            const callback: Observer = @ptrCast(@alignCast(record.callback.?));
+            const value = ops.host_value(story, story.state.globals[slot.to_int()]);
+            callback(record.context, name, value);
+        }
     }
 
     /// The checks of ink's ContinueSingleStep after `vm.run` returns; returns whether the
@@ -590,6 +658,7 @@ const Collected = struct {
         message: []const u8,
         severity: state_module.Diagnostic.Severity,
     ) void {
+        assert(message.len > 0);
         const collected: *Collected = @ptrCast(@alignCast(context.?));
         assert(severity == .@"error");
         collected.count += 1;
