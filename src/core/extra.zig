@@ -102,6 +102,33 @@ pub fn get(comptime T: type, words: []const u32, index: u32) Decoded(T) {
     return .{ .data = data, .end = end };
 }
 
+/// Whether the words at `index` decode as a `T`: each bool word is 0 or 1, and each enum
+/// word fits its tag type and, for a closed enum, names a value. Checking untrusted data
+/// (program images, P10.5) calls this before `get`, which asserts it.
+pub fn decodable(comptime T: type, words: []const u32, index: u32) bool {
+    const info = @typeInfo(T).@"struct";
+    if (index > words.len or info.field_names.len > words.len - index) return false;
+    inline for (info.field_types, 0..) |Field, offset| {
+        if (!word_decodes(Field, words[index + offset])) return false;
+    }
+    assert(index + info.field_names.len <= words.len);
+    return true;
+}
+
+fn word_decodes(comptime Field: type, word: u32) bool {
+    comptime assert(fits_a_word(Field));
+    switch (@typeInfo(Field)) {
+        .int, .float, .@"struct" => return true,
+        .bool => return word <= 1,
+        .@"enum" => |enumeration| {
+            const tag = std.math.cast(enumeration.tag_type, word) orelse return false;
+            if (enumeration.mode == .nonexhaustive) return true;
+            return std.enums.fromInt(Field, tag) != null;
+        },
+        else => comptime unreachable,
+    }
+}
+
 fn fields_count(comptime T: type) u32 {
     const info = @typeInfo(T).@"struct";
     comptime assert(info.layout != .@"packed");

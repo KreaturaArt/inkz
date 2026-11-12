@@ -296,6 +296,8 @@ pub const Program = struct {
         assert(program.externals.len < std.math.maxInt(u32));
         const words = @typeInfo(instruction_module.ExternalCall).@"struct".field_names.len;
         if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
+        const Data = instruction_module.ExternalCall;
+        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
         const call = extra_module.get(instruction_module.ExternalCall, program.extra, at).data;
         if (call.external.is_none() or call.external.to_int() >= program.externals.len) {
             return .external_out_of_range;
@@ -381,6 +383,8 @@ pub const Program = struct {
         assert(at < std.math.maxInt(u32));
         const words = @typeInfo(instruction_module.Divert).@"struct".field_names.len;
         if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
+        const Data = instruction_module.Divert;
+        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
         const divert = extra_module.get(instruction_module.Divert, program.extra, at).data;
         if (divert.flags.variable) {
             if (divert.name.is_none() or divert.name.to_int() >= program.strings.count()) {
@@ -396,6 +400,8 @@ pub const Program = struct {
         assert(at < std.math.maxInt(u32));
         const words = @typeInfo(instruction_module.ChoicePoint).@"struct".field_names.len;
         if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
+        const Data = instruction_module.ChoicePoint;
+        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
         const choice = extra_module.get(instruction_module.ChoicePoint, program.extra, at).data;
         assert(words == 3);
         return program.check_target(choice.target_container, choice.target_index);

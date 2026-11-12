@@ -199,6 +199,34 @@ pub const FrozenStringPool = struct {
         return bytes;
     }
 
+    /// A frozen pool over `bytes` and `ends` (taken on success, as from `freeze`), with its
+    /// hash index rebuilt; two equal strings are an error (program images, P10.5). `ends`
+    /// must be valid: `ends[0] == 0`, never decreasing, the last `bytes.len`.
+    pub fn init_unique(
+        gpa: Allocator,
+        bytes: []const u8,
+        ends: []const u32,
+    ) (Allocator.Error || error{DuplicateString})!FrozenStringPool {
+        assert(ends.len > 0 and ends[0] == 0);
+        assert(ends[ends.len - 1] == bytes.len);
+        var frozen: FrozenStringPool = .{
+            .strings = .{ .bytes = bytes, .ends = ends },
+            .table = .empty,
+        };
+        errdefer frozen.table.deinit(gpa);
+        const context: IdContext = .{ .strings = &frozen.strings };
+        try frozen.table.ensureTotalCapacityContext(gpa, @intCast(ends.len), context);
+        const adapter: BytesAdapter = .{ .strings = &frozen.strings };
+        for (0..ends.len) |position| {
+            const text = frozen.strings.get(@fromBackingInt(@intCast(position)));
+            const entry = frozen.table.getOrPutAssumeCapacityAdapted(text, adapter);
+            if (entry.found_existing) return error.DuplicateString;
+            entry.key_ptr.* = @intCast(position);
+        }
+        assert(frozen.table.count() == ends.len);
+        return frozen;
+    }
+
     /// The id of `bytes` if it is interned. Never allocates.
     pub fn find(frozen: *const FrozenStringPool, bytes: []const u8) ?StringId {
         const id = table_find(&frozen.table, &frozen.strings, bytes);
