@@ -195,7 +195,15 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
     const Engine = @typeInfo(@TypeOf(engine)).pointer.child;
     assert(action.argument.len < 4096);
     switch (action.kind) {
-        inline .choose_path, .switch_flow, .remove_flow, .default_flow, .reset => |kind| {
+        inline .choose_path,
+        .switch_flow,
+        .remove_flow,
+        .default_flow,
+        .reset,
+        .bind,
+        .unbind,
+        .fallbacks,
+        => |kind| {
             if (!@hasDecl(Engine, @tagName(kind))) return error.Unsupported;
             try @field(Engine, @tagName(kind))(engine, action.argument);
         },
@@ -266,6 +274,9 @@ fn continue_once(engine: anytype, writer: *std.Io.Writer) !void {
         try write_json_list(writer, line.tags);
         try writer.writeByte('\n');
     }
+    // The harness flushes host events and messages after each line.
+    const Engine = @typeInfo(@TypeOf(engine)).pointer.child;
+    if (@hasDecl(Engine, "write_messages")) try engine.write_messages(writer);
     assert(line.text.len < 1024 * 1024);
 }
 

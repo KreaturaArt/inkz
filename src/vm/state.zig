@@ -80,6 +80,10 @@ pub const Diagnostic = struct {
         list_not_found,
         list_range_arguments,
         list_random_not_list,
+        external_unsafe_in_string,
+        external_not_bound,
+        external_fallback_missing,
+        too_many_arguments,
         unsupported,
         _,
     };

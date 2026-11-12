@@ -6,7 +6,8 @@ const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
-const Story = @import("../vm/story.zig").Story;
+const story_module = @import("../vm/story.zig");
+const Story = story_module.Story;
 const value_module = @import("../vm/value.zig");
 
 pub const NewEngine = struct {
@@ -24,6 +25,9 @@ pub const NewEngine = struct {
     /// Text for the last `get` and the global names, owned until the next call.
     scratch: std.ArrayList(u8) = .empty,
     names: std.ArrayList([]const u8) = .empty,
+    /// Host events since the last action (`external: ...` lines), written by `write_messages`.
+    events: std.ArrayList(u8) = .empty,
+    bindings: std.ArrayList(*Bound) = .empty,
 
     pub fn open(gpa: std.mem.Allocator, json: []const u8) !NewEngine {
         assert(json.len > 0);
@@ -47,6 +51,9 @@ pub const NewEngine = struct {
         if (engine.exception) |text| engine.gpa.free(text);
         engine.scratch.deinit(engine.gpa);
         engine.names.deinit(engine.gpa);
+        engine.events.deinit(engine.gpa);
+        for (engine.bindings.items) |bound| bound.release(engine.gpa);
+        engine.bindings.deinit(engine.gpa);
         engine.story.deinit(engine.gpa);
         engine.gpa.destroy(engine.story);
         engine.program.deinit(engine.gpa);
@@ -62,7 +69,10 @@ pub const NewEngine = struct {
 
     pub fn continue_line(engine: *NewEngine) !transcript.Line {
         assert(engine.can_continue());
-        const text = try engine.story.cont();
+        const text = engine.story.cont() catch |err| {
+            if (err == error.MissingExternalBinding) try engine.missing_binding_exception();
+            return err;
+        };
         engine.clear_tags();
         try engine.story.current_tags(engine);
         try engine.finish_tags();
@@ -189,6 +199,40 @@ pub const NewEngine = struct {
         return result;
     }
 
+    /// A host value as the harness renders one.
+    fn write_host_value(
+        engine: *NewEngine,
+        writer: *std.Io.Writer,
+        value: story_module.HostValue,
+    ) !void {
+        assert(@sizeOf(story_module.HostValue) > 0);
+        assert(engine.story.state.memory.len > 0);
+        switch (value) {
+            .null => try writer.writeAll("null"),
+            .integer => |number| try writer.print("int {d}", .{number}),
+            .float => |number| {
+                var buffer: [value_module.float_text_bytes_max]u8 = undefined;
+                try writer.print("float {s}", .{value_module.format_float(number, &buffer)});
+            },
+            .bool => |flag| try writer.writeAll(if (flag) "bool true" else "bool false"),
+            .string => |text| {
+                try writer.writeAll("string ");
+                try transcript.write_json_string(writer, text);
+            },
+            .list => |list| {
+                var text: std.Io.Writer.Allocating = .init(engine.gpa);
+                defer text.deinit();
+                try engine.story.write_list(list, &text.writer);
+                try writer.writeAll("list ");
+                try transcript.write_json_string(writer, text.written());
+            },
+            .divert_target => |target| {
+                try writer.writeAll("other ");
+                try transcript.write_json_string(writer, engine.story.path_of(target));
+            },
+        }
+    }
+
     fn list_text(engine: *NewEngine, list: value_module.ListReference) ![]const u8 {
         assert(engine.story.state.memory.len > 0);
         assert(engine.scratch.items.len == 0);
@@ -214,5 +258,197 @@ pub const NewEngine = struct {
         assert(a.ptr != b.ptr or a.len == b.len);
         assert(a.len > 0 and b.len > 0);
         return std.mem.order(u8, a, b) == .lt;
+    }
+
+    /// ink's ValidateExternalBindings message.
+    fn missing_binding_exception(engine: *NewEngine) !void {
+        assert(!engine.story.has_validated_externals or engine.story.bindings.len > 0);
+        var names: NameList = .{ .engine = engine };
+        defer names.list.deinit(engine.gpa);
+        try engine.story.missing_externals(&names);
+        assert(names.count > 0);
+        const suffix = if (engine.story.allow_external_function_fallbacks)
+            ", and no fallback ink function found."
+        else
+            " (ink fallbacks disabled)";
+        try engine.set_exception("ERROR: Missing function binding for external{s}: '{s}' {s}", .{
+            if (names.count > 1) "s" else "", names.list.items, suffix,
+        });
+    }
+
+    pub fn write_messages(engine: *NewEngine, writer: *std.Io.Writer) !void {
+        assert(engine.story.state.memory.len > 0);
+        assert(engine.events.items.len < 1 << 24);
+        try writer.writeAll(engine.events.items);
+        engine.events.clearRetainingCapacity();
+    }
+
+    pub fn reset(engine: *NewEngine, argument: []const u8) !void {
+        assert(argument.len == 0);
+        try engine.story.reset_state();
+        assert(engine.story.state.call_stack.depth() == 1);
+    }
+
+    pub fn fallbacks(engine: *NewEngine, argument: []const u8) !void {
+        assert(engine.story.state.memory.len > 0);
+        assert(argument.len > 0);
+        engine.story.allow_external_function_fallbacks = std.mem.eql(u8, argument, "on");
+    }
+
+    pub fn unbind(engine: *NewEngine, name: []const u8) !void {
+        assert(engine.story.state.memory.len > 0);
+        assert(name.len > 0);
+        try engine.story.unbind_external_function(name);
+    }
+
+    /// `bind <function> <behaviour> [lookahead_unsafe]`, as the harness binds.
+    pub fn bind(engine: *NewEngine, argument: []const u8) !void {
+        assert(engine.bindings.items.len < 1 << 16);
+        assert(argument.len > 0);
+        var words = std.mem.tokenizeScalar(u8, argument, ' ');
+        const name = words.next() orelse return error.BadActionArgument;
+        const behaviour_text = words.next() orelse return error.BadActionArgument;
+        const behaviour = std.meta.stringToEnum(Behaviour, behaviour_text) orelse
+            return error.BadActionArgument;
+        const bound = try engine.gpa.create(Bound);
+        errdefer engine.gpa.destroy(bound);
+        const owned_name = try engine.gpa.dupe(u8, name);
+        bound.* = .{ .engine = engine, .name = owned_name, .behaviour = behaviour };
+        try engine.bindings.append(engine.gpa, bound);
+        var rest = words.rest();
+        if (behaviour == .@"return") rest = try bound.take_constant(engine.gpa, rest);
+        if (behaviour == .increment_and_evaluate) {
+            var function_words = std.mem.tokenizeScalar(u8, rest, ' ');
+            bound.function = try engine.gpa.dupe(
+                u8,
+                function_words.next() orelse return error.BadActionArgument,
+            );
+            rest = function_words.rest();
+        }
+        const lookahead_safe = !std.mem.eql(u8, std.mem.trim(u8, rest, " "), "lookahead_unsafe");
+        try engine.story.bind_external_function(name, Bound.call, bound, lookahead_safe);
+    }
+};
+
+const Behaviour = enum { record, @"return", multiply, repeat, increment_and_evaluate };
+
+/// One binding made by `bind`, the callback's context.
+const Bound = struct {
+    engine: *NewEngine,
+    name: []u8,
+    behaviour: Behaviour,
+    constant: story_module.HostValue = .null,
+    constant_text: []u8 = &.{},
+    function: []u8 = &.{},
+    result: std.ArrayList(u8) = .empty,
+
+    fn release(bound: *Bound, gpa: std.mem.Allocator) void {
+        assert(bound.result.items.len < 1 << 31);
+        assert(bound.name.len > 0);
+        gpa.free(bound.name);
+        gpa.free(bound.constant_text);
+        gpa.free(bound.function);
+        bound.result.deinit(gpa);
+        gpa.destroy(bound);
+    }
+
+    /// Parses `return`'s typed value; returns the rest of the argument.
+    fn take_constant(bound: *Bound, gpa: std.mem.Allocator, rest: []const u8) ![]const u8 {
+        assert(rest.len > 0);
+        assert(bound.behaviour == .@"return");
+        var buffer: [4096]u8 = undefined;
+        const value = try transcript.parse_typed(rest, &buffer);
+        bound.constant = switch (value) {
+            .int => |number| .{ .integer = @intCast(number) },
+            .float => |number| .{ .float = @floatCast(number) },
+            .bool => |flag| .{ .bool = flag },
+            .string => |text| string: {
+                bound.constant_text = try gpa.dupe(u8, text);
+                break :string .{ .string = bound.constant_text };
+            },
+            else => unreachable,
+        };
+        // A string constant is the last word; others are one word.
+        if (value == .string) return "";
+        var words = std.mem.tokenizeScalar(u8, rest, ' ');
+        _ = words.next();
+        _ = words.next();
+        return words.rest();
+    }
+
+    fn call(
+        context: ?*anyopaque,
+        story: *Story,
+        arguments: []const story_module.HostValue,
+    ) anyerror!story_module.HostValue {
+        assert(arguments.len <= story_module.external_arguments_max);
+        const bound: *Bound = @ptrCast(@alignCast(context.?));
+        assert(bound.engine.story == story);
+        try bound.record(arguments);
+        return switch (bound.behaviour) {
+            .record => .null,
+            .@"return" => bound.constant,
+            .multiply => multiply(arguments),
+            .repeat => bound.repeat(arguments),
+            .increment_and_evaluate => error.Unsupported,
+        };
+    }
+
+    /// `external: name(args)`, rendered like the harness renders values.
+    fn record(bound: *Bound, arguments: []const story_module.HostValue) !void {
+        assert(bound.name.len > 0);
+        const engine = bound.engine;
+        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.events);
+        defer engine.events = writer.toArrayList();
+        try writer.writer.print("external: {s}(", .{bound.name});
+        for (arguments, 0..) |argument, position| {
+            if (position > 0) try writer.writer.writeAll(", ");
+            try engine.write_host_value(&writer.writer, argument);
+        }
+        try writer.writer.writeAll(")\n");
+        assert(arguments.len <= story_module.external_arguments_max);
+    }
+
+    fn multiply(arguments: []const story_module.HostValue) story_module.HostValue {
+        assert(arguments.len <= story_module.external_arguments_max);
+        assert(arguments.len > 0);
+        var any_float = false;
+        for (arguments) |argument| any_float = any_float or argument == .float;
+        if (any_float) {
+            var product: f32 = 1;
+            for (arguments) |argument| product *= switch (argument) {
+                .float => |number| number,
+                .integer => |number| @floatFromInt(number),
+                else => 0,
+            };
+            return .{ .float = product };
+        }
+        var whole: i32 = 1;
+        for (arguments) |argument| whole *%= if (argument == .integer) argument.integer else 0;
+        return .{ .integer = whole };
+    }
+
+    fn repeat(bound: *Bound, arguments: []const story_module.HostValue) !story_module.HostValue {
+        assert(arguments[0] == .integer and arguments[1] == .string);
+        assert(arguments.len == 2);
+        const gpa = bound.engine.gpa;
+        bound.result.clearRetainingCapacity();
+        const times: usize = @intCast(@max(arguments[0].integer, 0));
+        for (0..times) |_| try bound.result.appendSlice(gpa, arguments[1].string);
+        return .{ .string = bound.result.items };
+    }
+};
+
+const NameList = struct {
+    engine: *NewEngine,
+    list: std.ArrayList(u8) = .empty,
+    count: u32 = 0,
+
+    pub fn name(names: *NameList, text: []const u8) !void {
+        assert(names.count < 1 << 16);
+        assert(text.len > 0);
+        if (names.count > 0) try names.list.appendSlice(names.engine.gpa, "', '");
+        try names.list.appendSlice(names.engine.gpa, text);
+        names.count += 1;
     }
 };
