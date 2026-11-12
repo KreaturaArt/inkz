@@ -11,6 +11,7 @@ test {
     _ = @import("compiler/codegen_to_program.zig");
     _ = @import("testing/e2e_new_vm.zig");
     _ = @import("testing/e2e_new_vm_api.zig");
+    _ = @import("testing/structure_gate.zig");
     _ = @import("test/compiler_helpers.zig");
     _ = @import("compiler_next/tokenizer.zig");
     _ = @import("compiler_next/ast.zig");

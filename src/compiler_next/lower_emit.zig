@@ -1,6 +1,7 @@
-//! The laid-out IR as a Program (ProgramBuilder, making the calls ink_json's loader makes for
-//! the same JSON) and as ink's JSON (ink's JsonSerialisation, with CompactPathString's
-//! relative paths), which tests compare with inklecate's output.
+//! The laid-out IR as a Program, through ProgramBuilder, making the calls ink_json's loader
+//! makes for the same JSON (paths as ink writes them: CompactPathString for diverts, choices
+//! and read counts, absolute for divert targets), so the program equals the one loaded from
+//! inklecate's output; ink_json.serialize writes it back as JSON.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -82,7 +83,7 @@ fn step(
                 _ = try builder.begin_container(.{});
                 return value.container;
             }
-            try add_item(lowering, layout, builder, value, path);
+            try add_item(lowering, layout, builder, item_id, value, path);
         }
         if (container.name) |name| {
             if (!is_named_only(lowering, frame.container)) try builder.set_name(name);
@@ -115,6 +116,7 @@ fn add_item(
     lowering: *Lowering,
     layout: *const Layout,
     builder: *ProgramBuilder,
+    item_id: ItemId,
     value: Item,
     path: *std.ArrayList(u8),
 ) !void {
@@ -132,13 +134,13 @@ fn add_item(
         .integer => |integer| try builder.add(.integer, integer),
         .float => |float| try builder.add(.float, float),
         .boolean => |boolean| try builder.add(.bool, boolean),
-        .divert => |divert| try add_divert(lowering, layout, builder, divert, path),
+        .divert => |divert| try add_divert(lowering, layout, builder, item_id, divert, path),
         .divert_target => |target| {
             try layout_module.target_path(lowering, layout, target, path);
             try builder.add_container_operand(.divert_target, path.items);
         },
         .read_count => |target| {
-            try layout_module.target_path(lowering, layout, target, path);
+            try layout_module.compact_path(lowering, layout, item_id, target, path);
             try builder.add_container_operand(.read_count, path.items);
         },
         .variable_reference => |name| try builder.add_variable_get(name),
@@ -147,7 +149,7 @@ fn add_item(
             try ink_json.add_variable_pointer_to(builder, pointer.name, pointer.context);
         },
         .choice_point => |choice| {
-            try layout_module.target_path(lowering, layout, choice.target, path);
+            try layout_module.compact_path(lowering, layout, item_id, choice.target, path);
             try builder.add_choice_point(path.items, @bitCast(@as(u32, choice.flags)));
         },
         .list => |list| try add_list(lowering, builder, list.items, list.origins),
@@ -158,6 +160,7 @@ fn add_divert(
     lowering: *Lowering,
     layout: *const Layout,
     builder: *ProgramBuilder,
+    item_id: ItemId,
     divert: ir_module.Divert,
     path: *std.ArrayList(u8),
 ) !void {
@@ -183,7 +186,7 @@ fn add_divert(
         object.target = name;
         object.variable = true;
     } else {
-        try layout_module.target_path(lowering, layout, divert.target, path);
+        try layout_module.compact_path(lowering, layout, item_id, divert.target, path);
         object.target = path.items;
     }
     try ink_json.add_divert_object_to(builder, object);

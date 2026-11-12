@@ -51,6 +51,8 @@ pub const Lowering = struct {
     weaves: weave.States,
     /// EXTERNAL names (ink's story.externals).
     externals: std.StringHashMapUnmanaged(void) = .empty,
+    /// ink's countAllVisits compiler option: every flow, gather and choice counts visits.
+    count_all_visits: bool = false,
     root: ContainerId = .none,
 
     pub fn init(
@@ -288,6 +290,7 @@ pub const Lowering = struct {
         if (tree.kind(flow) != .story) ir.container(container).name = try ir.text(
             lowering.child_name(flow, 0),
         );
+        if (lowering.count_all_visits) ir.container(container).flags |= ir_module.count_visits;
         try lowering.add_parameter_assignments(container, flow);
         const children = tree.children_of(flow);
         for (children, 0..) |child, position| {

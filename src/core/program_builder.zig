@@ -664,9 +664,11 @@ pub const ProgramBuilder = struct {
                     .items_count = 1,
                     .origins_count = 1,
                 });
+                // The name it was written with follows (for ink_json.serialize).
                 _ = try builder.extra.add_slice(builder.gpa, &.{
                     @backingInt(item),
                     @backingInt(origin),
+                    @backingInt(fixup.name),
                 });
                 opcodes[at] = .list;
                 operands[at] = record;

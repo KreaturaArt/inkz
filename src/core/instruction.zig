@@ -175,7 +175,9 @@ pub const VariablePointer = struct {
 };
 
 /// A list literal; `items_count` list item indices and then `origins_count` origin indices
-/// follow it in `extra`.
+/// follow it in `extra`. A list item read as a variable (`{"VAR?": "item"}`, resolved by the
+/// builder) is one item and one origin, followed by the name it was written with; a literal
+/// with one item never has origins, as ink writes them only for empty lists.
 pub const ListLiteral = struct {
     items_count: u32,
     origins_count: u32,

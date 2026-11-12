@@ -13,7 +13,7 @@ const source_space = @import("source_space.zig");
 const lower = @import("lower.zig");
 const layout_module = @import("lower_layout.zig");
 const emit = @import("lower_emit.zig");
-const json = @import("lower_json.zig");
+const ink_json = @import("../core/ink_json.zig");
 const limits = @import("../core/limits.zig");
 const Program = @import("../core/program.zig").Program;
 
@@ -31,10 +31,9 @@ fn is_warning(diagnostic: core.Diagnostic) bool {
     return message == .return_without_tilde or message == .choice_empty or message == .choice_blank;
 }
 
-/// What a compilation left: the diagnostics' counts, and the program if it succeeded.
-pub const Compiled = struct {
-    parse_errors: u32 = 0,
-    resolve_errors: u32 = 0,
+pub const Options = struct {
+    /// ink's countAllVisits: count the visits of every knot, stitch, gather and choice.
+    count_all_visits: bool = false,
 };
 
 /// The stages after parsing, on a parsed story (one file, or a space's).
@@ -42,7 +41,7 @@ fn compile_parsed(
     gpa: Allocator,
     parsed: *const grammar.Parsed,
     space: ?*const source_space.Space,
-    json_out: ?*std.Io.Writer,
+    options: Options,
 ) !Program {
     assert(parsed.tree.tags.len > 0);
     assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
@@ -59,13 +58,13 @@ fn compile_parsed(
     if (resolution.diagnostics.len > 0) return error.CompileFailed;
     var lowering = try lower.Lowering.init(gpa, parsed, &tree, &resolution);
     defer lowering.deinit();
+    lowering.count_all_visits = options.count_all_visits;
     try lowering.generate_all();
     try lowering.finish_story();
     layout_module.set_count_flags(&lowering);
     try layout_module.flatten(&lowering);
     var layout = try layout_module.lay_out(&lowering);
     defer layout.deinit();
-    if (json_out) |out| try json.write(&lowering, &layout, out);
     return emit.emit_program(&lowering, &layout);
 }
 
@@ -75,29 +74,40 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
     assert(source.len < std.math.maxInt(u32));
     var parsed = try grammar.parse(gpa, source, .{});
     defer parsed.deinit(gpa);
-    return compile_parsed(gpa, &parsed, null, null);
+    return compile_parsed(gpa, &parsed, null, .{});
 }
 
 /// Compiles `path` (in `directory`) and the files it includes.
 pub fn compile_file(gpa: Allocator, io: std.Io, directory: std.Io.Dir, path: []const u8) !Program {
+    assert(path.len > 0);
+    assert(path.len > 0);
+    return compile_file_with(gpa, io, directory, path, .{});
+}
+
+pub fn compile_file_with(
+    gpa: Allocator,
+    io: std.Io,
+    directory: std.Io.Dir,
+    path: []const u8,
+    options: Options,
+) !Program {
     assert(std.fs.path.basename(path).len > 0);
     assert(path.len > 0);
     var space = try source_space.load(gpa, io, directory, path, .{});
     defer space.deinit(gpa);
     if (space.problems.len > 0) return error.CompileFailed;
-    return compile_parsed(gpa, &space.parsed, &space, null);
+    return compile_parsed(gpa, &space.parsed, &space, options);
 }
 
-/// The ink JSON of a story (for comparing the layout with inklecate's).
+/// A story compiled and serialized as ink's JSON (for comparing with inklecate's).
 pub fn compile_to_json(gpa: Allocator, source: []const u8) ![]u8 {
     assert(source.len < std.math.maxInt(u32));
     assert(@TypeOf(gpa) == Allocator);
-    var parsed = try grammar.parse(gpa, source, .{});
-    defer parsed.deinit(gpa);
+    var program = try compile_source(gpa, source);
+    defer program.deinit(gpa);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    var program = try compile_parsed(gpa, &parsed, null, &out.writer);
-    program.deinit(gpa);
+    try ink_json.serialize(gpa, &program, &out.writer);
     return out.toOwnedSlice();
 }
 

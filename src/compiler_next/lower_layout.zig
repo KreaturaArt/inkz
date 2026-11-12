@@ -36,7 +36,11 @@ pub fn set_count_flags(lowering: *Lowering) void {
             .divert_target => {
                 const divert = tree.children_of(object)[0];
                 const counted = lowering.resolution.targets[divert.to_int()];
-                const parent = tree.parent(object);
+                // ink moves a TURNS_SINCE argument under the call (out of its proxy divert).
+                var parent = tree.parent(object);
+                if (tree.kind(parent) == .divert and tree.has(parent, sema.Flags.function_call)) {
+                    parent = tree.parent(parent);
+                }
                 const turns_only = tree.kind(parent) == .function_call and
                     std.mem.eql(u8, lowering.child_name(parent, 0), "TURNS_SINCE");
                 const both = ir_module.count_visits | ir_module.count_turns;
@@ -222,4 +226,63 @@ pub fn target_path(
             try out.print(layout.gpa, "{d}", .{layout.item_position[item_id.to_int()]});
         },
     }
+}
+
+/// The components of a target's runtime path.
+fn target_components(
+    lowering: *Lowering,
+    layout: *const Layout,
+    target: Target,
+    out: *std.ArrayList([]const u8),
+) !void {
+    assert(lowering.results.len == lowering.tree.count());
+    assert(lowering.runtime_containers.len == lowering.tree.count());
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(layout.gpa);
+    try target_path(lowering, layout, target, &text);
+    if (text.items.len == 0) return;
+    const arena = lowering.ir.arena.allocator();
+    var parts = std.mem.splitScalar(u8, try arena.dupe(u8, text.items), '.');
+    while (parts.next()) |part| try out.append(layout.gpa, part);
+}
+
+/// Object.CompactPathString: the path from the item `from` to `target`, relative when that
+/// is shorter (as ink writes diverts, choices and read counts).
+pub fn compact_path(
+    lowering: *Lowering,
+    layout: *const Layout,
+    from: ItemId,
+    target: Target,
+    out: *std.ArrayList(u8),
+) !void {
+    assert(lowering.results.len == lowering.tree.count());
+    assert(lowering.runtime_containers.len == lowering.tree.count());
+    const gpa = layout.gpa;
+    var own: std.ArrayList([]const u8) = .empty;
+    defer own.deinit(gpa);
+    try target_components(lowering, layout, .{ .item = from }, &own);
+    var other: std.ArrayList([]const u8) = .empty;
+    defer other.deinit(gpa);
+    try target_components(lowering, layout, target, &other);
+    var global: std.ArrayList(u8) = .empty;
+    defer global.deinit(gpa);
+    for (other.items, 0..) |component, position| {
+        if (position > 0) try global.append(gpa, '.');
+        try global.appendSlice(gpa, component);
+    }
+    var shared: ?usize = null;
+    for (0..@min(own.items.len, other.items.len)) |position| {
+        if (!std.mem.eql(u8, own.items[position], other.items[position])) break;
+        shared = position;
+    }
+    const last_shared = shared orelse return out.appendSlice(gpa, global.items);
+    var relative: std.ArrayList(u8) = .empty;
+    defer relative.deinit(gpa);
+    for (0..own.items.len - 1 - last_shared) |_| try relative.appendSlice(gpa, ".^");
+    for (other.items[last_shared + 1 ..]) |component| {
+        try relative.append(gpa, '.');
+        try relative.appendSlice(gpa, component);
+    }
+    const shorter = if (relative.items.len < global.items.len) relative.items else global.items;
+    try out.appendSlice(gpa, shorter);
 }
