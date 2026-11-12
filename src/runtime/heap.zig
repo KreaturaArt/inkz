@@ -29,6 +29,9 @@ const poison: u8 = 0xAA;
 pub const StringHeap = struct {
     bytes: []u8,
     used: u32 = 0,
+    /// Bumped whenever existing bytes may change meaning (truncate, shrink, compact, reset),
+    /// so a cache of cleaned text knows its references may be stale.
+    generation: u32 = 0,
 
     pub const Fault = enum { ok, used_exceeds_capacity, object_out_of_bounds, misaligned, marked };
 
@@ -66,6 +69,7 @@ pub const StringHeap = struct {
         assert(at + object_bytes(heap.length_at(at)) == heap.used);
         std.mem.writeInt(u32, heap.bytes[at..][0..4], length, .little);
         heap.used = at + object_bytes(length);
+        heap.generation +%= 1;
     }
 
     /// Drops every object from `top` on; `top` must be an object boundary, such as a
@@ -75,6 +79,7 @@ pub const StringHeap = struct {
         assert(top % 4 == 0);
         if (std.debug.runtime_safety) @memset(heap.bytes[top..heap.used], poison);
         heap.used = top;
+        heap.generation +%= 1;
     }
 
     fn length_at(heap: *const StringHeap, at: u32) u32 {
@@ -280,6 +285,7 @@ fn slide_strings(heap: *StringHeap) void {
     }
     if (std.debug.runtime_safety) @memset(heap.bytes[next..heap.used], poison);
     heap.used = next;
+    heap.generation +%= 1;
     assert(heap.used <= heap.bytes.len);
 }
 

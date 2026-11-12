@@ -2,6 +2,7 @@
 //! Continue loop around the VM. The public API (P6) wraps this.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Program = @import("../core/program.zig").Program;
@@ -117,6 +118,16 @@ pub const external_arguments_max = 32;
 
 pub const SetError = Error || error{VariableNotDeclared};
 
+const TextCache = struct {
+    items: []output_module.Item = &.{},
+    text: []u8 = &.{},
+    count: u32 = 0,
+    end: u32 = 0,
+    generation: u32 = 0,
+    in_tag: bool = false,
+    cleaner_state: output_module.Cleaner = .{ .writer = undefined },
+};
+
 pub const Story = struct {
     program: *const Program,
     state: State,
@@ -152,6 +163,9 @@ pub const Story = struct {
     /// evaluate_function calls running now.
     evaluate_depth: u32 = 0,
     events: Events = .{},
+    /// The items cleaned into `state.line_bytes` last time, so appending items only cleans
+    /// the new ones (prototype: a shadow copy of `output_items_max` items).
+    text_cache: TextCache = .{},
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
@@ -159,6 +173,10 @@ pub const Story = struct {
         errdefer gpa.free(bindings);
         @memset(bindings, .{});
         story.* = .{ .program = program, .state = undefined, .bindings = bindings };
+        story.text_cache.items = try gpa.alloc(output_module.Item, limits.output_items_max);
+        errdefer gpa.free(story.text_cache.items);
+        story.text_cache.text = try gpa.alloc(u8, limits.output_bytes_max);
+        errdefer gpa.free(story.text_cache.text);
         try story.state.init(gpa, program, limits);
         errdefer story.state.deinit(gpa);
         try story.reset_globals();
@@ -256,6 +274,8 @@ pub const Story = struct {
 
     pub fn deinit(story: *Story, gpa: Allocator) void {
         gpa.free(story.bindings);
+        gpa.free(story.text_cache.items);
+        gpa.free(story.text_cache.text);
         const shape = State.shape_of(story.program);
         assert(story.state.memory.len == story.state.limits.bytes_total(shape));
         assert(story.state.memory.len > 0);
@@ -307,7 +327,7 @@ pub const Story = struct {
         story.state.output.clear();
         const length = try story.continue_internal();
         story.line_length = length;
-        return story.state.line_bytes[0..length];
+        return story.text_cache.text[0..length];
     }
 
     /// ink's ContinueMaximally: every line until the story can't continue, written to
@@ -501,7 +521,7 @@ pub const Story = struct {
         assert(story.snapshot_text_length <= story.state.line_bytes.len);
         const previous = story.snapshot_text_length;
         const length = try story.write_current_text();
-        const text = story.state.line_bytes[0..length];
+        const text = story.text_cache.text[0..length];
         const tags = try story.current_tags_count();
         const newline_still_exists =
             length >= previous and previous > 0 and text[previous - 1] == '\n';
@@ -522,17 +542,59 @@ pub const Story = struct {
         assert(story.state.output.items.count <= story.state.output.items.capacity());
         assert(story.state.line_bytes.len > 0);
         const length = try story.write_current_text();
-        return story.state.line_bytes[0..length];
+        return story.text_cache.text[0..length];
     }
 
     /// The current text, cleaned, into `line_bytes`; returns its length.
     fn write_current_text(story: *Story) Error!u32 {
         assert(story.state.line_bytes.len > 0);
-        var writer: std.Io.Writer = .fixed(story.state.line_bytes);
-        story.state.output.write_text(ops.strings_of(story), &writer) catch
-            return error.OutputLimit;
-        assert(writer.end <= story.state.line_bytes.len);
+        const cache = &story.text_cache;
+        const items = story.state.output.items.slice();
+        const generation = story.state.strings.generation;
+        const reusable = cache.count <= items.len and cache.generation == generation and
+            std.mem.eql(
+                u8,
+                std.mem.sliceAsBytes(cache.items[0..cache.count]),
+                std.mem.sliceAsBytes(items[0..cache.count]),
+            );
+        if (!reusable) {
+            cache.count = 0;
+            cache.end = 0;
+            cache.in_tag = false;
+            cache.cleaner_state = .{ .writer = undefined };
+            cache.generation = generation;
+        }
+        var writer: std.Io.Writer = .fixed(cache.text);
+        writer.end = cache.end;
+        var cleaner = cache.cleaner_state;
+        cleaner.writer = &writer;
+        const strings = ops.strings_of(story);
+        for (items[cache.count..]) |item| {
+            switch (item.kind) {
+                .begin_tag => cache.in_tag = true,
+                .end_tag => cache.in_tag = false,
+                .text => if (!cache.in_tag) {
+                    cleaner.write(item.bytes(strings)) catch return error.OutputLimit;
+                },
+                else => {},
+            }
+        }
+        @memcpy(cache.items[cache.count..items.len], items[cache.count..]);
+        cache.count = @intCast(items.len);
+        cache.end = @intCast(writer.end);
+        cache.cleaner_state = cleaner;
+        if (std.debug.runtime_safety and builtin.mode == .debug) story.check_text_cache();
+        assert(writer.end <= cache.text.len);
         return @intCast(writer.end);
+    }
+
+    /// Debug: the incremental text equals a full clean.
+    fn check_text_cache(story: *Story) void {
+        const end = story.text_cache.end;
+        var full: [64 * 1024]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(full[0..@min(full.len, story.state.line_bytes.len)]);
+        story.state.output.write_text(ops.strings_of(story), &writer) catch return;
+        assert(std.mem.eql(u8, writer.buffered(), story.text_cache.text[0..end]));
     }
 
     fn current_tags_count(story: *Story) Error!u32 {

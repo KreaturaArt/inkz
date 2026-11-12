@@ -270,6 +270,7 @@ pub const State = struct {
         state.turn_index = -1;
         state.previous_random = 0;
         state.strings.used = 0;
+        state.strings.generation +%= 1;
         state.lists.used = 0;
         state.observer_events.clear();
         state.errors.clear();
