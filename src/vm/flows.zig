@@ -131,6 +131,26 @@ fn create(state: *State, name: []const u8) Error!u32 {
     return error.FlowLimit;
 }
 
+/// For loading a save: the record of flow `name`, created if needed (the default flow is
+/// always record 0).
+pub fn record_for(state: *State, name: []const u8) Error!u32 {
+    if (name.len == 0 or name.len > state_module.flow_name_bytes_max) return error.FlowNameTooLong;
+    const record = find(state, name) orelse try create(state, name);
+    assert(state.flows[record].in_use);
+    return record;
+}
+
+/// For loading a save: parks the live buffers as flow `record`'s content, leaving the live
+/// buffers to be filled with the next flow.
+pub fn park_live_into(state: *State, record: u32) Error!void {
+    assert(record < state.flows.len and state.flows[record].in_use);
+    assert(state.flows[record].parked_words == 0);
+    const current = state.current_flow;
+    state.current_flow = record;
+    defer state.current_flow = current;
+    try park_current(state);
+}
+
 /// The words in use in the parking region: parked flows are packed from the start.
 pub fn parking_used(state: *const State) u32 {
     var used: u32 = 0;
@@ -192,7 +212,7 @@ const Writer = struct {
 };
 
 /// A view of a parked flow's arrays, in place.
-const Parked = struct {
+pub const Parked = struct {
     header: Header,
     frames: []call_stack_module.Frame,
     threads: []call_stack_module.Thread,
@@ -205,7 +225,7 @@ const Parked = struct {
     snapshot_frames: []call_stack_module.Frame,
     snapshot_temps: []call_stack_module.Temp,
 
-    fn of(words: []u32) Parked {
+    pub fn of(words: []u32) Parked {
         assert(words.len >= header_words);
         var reader: Reader = .{ .words = words };
         const header = reader.take(Header, 1)[0];
@@ -241,7 +261,7 @@ const Reader = struct {
     }
 };
 
-fn parked_words(state: *State, record: *const FlowRecord) []u32 {
+pub fn parked_words(state: *State, record: *const FlowRecord) []u32 {
     assert(record.in_use);
     assert(record.parked_first + record.parked_words <= state.parking.len);
     return state.parking[record.parked_first..][0..record.parked_words];

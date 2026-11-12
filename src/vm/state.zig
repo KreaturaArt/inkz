@@ -20,6 +20,7 @@ const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
 const flows = @import("flows.zig");
+const json_tree = @import("json_tree.zig");
 const lookahead_module = @import("lookahead.zig");
 const Limits = limits_module.Limits;
 const element_bytes = limits_module.element_bytes;
@@ -190,6 +191,8 @@ pub const State = struct {
     diagnostics_dropped: u32 = 0,
     /// Scratch for the visit-counting walk (plan §4.6).
     ancestors: []ContainerIndex,
+    /// The fixed scratch `load_json` tokenizes a save into (plan §4.10).
+    load_nodes: []json_tree.Node,
 
     // The lookahead snapshot (P4.9) and parked flows (P4.8).
     lookahead: FlowBuffers,
@@ -596,6 +599,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .errors = .init(carver.take(Diagnostic, limits.errors_max)),
         .warnings = .init(carver.take(Diagnostic, limits.warnings_max)),
         .ancestors = carver.take(ContainerIndex, limits.container_depth_max),
+        .load_nodes = carver.take(json_tree.Node, limits.load_nodes_max),
         .lookahead = lookahead,
         .patch = carver.take(PatchEntry, limits.patch_entries_max),
         .flows = carver.take(FlowRecord, limits.flows_max),

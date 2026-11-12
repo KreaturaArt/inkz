@@ -165,12 +165,14 @@ pub const Story = struct {
 
     /// ink's SwitchToDefaultFlow.
     pub fn switch_to_default_flow(story: *Story) (Error || flows.Error)!void {
+        assert(story.state.flows[0].in_use);
         assert(story.state.flows.len > 0);
         try story.switch_flow(flows.default_name);
     }
 
     /// ink's RemoveFlow.
     pub fn remove_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
+        assert(story.state.flows[0].in_use);
         assert(name.len > 0);
         if (story.callback_depth > 0) return error.Reentrant;
         try flows.remove_flow(&story.state, name);
@@ -261,6 +263,7 @@ pub const Story = struct {
 
     /// ink's Continue: the next line. Story errors stay in `state.errors`.
     pub fn cont(story: *Story) Error![]const u8 {
+        assert(story.state.call_stack.depth() > 0);
         assert(story.state.line_bytes.len > 0);
         if (story.callback_depth > 0) return error.Reentrant;
         return story.next_line();
@@ -469,6 +472,15 @@ pub const Story = struct {
         return .none;
     }
 
+    /// ink's currentText: the output stream's text, cleaned. Valid until the next mutating
+    /// call.
+    pub fn current_text(story: *Story) Error![]const u8 {
+        assert(story.state.output.items.count <= story.state.output.items.capacity());
+        assert(story.state.line_bytes.len > 0);
+        const length = try story.write_current_text();
+        return story.state.line_bytes[0..length];
+    }
+
     /// The current text, cleaned, into `line_bytes`; returns its length.
     fn write_current_text(story: *Story) Error!u32 {
         assert(story.state.line_bytes.len > 0);
@@ -554,6 +566,7 @@ pub const Story = struct {
     /// The choices shown to the player (ink's currentChoices): none while the story can
     /// continue, and never the invisible defaults.
     pub fn visible_choices_count(story: *Story) u32 {
+        if (!story.can_continue()) story.state.choices.indexed_count = story.state.choices.count();
         assert(story.state.choices.count() <= story.state.choices.records.buffer.len);
         if (story.can_continue()) return 0;
         var count: u32 = 0;
@@ -636,6 +649,42 @@ pub const Story = struct {
         assert(story.state.lists.used <= story.state.lists.words.len);
         const lists: Lists = .{ .program = story.program, .slab = &story.state.lists };
         try lists.write(list, writer);
+    }
+
+    /// ink's RuntimeObjectsEqual (for saving only non-default globals): same type, then the
+    /// same value; strings by text, lists by their items.
+    pub fn values_equal(story: *Story, a: value_module.Value, b: value_module.Value) bool {
+        assert(story.state.memory.len > 0);
+        assert(@sizeOf(value_module.Value) == 12);
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .string => |text| std.mem.eql(u8, story.text_of(text), story.text_of(b.string)),
+            .list => |list| list_items_equal(story, list, b.list),
+            .null => true,
+            .integer => |number| number == b.integer,
+            .float => |number| number == b.float,
+            .bool => |flag| flag == b.bool,
+            .divert_target => |target| target == b.divert_target,
+            .variable_pointer => |pointer| pointer.name == b.variable_pointer.name and
+                pointer.context == b.variable_pointer.context,
+            .tag => |text| std.mem.eql(u8, story.text_of(text), story.text_of(b.tag)),
+        };
+    }
+
+    fn list_items_equal(
+        story: *Story,
+        a: value_module.ListReference,
+        b: value_module.ListReference,
+    ) bool {
+        assert(story.state.lists.check_reference(a) and story.state.lists.check_reference(b));
+        const items_a = story.state.lists.view(a).items;
+        const items_b = story.state.lists.view(b).items;
+        if (items_a.len != items_b.len) return false;
+        for (items_a) |item| {
+            if (std.mem.indexOfScalar(index.ListItemIndex, items_b, item) == null) return false;
+        }
+        assert(items_a.len == items_b.len);
+        return true;
     }
 
     pub fn text_of(story: *const Story, reference: StringReference) []const u8 {

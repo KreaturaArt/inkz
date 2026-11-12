@@ -137,3 +137,39 @@ test "fuzz: loading a save never crashes" {
 test "fuzz: a save survives a round trip" {
     try std.testing.fuzz({}, save_round_trip, .{ .corpus = &.{ "\x00", "\x03" } });
 }
+
+const NewStory = @import("vm/story.zig").Story;
+const new_save = @import("vm/save.zig");
+const new_load = @import("vm/load.zig");
+
+/// The new runtime's load_json (P6.2): any bytes either load into a state that passes its
+/// check, or fail and leave the state as it was.
+fn load_save_new(_: void, smith: *std.testing.Smith) anyerror!void {
+    assert(json_corpus[0].len > 0);
+    var buffer: [input_bytes_max + 1]u8 = undefined;
+    const save = fuzz_input(smith, &buffer);
+    const gpa = std.testing.allocator;
+    var program = try ink_json.load(gpa, json_corpus[0]);
+    defer program.deinit(gpa);
+    var story: NewStory = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    const before = story.state.hash();
+    new_load.load_json(&story, save) catch {
+        try std.testing.expectEqual(before, story.state.hash());
+        return;
+    };
+    assert(story.state.check() == .ok);
+}
+
+test "fuzz: the new runtime's save loader never crashes" {
+    var good: [1024]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&good);
+    var program = try ink_json.load(std.testing.allocator, json_corpus[0]);
+    defer program.deinit(std.testing.allocator);
+    var story: NewStory = undefined;
+    try story.init(std.testing.allocator, &program, .{});
+    defer story.deinit(std.testing.allocator);
+    try new_save.to_json(&story, &writer);
+    try std.testing.fuzz({}, load_save_new, .{ .corpus = &.{ "{}", writer.buffered() } });
+}
