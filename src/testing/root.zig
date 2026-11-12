@@ -11,6 +11,7 @@ pub const loader_comparison = @import("loader_comparison.zig");
 pub const transcripts = @import("transcripts.zig");
 pub const weave_reproductions = @import("weave_reproductions.zig");
 pub const new_engine_cases = @import("new_engine_cases.zig");
+pub const zero_allocation = @import("zero_allocation.zig");
 
 test {
     _ = transcript;
@@ -23,4 +24,5 @@ test {
     _ = loader_comparison;
     _ = weave_reproductions;
     _ = new_engine_cases;
+    _ = zero_allocation;
 }
