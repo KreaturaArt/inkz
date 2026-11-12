@@ -18,20 +18,21 @@ pub const StringReference = enum(u32) {
     pub fn program(id: StringId) StringReference {
         const raw = id.to_int();
         assert(raw & heap_bit == 0);
-        const reference: StringReference = @enumFromInt(raw);
+        const reference: StringReference = @fromBackingInt(@intCast(raw));
         assert(!reference.is_heap());
         return reference;
     }
 
     pub fn heap(offset: u32) StringReference {
         assert(offset & heap_bit == 0);
-        const reference: StringReference = @enumFromInt(offset | heap_bit);
+        const reference: StringReference = @fromBackingInt(@intCast(offset | heap_bit));
         assert(reference.is_heap());
         return reference;
     }
 
     pub fn is_heap(reference: StringReference) bool {
-        const raw = @intFromEnum(reference);
+        assert(@sizeOf(StringReference) == 4);
+        const raw = @backingInt(reference);
         const result = raw & heap_bit != 0;
         assert(result or raw < heap_bit);
         return result;
@@ -39,14 +40,14 @@ pub const StringReference = enum(u32) {
 
     pub fn program_id(reference: StringReference) StringId {
         assert(!reference.is_heap());
-        const id = StringId.from_int(@intFromEnum(reference));
-        assert(@intFromEnum(id) < heap_bit);
+        const id = StringId.from_int(@backingInt(reference));
+        assert(@backingInt(id) < heap_bit);
         return id;
     }
 
     pub fn heap_offset(reference: StringReference) u32 {
         assert(reference.is_heap());
-        const offset = @intFromEnum(reference) & ~heap_bit;
+        const offset = @backingInt(reference) & ~heap_bit;
         assert(offset < heap_bit);
         return offset;
     }
@@ -78,6 +79,7 @@ pub const Value = union(enum(u8)) {
     /// ink's coercion order (Value.cs `ValueType`): a binary operation converts both operands
     /// to the higher of their two types. Null and tags don't take part in arithmetic.
     pub fn rank(value: Value) ?i8 {
+        assert(@sizeOf(Value) == 12);
         const result: ?i8 = switch (value) {
             .bool => -1,
             .integer => 0,
@@ -94,6 +96,7 @@ pub const Value = union(enum(u8)) {
 
     /// ink's `isTruthy`. Divert targets, variable pointers and tags have no truth value.
     pub fn is_truthy(value: Value, list_count: anytype) error{NoTruthValue}!bool {
+        assert(@sizeOf(Value) == 12);
         const result = switch (value) {
             .bool => |flag| flag,
             .integer => |number| number != 0,
