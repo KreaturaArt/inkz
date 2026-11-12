@@ -489,6 +489,8 @@ pub const Parsed = struct {
     tokens_count: u32,
     diagnostics_count: u32,
     buffer: []u8,
+    /// With parse_space: each region's story root (the first is `tree.root`).
+    roots: []const ast.NodeIndex = &.{},
 
     pub fn diagnostics(parsed: *const Parsed) []const core.Diagnostic {
         assert(parsed.buffer.len >= parsed.source.len);
@@ -501,6 +503,7 @@ pub const Parsed = struct {
         assert(parsed.buffer.len >= parsed.source.len);
         parsed.workspace.deinit(gpa);
         gpa.free(parsed.buffer);
+        if (parsed.roots.len > 0) gpa.free(parsed.roots);
         parsed.* = undefined;
     }
 };
@@ -544,4 +547,68 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
         scale *= 2;
     }
     return error.WorkspaceFull;
+}
+
+/// A file's range in a shared source space.
+pub const Region = struct { start: u32, end: u32 };
+
+/// Parses each region of `buffer` (comment-free files laid end to end, plan §4.11) into one
+/// tree, so token and node indices are global. Takes ownership of `buffer`.
+pub fn parse_space(
+    gpa: std.mem.Allocator,
+    buffer: []u8,
+    regions: []const Region,
+    bounds: limits.CompilerLimits,
+) !Parsed {
+    assert(regions.len > 0);
+    errdefer gpa.free(buffer);
+    const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
+    defer gpa.free(frames);
+    const roots = try gpa.alloc(ast.NodeIndex, regions.len);
+    errdefer gpa.free(roots);
+    var scale: u32 = 1;
+    for (0..bounds.compile_retries_max + 1) |_| {
+        const length: u32 = @intCast(buffer.len);
+        var workspace = try core.Workspace.init(gpa, length, bounds.diagnostics_max, scale);
+        errdefer workspace.deinit(gpa);
+        var machine: Machine = .init(buffer, &workspace, frames);
+        if (try parse_regions(&machine, buffer, regions, roots)) {
+            return .{
+                .source = buffer,
+                .tree = machine.finish_regions(roots[0]),
+                .workspace = workspace,
+                .tokens_count = machine.tokens_count,
+                .diagnostics_count = machine.diagnostics_count,
+                .buffer = buffer,
+                .roots = roots,
+            };
+        }
+        workspace.deinit(gpa);
+        if (!machine.workspace_full) return error.ParseFailed;
+        scale *= 2;
+    }
+    return error.WorkspaceFull;
+}
+
+/// Whether every region parsed (false: retry with more room if the workspace was full).
+fn parse_regions(
+    machine: *Machine,
+    buffer: []const u8,
+    regions: []const Region,
+    roots: []ast.NodeIndex,
+) !bool {
+    assert(roots.len == regions.len);
+    for (regions, roots) |region, *root| {
+        assert(region.start <= region.end and region.end <= buffer.len);
+        machine.begin_region(buffer[0..region.end], region.start);
+        const outcome = machine.run(.story) catch |err| switch (err) {
+            error.WorkspaceFull => core.Outcome.failed,
+        };
+        if (machine.workspace_full or outcome != .succeeded) return false;
+        root.* = machine.commit_root() catch {
+            machine.workspace_full = true;
+            return false;
+        };
+    }
+    return true;
 }
