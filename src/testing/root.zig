@@ -7,6 +7,7 @@ pub const cases = @import("cases.zig");
 pub const oracle = @import("oracle.zig");
 pub const known_bugs = @import("known_bugs.zig");
 pub const simulation = @import("simulation.zig");
+pub const loader_comparison = @import("loader_comparison.zig");
 pub const transcripts = @import("transcripts.zig");
 
 test {
@@ -17,4 +18,5 @@ test {
     _ = oracle;
     _ = known_bugs;
     _ = simulation;
+    _ = loader_comparison;
 }

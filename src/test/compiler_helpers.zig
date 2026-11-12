@@ -2143,7 +2143,7 @@ test "Compiler e2e: crime_scene.ink - examine bed fully" {
     // Both paths must produce identical output.
     const alloc = std.testing.allocator;
     const io = std.testing.io;
-    const json = try helpers.loadFixture(alloc, "crime_scene.ink.json");
+    const json = try helpers.loadFixture(alloc, "../old_compiler/crime_scene.ink.json");
     defer alloc.free(json);
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/crime_scene.ink", alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);

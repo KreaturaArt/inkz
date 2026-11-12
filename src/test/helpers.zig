@@ -26,7 +26,7 @@ test "zero allocation in cont: old runtime (skipped, recorded)" {
     const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllocator;
     var counting = CountingAllocator.init(std.testing.allocator);
     const gpa = counting.allocator();
-    const json = try loadFixture(gpa, "crime_scene.ink.json");
+    const json = try loadFixture(gpa, "../old_compiler/crime_scene.ink.json");
     defer gpa.free(json);
     var story = try Story.initFromJson(gpa, json);
     defer story.deinit();
