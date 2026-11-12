@@ -34,7 +34,7 @@ test "soa_bytes adds field sizes without padding" {
 test "index newtypes are one word" {
     // Goal: typed indices cost nothing over u32. Method: check each one.
     const types = [_]type{
-        index.ContainerIndex, index.InstructionIndex, index.StringId,     index.NodeIndex,
+        index.ContainerIndex, index.InstructionIndex, index.StringId,      index.NodeIndex,
         index.TokenIndex,     index.GlobalSlot,       index.ListItemIndex, index.ListOriginIndex,
         index.ExternalIndex,  index.FlowIndex,        index.FileIndex,
     };

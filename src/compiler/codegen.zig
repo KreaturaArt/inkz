@@ -326,8 +326,7 @@ const Gen = struct {
                 // When a knot has no explicit content before its first stitch,
                 // Inklecate emits an auto-divert to the first stitch so that
                 // `-> knot` naturally falls through to `knot.first_stitch`.
-                const first_stitch_path = try std.fmt.allocPrint(
-                    self.alloc, "{s}.{s}", .{ knot.name, knot.stitches[0].name });
+                const first_stitch_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ knot.name, knot.stitches[0].name });
                 try items.append(self.alloc, .{ .divert = first_stitch_path });
             }
             var stitch_named = std.ArrayList(NamedChild).empty;
@@ -797,8 +796,7 @@ const Gen = struct {
                     .gather => |g| if (logicalWeaveNesting(g.nesting, weave_base_nesting) == min_nesting) {
                         const gname = gather_names.items[gi];
                         if (g.label) |lbl| {
-                            const abs_path = try std.fmt.allocPrint(
-                                self.alloc, "{s}.{s}", .{ holder_abs_path, lbl });
+                            const abs_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, lbl });
                             (try self.putName(lbl)).gather_path = abs_path;
                             // Also register "context.label" for external diverts like `-> knot.gather`.
                             if (context_name.len > 0) {
@@ -806,15 +804,13 @@ const Gen = struct {
                                 (try self.putName(qual_key)).gather_path = abs_path;
                             }
                         }
-                        cur_section_abs = try std.fmt.allocPrint(
-                            self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                        cur_section_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                         gi += 1;
                     },
                     .choice => |ch| if (logicalWeaveNesting(ch.nesting, weave_base_nesting) == min_nesting) {
                         if (ch.label) |lbl| {
                             const c_name = try std.fmt.allocPrint(self.alloc, "c-{}", .{ci});
-                            const abs_path = try std.fmt.allocPrint(
-                                self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
+                            const abs_path = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ cur_section_abs, c_name });
                             (try self.putName(lbl)).choice_path = abs_path;
                             // Also register "context.label" for external diverts.
                             if (context_name.len > 0) {
@@ -897,14 +893,12 @@ const Gen = struct {
                                 const sec = try self.newContainer(gname);
                                 if (g.label != null) sec.flags = 5; // VISITS+COUNT_AT_START
                                 init_sec_container = sec;
-                                cur_holder_abs = try std.fmt.allocPrint(
-                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                                cur_holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 cur_is_root = false;
                                 cur_content = &init_sec_content;
                                 section_choice_count = 0;
                             } else {
-                                const gather_sec_abs = try std.fmt.allocPrint(
-                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                                const gather_sec_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                                 // When there are no pre-gather choices, the story needs an
                                 // explicit divert to flow from the preamble into the gather
                                 // section (pre-gather choices stop naturally via pointer-null).
@@ -927,15 +921,13 @@ const Gen = struct {
                                 try init_sec_content.toOwnedSlice(self.alloc);
                             init_sec_container.?.named_children =
                                 try init_sec_named.toOwnedSlice(self.alloc);
-                            try main_content.append(
-                                self.alloc, .{ .container = init_sec_container.? });
+                            try main_content.append(self.alloc, .{ .container = init_sec_container.? });
                             init_sec_container = null;
                             // Start the next named section.
                             state = .in_named;
                             named_sec_name = gname;
                             named_sec_has_user_label = g.label != null;
-                            cur_holder_abs = try std.fmt.allocPrint(
-                                self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                            cur_holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                             cur_is_root = false;
                             cur_content = &named_sec_content;
                             section_choice_count = 0;
@@ -945,19 +937,16 @@ const Gen = struct {
                             const gc = try self.newContainer(null);
                             if (named_sec_has_user_label) gc.flags = 5; // VISITS+COUNT_AT_START
                             if (section_choice_count == 0) {
-                                try named_sec_content.append(self.alloc, .{ .divert = try std.fmt.allocPrint(
-                                    self.alloc, "{s}.{s}", .{ holder_abs_path, gname }) });
+                                try named_sec_content.append(self.alloc, .{ .divert = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, gname }) });
                             }
                             gc.content = try named_sec_content.toOwnedSlice(self.alloc);
                             gc.named_children =
                                 try named_sec_named.toOwnedSlice(self.alloc);
-                            try main_named.append(
-                                self.alloc, .{ .name = named_sec_name, .container = gc });
+                            try main_named.append(self.alloc, .{ .name = named_sec_name, .container = gc });
                             // Start fresh named section.
                             named_sec_name = gname;
                             named_sec_has_user_label = g.label != null;
-                            cur_holder_abs = try std.fmt.allocPrint(
-                                self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
+                            cur_holder_abs = try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, gname });
                             section_choice_count = 0;
                         },
                     }
@@ -987,13 +976,11 @@ const Gen = struct {
                             const gather_path: []const u8 = gp: {
                                 if (next_gi < gather_names.items.len) {
                                     const next_gname = gather_names.items[next_gi];
-                                    break :gp try std.fmt.allocPrint(
-                                        self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
+                                    break :gp try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
                                 } else if (outer_gather_path) |ogp| {
                                     break :gp ogp;
                                 } else {
-                                    break :gp try std.fmt.allocPrint(
-                                        self.alloc, "{s}.g-0", .{holder_abs_path});
+                                    break :gp try std.fmt.allocPrint(self.alloc, "{s}.g-0", .{holder_abs_path});
                                 }
                             };
                             try self.genNestedWeave(cur_content, batch, cur_holder_abs, 1, gather_path);
@@ -1014,14 +1001,12 @@ const Gen = struct {
                         if (next_gi < gather_names.items.len) {
                             const next_gname = gather_names.items[next_gi];
                             // The next gather is always a named_child of holder_abs_path.
-                            break :gp try std.fmt.allocPrint(
-                                self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
+                            break :gp try std.fmt.allocPrint(self.alloc, "{s}.{s}", .{ holder_abs_path, next_gname });
                         } else if (outer_gather_path) |ogp| {
                             break :gp ogp;
                         } else {
                             // No gathers at all and no outer path: implicit g-0.
-                            break :gp try std.fmt.allocPrint(
-                                self.alloc, "{s}.g-0", .{holder_abs_path});
+                            break :gp try std.fmt.allocPrint(self.alloc, "{s}.g-0", .{holder_abs_path});
                         }
                     };
 
@@ -1629,7 +1614,10 @@ const Gen = struct {
                         // Track origin for empty-list cases.
                         var has_origin = false;
                         for (origins.items) |o| {
-                            if (std.mem.eql(u8, o, resolved.origin)) { has_origin = true; break; }
+                            if (std.mem.eql(u8, o, resolved.origin)) {
+                                has_origin = true;
+                                break;
+                            }
                         }
                         if (!has_origin) try origins.append(self.alloc, resolved.origin);
                     }

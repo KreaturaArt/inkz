@@ -34,7 +34,7 @@ pub const must_panic = struct {
 
     pub fn index_from_int_of_none_pattern_panics() void {
         const pattern: u32 = std.math.maxInt(u32);
-        assert(pattern == @intFromEnum(index.StringId.none));
+        assert(pattern == @backingInt(index.StringId.none));
         assert(pattern > 0);
         _ = index.StringId.from_int(pattern);
     }

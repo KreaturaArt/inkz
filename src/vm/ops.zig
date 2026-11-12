@@ -351,11 +351,7 @@ fn reserve(story: *Story, operands: []Value) Error!void {
     }
     if (state.strings.bytes.len - state.strings.used < string_bytes) state.compact(operands);
     if (state.strings.bytes.len - state.strings.used < string_bytes) return error.HeapLimit;
-    if (!has_list) return;
-    const program = story.program;
-    const list_words: u32 = @intCast(3 + program.list_items.len + program.list_origins.len);
-    if (state.lists.words.len - state.lists.used < list_words) state.compact(operands);
-    if (state.lists.words.len - state.lists.used < list_words) return error.ListLimit;
+    if (has_list) try reserve_list(story, operands);
 }
 
 const NativeContext = struct {
@@ -516,6 +512,8 @@ pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
         story,
         value.variable_pointer,
     );
+    const old = story.state.call_stack.temp_get(name, -1);
+    stored = try retain_list_origins(story, old, stored);
     story.state.call_stack.temp_set(name, stored, true, -1) catch |err| switch (err) {
         error.TempNotFound => unreachable,
         else => return error.TempLimit,
@@ -563,7 +561,9 @@ fn assign_existing(
         );
         return set_global(story, slot, value);
     }
-    story.state.call_stack.temp_set(name, value, false, context) catch |err| switch (err) {
+    const old = try raw_variable(story, name, context);
+    const stored = try retain_list_origins(story, old, value);
+    story.state.call_stack.temp_set(name, stored, false, context) catch |err| switch (err) {
         error.TempNotFound => return fail_name(story, .temp_not_found, name),
         else => return error.TempLimit,
     };
@@ -572,8 +572,22 @@ fn assign_existing(
 /// ink's SetGlobal. Observers are queued in P5.7.
 fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.state.globals.len);
-    lookahead.set_global(&story.state, slot, value) catch return error.LookaheadLogLimit;
-    assert(story.state.globals[slot.to_int()] == std.meta.activeTag(value));
+    const stored = try retain_list_origins(story, story.state.globals[slot.to_int()], value);
+    lookahead.set_global(&story.state, slot, stored) catch return error.LookaheadLogLimit;
+    assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored));
+}
+
+/// ink's RetainListOriginsForAssignment: an empty list assigned over a list keeps the old
+/// list's origins.
+fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!Value {
+    assert(value != .tag);
+    assert(@sizeOf(Value) == 12);
+    const previous = old orelse return value;
+    if (previous != .list or value != .list) return value;
+    if (lists_of(story).count(value.list) != 0) return value;
+    var keep = [_]Value{ previous, value };
+    try reserve_list(story, &keep);
+    return lists_of(story).empty_with_origins_of(keep[0].list) catch |err| list_error(err);
 }
 
 pub fn list_literal(story: *Story, instruction: Instruction) Error!ListReference {
@@ -801,9 +815,89 @@ pub fn force_end(story: *Story) void {
 }
 
 pub fn list_command(story: *Story, opcode: Opcode) Error!void {
-    assert(story.state.memory.len > 0);
     assert(opcode == .list_from_int or opcode == .list_range or opcode == .list_random);
-    return fail(story, .unsupported);
+    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
+    const value = switch (opcode) {
+        .list_from_int => try list_from_int(story),
+        .list_range => try list_range(story),
+        .list_random => try list_random(story),
+        else => unreachable,
+    };
+    try vm.push_evaluation(story, value);
+}
+
+fn list_error(err: lists_module.Error) Error {
+    assert(err != error.DivisionByZero);
+    assert(@errorName(err).len > 0);
+    return switch (err) {
+        error.ListLimit, error.OutOfMemory => error.ListLimit,
+        error.HeapLimit => error.HeapLimit,
+        else => unreachable,
+    };
+}
+
+/// `"listInt"`: the list item named by a list name and a value.
+fn list_from_int(story: *Story) Error!Value {
+    assert(story.state.lists.used <= story.state.lists.words.len);
+    const number = try vm.pop_evaluation(story);
+    var keep = [_]Value{try vm.pop_evaluation(story)};
+    if (number != .integer) return fail(story, .list_from_int_not_int);
+    if (keep[0] != .string) return fail(story, .list_not_found);
+    try reserve_list(story, &keep);
+    const name = strings_of(story).get(keep[0].string);
+    const lists = lists_of(story);
+    const result = lists.from_int(name, number.integer) catch |err| return list_error(err);
+    assert(result == null or result.? == .list);
+    return result orelse fail(story, .list_not_found);
+}
+
+/// LIST_RANGE(list, min, max).
+fn list_range(story: *Story) Error!Value {
+    assert(story.state.lists.used <= story.state.lists.words.len);
+    var keep: [3]Value = undefined;
+    keep[2] = try vm.pop_evaluation(story);
+    keep[1] = try vm.pop_evaluation(story);
+    keep[0] = try vm.pop_evaluation(story);
+    if (keep[0] != .list or keep[1] == .null or keep[2] == .null) {
+        return fail(story, .list_range_arguments);
+    }
+    try reserve_list(story, &keep);
+    const result = lists_of(story).sub_range(keep[0].list, keep[1], keep[2]) catch |err|
+        return list_error(err);
+    assert(result == .list);
+    return result;
+}
+
+/// LIST_RANDOM(list): one item, drawn like RANDOM.
+fn list_random(story: *Story) Error!Value {
+    assert(story.state.lists.used <= story.state.lists.words.len);
+    var keep = [_]Value{try vm.pop_evaluation(story)};
+    if (keep[0] != .list) return fail(story, .list_random_not_list);
+    try reserve_list(story, &keep);
+    const lists = lists_of(story);
+    const count = lists.count(keep[0].list);
+    if (count == 0) {
+        return .{ .list = story.state.lists.store(&.{}, &.{}) catch return error.ListLimit };
+    }
+    const state = &story.state;
+    var generator = DotnetRandom.init(state.story_seed +% state.previous_random);
+    const next = generator.next();
+    const position: u32 = @intCast(@rem(next, @as(i32, @intCast(count))));
+    const result = lists.item_list(keep[0].list, position) catch |err| return list_error(err);
+    state.previous_random = next;
+    assert(result == .list);
+    return result;
+}
+
+/// Room for one list of any size, compacting (and updating `keep`) if needed.
+fn reserve_list(story: *Story, keep: []Value) Error!void {
+    assert(keep.len <= 3);
+    const state = &story.state;
+    const program = story.program;
+    const words: u32 = @intCast(3 + program.list_items.len + program.list_origins.len);
+    if (state.lists.words.len - state.lists.used < words) state.compact(keep);
+    if (state.lists.words.len - state.lists.used < words) return error.ListLimit;
+    assert(state.lists.used + words <= state.lists.words.len);
 }
 
 pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {

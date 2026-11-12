@@ -199,8 +199,14 @@ pub const Parser = struct {
             switch (self.cur().tag) {
                 .eof => return false,
                 .newline => return true,
-                .left_brace => { _ = self.eat(); depth += 1; },
-                .right_brace => { _ = self.eat(); depth -= 1; },
+                .left_brace => {
+                    _ = self.eat();
+                    depth += 1;
+                },
+                .right_brace => {
+                    _ = self.eat();
+                    depth -= 1;
+                },
                 else => _ = self.eat(),
             }
         }
@@ -269,7 +275,6 @@ pub const Parser = struct {
             .root_content = try root_content.toOwnedSlice(self.alloc),
             .errors = try self.errors.toOwnedSlice(self.alloc),
         };
-
     }
 
     // -- Content block --------------------------------------------------------
@@ -627,12 +632,12 @@ pub const Parser = struct {
                                 try arg_buf.appendSlice(self.alloc, initial);
                                 while (!close_found) {
                                     switch (self.cur().tag) {
-                                    .newline, .eof => break,
-                                    .text => {
-                                        const more = self.eat().loc.slice(self.src);
-                                        if (std.mem.indexOfScalar(u8, more, ')')) |end| {
-                                            try arg_buf.appendSlice(self.alloc, more[0..end]);
-                                            close_found = true;
+                                        .newline, .eof => break,
+                                        .text => {
+                                            const more = self.eat().loc.slice(self.src);
+                                            if (std.mem.indexOfScalar(u8, more, ')')) |end| {
+                                                try arg_buf.appendSlice(self.alloc, more[0..end]);
+                                                close_found = true;
                                             } else try arg_buf.appendSlice(self.alloc, more);
                                         },
                                         else => _ = self.eat(),
@@ -1164,7 +1169,10 @@ pub const Parser = struct {
         if (self.cur().tag != .left_brace) return null;
         const saved = self.save();
         _ = self.eat(); // {
-        if (self.cur().tag != .text) { self.restore(saved); return null; }
+        if (self.cur().tag != .text) {
+            self.restore(saved);
+            return null;
+        }
         const tok_text = self.eat().loc.slice(self.src);
         const trimmed = std.mem.trim(u8, tok_text, " \t");
         // Detect keyword (text ends with ':' and keyword before ':' is a sequence keyword).
@@ -1174,7 +1182,10 @@ pub const Parser = struct {
             return null;
         };
         // Must be followed by newline (block form only).
-        if (self.cur().tag != .newline) { self.restore(saved); return null; }
+        if (self.cur().tag != .newline) {
+            self.restore(saved);
+            return null;
+        }
         _ = self.eat(); // newline after keyword line
         self.skipNewlines();
         // Parse gather-delimited branches.
@@ -1185,7 +1196,10 @@ pub const Parser = struct {
             try branches.append(self.alloc, content);
         }
         self.skipNewlines();
-        if (self.cur().tag != .right_brace) { self.restore(saved); return null; }
+        if (self.cur().tag != .right_brace) {
+            self.restore(saved);
+            return null;
+        }
         _ = self.eat(); // }
         if (self.cur().tag == .newline) _ = self.eat();
         return Parsed.Sequence{
@@ -1316,7 +1330,10 @@ pub const Parser = struct {
         }
 
         self.skipNewlines();
-        if (self.cur().tag != .right_brace) { self.restore(saved); return null; }
+        if (self.cur().tag != .right_brace) {
+            self.restore(saved);
+            return null;
+        }
         _ = self.eat(); // }
         return Parsed.Sequence{
             .kind = kind,
@@ -1395,7 +1412,10 @@ pub const Parser = struct {
                 // Detect switch: outer_cond + any branch has its own condition.
                 var is_switch = false;
                 for (branches) |b| {
-                    if (b.condition != null) { is_switch = true; break; }
+                    if (b.condition != null) {
+                        is_switch = true;
+                        break;
+                    }
                 }
                 return Parsed.Conditional{
                     .outer_condition = outer_cond,
@@ -2472,26 +2492,83 @@ fn binOpPrec(op: Parsed.BinaryOp) u8 {
 /// Peek a binary operator at the start of `s`; write its byte-length into `out_len`.
 fn epPeekBinaryOp(s: []const u8, out_len: *usize) ?Parsed.BinaryOp {
     if (s.len == 0) return null;
-    if (std.mem.startsWith(u8, s, "==")) { out_len.* = 2; return .eq; }
-    if (std.mem.startsWith(u8, s, "!?")) { out_len.* = 2; return .hasnt; }
-    if (std.mem.startsWith(u8, s, "!=")) { out_len.* = 2; return .ne; }
-    if (s[0] == '?') { out_len.* = 1; return .has; }
-    if (s[0] == '^') { out_len.* = 1; return .intersect; }
-    if (std.mem.startsWith(u8, s, ">=")) { out_len.* = 2; return .ge; }
-    if (std.mem.startsWith(u8, s, "<=")) { out_len.* = 2; return .le; }
-    if (std.mem.startsWith(u8, s, "&&")) { out_len.* = 2; return .and_; }
-    if (std.mem.startsWith(u8, s, "||")) { out_len.* = 2; return .or_; }
-    if (epKwStartsWith(s, "and")) { out_len.* = 3; return .and_; }
-    if (epKwStartsWith(s, "or"))  { out_len.* = 2; return .or_; }
-    if (epKwStartsWith(s, "mod")) { out_len.* = 3; return .mod; }
+    if (std.mem.startsWith(u8, s, "==")) {
+        out_len.* = 2;
+        return .eq;
+    }
+    if (std.mem.startsWith(u8, s, "!?")) {
+        out_len.* = 2;
+        return .hasnt;
+    }
+    if (std.mem.startsWith(u8, s, "!=")) {
+        out_len.* = 2;
+        return .ne;
+    }
+    if (s[0] == '?') {
+        out_len.* = 1;
+        return .has;
+    }
+    if (s[0] == '^') {
+        out_len.* = 1;
+        return .intersect;
+    }
+    if (std.mem.startsWith(u8, s, ">=")) {
+        out_len.* = 2;
+        return .ge;
+    }
+    if (std.mem.startsWith(u8, s, "<=")) {
+        out_len.* = 2;
+        return .le;
+    }
+    if (std.mem.startsWith(u8, s, "&&")) {
+        out_len.* = 2;
+        return .and_;
+    }
+    if (std.mem.startsWith(u8, s, "||")) {
+        out_len.* = 2;
+        return .or_;
+    }
+    if (epKwStartsWith(s, "and")) {
+        out_len.* = 3;
+        return .and_;
+    }
+    if (epKwStartsWith(s, "or")) {
+        out_len.* = 2;
+        return .or_;
+    }
+    if (epKwStartsWith(s, "mod")) {
+        out_len.* = 3;
+        return .mod;
+    }
     switch (s[0]) {
-        '+' => { out_len.* = 1; return .add; },
-        '-' => { out_len.* = 1; return .sub; },
-        '*' => { out_len.* = 1; return .mul; },
-        '/' => { out_len.* = 1; return .div; },
-        '%' => { out_len.* = 1; return .mod; },
-        '>' => { out_len.* = 1; return .gt; },
-        '<' => { out_len.* = 1; return .lt; },
+        '+' => {
+            out_len.* = 1;
+            return .add;
+        },
+        '-' => {
+            out_len.* = 1;
+            return .sub;
+        },
+        '*' => {
+            out_len.* = 1;
+            return .mul;
+        },
+        '/' => {
+            out_len.* = 1;
+            return .div;
+        },
+        '%' => {
+            out_len.* = 1;
+            return .mod;
+        },
+        '>' => {
+            out_len.* = 1;
+            return .gt;
+        },
+        '<' => {
+            out_len.* = 1;
+            return .lt;
+        },
         else => return null,
     }
 }
@@ -2829,8 +2906,7 @@ test "Compiler parser: malformed VAR no name — no crash, parse error recorded"
 test "Compiler parser: CONST all literal types" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "CONST a = 7\nCONST b = 2.5\nCONST c = true\nCONST d = \"hi\"\n");
+    const story = try parse(arena.allocator(), "CONST a = 7\nCONST b = 2.5\nCONST c = true\nCONST d = \"hi\"\n");
     try testing.expectEqual(@as(usize, 4), story.constants.len);
     try testing.expect(story.constants[0].value.* == .int_lit);
     try testing.expect(story.constants[1].value.* == .float_lit);
@@ -2857,8 +2933,7 @@ test "Compiler parser: knot_marker == two-equals" {
 test "Compiler parser: knot with text and divert content" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "=== myknot ===\nSome content\n-> END\n");
+    const story = try parse(arena.allocator(), "=== myknot ===\nSome content\n-> END\n");
     try testing.expectEqual(@as(usize, 1), story.knots.len);
     const k = story.knots[0];
     try testing.expectEqualStrings("myknot", k.name);
@@ -2882,8 +2957,7 @@ test "Compiler parser: empty knot (no content before next knot)" {
 test "Compiler parser: knot with single stitch" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "=== myknot ===\n= mystitch\nStitch text\n");
+    const story = try parse(arena.allocator(), "=== myknot ===\n= mystitch\nStitch text\n");
     try testing.expectEqual(@as(usize, 1), story.knots.len);
     const k = story.knots[0];
     try testing.expectEqual(@as(usize, 1), k.stitches.len);
@@ -2895,8 +2969,7 @@ test "Compiler parser: knot with single stitch" {
 test "Compiler parser: knot with multiple stitches" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "=== k ===\n= s1\nA\n= s2\nB\n= s3\nC\n");
+    const story = try parse(arena.allocator(), "=== k ===\n= s1\nA\n= s2\nB\n= s3\nC\n");
     const k = story.knots[0];
     try testing.expectEqual(@as(usize, 3), k.stitches.len);
     try testing.expectEqualStrings("s1", k.stitches[0].name);
@@ -2907,8 +2980,7 @@ test "Compiler parser: knot with multiple stitches" {
 test "Compiler parser: VAR inside stitch goes to global_decls" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "=== k ===\n= s\nVAR counter = 0\n");
+    const story = try parse(arena.allocator(), "=== k ===\n= s\nVAR counter = 0\n");
     try testing.expectEqual(@as(usize, 1), story.global_decls.len);
     try testing.expectEqualStrings("counter", story.global_decls[0].name);
     try testing.expectEqual(@as(i64, 0), story.global_decls[0].initial.int_lit);
@@ -2917,8 +2989,7 @@ test "Compiler parser: VAR inside stitch goes to global_decls" {
 test "Compiler parser: multiple knots" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "=== a ===\ntext a\n=== b ===\ntext b\n=== c ===\ntext c\n");
+    const story = try parse(arena.allocator(), "=== a ===\ntext a\n=== b ===\ntext b\n=== c ===\ntext c\n");
     try testing.expectEqual(@as(usize, 3), story.knots.len);
     try testing.expectEqualStrings("a", story.knots[0].name);
     try testing.expectEqualStrings("b", story.knots[1].name);
@@ -2932,8 +3003,7 @@ test "Compiler parser: multiple knots" {
 test "Compiler parser: root content before first knot" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
-    const story = try parse(arena.allocator(),
-        "-> start\n=== start ===\nKnot text\n");
+    const story = try parse(arena.allocator(), "-> start\n=== start ===\nKnot text\n");
     try testing.expectEqual(@as(usize, 1), story.root_content.len);
     try testing.expect(story.root_content[0] == .divert);
     try testing.expectEqualStrings("start", story.root_content[0].divert.target);
@@ -3098,7 +3168,10 @@ test "Compiler parser: stitch_gather_counts VAR in knot" {
     for (names) |name| {
         var found = false;
         for (story.global_decls) |d| {
-            if (std.mem.eql(u8, d.name, name)) { found = true; break; }
+            if (std.mem.eql(u8, d.name, name)) {
+                found = true;
+                break;
+            }
         }
         try testing.expect(found);
     }

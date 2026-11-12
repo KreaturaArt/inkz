@@ -76,6 +76,10 @@ pub const Diagnostic = struct {
         unexpected_end_of_function,
         ran_out_of_content,
         unexpected_end_unknown,
+        list_from_int_not_int,
+        list_not_found,
+        list_range_arguments,
+        list_random_not_list,
         unsupported,
         _,
     };

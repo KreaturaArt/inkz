@@ -10,7 +10,7 @@ const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const StringId = @import("index.zig").StringId;
 
-pub const empty_id: StringId = @enumFromInt(0);
+pub const empty_id: StringId = @fromBackingInt(@intCast(0));
 
 /// `ends[i]` is one past the last byte of string `i`; string `i` starts at `ends[i - 1]`, or 0.
 const Strings = struct {
@@ -33,7 +33,7 @@ const IdContext = struct {
 
     pub fn hash(context: IdContext, key: u32) u64 {
         assert(key < context.strings.ends.len);
-        const bytes = context.strings.get(@enumFromInt(key));
+        const bytes = context.strings.get(@fromBackingInt(@intCast(key)));
         assert(bytes.len <= context.strings.bytes.len);
         return std.hash.Wyhash.hash(0, bytes);
     }
@@ -58,7 +58,7 @@ const BytesAdapter = struct {
 
     pub fn eql(adapter: BytesAdapter, bytes: []const u8, key: u32) bool {
         assert(key < adapter.strings.ends.len);
-        const candidate = adapter.strings.get(@enumFromInt(key));
+        const candidate = adapter.strings.get(@fromBackingInt(@intCast(key)));
         assert(candidate.len <= adapter.strings.bytes.len);
         return std.mem.eql(u8, bytes, candidate);
     }
@@ -71,7 +71,7 @@ fn table_find(table: *const Table, strings: *const Strings, bytes: []const u8) ?
     const adapter: BytesAdapter = .{ .strings = strings };
     const key = table.getKeyAdapted(bytes, adapter) orelse return null;
     assert(key < strings.ends.len);
-    return @enumFromInt(key);
+    return @fromBackingInt(@intCast(key));
 }
 
 pub const StringPool = struct {
@@ -118,9 +118,9 @@ pub const StringPool = struct {
         pool.ends.appendAssumeCapacity(@intCast(pool.bytes.items.len));
         const id: u32 = @intCast(pool.ends.items.len - 1);
         pool.table.putAssumeCapacityNoClobberContext(id, {}, pool.id_context());
-        assert(std.mem.eql(u8, pool.get(@enumFromInt(id)), bytes));
+        assert(std.mem.eql(u8, pool.get(@fromBackingInt(@intCast(id))), bytes));
         assert(pool.count() == id + 1);
-        return @enumFromInt(id);
+        return @fromBackingInt(@intCast(id));
     }
 
     /// The id of `bytes` if it is interned. Never inserts and never allocates.

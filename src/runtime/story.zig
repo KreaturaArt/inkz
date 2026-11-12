@@ -110,17 +110,31 @@ fn writeRtObjJson(w: *std.Io.Writer, obj: RuntimeObject) !void {
         .control_command => |cmd| {
             // Use the fromString table in reverse: just embed the string key
             const s = switch (cmd) {
-                .eval_start => "ev", .eval_end => "/ev", .output => "out",
-                .pop_eval_stack => "pop", .duplicate => "du",
-                .pop_function => "~ret", .pop_tunnel => "->->",
-                .begin_string => "str", .end_string => "/str",
-                .no_op => "nop", .choice_count => "choiceCnt",
-                .turns_since => "turns", .read_count => "readc", .turn_index => "turn",
-                .visit_index => "visit", .sequence_shuffle_index => "seq",
-                .seed_random => "srnd", .start_tag => "#", .end_tag => "/#",
-                .list_from_int => "listInt", .list_range => "range",
-                .list_random => "lrnd", .begin_thread => "thread",
-                .done => "done", .end_of_story => "end",
+                .eval_start => "ev",
+                .eval_end => "/ev",
+                .output => "out",
+                .pop_eval_stack => "pop",
+                .duplicate => "du",
+                .pop_function => "~ret",
+                .pop_tunnel => "->->",
+                .begin_string => "str",
+                .end_string => "/str",
+                .no_op => "nop",
+                .choice_count => "choiceCnt",
+                .turns_since => "turns",
+                .read_count => "readc",
+                .turn_index => "turn",
+                .visit_index => "visit",
+                .sequence_shuffle_index => "seq",
+                .seed_random => "srnd",
+                .start_tag => "#",
+                .end_tag => "/#",
+                .list_from_int => "listInt",
+                .list_range => "range",
+                .list_random => "lrnd",
+                .begin_thread => "thread",
+                .done => "done",
+                .end_of_story => "end",
             };
             try std.json.Stringify.encodeJsonString(s, .{}, w);
         },
@@ -382,7 +396,10 @@ pub const Story = struct {
         for (c.content) |obj| {
             switch (obj) {
                 .control_command => |cmd| switch (cmd) {
-                    .start_tag => { in_tag = true; tag_buf.clearRetainingCapacity(); },
+                    .start_tag => {
+                        in_tag = true;
+                        tag_buf.clearRetainingCapacity();
+                    },
                     .end_tag => {
                         in_tag = false;
                         const tag = try self.arena.allocator().dupe(u8, tag_buf.items);
@@ -637,7 +654,10 @@ pub const Story = struct {
                 if (ei > 0) try w.writeByte(',');
                 try w.writeAll("{\"type\":");
                 if (elem.push_pop_type) |ppt| {
-                    try w.print("{d}", .{@as(u32, switch (ppt) { .function => 1, .tunnel => 2 })});
+                    try w.print("{d}", .{@as(u32, switch (ppt) {
+                        .function => 1,
+                        .tunnel => 2,
+                    })});
                 } else {
                     try w.writeAll("0");
                 }
@@ -1010,8 +1030,7 @@ pub const Story = struct {
 
             // Must run *before* `step()`: executing the tail divert advances the pointer, so
             // `currentObject()` would no longer be the divert we need to detect.
-            if (self.state.current_choices.items.len > 0)
-            {
+            if (self.state.current_choices.items.len > 0) {
                 const elem = self.state.call_stack.currentElement();
                 const cur = elem.current_pointer;
                 if (!cur.isNull()) {
@@ -1265,8 +1284,7 @@ pub const Story = struct {
                             }
                             if (lookahead < self.state.output_stream.items.len) {
                                 const after_ws = self.state.output_stream.items[lookahead];
-                                if (after_ws == .string and std.mem.eql(u8, after_ws.string, "\n"))
-                                {
+                                if (after_ws == .string and std.mem.eql(u8, after_ws.string, "\n")) {
                                     try buf.append(self.allocator, ' ');
                                     i = lookahead;
                                     continue;
@@ -2455,13 +2473,19 @@ pub const Story = struct {
         // Flag 0x04: HasChoiceOnlyContent — always pop (even if condition failed)
         const choice_only: []const u8 = if (flags & 0x04 != 0) blk: {
             const v = self.state.evaluation_stack.pop() orelse RuntimeObject{ .string = "" };
-            break :blk switch (v) { .string => |s| s, else => "" };
+            break :blk switch (v) {
+                .string => |s| s,
+                else => "",
+            };
         } else "";
 
         // Flag 0x02: HasStartContent — always pop (even if condition failed)
         const start_content: []const u8 = if (flags & 0x02 != 0) blk: {
             const v = self.state.evaluation_stack.pop() orelse RuntimeObject{ .string = "" };
-            break :blk switch (v) { .string => |s| s, else => "" };
+            break :blk switch (v) {
+                .string => |s| s,
+                else => "",
+            };
         } else "";
 
         if (!show_choice) return;
@@ -2556,7 +2580,7 @@ pub const Story = struct {
             // Shift remaining items down
             const count = i - start;
             const remaining = stream.items.len - i;
-            std.mem.copyForwards(RuntimeObject, stream.items[start..start + remaining], stream.items[i..stream.items.len]);
+            std.mem.copyForwards(RuntimeObject, stream.items[start .. start + remaining], stream.items[i..stream.items.len]);
             stream.items.len -= count;
         }
     }
@@ -4122,7 +4146,9 @@ test "observeVariable: does not fire for unobserved variable" {
 
     const Ctx = struct {
         fired: bool = false,
-        fn callback(_: []const u8, _: RuntimeObject) void { result.fired = true; }
+        fn callback(_: []const u8, _: RuntimeObject) void {
+            result.fired = true;
+        }
         var result: @This() = .{};
     };
     Ctx.result = .{};

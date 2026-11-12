@@ -78,6 +78,8 @@ const VariableFixup = struct {
     container: ContainerIndex,
     position: u32,
     name: StringId,
+    /// A `VAR?` read (a `temp_get` until resolved) or a re-assignment (a `temp_assign`).
+    kind: enum { get, assign } = .get,
 };
 
 /// A list literal whose items and origins are names until the list definitions are known.
@@ -338,6 +340,22 @@ pub const ProgramBuilder = struct {
             .name = id,
         });
         try builder.add(.temp_get, id);
+    }
+
+    /// A re-assignment of `name` (ink's `"VAR=": name, "re": true`), which ink writes for
+    /// temps and globals alike: a global assignment if `name` is a declared global, resolved
+    /// in `finish`, else a temp assignment.
+    pub fn add_variable_assign(builder: *ProgramBuilder, name: []const u8) !void {
+        assert(builder.frames.items.len > 0);
+        assert(name.len > 0);
+        const id = try builder.intern(name);
+        try builder.variable_fixups.append(builder.gpa, .{
+            .container = builder.current(),
+            .position = builder.content_count(),
+            .name = id,
+            .kind = .assign,
+        });
+        try builder.add(.temp_assign, id);
     }
 
     /// A list literal of items named `origin.item`, with the origins it was declared with.
@@ -628,6 +646,14 @@ pub const ProgramBuilder = struct {
         for (builder.variable_fixups.items) |fixup| {
             const staged = builder.staged.items[fixup.container.to_int()];
             const at = staged.instructions_first + fixup.position;
+            if (fixup.kind == .assign) {
+                assert(opcodes[at] == .temp_assign);
+                if (builder.find_global(fixup.name)) |slot| {
+                    opcodes[at] = .global_assign;
+                    operands[at] = @backingInt(slot);
+                }
+                continue;
+            }
             assert(opcodes[at] == .temp_get);
             if (builder.find_global(fixup.name)) |slot| {
                 opcodes[at] = .global_get;

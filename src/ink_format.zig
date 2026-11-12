@@ -16,7 +16,7 @@ pub const key_meta_flags = "#f";
 
 pub const key_divert = "->";
 pub const key_tunnel_divert = "->t->";
-pub const key_function_call_0 = "f()";     // function call with 0 args
+pub const key_function_call_0 = "f()"; // function call with 0 args
 pub const key_function_call_prefix = "f("; // prefix for f(N) keys (N > 0)
 pub const key_external_call = "x()";
 pub const key_choice_point = "*";
@@ -27,7 +27,7 @@ pub const key_read_count = "CNT?";
 pub const key_divert_target_val = "^->";
 pub const key_var_pointer = "^var";
 pub const key_list = "list";
-pub const key_inline_tag = "#";             // inkVersion 20 inline tag object
+pub const key_inline_tag = "#"; // inkVersion 20 inline tag object
 
 // ── Modifier keys (secondary keys within an object) ──────────────────────────
 
