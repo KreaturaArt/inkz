@@ -79,7 +79,13 @@ fn buildContainer(
                 else
                     try std.fmt.allocPrint(arena, "{}", .{item_idx});
                 const child_idx = try buildContainer(
-                    arena, child_cc, containers, named_entries, my_idx, null, child_path,
+                    arena,
+                    child_cc,
+                    containers,
+                    named_entries,
+                    my_idx,
+                    null,
+                    child_path,
                 );
                 break :blk RuntimeObject{ .container = child_idx };
             },
@@ -109,7 +115,13 @@ fn buildContainer(
         else
             try arena.dupe(u8, nc.name);
         const child_idx = try buildContainer(
-            arena, nc.container, containers, named_entries, my_idx, nc.name, child_path,
+            arena,
+            nc.container,
+            containers,
+            named_entries,
+            my_idx,
+            nc.name,
+            child_path,
         );
         try meta_named.append(arena, .{ .name = nc.name, .container_idx = child_idx });
     }
@@ -154,7 +166,9 @@ fn convertCObject(arena: std.mem.Allocator, obj: CObject) !RuntimeObject {
         .divert => |t| .{ .divert = .{ .target = t } },
         .tunnel_divert => |t| .{ .divert = .{ .target = t, .push_pop_type = .tunnel } },
         .tunnel_divert_via_var => |n| .{ .divert = .{
-            .target = n, .is_variable = true, .push_pop_type = .tunnel,
+            .target = n,
+            .is_variable = true,
+            .push_pop_type = .tunnel,
         } },
         .container => unreachable, // handled in buildContainer
         .eval_start => .{ .control_command = .eval_start },
@@ -170,31 +184,42 @@ fn convertCObject(arena: std.mem.Allocator, obj: CObject) !RuntimeObject {
         // function, or a plain string literal. Mirror json_loader.parseStringObject.
         .string => |s| convertString(s),
         .var_assign => |va| .{ .variable_assignment = .{
-            .name = va.name, .is_new_decl = va.is_new, .is_global = true,
+            .name = va.name,
+            .is_new_decl = va.is_new,
+            .is_global = true,
         } },
         .var_ref => |n| .{ .variable_reference = .{ .name = n, .path_for_count = null } },
         .var_pointer => |vp| .{ .variable_pointer = .{
-            .name = vp.name, .context_index = vp.context_idx,
+            .name = vp.name,
+            .context_index = vp.context_idx,
         } },
         .temp_assign => |ta| .{ .variable_assignment = .{
-            .name = ta.name, .is_new_decl = ta.is_new, .is_global = false,
+            .name = ta.name,
+            .is_new_decl = ta.is_new,
+            .is_global = false,
         } },
         .cond_divert => |p| .{ .divert = .{ .target = p, .is_conditional = true } },
         .dup => .{ .control_command = .duplicate },
         .choice_point => |cp| .{ .choice_point = .{
-            .path = cp.path, .flags = @intCast(cp.flags),
+            .path = cp.path,
+            .flags = @intCast(cp.flags),
         } },
         .divert_target_val => |p| .{ .divert_target = p },
         .divert_via_var => |n| .{ .divert = .{ .target = n, .is_variable = true } },
         .read_count => |p| .{ .variable_reference = .{
-            .name = "", .path_for_count = p,
+            .name = "",
+            .path_for_count = p,
         } },
         .func_return => .{ .control_command = .pop_function },
         .function_call => |fc| .{ .divert = .{
-            .target = fc.name, .is_variable = fc.is_var, .push_pop_type = .function,
+            .target = fc.name,
+            .is_variable = fc.is_var,
+            .push_pop_type = .function,
         } },
         .external_call => |ec| .{ .divert = .{
-            .target = ec.name, .push_pop_type = .function, .external_args = ec.arg_count,
+            .target = ec.name,
+            .push_pop_type = .function,
+            .external_args = ec.arg_count,
         } },
         .list_val => |lv| blk: {
             const ink_list = try arena.create(value.InkList);

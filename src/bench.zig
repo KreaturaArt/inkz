@@ -206,9 +206,9 @@ fn write_report(
         assert(per_object > 0);
         const row = "| {s} | {d:.1} | {d:.0} | {d:.0} | {d:.0} | {d} | {d} | {d:.1} | {d:.2} |\n";
         try writer.print(row, .{
-            m.name,                 m.load_microseconds,     m.play_turns_per_second,
+            m.name,                  m.load_microseconds,     m.play_turns_per_second,
             m.play_lines_per_second, m.play_steps_per_second, m.loaded_bytes,
-            m.runtime_objects_count, per_object,             m.compile_milliseconds,
+            m.runtime_objects_count, per_object,              m.compile_milliseconds,
         });
     }
     try writer.print("\nPeak RSS of the whole run: {d} KiB. Plays use seeded random choices " ++

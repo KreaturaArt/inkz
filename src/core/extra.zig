@@ -146,7 +146,7 @@ fn from_word(comptime Field: type, word: u32) Field {
         },
         .@"enum" => |enumeration| {
             const tag: enumeration.tag_type = @intCast(word);
-            return @enumFromInt(tag);
+            return @fromBackingInt(@intCast(tag));
         },
         else => comptime unreachable,
     }

@@ -199,7 +199,7 @@ pub const OperandKind = enum {
 /// What the operand of `opcode` means. The switch has no `else`, so a new opcode can't be
 /// added without deciding its operand.
 pub fn operand_kind(opcode: Opcode) OperandKind {
-    assert(@intFromEnum(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
+    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
     const kind: OperandKind = switch (opcode) {
         .text, .tag, .temp_get, .temp_declare, .temp_assign => .string,
         .divert_target, .enter_container, .read_count => .container,
@@ -225,7 +225,7 @@ pub fn operand_kind(opcode: Opcode) OperandKind {
         .list_invert => .none,
     };
     // Every opcode from `eval_start` on is a command, a native function or flow.
-    if (@intFromEnum(opcode) >= @intFromEnum(Opcode.eval_start)) assert(kind != .integer);
+    if (@backingInt(opcode) >= @backingInt(Opcode.eval_start)) assert(kind != .integer);
     return kind;
 }
 
@@ -253,7 +253,7 @@ fn word_of(comptime kind: OperandKind, operand: Operand(kind)) u32 {
         .none => 0,
         .integer, .float => @bitCast(operand),
         .boolean => @intFromBool(operand),
-        else => @intFromEnum(operand),
+        else => @backingInt(operand),
     };
     if (kind == .boolean) assert(word <= 1);
     if (kind == .none) assert(word == 0);
@@ -288,7 +288,7 @@ pub const Instruction = struct {
                 assert(word <= 1);
                 break :boolean word == 1;
             },
-            else => @enumFromInt(word),
+            else => @fromBackingInt(@intCast(word)),
         };
     }
 };
@@ -308,7 +308,7 @@ test "every opcode round-trips through its typed operand" {
             .string => StringId.from_int(7),
             .container => ContainerIndex.from_int(3),
             .global => GlobalSlot.from_int(1),
-            else => @enumFromInt(42),
+            else => @fromBackingInt(@intCast(42)),
         };
         const instruction = Instruction.init(opcode, sample);
         try std.testing.expectEqual(opcode, instruction.opcode);

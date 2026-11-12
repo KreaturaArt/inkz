@@ -468,9 +468,8 @@ const Loader = struct {
         if (std.mem.eql(u8, key, "VAR?")) return builder.add_variable_get(value);
         if (std.mem.eql(u8, key, "#")) return builder.add(.tag, try builder.intern(value));
         if (std.mem.eql(u8, key, "VAR=")) {
-            const slot = try builder.global(value);
-            if (fields.reassignment) return builder.add(.global_assign, slot);
-            return builder.add(.global_declare, slot);
+            if (fields.reassignment) return builder.add_variable_assign(value);
+            return builder.add(.global_declare, try builder.global(value));
         }
         if (std.mem.eql(u8, key, "temp=")) {
             const name = try builder.intern(value);

@@ -65,7 +65,7 @@ pub const Program = struct {
     /// The string "\n", always interned: newline output items are slices of it.
     newline: StringId,
 
-    pub const root: ContainerIndex = @enumFromInt(0);
+    pub const root: ContainerIndex = @fromBackingInt(@intCast(0));
 
     pub const Fault = enum {
         ok,

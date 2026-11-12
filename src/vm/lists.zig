@@ -215,6 +215,84 @@ pub const Lists = struct {
         return best;
     }
 
+    /// ink's ListWithSubRange (LIST_RANGE): the items with values in `[minimum, maximum]`,
+    /// in iteration order. A bound is an int, or a non-empty list's lowest (or highest)
+    /// value; anything else leaves the bound open.
+    pub fn sub_range(
+        lists: Lists,
+        list: ListReference,
+        minimum: Value,
+        maximum: Value,
+    ) Error!Value {
+        assert(lists.slab.used <= lists.slab.words.len);
+        const view = lists.slab.view(list);
+        var builder: Builder = .{};
+        if (view.items.len == 0) return builder.finish(lists.slab);
+        var low: i32 = 0;
+        var high: i32 = std.math.maxInt(i32);
+        switch (minimum) {
+            .integer => |number| low = number,
+            .list => |bound| if (lists.min_item(lists.slab.view(bound))) |item| {
+                low = lists.item_value(item);
+            },
+            else => {},
+        }
+        switch (maximum) {
+            .integer => |number| high = number,
+            .list => |bound| if (lists.max_item(lists.slab.view(bound))) |item| {
+                high = lists.item_value(item);
+            },
+            else => {},
+        }
+        try lists.origin_names(view, &builder);
+        for (view.items) |item| {
+            const value = lists.item_value(item);
+            if (value >= low and value <= high) try builder.add(item);
+        }
+        assert(builder.items_count <= view.items.len);
+        return builder.finish(lists.slab);
+    }
+
+    /// The list item of origin `origin_name` with value `value` as a one-item list, an
+    /// empty list if the origin has no such item, or null if there is no such origin
+    /// (ink's ListFromInt).
+    pub fn from_int(lists: Lists, origin_name: []const u8, value: i32) Error!?Value {
+        assert(lists.slab.used <= lists.slab.words.len);
+        const strings = &lists.program.strings;
+        for (lists.program.list_origins, 0..) |origin, position| {
+            if (!std.mem.eql(u8, strings.get(origin.name), origin_name)) continue;
+            var builder: Builder = .{};
+            if (lists.item_with_value(.from_int(@intCast(position)), value)) |item| {
+                try builder.add(item);
+                try builder.add_origin(.from_int(@intCast(position)));
+            }
+            return try builder.finish(lists.slab);
+        }
+        assert(lists.program.list_origins.len < std.math.maxInt(u32));
+        return null;
+    }
+
+    /// The item at `position` in iteration (insertion) order, as a one-item list.
+    pub fn item_list(lists: Lists, list: ListReference, position: u32) Error!Value {
+        assert(lists.slab.used <= lists.slab.words.len);
+        const view = lists.slab.view(list);
+        assert(position < view.items.len);
+        const item = view.items[position];
+        var builder: Builder = .{};
+        try builder.add(item);
+        try builder.add_origin(lists.item_origin(item));
+        return builder.finish(lists.slab);
+    }
+
+    /// An empty list declared with `old`'s origins (ink's RetainListOriginsForAssignment).
+    pub fn empty_with_origins_of(lists: Lists, old: ListReference) Error!Value {
+        assert(lists.slab.used <= lists.slab.words.len);
+        var builder: Builder = .{};
+        try lists.origin_names(lists.slab.view(old), &builder);
+        assert(builder.items_count == 0);
+        return builder.finish(lists.slab);
+    }
+
     pub fn count(lists: Lists, list: ListReference) u32 {
         assert(lists.slab.used <= lists.slab.words.len);
         const items_count: u32 = @intCast(lists.slab.view(list).items.len);

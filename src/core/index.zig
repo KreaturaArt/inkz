@@ -17,8 +17,8 @@ pub fn Index(comptime name: []const u8) type {
 
         /// Wraps a position. `value` must not be the `.none` bit pattern.
         pub fn from_int(value: u32) Self {
-            assert(value != @intFromEnum(Self.none));
-            const index: Self = @enumFromInt(value);
+            assert(value != @backingInt(Self.none));
+            const index: Self = @fromBackingInt(@intCast(value));
             assert(index != .none);
             return index;
         }
@@ -26,15 +26,15 @@ pub fn Index(comptime name: []const u8) type {
         /// Unwraps a position. Panics on `.none`, which has no position.
         pub fn to_int(index: Self) u32 {
             assert(index != .none);
-            const value = @intFromEnum(index);
+            const value = @backingInt(index);
             assert(value < std.math.maxInt(u32));
             return value;
         }
 
         pub fn is_none(index: Self) bool {
             const result = index == .none;
-            assert(result == (@intFromEnum(index) == std.math.maxInt(u32)));
-            if (!result) assert(@intFromEnum(index) < std.math.maxInt(u32));
+            assert(result == (@backingInt(index) == std.math.maxInt(u32)));
+            if (!result) assert(@backingInt(index) < std.math.maxInt(u32));
             return result;
         }
 
@@ -42,7 +42,7 @@ pub fn Index(comptime name: []const u8) type {
         pub fn from_optional(value: ?u32) Self {
             const index: Self = if (value) |position| from_int(position) else .none;
             assert((value == null) == (index == .none));
-            if (value) |position| assert(@intFromEnum(index) == position);
+            if (value) |position| assert(@backingInt(index) == position);
             return index;
         }
 
