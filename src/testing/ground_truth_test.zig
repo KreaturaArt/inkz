@@ -22,7 +22,8 @@ pub fn collect_cases(arena: std.mem.Allocator, io: std.Io) ![]const []const u8 {
     while (try walker.next(io)) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.path, ".expected")) continue;
-        if (std.mem.eql(u8, entry.path, "dotnet_random.expected")) continue;
+        // .NET reference data for unit tests, not story cases.
+        if (std.mem.startsWith(u8, entry.path, "dotnet_")) continue;
         const id = entry.path[0 .. entry.path.len - ".expected".len];
         try ids.append(arena, try arena.dupe(u8, id));
     }
