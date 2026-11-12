@@ -46,14 +46,14 @@ pub const Item = struct {
     class: Class,
     length: u16,
 
-    fn bytes(item: Item, strings: anytype) []const u8 {
+    pub fn bytes(item: Item, strings: anytype) []const u8 {
         assert(item.kind == .text or item.kind == .tag);
         const whole = strings.get(item.string);
         assert(item.start + item.length <= whole.len);
         return whole[item.start..][0..item.length];
     }
 
-    fn command(kind: Kind) Item {
+    pub fn command(kind: Kind) Item {
         assert(kind != .text and kind != .tag);
         const item: Item = .{
             .string = @fromBackingInt(@intCast(0)),

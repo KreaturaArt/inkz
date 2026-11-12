@@ -55,6 +55,9 @@ pub const Choices = struct {
     snapshots: BoundedStack(Snapshot),
     frames: BoundedStack(Frame),
     temps: BoundedStack(Temp),
+    /// How many leading choices have their visible index set: ink sets a choice's `index`
+    /// only when the host reads currentChoices, and saves write it.
+    indexed_count: u32 = 0,
 
     pub const Fault = enum {
         ok,
@@ -91,6 +94,7 @@ pub const Choices = struct {
         choices.snapshots.clear();
         choices.frames.clear();
         choices.temps.clear();
+        choices.indexed_count = 0;
         assert(choices.records.is_empty());
     }
 

@@ -10,6 +10,8 @@ const story_module = @import("../vm/story.zig");
 const Story = story_module.Story;
 const story_paths = @import("../vm/story_paths.zig");
 const evaluate_module = @import("../vm/evaluate.zig");
+const save_module = @import("../vm/save.zig");
+const load_module = @import("../vm/load.zig");
 const value_module = @import("../vm/value.zig");
 const Severity = @import("../vm/state.zig").Diagnostic.Severity;
 
@@ -31,6 +33,8 @@ pub const NewEngine = struct {
     /// The text of the last `evaluate`, and its result's text.
     evaluated: std.ArrayList(u8) = .empty,
     evaluated_result: std.ArrayList(u8) = .empty,
+    /// The last save, for `load` and `load_fresh`.
+    saved: std.ArrayList(u8) = .empty,
     /// What `write_messages` writes; heap-allocated as the story's error handler context.
     messages: *Messages,
     bindings: std.ArrayList(*Bound) = .empty,
@@ -69,6 +73,7 @@ pub const NewEngine = struct {
         engine.names.deinit(engine.gpa);
         engine.evaluated.deinit(engine.gpa);
         engine.evaluated_result.deinit(engine.gpa);
+        engine.saved.deinit(engine.gpa);
         engine.messages.deinit(engine.gpa);
         engine.gpa.destroy(engine.messages);
         for (engine.bindings.items) |bound| bound.release(engine.gpa);
@@ -275,6 +280,45 @@ pub const NewEngine = struct {
             },
             .divert_target => |target| .{ .other = engine.story.path_of(target) },
         };
+    }
+
+    pub fn current_text(engine: *NewEngine) ![]const u8 {
+        assert(engine.story.program == engine.program);
+        assert(engine.story.state.memory.len > 0);
+        return engine.story.current_text();
+    }
+
+    /// `save`: the state's JSON, kept for `load` and `load_fresh`.
+    pub fn save(engine: *NewEngine) ![]const u8 {
+        assert(engine.story.program == engine.program);
+        assert(engine.story.state.memory.len > 0);
+        engine.saved.clearRetainingCapacity();
+        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.saved);
+        try save_module.to_json(engine.story, &writer.writer);
+        engine.saved = writer.toArrayList();
+        return engine.saved.items;
+    }
+
+    /// `load`: the last save into this story.
+    pub fn load(engine: *NewEngine) !void {
+        assert(engine.story.program == engine.program);
+        assert(engine.saved.items.len > 0);
+        try load_module.load_json(engine.story, engine.saved.items);
+    }
+
+    /// `load_fresh`: a new story from the same program, then the last save, as when a game
+    /// restarts. Bindings, observers and the error handler start over, as in the harness.
+    pub fn load_fresh(engine: *NewEngine) !void {
+        assert(engine.story.program == engine.program);
+        assert(engine.saved.items.len > 0);
+        const gpa = engine.gpa;
+        engine.story.deinit(gpa);
+        for (engine.bindings.items) |bound| bound.release(gpa);
+        engine.bindings.clearRetainingCapacity();
+        try engine.story.init(gpa, engine.program, .{});
+        engine.story.on_error = Messages.on_error;
+        engine.story.on_error_context = engine.messages;
+        try load_module.load_json(engine.story, engine.saved.items);
     }
 
     pub fn observe(engine: *NewEngine, name: []const u8) !void {

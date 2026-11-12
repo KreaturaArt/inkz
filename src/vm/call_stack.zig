@@ -22,6 +22,9 @@ pub const Pointer = struct {
     index: u32,
 
     pub const @"null": Pointer = .{ .container = .none, .index = 0 };
+    /// The index of a pointer at the container itself (ink's index -1), as loaded saves
+    /// give previous pointers; it resolves to no item.
+    pub const container_self: u32 = std.math.maxInt(u32);
 
     pub fn is_null(pointer: Pointer) bool {
         assert(@sizeOf(Pointer) == 8);

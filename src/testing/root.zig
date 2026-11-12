@@ -12,6 +12,7 @@ pub const transcripts = @import("transcripts.zig");
 pub const weave_reproductions = @import("weave_reproductions.zig");
 pub const new_engine_cases = @import("new_engine_cases.zig");
 pub const zero_allocation = @import("zero_allocation.zig");
+pub const save_load_test = @import("save_load_test.zig");
 
 test {
     _ = transcript;
@@ -25,4 +26,5 @@ test {
     _ = weave_reproductions;
     _ = new_engine_cases;
     _ = zero_allocation;
+    _ = save_load_test;
 }

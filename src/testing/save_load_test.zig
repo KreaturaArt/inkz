@@ -1,0 +1,210 @@
+//! Saving and loading on the new runtime (plan P6.1, P6.2), beyond the ground-truth
+//! transcripts (whose C# saves the new engine already reproduces byte for byte):
+//! - a save and load at every turn of every case doesn't change the play;
+//! - every C# save recorded in the ground truth loads, and saves back to the same JSON;
+//! - a corrupted save leaves the story unchanged.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const ink_json = @import("../core/ink_json.zig");
+const Program = @import("../core/program.zig").Program;
+const story_module = @import("../vm/story.zig");
+const save = @import("../vm/save.zig");
+const load = @import("../vm/load.zig");
+const state_module = @import("../vm/state.zig");
+const cases = @import("cases.zig");
+const ground_truth_test = @import("ground_truth_test.zig");
+const Story = story_module.Story;
+
+fn ignore_error(
+    context: ?*anyopaque,
+    message: []const u8,
+    severity: state_module.Diagnostic.Severity,
+) void {
+    assert(context == null);
+    assert(message.len > 0 or severity == .warning);
+}
+
+fn noop_external(
+    context: ?*anyopaque,
+    story: *Story,
+    arguments: []const story_module.HostValue,
+) anyerror!story_module.HostValue {
+    assert(context == null);
+    assert(arguments.len <= story_module.external_arguments_max and story.callback_depth > 0);
+    return .{ .integer = 1 };
+}
+
+fn prepare(story: *Story) void {
+    assert(story.callback_depth == 0);
+    assert(story.state.memory.len > 0);
+    for (story.program.externals) |external| {
+        const name = story.program.strings.get(external.name);
+        story.bind_external_function(name, noop_external, null, true) catch {};
+    }
+    story.on_error = ignore_error;
+}
+
+/// Plays up to `turns` turns choosing the first choice, writing every line and choice to
+/// `transcript`; with `round_trip`, saves and loads into a fresh story before each choice.
+fn play(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    transcript: *std.Io.Writer,
+    round_trip: bool,
+    save_buffer: []u8,
+) !void {
+    assert(save_buffer.len > 0);
+    assert(program.containers.len > 0);
+    var story: Story = undefined;
+    try story.init(gpa, program, .{});
+    defer story.deinit(gpa);
+    prepare(&story);
+    var turn: u32 = 0;
+    while (turn < 30) : (turn += 1) {
+        var lines: u32 = 0;
+        while (story.can_continue() and lines < 300) : (lines += 1) {
+            const line = story.cont() catch break;
+            try transcript.writeAll(line);
+        }
+        const count = story.visible_choices_count();
+        try transcript.print("[{d} choices]\n", .{count});
+        if (count == 0) return;
+        // ink doesn't save isInvisibleDefault, so a hidden fallback choice shows after a
+        // load, in C# too; turns holding one aren't round-tripped.
+        if (round_trip and !has_invisible_default(&story)) {
+            var writer: std.Io.Writer = .fixed(save_buffer);
+            try save.to_json(&story, &writer);
+            const json = writer.buffered();
+            story.deinit(gpa);
+            try story.init(gpa, program, .{});
+            prepare(&story);
+            try load.load_json(&story, json);
+            try std.testing.expectEqual(count, story.visible_choices_count());
+        }
+        try story.choose_choice_index(0);
+    }
+}
+
+fn has_invisible_default(story: *Story) bool {
+    assert(story.state.memory.len > 0);
+    assert(story.state.choices.count() <= story.state.choices.records.capacity());
+    for (story.state.choices.records.slice()) |choice| {
+        if (choice.invisible_default) return true;
+    }
+    return false;
+}
+
+test "a save and load at every turn doesn't change the play" {
+    // Goal: P6.2; save, load, continue gives the uninterrupted run, at every turn of every
+    // ground-truth case. Method: play each case twice, once with a round trip per turn.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    const save_buffer = try arena.alloc(u8, 1 << 20);
+    var checked: u32 = 0;
+    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
+            cases.cases_directory,
+            id,
+        });
+        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
+        var program = ink_json.load(arena, json) catch continue;
+        var plain: std.Io.Writer.Allocating = .init(arena);
+        var tripped: std.Io.Writer.Allocating = .init(arena);
+        play(std.testing.allocator, &program, &plain.writer, false, save_buffer) catch continue;
+        try play(std.testing.allocator, &program, &tripped.writer, true, save_buffer);
+        std.testing.expectEqualStrings(plain.written(), tripped.written()) catch |err| {
+            std.debug.print("case {s}\n", .{id});
+            return err;
+        };
+        checked += 1;
+    }
+    try std.testing.expect(checked > 150);
+}
+
+test "every C# save in the ground truth loads and saves back to the same JSON" {
+    // Goal: P6.1 and P6.2 interop (D15). Method: load each recorded `save:` into a fresh
+    // story of its case and save again; ink and this runtime write keys in the same order,
+    // so the text must match exactly.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var checked: u32 = 0;
+    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+        const expected_path = try std.fmt.allocPrint(arena, "{s}/{s}.expected", .{
+            cases.cases_directory,
+            id,
+        });
+        const expected = try std.Io.Dir.cwd().readFileAlloc(
+            io,
+            expected_path,
+            arena,
+            .limited(16 << 20),
+        );
+        if (std.mem.indexOf(u8, expected, "\nsave: ") == null) continue;
+        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
+            cases.cases_directory,
+            id,
+        });
+        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
+        var program = try ink_json.load(arena, json);
+        var lines = std.mem.splitScalar(u8, expected, '\n');
+        while (lines.next()) |line| {
+            if (!std.mem.startsWith(u8, line, "save: ")) continue;
+            const saved = line["save: ".len..];
+            var story: Story = undefined;
+            try story.init(std.testing.allocator, &program, .{});
+            defer story.deinit(std.testing.allocator);
+            try load.load_json(&story, saved);
+            var again: std.Io.Writer.Allocating = .init(arena);
+            try save.to_json(&story, &again.writer);
+            std.testing.expectEqualStrings(saved, again.written()) catch |err| {
+                std.debug.print("case {s}\n", .{id});
+                return err;
+            };
+            checked += 1;
+        }
+    }
+    try std.testing.expect(checked >= 6);
+}
+
+test "a corrupted save leaves the story unchanged" {
+    // Goal: P6.2 validate-then-commit. Method: break a real save in several ways; each load
+    // fails and the state hash doesn't move.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    const path = cases.cases_directory ++ "/audit/save_choices_and_seed.ink.json";
+    const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(1 << 20));
+    var program = try ink_json.load(arena, json);
+    var story: Story = undefined;
+    try story.init(std.testing.allocator, &program, .{});
+    defer story.deinit(std.testing.allocator);
+    story.set_random_seed(5);
+    while (story.can_continue()) _ = try story.cont();
+    var saved: std.Io.Writer.Allocating = .init(arena);
+    try save.to_json(&story, &saved.writer);
+    try story.choose_choice_index(1);
+    while (story.can_continue()) _ = try story.cont();
+    const before = story.state.hash();
+    const good = saved.written();
+    const bad_list = "\"roll\":{\"list\":{\"no.such\":1}},\"x\":";
+    const broken = [_][]const u8{
+        good[0 .. good.len / 2],
+        try std.mem.replaceOwned(u8, arena, good, "\"turnIdx\":", "\"turnIdx\":\"x\","),
+        try std.mem.replaceOwned(u8, arena, good, "\"0.c-0\"", "\"nowhere\""),
+        try std.mem.replaceOwned(u8, arena, good, "\"inkSaveVersion\":10", "\"inkSaveVersion\":7"),
+        try std.mem.replaceOwned(u8, arena, good, "\"roll\":", bad_list),
+        try std.mem.replaceOwned(u8, arena, good, "\"evalStack\":[]", "\"evalStack\":[\"bad\"]"),
+    };
+    for (broken) |text| {
+        if (load.load_json(&story, text)) |_| return error.TestUnexpectedResult else |_| {}
+        try std.testing.expectEqual(before, story.state.hash());
+    }
+    try load.load_json(&story, good);
+    try std.testing.expect(story.state.hash() != before);
+}

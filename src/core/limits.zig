@@ -28,6 +28,7 @@ pub const element_bytes = struct {
     pub const global = value * 2; // current value + default value (§4.10)
     pub const ancestor = 4; // ContainerIndex, for the visit-counting walk (§4.6)
     pub const snapshot = 24; // a choice's stored thread: frame and temp ranges, previous pointer
+    pub const load_node = 16; // a token of a save being loaded (vm/json_tree.zig)
 };
 
 /// Bounds for one story instance. Every field is a maximum count unless its name says bytes.
@@ -57,6 +58,8 @@ pub const Limits = struct {
     evaluate_depth_max: u32 = 4,
     container_depth_max: u32 = 256,
     path_components_max: u32 = 64,
+    /// Tokens of a save document `load_json` can hold (its fixed scratch, plan §4.10).
+    load_nodes_max: u32 = 16 * 1024,
 
     pub const Fault = enum {
         ok,
@@ -158,6 +161,7 @@ pub const Limits = struct {
         total += @as(u64, limits.observer_events_max) * bytes.observer_event;
         total += @as(u64, limits.errors_max + limits.warnings_max) * bytes.diagnostic;
         total += @as(u64, limits.container_depth_max) * bytes.ancestor;
+        total += @as(u64, limits.load_nodes_max) * bytes.load_node;
         assert(total >= limits.heap_bytes_max);
         assert(total < std.math.maxInt(u64) / 4);
         return total;
@@ -235,7 +239,7 @@ test "the default byte budget is pinned" {
     // Method: compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 1_826_560), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 2_088_704), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories (P4.12).
@@ -262,6 +266,7 @@ pub const small_story_limits: Limits = .{
     .errors_max = 8,
     .warnings_max = 8,
     .container_depth_max = 64,
+    .load_nodes_max = 4096,
 };
 
 test "the sizing example in docs/benchmarks.md" {
@@ -271,13 +276,13 @@ test "the sizing example in docs/benchmarks.md" {
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 1_475_968), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 1_853_824), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 1_738_112), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_115_968), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 115_248), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 174_896), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 180_784), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 240_432), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {

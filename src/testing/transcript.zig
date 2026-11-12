@@ -236,6 +236,12 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
             }
         },
         .evaluate => try apply_evaluate(engine, action, writer),
+        .current_text => {
+            if (!@hasDecl(Engine, "current_text")) return error.Unsupported;
+            try writer.writeAll("current_text: ");
+            try write_json_string(writer, try engine.current_text());
+            try writer.writeByte('\n');
+        },
         .tags_at => {
             if (!@hasDecl(Engine, "tags_at")) return error.Unsupported;
             try writer.writeAll("tags: ");

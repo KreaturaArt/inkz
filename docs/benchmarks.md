@@ -23,7 +23,8 @@ that. The total has three parts:
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
   (8 bytes per counted container), the line buffer (`output_bytes_max`), the string heap, the
   list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
-  observer queue, errors and warnings, and the ancestor scratch for visit counting.
+  observer queue, errors and warnings, the ancestor scratch for visit counting, and the
+  scratch `load_json` tokenizes a save into (16 bytes per token, `load_nodes_max`).
 
 Flows don't multiply the budget: all flows of a story share one state, and only the current
 flow uses the live buffers. A switched-out flow is packed into the parking region, taking
@@ -47,12 +48,12 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copy + undo log) | 197,120 | 31,872 |
-| Shared | 1,475,968 | 115,248 |
-| **Total per story** | **1,853,824** (1.77 MiB) | **174,896** (171 KiB) |
+| Shared | 1,738,112 | 180,784 |
+| **Total per story** | **2,115,968** (2.02 MiB) | **240,432** (235 KiB) |
 
-The whole game, one main story and four side stories, needs 1,853,824 + 4 × 174,896 =
-2,553,408 bytes (2.44 MiB), fixed at load time. In the main story the 1 MiB string heap is
-more than half of the total. It is the first limit to tune: measure the heap's high-water
+The whole game, one main story and four side stories, needs 2,115,968 + 4 × 240,432 =
+3,077,696 bytes (2.94 MiB), fixed at load time. In the main story the 1 MiB string heap is
+about half of the total. It is the first limit to tune: measure the heap's high-water
 mark over a full playthrough, double it, and round up.
 
 ## Weave heuristics (P0.12)
