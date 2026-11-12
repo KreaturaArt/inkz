@@ -173,3 +173,28 @@ test "fuzz: the new runtime's save loader never crashes" {
     try new_save.to_json(&story, &writer);
     try std.testing.fuzz({}, load_save_new, .{ .corpus = &.{ "{}", writer.buffered() } });
 }
+
+const NextTokenizer = @import("compiler_next/tokenizer.zig");
+
+/// The new tokenizer (P7.1): in any mode sequence, every token but eof consumes input, so it
+/// ends with eof at the input's end.
+fn tokenize_next(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buffer: [input_bytes_max + 1]u8 = undefined;
+    const source = fuzz_input(smith, &buffer);
+    var tokenizer: NextTokenizer.Tokenizer = .init(source);
+    var tokens: u32 = 0;
+    while (tokens <= source.len + 1) : (tokens += 1) {
+        const mode: NextTokenizer.Mode = @fromBackingInt(@intCast(smith.value(u8) % 5));
+        const token = tokenizer.next(mode);
+        assert(token.start <= token.end and token.end <= source.len);
+        if (token.tag == .eof) {
+            assert(token.start == source.len);
+            return;
+        }
+    }
+    return error.TokenizerDidNotTerminate;
+}
+
+test "fuzz: the new tokenizer ends in every mode" {
+    try std.testing.fuzz({}, tokenize_next, .{ .corpus = &ink_corpus });
+}
