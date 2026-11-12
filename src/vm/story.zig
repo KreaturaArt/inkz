@@ -43,6 +43,8 @@ pub const Error = error{
     MissingExternalBinding,
     /// More globals changed in one `cont` than `observer_events_max`.
     ObserverQueueLimit,
+    /// A mutating call from inside a callback (only evaluate_function may nest).
+    Reentrant,
     /// A bound external function returned an error.
     ExternalFunctionFailed,
 };
@@ -116,6 +118,10 @@ pub const Story = struct {
     /// ink's batchObservingVariableChanges: inside the outermost ContinueInternal, changed
     /// globals are queued in `state.observer_events` and notified at its end.
     batching_observers: bool = false,
+    /// Callbacks running now (externals, observers, the error handler).
+    callback_depth: u32 = 0,
+    /// evaluate_function calls running now.
+    evaluate_depth: u32 = 0,
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
@@ -132,6 +138,7 @@ pub const Story = struct {
     /// ink's ResetState: a fresh state, with the global declaration run again.
     pub fn reset_state(story: *Story) Error!void {
         assert(story.state.memory.len > 0);
+        if (story.callback_depth > 0) return error.Reentrant;
         story.state.reset();
         story.diverted_pointer = .null;
         try story.reset_globals();
@@ -224,6 +231,13 @@ pub const Story = struct {
     /// ink's Continue: the next line. Story errors stay in `state.errors`.
     pub fn cont(story: *Story) Error![]const u8 {
         assert(story.state.line_bytes.len > 0);
+        if (story.callback_depth > 0) return error.Reentrant;
+        return story.next_line();
+    }
+
+    /// `cont` without the reentrancy check, for evaluate_function's loop.
+    pub fn next_line(story: *Story) Error![]const u8 {
+        assert(story.state.line_bytes.len > 0);
         assert(story.can_continue());
         if (!story.has_validated_externals) try story.validate_external_bindings();
         story.state.did_safe_exit = false;
@@ -259,6 +273,8 @@ pub const Story = struct {
             for (list) |diagnostic| {
                 var writer: std.Io.Writer = .fixed(&buffer);
                 messages.write(story, diagnostic, &writer) catch {};
+                story.callback_depth += 1;
+                defer story.callback_depth -= 1;
                 handler(story.on_error_context, writer.buffered(), diagnostic.severity);
             }
         }
@@ -266,6 +282,8 @@ pub const Story = struct {
             const dropped = state.diagnostics_dropped;
             const text = std.fmt.bufPrint(&buffer, "RUNTIME ERROR: {d} more errors and " ++
                 "warnings didn't fit errors_max or warnings_max", .{dropped}) catch &buffer;
+            story.callback_depth += 1;
+            defer story.callback_depth -= 1;
             handler(story.on_error_context, text, .@"error");
         }
         state.reset_errors();
@@ -354,6 +372,8 @@ pub const Story = struct {
             if (record.slot != slot) continue;
             const callback: Observer = @ptrCast(@alignCast(record.callback.?));
             const value = ops.host_value(story, story.state.globals[slot.to_int()]);
+            story.callback_depth += 1;
+            defer story.callback_depth -= 1;
             callback(record.context, name, value);
         }
     }
@@ -527,6 +547,7 @@ pub const Story = struct {
 
     /// ink's ChooseChoiceIndex.
     pub fn choose_choice_index(story: *Story, position: u32) Error!void {
+        if (story.callback_depth > 0) return error.Reentrant;
         assert(!story.can_continue());
         const choice = story.visible_choice(position);
         story.state.choices.restore(&story.state.call_stack, choice) catch return error.FrameLimit;
@@ -550,6 +571,7 @@ pub const Story = struct {
         assert(name.len > 0);
         assert(value != .tag and value != .variable_pointer);
         const slot = story.program.global_by_name(name) orelse return error.VariableNotDeclared;
+        if (story.callback_depth > 0) return error.Reentrant;
         try ops.set_global(story, slot, value);
         assert(story.state.globals[slot.to_int()] == std.meta.activeTag(value) or value == .list);
     }

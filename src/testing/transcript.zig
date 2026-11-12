@@ -220,14 +220,7 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
             if (!@hasDecl(Engine, "visit_count")) return error.Unsupported;
             try writer.print("visit_count: {d}\n", .{try engine.visit_count(action.argument)});
         },
-        .set => {
-            if (!@hasDecl(Engine, "set")) return error.Unsupported;
-            const space = std.mem.indexOfScalar(u8, action.argument, ' ') orelse
-                return error.BadActionArgument;
-            var buffer: [4096]u8 = undefined;
-            const value = try parse_typed(action.argument[space + 1 ..], &buffer);
-            try engine.set(action.argument[0..space], value);
-        },
+        .set => try apply_set(engine, action),
         .get => {
             if (!@hasDecl(Engine, "get")) return error.Unsupported;
             try writer.writeAll("value: ");
@@ -242,6 +235,7 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
                 try writer.writeByte('\n');
             }
         },
+        .evaluate => try apply_evaluate(engine, action, writer),
         .tags_at => {
             if (!@hasDecl(Engine, "tags_at")) return error.Unsupported;
             try writer.writeAll("tags: ");
@@ -257,6 +251,38 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
         else => return error.Unsupported,
     }
     assert(action.kind != .play);
+}
+
+/// `set <variable> <typed value>`.
+fn apply_set(engine: anytype, action: Action) anyerror!void {
+    assert(action.argument.len > 0);
+    const Engine = @typeInfo(@TypeOf(engine)).pointer.child;
+    if (!@hasDecl(Engine, "set")) return error.Unsupported;
+    assert(action.kind == .set);
+    const space = std.mem.indexOfScalar(u8, action.argument, ' ') orelse
+        return error.BadActionArgument;
+    var buffer: [4096]u8 = undefined;
+    const value = try parse_typed(action.argument[space + 1 ..], &buffer);
+    try engine.set(action.argument[0..space], value);
+}
+
+/// `evaluate <function> [<typed value>...]`: records the function's text and result.
+fn apply_evaluate(engine: anytype, action: Action, writer: *std.Io.Writer) anyerror!void {
+    assert(action.argument.len > 0);
+    const Engine = @typeInfo(@TypeOf(engine)).pointer.child;
+    if (!@hasDecl(Engine, "evaluate")) return error.Unsupported;
+    assert(action.kind == .evaluate);
+    const space = std.mem.indexOfScalar(u8, action.argument, ' ');
+    const name = if (space) |at| action.argument[0..at] else action.argument;
+    var arguments: Arguments = .{};
+    var buffer: [4096]u8 = undefined;
+    if (space) |at| try parse_typed_list(action.argument[at + 1 ..], &buffer, &arguments);
+    const evaluated = try engine.evaluate(name, arguments.values[0..arguments.count]);
+    try writer.writeAll("text: ");
+    try write_json_string(writer, evaluated.text);
+    try writer.writeAll("\nresult: ");
+    try write_value(writer, evaluated.result);
+    try writer.writeByte('\n');
 }
 
 fn write_tags(writer: *std.Io.Writer, tags: []const []const u8) !void {
@@ -345,9 +371,55 @@ fn pick(random: *DotnetRandom, count: u32) u32 {
     return index;
 }
 
+/// The typed values of an `evaluate` action, after the function name.
+pub const Arguments = struct {
+    values: [16]Value = undefined,
+    count: u32 = 0,
+};
+
+/// Parses `text` as typed values, one after another; strings are unescaped into `buffer`.
+pub fn parse_typed_list(text_raw: []const u8, buffer: []u8, arguments: *Arguments) !void {
+    assert(buffer.len > 0);
+    var rest = std.mem.trim(u8, text_raw, " ");
+    var used: usize = 0;
+    while (rest.len > 0) {
+        if (arguments.count == arguments.values.len) return error.BadActionArgument;
+        const space = std.mem.indexOfScalar(u8, rest, ' ') orelse return error.BadActionArgument;
+        const after_type = std.mem.trimStart(u8, rest[space + 1 ..], " ");
+        const value_end = if (std.mem.startsWith(u8, rest, "string"))
+            try json_string_end(after_type)
+        else
+            std.mem.indexOfScalar(u8, after_type, ' ') orelse after_type.len;
+        const consumed = rest.len - after_type.len + value_end;
+        const value = try parse_typed(rest[0..consumed], buffer[used..]);
+        if (value == .string) used += value.string.len;
+        arguments.values[arguments.count] = value;
+        arguments.count += 1;
+        rest = std.mem.trimStart(u8, rest[consumed..], " ");
+    }
+    assert(arguments.count <= arguments.values.len);
+}
+
+/// The length of the JSON string literal at the start of `text`.
+fn json_string_end(text: []const u8) !usize {
+    assert(text.len < 1 << 20);
+    if (text.len == 0 or text[0] != '"') return error.BadActionArgument;
+    var position: usize = 1;
+    while (position < text.len) : (position += 1) {
+        if (text[position] == '\\') {
+            position += 1;
+        } else if (text[position] == '"') {
+            return position + 1;
+        }
+    }
+    assert(position == text.len);
+    return error.BadActionArgument;
+}
+
 /// A typed value as the harness reads one: `int 5`, `float 2.5`, `bool true` or
 /// `string "text"` (JSON-escaped; unescaped into `buffer`).
 pub fn parse_typed(text_raw: []const u8, buffer: []u8) !Value {
+    assert(buffer.len > 0);
     const text = std.mem.trim(u8, text_raw, " ");
     const space = std.mem.indexOfScalar(u8, text, ' ') orelse return error.BadActionArgument;
     const kind = text[0..space];

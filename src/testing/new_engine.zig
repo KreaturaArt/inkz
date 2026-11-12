@@ -9,6 +9,7 @@ const Program = @import("../core/program.zig").Program;
 const story_module = @import("../vm/story.zig");
 const Story = story_module.Story;
 const story_paths = @import("../vm/story_paths.zig");
+const evaluate_module = @import("../vm/evaluate.zig");
 const value_module = @import("../vm/value.zig");
 const Severity = @import("../vm/state.zig").Diagnostic.Severity;
 
@@ -27,6 +28,9 @@ pub const NewEngine = struct {
     /// Text for the last `get` and the global names, owned until the next call.
     scratch: std.ArrayList(u8) = .empty,
     names: std.ArrayList([]const u8) = .empty,
+    /// The text of the last `evaluate`, and its result's text.
+    evaluated: std.ArrayList(u8) = .empty,
+    evaluated_result: std.ArrayList(u8) = .empty,
     /// What `write_messages` writes; heap-allocated as the story's error handler context.
     messages: *Messages,
     bindings: std.ArrayList(*Bound) = .empty,
@@ -63,6 +67,8 @@ pub const NewEngine = struct {
         if (engine.exception) |text| engine.gpa.free(text);
         engine.scratch.deinit(engine.gpa);
         engine.names.deinit(engine.gpa);
+        engine.evaluated.deinit(engine.gpa);
+        engine.evaluated_result.deinit(engine.gpa);
         engine.messages.deinit(engine.gpa);
         engine.gpa.destroy(engine.messages);
         for (engine.bindings.items) |bound| bound.release(engine.gpa);
@@ -212,7 +218,66 @@ pub const NewEngine = struct {
         return result;
     }
 
-    /// A host value as the harness renders one.
+    /// `evaluate`: the function's text and result, owned until the next call.
+    pub fn evaluate(
+        engine: *NewEngine,
+        name: []const u8,
+        arguments: []const transcript.Value,
+    ) !struct { text: []const u8, result: transcript.Value } {
+        assert(arguments.len <= 16);
+        assert(name.len > 0);
+        var hosts: [16]story_module.HostValue = undefined;
+        for (arguments, 0..) |argument, position| hosts[position] = switch (argument) {
+            .int => |number| .{ .integer = @intCast(number) },
+            .float => |number| .{ .float = @floatCast(number) },
+            .bool => |flag| .{ .bool = flag },
+            .string => |text| .{ .string = text },
+            else => .null,
+        };
+        engine.evaluated.clearRetainingCapacity();
+        var text: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.evaluated);
+        const result = evaluate_module.evaluate_function(
+            engine.story,
+            name,
+            hosts[0..arguments.len],
+            &text.writer,
+        );
+        engine.evaluated = text.toArrayList();
+        const value = result catch |err| {
+            if (err == error.FunctionNotFound) try engine.set_exception(
+                "Function doesn't exist: '{s}'",
+                .{name},
+            );
+            return err;
+        };
+        return .{ .text = engine.evaluated.items, .result = try engine.transcript_value(value) };
+    }
+
+    fn transcript_value(engine: *NewEngine, value: story_module.HostValue) !transcript.Value {
+        assert(engine.evaluated_result.items.len < 1 << 24);
+        assert(engine.story.state.memory.len > 0);
+        const owned = &engine.evaluated_result;
+        owned.clearRetainingCapacity();
+        return switch (value) {
+            .null => .null,
+            .integer => |number| .{ .int = number },
+            .float => |number| float: {
+                var buffer: [value_module.float_text_bytes_max]u8 = undefined;
+                try owned.appendSlice(engine.gpa, value_module.format_float(number, &buffer));
+                break :float .{ .float_text = owned.items };
+            },
+            .bool => |flag| .{ .bool = flag },
+            .string => |text| .{ .string = text },
+            .list => |list| list: {
+                var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, owned);
+                try engine.story.write_list(list, &writer.writer);
+                owned.* = writer.toArrayList();
+                break :list .{ .list = owned.items };
+            },
+            .divert_target => |target| .{ .other = engine.story.path_of(target) },
+        };
+    }
+
     pub fn observe(engine: *NewEngine, name: []const u8) !void {
         assert(name.len > 0);
         assert(engine.story.observers_count < engine.story.state.observers.len);
@@ -434,7 +499,7 @@ const Bound = struct {
             .@"return" => bound.constant,
             .multiply => multiply(arguments),
             .repeat => bound.repeat(arguments),
-            .increment_and_evaluate => error.Unsupported,
+            .increment_and_evaluate => bound.increment_and_evaluate(story, arguments),
         };
     }
 
@@ -452,6 +517,25 @@ const Bound = struct {
         }
         try writer.writer.writeAll(")\n");
         assert(arguments.len <= story_module.external_arguments_max);
+    }
+
+    /// `EvaluateFunction(<ink function>, x + 1)` from inside the external, discarding the
+    /// function's text as ink's overload without `out` text does.
+    fn increment_and_evaluate(
+        bound: *Bound,
+        story: *Story,
+        arguments: []const story_module.HostValue,
+    ) !story_module.HostValue {
+        assert(bound.function.len > 0);
+        assert(arguments.len == 1 and arguments[0] == .integer);
+        var discarding: std.Io.Writer.Discarding = .init(&.{});
+        const argument: story_module.HostValue = .{ .integer = arguments[0].integer +% 1 };
+        return evaluate_module.evaluate_function(
+            story,
+            bound.function,
+            &.{argument},
+            &discarding.writer,
+        );
     }
 
     fn multiply(arguments: []const story_module.HostValue) story_module.HostValue {

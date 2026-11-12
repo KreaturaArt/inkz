@@ -119,6 +119,15 @@ pub const FlowRecord = struct {
 
 pub const flow_name_bytes_max = 50;
 
+pub const output_stashes_max = 8;
+
+/// A parked output stream: `items` items then `marks` string marks, from word `first`.
+pub const OutputStash = struct {
+    first: u32,
+    items: u32,
+    marks: u32,
+};
+
 /// A turn index for a container that has never been visited.
 pub const never_visited: i32 = std.math.minInt(i32);
 
@@ -188,6 +197,10 @@ pub const State = struct {
     flows: []FlowRecord,
     parking: []u32,
     current_flow: u32 = 0,
+    /// Output streams set aside by evaluate_function (ink's outputStreamBefore), parked
+    /// after the flows in `parking`; compaction roots.
+    output_stashes: [output_stashes_max]OutputStash = undefined,
+    output_stashes_count: u32 = 0,
     /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
     did_safe_exit: bool = false,
     snapshot: lookahead_module.Snapshot = .{},
@@ -256,6 +269,7 @@ pub const State = struct {
         state.errors.clear();
         state.reset_errors();
         state.did_safe_exit = false;
+        state.output_stashes_count = 0;
         state.snapshot = .{};
         flows.reset(state);
         state.verify();
@@ -279,6 +293,16 @@ pub const State = struct {
         for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         flows.visit_parked(state, visitor);
+        for (state.output_stashes[0..state.output_stashes_count]) |stash| {
+            const words = state.parking[stash.first..][0 .. stash.items * 3];
+            const items: []output_module.Item = @alignCast(std.mem.bytesAsSlice(
+                output_module.Item,
+                std.mem.sliceAsBytes(words),
+            ));
+            for (items) |*item| {
+                if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
+            }
+        }
         lookahead_module.visit(state, visitor);
     }
 
