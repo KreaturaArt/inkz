@@ -7,6 +7,7 @@ const Story = @import("../runtime/story.zig").Story;
 const RuntimeObject = @import("../runtime/story.zig").RuntimeObject;
 const compiler = @import("../compiler/compiler.zig");
 const helpers = @import("helpers.zig");
+const e2e_new_vm = @import("../testing/e2e_new_vm.zig");
 
 fn extFunctionCount(args: []const RuntimeObject) ?RuntimeObject {
     if (args.len == 0) return .{ .int = 3 };
@@ -51,8 +52,20 @@ fn extNoOp(_: []const RuntimeObject) ?RuntimeObject {
 }
 
 /// Compile `ink_source`, run the story through `choices`, and return all output.
-/// Caller owns the returned slice.
+/// Caller owns the returned slice. The story is also played on the new VM (P8.0), which
+/// must agree or have a ledger entry.
 pub fn compileAndRun(
+    alloc: std.mem.Allocator,
+    ink_source: []const u8,
+    choices: []const usize,
+) ![]u8 {
+    const output = try compileAndRunOld(alloc, ink_source, choices);
+    errdefer alloc.free(output);
+    try e2e_new_vm.check(alloc, null, ink_source, choices, output);
+    return output;
+}
+
+fn compileAndRunOld(
     alloc: std.mem.Allocator,
     ink_source: []const u8,
     choices: []const usize,
@@ -112,12 +125,30 @@ pub fn compileFixtureRootAndRun(
     const io = std.testing.io;
     const src = try std.Io.Dir.cwd().readFileAlloc(io, "test/fixture/" ++ rel_path, alloc, .limited(4 * 1024 * 1024));
     defer alloc.free(src);
-    return compileAndRun(alloc, src, choices);
+    const output = try compileAndRunOld(alloc, src, choices);
+    errdefer alloc.free(output);
+    try e2e_new_vm.check(alloc, rel_path, src, choices, output);
+    return output;
 }
 
 /// Load an .ink file from test/fixture/original/, compile and run it.
 /// Caller owns the returned slice.
 pub fn compileFixtureAndRun(
+    alloc: std.mem.Allocator,
+    comptime rel_path: []const u8,
+    choices: []const usize,
+) ![]u8 {
+    const output = try compileFixtureAndRunOld(alloc, rel_path, choices);
+    errdefer alloc.free(output);
+    const io = std.testing.io;
+    const path = "test/fixture/original/" ++ rel_path;
+    const src = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(4 * 1024 * 1024));
+    defer alloc.free(src);
+    try e2e_new_vm.check(alloc, rel_path, src, choices, output);
+    return output;
+}
+
+fn compileFixtureAndRunOld(
     alloc: std.mem.Allocator,
     comptime rel_path: []const u8,
     choices: []const usize,
