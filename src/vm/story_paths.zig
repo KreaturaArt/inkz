@@ -42,13 +42,25 @@ pub fn choose_path_string(
     story: *Story,
     text: []const u8,
     reset_callstack: bool,
+    arguments: []const story_module.HostValue,
 ) (PathError || story_module.Error)!void {
     assert(text.len > 0);
+    if (story.callback_depth > 0) return error.Reentrant;
+    if (story.events.on_choose_path_string) |event| {
+        story.callback_depth += 1;
+        defer story.callback_depth -= 1;
+        event(story.events.context, text, arguments);
+    }
     const target = try pointer_at_path(story, text);
     if (reset_callstack) {
         ops.force_end(story);
     } else if (story.state.call_stack.current_frame().kind == .function) {
         return error.ChoosePathInFunction;
+    }
+    // ink's PassArgumentsToEvaluationStack, for a knot with parameters.
+    for (arguments) |argument| {
+        const value = try ops.value_of_host(story, argument);
+        story.state.evaluation.push(value) catch return error.EvaluationLimit;
     }
     try story.choose_pointer(target, true);
     assert(story.state.choices.count() == 0);

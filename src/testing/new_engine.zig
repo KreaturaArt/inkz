@@ -321,6 +321,20 @@ pub const NewEngine = struct {
         try load_module.load_json(engine.story, engine.saved.items);
     }
 
+    /// `events`: records ink's host events.
+    pub fn events(engine: *NewEngine, argument: []const u8) !void {
+        assert(argument.len == 0);
+        engine.story.events = .{
+            .context = engine.messages,
+            .on_did_continue = Messages.did_continue,
+            .on_make_choice = Messages.make_choice,
+            .on_evaluate_function = Messages.evaluate_function,
+            .on_complete_evaluate_function = Messages.complete_evaluate_function,
+            .on_choose_path_string = Messages.choose_path_string,
+        };
+        assert(engine.story.events.on_did_continue != null);
+    }
+
     pub fn observe(engine: *NewEngine, name: []const u8) !void {
         assert(name.len > 0);
         assert(engine.story.observers_count < engine.story.state.observers.len);
@@ -366,7 +380,7 @@ pub const NewEngine = struct {
 
     pub fn choose_path(engine: *NewEngine, path: []const u8) !void {
         assert(path.len > 0);
-        story_paths.choose_path_string(engine.story, path, true) catch |err| {
+        story_paths.choose_path_string(engine.story, path, true, &.{}) catch |err| {
             if (err == error.PathNotFound) try engine.path_exception(path);
             return err;
         };
@@ -658,6 +672,94 @@ const Messages = struct {
         messages.events.deinit(gpa);
         messages.errors.deinit(gpa);
         messages.warnings.deinit(gpa);
+    }
+
+    fn event_writer(context: ?*anyopaque) struct { *Messages, std.Io.Writer.Allocating } {
+        assert(context != null);
+        const messages: *Messages = @ptrCast(@alignCast(context.?));
+        assert(messages.events.items.len < 1 << 24);
+        return .{ messages, .fromArrayList(messages.gpa, &messages.events) };
+    }
+
+    fn did_continue(context: ?*anyopaque) void {
+        assert(context != null);
+        assert(@sizeOf(Messages) > 0);
+        const messages, var writer = event_writer(context);
+        defer messages.events = writer.toArrayList();
+        writer.writer.writeAll("event: did_continue\n") catch return;
+    }
+
+    fn make_choice(context: ?*anyopaque, text: []const u8, position: u32) void {
+        assert(context != null);
+        const messages, var writer = event_writer(context);
+        defer messages.events = writer.toArrayList();
+        assert(position < 1 << 16);
+        writer.writer.writeAll("event: make_choice ") catch return;
+        transcript.write_json_string(&writer.writer, text) catch return;
+        writer.writer.writeByte('\n') catch return;
+    }
+
+    fn write_arguments(
+        messages: *Messages,
+        writer: *std.Io.Writer,
+        arguments: []const story_module.HostValue,
+    ) !void {
+        assert(messages.events.items.len < 1 << 31);
+        assert(arguments.len <= story_module.external_arguments_max);
+        try writer.writeByte('(');
+        for (arguments, 0..) |argument, position| {
+            if (position > 0) try writer.writeAll(", ");
+            try write_host_value_of(messages.gpa, messages.story, writer, argument);
+        }
+        try writer.writeByte(')');
+    }
+
+    fn evaluate_function(
+        context: ?*anyopaque,
+        name: []const u8,
+        arguments: []const story_module.HostValue,
+    ) void {
+        assert(context != null);
+        assert(@sizeOf(Messages) > 0);
+        const messages, var writer = event_writer(context);
+        defer messages.events = writer.toArrayList();
+        writer.writer.print("event: evaluate_function {s}", .{name}) catch return;
+        write_arguments(messages, &writer.writer, arguments) catch return;
+        writer.writer.writeByte('\n') catch return;
+    }
+
+    fn complete_evaluate_function(
+        context: ?*anyopaque,
+        name: []const u8,
+        arguments: []const story_module.HostValue,
+        text: []const u8,
+        result: story_module.HostValue,
+    ) void {
+        assert(context != null);
+        assert(@sizeOf(Messages) > 0);
+        const messages, var writer = event_writer(context);
+        defer messages.events = writer.toArrayList();
+        writer.writer.print("event: complete_evaluate_function {s}", .{name}) catch return;
+        write_arguments(messages, &writer.writer, arguments) catch return;
+        writer.writer.writeByte(' ') catch return;
+        transcript.write_json_string(&writer.writer, text) catch return;
+        writer.writer.writeByte(' ') catch return;
+        write_host_value_of(messages.gpa, messages.story, &writer.writer, result) catch return;
+        writer.writer.writeByte('\n') catch return;
+    }
+
+    fn choose_path_string(
+        context: ?*anyopaque,
+        path: []const u8,
+        arguments: []const story_module.HostValue,
+    ) void {
+        assert(context != null);
+        assert(@sizeOf(Messages) > 0);
+        const messages, var writer = event_writer(context);
+        defer messages.events = writer.toArrayList();
+        writer.writer.print("event: choose_path_string {s}", .{path}) catch return;
+        write_arguments(messages, &writer.writer, arguments) catch return;
+        writer.writer.writeByte('\n') catch return;
     }
 
     /// `observed: name = value`, as the harness's observer records it.

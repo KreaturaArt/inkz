@@ -201,3 +201,9 @@ test "P5.9: RANDOM, SEED_RANDOM, LIST_RANDOM and shuffles" {
         .{ .id = "runtime/sequences/empty_sequence_content" },
     });
 }
+
+test "P6.3: host events fire at ink's points" {
+    // Goal: P6.3 (D22); did_continue, make_choice, evaluate_function and its completion,
+    // choose_path_string, recorded as the harness records ink's events. Method: replay.
+    try expect_cases_match(&.{.{ .id = "audit/host_events" }});
+}

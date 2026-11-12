@@ -14,6 +14,7 @@ const assert = std.debug.assert;
 const fault = @import("core/fault.zig");
 const index = @import("core/index.zig");
 const string_pool = @import("core/string_pool.zig");
+const api = @import("vm/api.zig");
 
 pub const did_not_die_exit_code = 3;
 
@@ -45,6 +46,19 @@ pub const must_panic = struct {
         const unissued = index.StringId.from_int(1);
         assert(pool.find("anything") == null);
         _ = pool.get(unissued);
+    }
+
+    /// P6.3: a borrowed view used after the next mutating call asserts in Debug.
+    pub fn stale_view_access_panics() void {
+        assert(std.debug.runtime_safety);
+        const json = "{\"inkVersion\":21,\"root\":[[\"^One\",\"\\n\",\"^Two\",\"\\n\"," ++
+            "[\"done\",{\"#n\":\"g-0\"}],null],\"done\",null],\"listDefs\":{}}";
+        var story: api.Story = undefined;
+        story.init_from_json(std.heap.page_allocator, json, .{}) catch unreachable;
+        const line = story.cont() catch unreachable;
+        assert(std.mem.eql(u8, line.get(), "One\n"));
+        _ = story.cont() catch unreachable;
+        _ = line.get();
     }
 };
 

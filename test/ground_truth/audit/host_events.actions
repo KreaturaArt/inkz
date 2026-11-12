@@ -1,0 +1,10 @@
+# P6.3: the host events, recorded as `event:` lines after the action or line they follow.
+events
+continue
+continue
+choose 0
+continue_maximally
+evaluate bump int 3
+choose_path elsewhere
+continue
+reset
