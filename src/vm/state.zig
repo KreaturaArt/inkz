@@ -44,7 +44,41 @@ pub const Diagnostic = struct {
 
     pub const Severity = enum(u8) { @"error", warning };
     /// Filled in by the VM's error handling (P5.10).
-    pub const Code = enum(u16) { story_error, _ };
+    pub const Code = enum(u16) {
+        story_error,
+        evaluation_stack_empty,
+        glue_in_expression,
+        divert_variable_not_found,
+        divert_variable_not_target,
+        turns_since_expected_target,
+        tunnel_return_not_target,
+        pop_mismatch,
+        unmatched_end_string,
+        unexpected_command_in_tag,
+        no_truth_value,
+        division_by_zero,
+        integer_overflow,
+        float_to_integer_out_of_range,
+        void_operand,
+        unsupported_operation,
+        variable_not_found,
+        variable_pointer_cycle,
+        temp_not_found,
+        choice_text_not_string,
+        random_invalid_minimum,
+        random_invalid_maximum,
+        random_range_too_large,
+        random_range_empty,
+        seed_invalid,
+        shuffle_invalid,
+        thread_left_to_pop,
+        unexpected_end_of_tunnel,
+        unexpected_end_of_function,
+        ran_out_of_content,
+        unexpected_end_unknown,
+        unsupported,
+        _,
+    };
 };
 
 /// One undo record of the lookahead change log (P4.9): what a shared value was before.
@@ -137,6 +171,8 @@ pub const State = struct {
     flows: []FlowRecord,
     parking: []u32,
     current_flow: u32 = 0,
+    /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
+    did_safe_exit: bool = false,
     snapshot: lookahead_module.Snapshot = .{},
 
     pub const Fault = enum {
@@ -202,6 +238,7 @@ pub const State = struct {
         state.observer_events.clear();
         state.errors.clear();
         state.reset_errors();
+        state.did_safe_exit = false;
         state.snapshot = .{};
         flows.reset(state);
         state.verify();

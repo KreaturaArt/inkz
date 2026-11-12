@@ -128,7 +128,6 @@ pub const OldEngine = struct {
         assert(engine.turn_offset <= engine.turn_text.len);
     }
 
-
     pub fn choose_path(engine: *OldEngine, path: []const u8) !void {
         assert(path.len > 0);
         engine.discard_turn();

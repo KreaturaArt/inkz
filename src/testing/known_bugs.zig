@@ -65,10 +65,10 @@ fn is_issue(text: []const u8) bool {
 }
 
 fn is_semantic_kind(kind: oracle.Kind) bool {
-    const index = @intFromEnum(kind);
-    const result = index <= @intFromEnum(oracle.Kind.s11);
-    comptime assert(@intFromEnum(oracle.Kind.s1) == 0);
-    comptime assert(@intFromEnum(oracle.Kind.s11) == 10);
+    const index = @backingInt(kind);
+    const result = index <= @backingInt(oracle.Kind.s11);
+    comptime assert(@backingInt(oracle.Kind.s1) == 0);
+    comptime assert(@backingInt(oracle.Kind.s11) == 10);
     return result;
 }
 

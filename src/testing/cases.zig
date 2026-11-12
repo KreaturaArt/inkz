@@ -6,6 +6,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
 const OldEngine = @import("old_engine.zig").OldEngine;
+const NewEngine = @import("new_engine.zig").NewEngine;
 const old_compiler = @import("../compiler/compiler.zig");
 
 pub const cases_directory = "test/ground_truth";
@@ -58,10 +59,10 @@ pub fn replay_with(
     const actions_path = try std.fmt.allocPrint(arena, "{s}/{s}.actions", .{ cases_directory, id });
     const actions = actions_override orelse
         cwd.readFileAlloc(io, actions_path, arena, .limited(file_bytes_max)) catch |err|
-            switch (err) {
-                error.FileNotFound => "play",
-                else => return err,
-            };
+        switch (err) {
+            error.FileNotFound => "play",
+            else => return err,
+        };
     if (std.mem.eql(u8, engine, "old_compiler")) {
         const source_file = try source_path(arena, io, id);
         const source = try cwd.readFileAlloc(io, source_file, arena, .limited(file_bytes_max));
@@ -95,6 +96,7 @@ fn replay_story(
     actions: []const u8,
 ) ![]const u8 {
     assert(json.len > 0);
+    if (std.mem.eql(u8, engine, "new")) return replay_new(arena, json, actions);
     if (!std.mem.eql(u8, engine, "old")) return error.UnknownEngine;
     var output: std.Io.Writer.Allocating = .init(arena);
     var old = OldEngine.init(arena, json) catch |err| {
@@ -103,6 +105,19 @@ fn replay_story(
     };
     defer old.deinit();
     try transcript.replay(&old, actions, &output.writer);
+    assert(output.written().len > 0 or actions.len == 0);
+    return output.written();
+}
+
+fn replay_new(arena: std.mem.Allocator, json: []const u8, actions: []const u8) ![]const u8 {
+    assert(json.len > 0);
+    var output: std.Io.Writer.Allocating = .init(arena);
+    var new = NewEngine.open(arena, json) catch |err| {
+        try output.writer.print("exception: \"{t}\"\n", .{err});
+        return output.written();
+    };
+    defer new.deinit();
+    try transcript.replay(&new, actions, &output.writer);
     assert(output.written().len > 0 or actions.len == 0);
     return output.written();
 }
