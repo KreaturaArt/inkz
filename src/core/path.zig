@@ -187,7 +187,8 @@ pub fn resolve(table: anytype, origin: Origin, path: Path) Error!Target {
 /// One step from `container` through `component`, or null if nothing matches.
 fn resolve_component(table: anytype, container: ContainerIndex, component: Component) ?Target {
     assert(!container.is_none());
-    assert(table.content_count(container) > 0 or component != .index);
+    // An index into an empty container finds nothing (a corrupt or changed path).
+    if (component == .index and table.content_count(container) == 0) return null;
     const result: ?Target = switch (component) {
         .parent => parent: {
             const parent = table.parent(container);

@@ -236,7 +236,10 @@ fn write_object_path(story: *Story, writer: *Writer, pointer: Pointer) Writer.Er
     assert(pointer.container.to_int() < story.program.containers.len);
     assert(!pointer.is_null());
     const program = story.program;
-    if (pointer.index == Pointer.container_self) {
+    // ink's Pointer.Resolve gives the container itself for its own index and for an empty
+    // container.
+    const empty = program.content_count(pointer.container) == 0;
+    if (pointer.index == Pointer.container_self or empty) {
         return write_json_string(writer, story.path_of(pointer.container));
     }
     if (pointer.index < program.content_count(pointer.container)) {

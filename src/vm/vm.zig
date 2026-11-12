@@ -452,7 +452,7 @@ fn variable_get(story: *Story, instruction: Instruction) Error!Signal {
 }
 
 fn assign(story: *Story, instruction: Instruction) Error!Signal {
-    assert(story.state.evaluation.count > 0);
+    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     assert(@sizeOf(Value) == 12);
     const value = try pop_evaluation(story);
     switch (instruction.opcode) {

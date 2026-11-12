@@ -1,6 +1,12 @@
-//! `zig build simulate -- [--engine old] [--seed 1] [--seeds 10] [--case <id>]` (plan P0.9):
-//! plays every ground-truth case (or one) with seeded random choices for each seed and reports
-//! crashes with the command that reproduces them. Exits with 1 if any run crashed.
+//! `zig build simulate -- [--engine old|new] [--seed 1] [--seeds 10] [--case <id>]
+//! [--compact-always on]` (plan P0.9, P5.12): plays every ground-truth case (or one) with
+//! seeded random choices for each seed and reports failures with the command that reproduces
+//! them. Exits with 1 if any run failed.
+//!
+//! The old engine runs each story in a child process and reports crashes. The new engine runs
+//! in process with the full action mix (save and load points, flow switches,
+//! evaluate_function, set_variable) and State.check after every cont; `--compact-always on`
+//! compacts the heap before every allocation.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -12,6 +18,7 @@ const Options = struct {
     seed_first: i32 = 1,
     seeds_count: u32 = 10,
     case: ?[]const u8 = null,
+    compact_always: bool = false,
 };
 
 fn parse_options(arguments: []const [:0]const u8) !Options {
@@ -29,6 +36,8 @@ fn parse_options(arguments: []const [:0]const u8) !Options {
             options.seeds_count = try std.fmt.parseInt(u32, value, 10);
         } else if (std.mem.eql(u8, name, "--case")) {
             options.case = value;
+        } else if (std.mem.eql(u8, name, "--compact-always")) {
+            options.compact_always = std.mem.eql(u8, value, "on");
         } else return error.UnknownOption;
     }
     if (index != arguments.len) return error.MissingOptionValue;
@@ -46,6 +55,7 @@ pub fn main(init: std.process.Init) !void {
         try arena.dupe([]const u8, &.{case})
     else
         try ground_truth.collect_cases(arena, io);
+    if (std.mem.eql(u8, options.engine, "new")) return simulate_new(arena, io, ids, options);
     var runs: u32 = 0;
     var crashes: u32 = 0;
     for (0..options.seeds_count) |offset| {
@@ -67,3 +77,49 @@ pub fn main(init: std.process.Init) !void {
     });
     if (crashes > 0) std.process.exit(1);
 }
+
+/// The new engine, in process: each case's program is loaded once and played for every seed.
+fn simulate_new(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    ids: []const []const u8,
+    options: Options,
+) !void {
+    assert(ids.len > 0);
+    const gpa = std.heap.smp_allocator;
+    const save_buffer = try arena.alloc(u8, 4 << 20);
+    var runs: u64 = 0;
+    var failures: u32 = 0;
+    for (ids) |id| {
+        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
+        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
+        var program = ink_json.load(gpa, json) catch continue;
+        defer program.deinit(gpa);
+        var story: Story = undefined;
+        try story.init(gpa, &program, .{});
+        defer story.deinit(gpa);
+        simulation.prepare_new(&story, options.compact_always);
+        for (0..options.seeds_count) |offset| {
+            const seed = options.seed_first +% @as(i32, @intCast(offset));
+            runs += 1;
+            const result = simulation.simulate_new(&story, seed, save_buffer);
+            const finding = result catch |err| switch (err) {
+                error.StepLimit => simulation.Finding.ok,
+                else => return err,
+            };
+            if (finding == .ok) continue;
+            failures += 1;
+            std.debug.print("{t}: seed {d}, case {s}; reproduce with: zig build simulate -- " ++
+                "--engine new --seed {d} --seeds 1 --case {s} --compact-always {s}\n", .{
+                finding, seed, id, seed, id, if (options.compact_always) "on" else "off",
+            });
+        }
+    }
+    std.debug.print("simulate (new{s}): {d} runs over {d} seeds, {d} failures\n", .{
+        if (options.compact_always) ", compact always" else "", runs, options.seeds_count, failures,
+    });
+    if (failures > 0) std.process.exit(1);
+}
+
+const ink_json = @import("core/ink_json.zig");
+const Story = @import("vm/story.zig").Story;

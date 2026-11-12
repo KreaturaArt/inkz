@@ -373,7 +373,8 @@ fn reserve(story: *Story, operands: []Value) Error!void {
         };
         if (operand == .list) has_list = true;
     }
-    if (state.strings.bytes.len - state.strings.used < string_bytes) state.compact(operands);
+    const short = state.strings.bytes.len - state.strings.used < string_bytes;
+    if (short or state.compact_always) state.compact(operands);
     if (state.strings.bytes.len - state.strings.used < string_bytes) return error.HeapLimit;
     if (has_list) try reserve_list(story, operands);
 }
@@ -947,7 +948,8 @@ fn reserve_list(story: *Story, keep: []Value) Error!void {
     const state = &story.state;
     const program = story.program;
     const words: u32 = @intCast(3 + program.list_items.len + program.list_origins.len);
-    if (state.lists.words.len - state.lists.used < words) state.compact(keep);
+    const short = state.lists.words.len - state.lists.used < words;
+    if (short or state.compact_always) state.compact(keep);
     if (state.lists.words.len - state.lists.used < words) return error.ListLimit;
     assert(state.lists.used + words <= state.lists.words.len);
 }

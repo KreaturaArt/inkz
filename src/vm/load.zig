@@ -490,10 +490,17 @@ const Loader = struct {
         try loader.kind_is(node, .array);
         if (threads) |object| try loader.kind_is(object, .object);
         var walker = loader.tree.children(node);
+        // ink keeps each choice's saved index; this runtime keeps whether the choices had
+        // been indexed (some index isn't 0) and recomputes the indices.
+        var indexed = false;
         while (walker.next()) |choice_node| {
             try loader.choice(choice_node, threads, tally);
+            const saved_index = try loader.integer(try loader.member(choice_node, "index"));
+            if (saved_index != 0) indexed = true;
         }
-        if (loader.commit) loader.state().choices.indexed_count = loader.state().choices.count();
+        if (!loader.commit) return;
+        const records = &loader.state().choices;
+        records.indexed_count = if (indexed) records.count() else 0;
     }
 
     /// ink's JObjectToChoice and LoadFlowChoiceThreads.
@@ -763,8 +770,12 @@ const Loader = struct {
         var writer: std.Io.Writer = .fixed(&buffer);
         loader.tree.decode(node, &writer) catch return error.SaveTooLarge;
         const text = writer.buffered();
-        if (text.len == 0) return error.InvalidSave;
         const program = loader.story.program;
+        // The root's path is empty (ink's Path("") is the root).
+        if (text.len == 0) {
+            const root = program.root_container();
+            return .{ .container = root, .content_index = null, .approximate = false };
+        }
         const path = path_module.Path.parse(text, loader.state().limits.path_components_max) catch
             return error.InvalidSave;
         const origin: path_module.Origin = .{ .container = program.root_container() };
