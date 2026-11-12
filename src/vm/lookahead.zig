@@ -42,6 +42,7 @@ pub const Snapshot = struct {
     observer_events: u32 = 0,
     errors: u32 = 0,
     warnings: u32 = 0,
+    diagnostics_dropped: u32 = 0,
     patch_count: u32 = 0,
     turn_index: i32 = -1,
     story_seed: i32 = 0,
@@ -99,6 +100,7 @@ pub fn take(state: *State) void {
         .observer_events = state.observer_events.count,
         .errors = state.errors.count,
         .warnings = state.warnings.count,
+        .diagnostics_dropped = state.diagnostics_dropped,
         .turn_index = state.turn_index,
         .story_seed = state.story_seed,
         .previous_random = state.previous_random,
@@ -146,6 +148,7 @@ pub fn restore(state: *State) void {
     state.observer_events.count = snapshot.observer_events;
     state.errors.count = snapshot.errors;
     state.warnings.count = snapshot.warnings;
+    state.diagnostics_dropped = snapshot.diagnostics_dropped;
     state.turn_index = snapshot.turn_index;
     state.story_seed = snapshot.story_seed;
     state.previous_random = snapshot.previous_random;
@@ -272,7 +275,7 @@ fn change_everything(state: *State) !void {
     try state.observer_events.push(.from_int(0));
     const diagnostic: state_module.Diagnostic =
         .{ .argument = line, .number = 1, .code = .story_error, .severity = .@"error" };
-    try state.errors.push(diagnostic);
+    state.add_diagnostic(diagnostic);
     state.turn_index += 1;
     state.previous_random = 99;
     state.verify();
@@ -301,6 +304,7 @@ test "take then restore leaves the state bit-identical" {
     try std.testing.expectEqual(strings_used, state.strings.used);
     try std.testing.expectEqual(@as(u32, 0), state.lists.used);
     try std.testing.expectEqualStrings("kept", state.strings.get(state.globals[0].string));
+    try std.testing.expect(!state.has_error()); // errors from a discarded lookahead go too
     state.verify();
 }
 

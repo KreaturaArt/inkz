@@ -121,8 +121,13 @@ pub const State = struct {
     line_bytes: []u8,
     observers: []Observer,
     observer_events: BoundedStack(GlobalSlot),
+    /// ink's currentErrors and currentWarnings (P4.10). They are not saved (ink doesn't
+    /// save them), the lookahead restore drops ones added since its snapshot, and
+    /// `reset_errors` clears them once `cont()` has reported them (P5.10).
     errors: BoundedStack(Diagnostic),
     warnings: BoundedStack(Diagnostic),
+    /// Diagnostics that didn't fit; reported as a count after the kept ones.
+    diagnostics_dropped: u32 = 0,
     /// Scratch for the visit-counting walk (plan §4.6).
     ancestors: []ContainerIndex,
 
@@ -193,7 +198,7 @@ pub const State = struct {
         state.lists.used = 0;
         state.observer_events.clear();
         state.errors.clear();
-        state.warnings.clear();
+        state.reset_errors();
         state.snapshot = .{};
         flows.reset(state);
         state.verify();
@@ -218,6 +223,43 @@ pub const State = struct {
         for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         flows.visit_parked(state, visitor);
         lookahead_module.visit(state, visitor);
+    }
+
+    /// ink's AddError. When the list is full the diagnostic is counted, not kept: the first
+    /// ones are usually the cause of the rest.
+    pub fn add_diagnostic(state: *State, diagnostic: Diagnostic) void {
+        const list = switch (diagnostic.severity) {
+            .@"error" => &state.errors,
+            .warning => &state.warnings,
+        };
+        assert(list.buffer.len > 0);
+        assert(list.count <= list.buffer.len);
+        list.push(diagnostic) catch {
+            state.diagnostics_dropped += 1;
+        };
+        assert(list.count > 0 or list.buffer.len == 0);
+    }
+
+    /// ink's hasError, which also stops `can_continue`.
+    pub fn has_error(state: *const State) bool {
+        assert(state.errors.count <= state.errors.buffer.len);
+        // Limits are never zero, so a dropped error always has a kept one before it.
+        assert(state.errors.buffer.len > 0);
+        return state.errors.count > 0;
+    }
+
+    pub fn has_warning(state: *const State) bool {
+        assert(state.warnings.count <= state.warnings.buffer.len);
+        return state.warnings.count > 0;
+    }
+
+    /// ink's ResetErrors.
+    pub fn reset_errors(state: *State) void {
+        assert(state.errors.buffer.len > 0 and state.warnings.buffer.len > 0);
+        state.errors.clear();
+        state.warnings.clear();
+        state.diagnostics_dropped = 0;
+        assert(!state.has_error() and !state.has_warning());
     }
 
     /// Compacts the heap; the lookahead snapshot's heap tops follow their objects.
@@ -509,4 +551,29 @@ test "check catches a dangling heap string" {
     defer state.deinit(gpa);
     try state.evaluation.push(.{ .string = .heap(64) });
     try std.testing.expectEqual(State.Fault.string_reference, state.check());
+}
+
+test "errors and warnings are bounded and reset together" {
+    // Goal: P4.10; ink's AddError, hasError and ResetErrors, within errors_max. Method: add
+    // more errors than fit, then a warning, then reset.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{ .errors_max = 2, .warnings_max = 1 });
+    defer state.deinit(gpa);
+    try std.testing.expect(!state.has_error());
+    const diagnostic: Diagnostic =
+        .{ .argument = .none, .number = 0, .code = .story_error, .severity = .@"error" };
+    for (0..3) |_| state.add_diagnostic(diagnostic);
+    try std.testing.expect(state.has_error() and !state.has_warning());
+    try std.testing.expectEqual(@as(u32, 2), state.errors.count);
+    try std.testing.expectEqual(@as(u32, 1), state.diagnostics_dropped);
+    var warning = diagnostic;
+    warning.severity = .warning;
+    state.add_diagnostic(warning);
+    try std.testing.expect(state.has_warning());
+    state.reset_errors();
+    try std.testing.expect(!state.has_error() and !state.has_warning());
+    try std.testing.expectEqual(@as(u32, 0), state.diagnostics_dropped);
 }
