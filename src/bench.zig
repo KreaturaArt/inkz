@@ -1,7 +1,11 @@
-//! `zig build bench` (plan P0.6): the old runtime's baseline, in the build mode it was built
-//! with. Measures load time, play throughput, memory per runtime object, compile time and
-//! peak RSS on crime_scene and on a generated large story, and writes a section of
-//! docs/benchmarks.md between markers for this mode.
+//! `zig build bench` (plan P0.6, P6b, P9.4): the old runtime's baseline and the new runtime,
+//! in the build mode it was built with. Measures load time, play throughput, memory per
+//! instruction, compile time and peak RSS on crime_scene and on a generated large story,
+//! and writes sections of docs/benchmarks.md between markers for this mode.
+//!
+//! The old runtime plays the old compiler's JSON; the new runtime plays ink's JSON of the
+//! same stories (test/ground_truth/crime_scene.ink.json, test/fixture/bench/generated.ink.json),
+//! with the same seeded choices, so turns/s and lines/s compare.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -158,6 +162,93 @@ fn generate_story(gpa: std.mem.Allocator) ![]u8 {
     return source.toOwnedSlice();
 }
 
+const ink_json = @import("core/ink_json.zig");
+const Program = @import("core/program.zig").Program;
+const NewStory = @import("vm/story.zig").Story;
+const Severity = @import("vm/state.zig").Diagnostic.Severity;
+
+fn ignore_message(context: ?*anyopaque, message: []const u8, severity: Severity) void {
+    assert(context == null);
+    assert(message.len > 0 or severity == .warning);
+}
+
+/// Plays the new runtime `plays_count` times with the old bench's seeded choices.
+fn measure_play_new(gpa: std.mem.Allocator, io: std.Io, program: *const Program) !PlayRate {
+    assert(program.containers.len > 0);
+    var story: NewStory = undefined;
+    try story.init(gpa, program, .{});
+    defer story.deinit(gpa);
+    story.on_error = ignore_message;
+    var turns: u64 = 0;
+    var lines: u64 = 0;
+    const steps_before = story.steps_total;
+    const start = std.Io.Timestamp.now(io, .awake);
+    for (0..plays_count) |play| {
+        try story.reset_state();
+        var random = DotnetRandom.init(@intCast(play + 1));
+        var turn: u32 = 0;
+        while (turn < turns_max) : (turn += 1) {
+            while (story.can_continue()) {
+                _ = try story.cont();
+                lines += 1;
+            }
+            const choices_count = story.visible_choices_count();
+            if (choices_count == 0) break;
+            const index: u32 = @intCast(@mod(random.next(), @as(i32, @intCast(choices_count))));
+            try story.choose_choice_index(index);
+        }
+        turns += turn;
+    }
+    const seconds = @as(f64, @floatFromInt(elapsed_nanoseconds(io, start))) / 1e9;
+    assert(seconds > 0);
+    const steps = story.steps_total - steps_before;
+    return .{
+        .turns = @as(f64, @floatFromInt(turns)) / seconds,
+        .lines = @as(f64, @floatFromInt(lines)) / seconds,
+        .steps = @as(f64, @floatFromInt(steps)) / seconds,
+    };
+}
+
+/// The new runtime on ink's JSON: load (program and story), play, and memory (the program
+/// plus the state's fixed budget).
+fn measure_story_new(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    name: []const u8,
+    json: []const u8,
+) !Measurement {
+    assert(json.len > 0);
+    const start = std.Io.Timestamp.now(io, .awake);
+    for (0..loads_count) |_| {
+        var program = try ink_json.load(gpa, json);
+        var story: NewStory = undefined;
+        try story.init(gpa, &program, .{});
+        story.deinit(gpa);
+        program.deinit(gpa);
+    }
+    const load_nanoseconds: f64 = @floatFromInt(elapsed_nanoseconds(io, start));
+    const load_microseconds = load_nanoseconds / loads_count / 1000.0;
+    var counting = CountingAllocator.init(gpa);
+    var program = try ink_json.load(counting.allocator(), json);
+    defer program.deinit(counting.allocator());
+    const program_bytes = counting.bytes_live;
+    const limits: @import("core/limits.zig").Limits = .{};
+    const state_bytes = limits.bytes_total(@import("vm/state.zig").State.shape_of(&program));
+    const rate = try measure_play_new(gpa, io, &program);
+    const measurement: Measurement = .{
+        .name = name,
+        .load_microseconds = load_microseconds,
+        .play_turns_per_second = rate.turns,
+        .play_lines_per_second = rate.lines,
+        .play_steps_per_second = rate.steps,
+        .loaded_bytes = program_bytes + state_bytes,
+        .runtime_objects_count = program.instructions_count(),
+        .compile_milliseconds = 0,
+    };
+    assert(measurement.loaded_bytes > program_bytes);
+    return measurement;
+}
+
 pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
@@ -172,11 +263,30 @@ pub fn main(init: std.process.Init) !void {
         try measure_story(gpa, io, "crime_scene", crime_source),
         try measure_story(gpa, io, "generated (1000 knots)", generated),
     };
+    const crime_json = try cwd.readFileAlloc(
+        io,
+        "test/ground_truth/crime_scene.ink.json",
+        gpa,
+        .limited(1 << 24),
+    );
+    defer gpa.free(crime_json);
+    const generated_json = try cwd.readFileAlloc(
+        io,
+        "test/fixture/bench/generated.ink.json",
+        gpa,
+        .limited(1 << 24),
+    );
+    defer gpa.free(generated_json);
+    const new_measurements = [_]Measurement{
+        try measure_story_new(gpa, io, "crime_scene", crime_json),
+        try measure_story_new(gpa, io, "generated (1000 knots)", generated_json),
+    };
     const usage = std.posix.getrusage(std.c.rusage.SELF);
     // macOS reports bytes, Linux kilobytes.
     const rss_unit: u64 = if (builtin.os.tag == .linux) 1024 else 1;
     const rss_bytes: u64 = @as(u64, @intCast(usage.maxrss)) * rss_unit;
     try write_report(init.arena.allocator(), io, &measurements, rss_bytes);
+    try write_new_report(init.arena.allocator(), io, &new_measurements);
     assert(measurements.len == 2);
 }
 
@@ -187,12 +297,7 @@ fn write_report(
     rss_bytes: u64,
 ) !void {
     assert(measurements.len > 0);
-    const mode = switch (builtin.mode) {
-        .Debug => "Debug",
-        .ReleaseSafe => "ReleaseSafe",
-        .ReleaseFast => "ReleaseFast",
-        .ReleaseSmall => "ReleaseSmall",
-    };
+    const mode = mode_name();
     var section: std.Io.Writer.Allocating = .init(arena);
     const writer = &section.writer;
     const start_marker = try std.fmt.allocPrint(arena, "<!-- bench:{s}:start -->", .{mode});
@@ -217,6 +322,45 @@ fn write_report(
     });
     try write_section(arena, io, section.written(), start_marker, end_marker);
     std.debug.print("bench ({s}) written to {s}\n", .{ mode, report_path });
+}
+
+fn mode_name() []const u8 {
+    comptime assert(@typeInfo(std.builtin.OptimizeMode).@"enum".field_names.len == 4);
+    comptime assert(@sizeOf(std.builtin.OptimizeMode) == 1);
+    return switch (builtin.mode) {
+        .Debug => "Debug",
+        .ReleaseSafe => "ReleaseSafe",
+        .ReleaseFast => "ReleaseFast",
+        .ReleaseSmall => "ReleaseSmall",
+    };
+}
+
+fn write_new_report(arena: std.mem.Allocator, io: std.Io, measurements: []const Measurement) !void {
+    assert(measurements.len > 0);
+    assert(measurements.len <= 8);
+    const mode = mode_name();
+    var section: std.Io.Writer.Allocating = .init(arena);
+    const writer = &section.writer;
+    const start_marker = try std.fmt.allocPrint(arena, "<!-- bench-new:{s}:start -->", .{mode});
+    const end_marker = try std.fmt.allocPrint(arena, "<!-- bench-new:{s}:end -->", .{mode});
+    try writer.print("{s}\n### New runtime, {s}\n\n", .{ start_marker, mode });
+    try writer.writeAll("| Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes " ++
+        "(program + state) | Instructions | Bytes/instruction |\n" ++
+        "|---|---|---|---|---|---|---|---|\n");
+    for (measurements) |m| {
+        const per_object = @as(f64, @floatFromInt(m.loaded_bytes)) /
+            @as(f64, @floatFromInt(m.runtime_objects_count));
+        try writer.print("| {s} | {d:.1} | {d:.0} | {d:.0} | {d:.0} | {d} | {d} | {d:.1} |\n", .{
+            m.name,                  m.load_microseconds,     m.play_turns_per_second,
+            m.play_lines_per_second, m.play_steps_per_second, m.loaded_bytes,
+            m.runtime_objects_count, per_object,
+        });
+    }
+    try writer.print(
+        "\nThe state is the default limits' fixed budget, allocated once.\n{s}\n",
+        .{end_marker},
+    );
+    try write_section(arena, io, section.written(), start_marker, end_marker);
 }
 
 /// Replaces the marked section of the report, or appends it.

@@ -128,6 +128,8 @@ pub const Story = struct {
     snapshot_tags_count: u32 = 0,
     /// The last line returned by `cont`, in `state.line_bytes`.
     line_length: u32 = 0,
+    /// Instructions run since init, for benchmarks.
+    steps_total: u64 = 0,
     /// One per program external, by ExternalIndex.
     bindings: []Binding,
     /// ink's allowExternalFunctionFallbacks.
@@ -391,6 +393,7 @@ pub const Story = struct {
                 event(story.events.context);
             }
         }
+        story.steps_total += steps;
         const length = try story.write_current_text();
         try story.report_diagnostics();
         // Last, since observers may run more ink.

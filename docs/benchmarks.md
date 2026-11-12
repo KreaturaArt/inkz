@@ -10,6 +10,11 @@ runtime's `step()` calls, so steps/s is not comparable with the new VM's instruc
 and lines/s are. "Runtime objects" are the old `RuntimeObject`s in all containers, the closest
 thing to instructions.
 
+The new runtime's sections (`bench-new`) play ink's JSON of the same two stories with the same
+seeded choices, so turns/s and lines/s compare with the old runtime's; its memory is the
+program plus the state's fixed budget at the default limits, so bytes per instruction is high
+for a small story and falls as stories grow.
+
 ## Memory budget sizing (P4.12)
 
 A story's runtime state is one allocation of exactly `Limits.bytes_total(shape)` bytes, made by
@@ -87,8 +92,8 @@ What it means for P5.2 (measured 2026-11-11):
 
 | Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | Runtime objects | Bytes/object | Compile (ms) |
 |---|---|---|---|---|---|---|---|---|
-| crime_scene | 415.6 | 18625 | 49243 | 1848392 | 736736 | 1366 | 539.3 | 0.28 |
-| generated (1000 knots) | 8357.8 | 22578 | 45156 | 644201 | 14480976 | 35010 | 413.6 | 4.49 |
+| crime_scene | 287.9 | 29358 | 77620 | 2913550 | 736736 | 1366 | 539.3 | 0.20 |
+| generated (1000 knots) | 5496.8 | 33879 | 67758 | 966641 | 14480976 | 35010 | 413.6 | 3.13 |
 
 Peak RSS of the whole run: 17024 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseSafe:end -->
@@ -98,8 +103,30 @@ Peak RSS of the whole run: 17024 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | Runtime objects | Bytes/object | Compile (ms) |
 |---|---|---|---|---|---|---|---|---|
-| crime_scene | 245.5 | 31686 | 83776 | 3144612 | 930122 | 1366 | 680.9 | 0.18 |
-| generated (1000 knots) | 4967.6 | 37647 | 75295 | 1074161 | 19846150 | 35010 | 566.9 | 2.82 |
+| crime_scene | 186.8 | 31192 | 82471 | 3095649 | 930122 | 1366 | 680.9 | 0.12 |
+| generated (1000 knots) | 3500.6 | 53630 | 107260 | 1530187 | 19846150 | 35010 | 566.9 | 1.93 |
 
-Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
+Peak RSS of the whole run: 25360 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseFast:end -->
+
+<!-- bench-new:ReleaseSafe:start -->
+### New runtime, ReleaseSafe
+
+| Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
+|---|---|---|---|---|---|---|---|
+| crime_scene | 393.4 | 66038 | 85099 | 8597958 | 2139358 | 1513 | 1414.0 |
+| generated (1000 knots) | 3995.3 | 306223 | 306223 | 8274144 | 2801359 | 32010 | 87.5 |
+
+The state is the default limits' fixed budget, allocated once.
+<!-- bench-new:ReleaseSafe:end -->
+
+<!-- bench-new:ReleaseFast:start -->
+### New runtime, ReleaseFast
+
+| Story | Load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Instructions | Bytes/instruction |
+|---|---|---|---|---|---|---|---|
+| crime_scene | 183.9 | 171936 | 221562 | 22385604 | 2139358 | 1513 | 1414.0 |
+| generated (1000 knots) | 2935.3 | 990879 | 990879 | 26773544 | 2801359 | 32010 | 87.5 |
+
+The state is the default limits' fixed budget, allocated once.
+<!-- bench-new:ReleaseFast:end -->
