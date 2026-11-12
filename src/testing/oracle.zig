@@ -143,7 +143,7 @@ pub fn check(arena: std.mem.Allocator, io: std.Io, scope: Scope, results: []cons
         });
     }
     std.debug.print("{t} ({s}): {d} cases, {d} ledgered divergences, {d} problems\n", .{
-        scope.corpus, scope.engine, results.len, report.mismatches.len,
+        scope.corpus,                      scope.engine, results.len, report.mismatches.len,
         report.new.len + report.stale.len,
     });
     if (report.new.len + report.stale.len > 0) return error.OracleMismatch;

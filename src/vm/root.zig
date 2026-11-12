@@ -11,6 +11,9 @@ pub const choices = @import("choices.zig");
 pub const state = @import("state.zig");
 pub const flows = @import("flows.zig");
 pub const lookahead = @import("lookahead.zig");
+pub const vm = @import("vm.zig");
+pub const ops = @import("ops.zig");
+pub const story = @import("story.zig");
 const state_test = @import("state_test.zig");
 
 test {
@@ -24,5 +27,8 @@ test {
     _ = state;
     _ = flows;
     _ = lookahead;
+    _ = vm;
+    _ = ops;
+    _ = story;
     _ = state_test;
 }

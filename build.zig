@@ -25,6 +25,9 @@ pub fn build(b: *std.Build) void {
         }),
     });
     build_options.addOptionPath("replay_case_path", replay_case.getEmittedBin());
+    // `zig build replay` installs it, for replaying one case by hand.
+    const replay_step = b.step("replay", "Install replay_case (replay one case on an engine)");
+    replay_step.dependOn(&b.addInstallArtifact(replay_case, .{}).step);
 
     const lib = b.addLibrary(.{
         .name = "inkz",

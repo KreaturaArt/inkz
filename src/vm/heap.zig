@@ -59,6 +59,15 @@ pub const StringHeap = struct {
         return .heap(at);
     }
 
+    /// Shortens the most recently allocated string to `length` bytes.
+    pub fn shrink_last(heap: *StringHeap, reference: StringReference, length: u32) void {
+        const at = reference.heap_offset();
+        assert(length <= heap.length_at(at));
+        assert(at + object_bytes(heap.length_at(at)) == heap.used);
+        std.mem.writeInt(u32, heap.bytes[at..][0..4], length, .little);
+        heap.used = at + object_bytes(length);
+    }
+
     /// Drops every object from `top` on; `top` must be an object boundary, such as a
     /// relocated lookahead mark.
     pub fn truncate(heap: *StringHeap, top: u32) void {

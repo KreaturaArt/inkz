@@ -562,6 +562,8 @@ pub const ProgramBuilder = struct {
         errdefer gpa.free(list_items);
         const externals = try builder.externals.toOwnedSlice(gpa);
         errdefer gpa.free(externals);
+        // The VM's newline output items point at this string (plan §4.2).
+        const newline = try builder.intern("\n");
         var containers = builder.containers;
         builder.containers = .empty;
         const program: Program = .{
@@ -577,6 +579,7 @@ pub const ProgramBuilder = struct {
             .global_declaration = .none,
             .count_slots_count = count_slots,
             .ink_version = builder.ink_version,
+            .newline = newline,
         };
         builder.strings = try string_pool.StringPool.init(gpa);
         assert(program.containers.len == builder.staged.items.len);

@@ -47,6 +47,7 @@ pub const Snapshot = struct {
     turn_index: i32 = -1,
     story_seed: i32 = 0,
     previous_random: i32 = 0,
+    did_safe_exit: bool = false,
 };
 
 /// A PatchEntry's target: which shared array, and the slot in it.
@@ -104,6 +105,7 @@ pub fn take(state: *State) void {
         .turn_index = state.turn_index,
         .story_seed = state.story_seed,
         .previous_random = state.previous_random,
+        .did_safe_exit = state.did_safe_exit,
     };
     assert(active(state));
 }
@@ -152,6 +154,7 @@ pub fn restore(state: *State) void {
     state.turn_index = snapshot.turn_index;
     state.story_seed = snapshot.story_seed;
     state.previous_random = snapshot.previous_random;
+    state.did_safe_exit = snapshot.did_safe_exit;
     state.snapshot = .{};
     assert(!active(state));
 }

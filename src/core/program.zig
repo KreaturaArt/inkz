@@ -62,6 +62,8 @@ pub const Program = struct {
     /// How many containers count visits or turns: the length of the count arrays.
     count_slots_count: u32,
     ink_version: u32,
+    /// The string "\n", always interned: newline output items are slices of it.
+    newline: StringId,
 
     pub const root: ContainerIndex = @enumFromInt(0);
 
