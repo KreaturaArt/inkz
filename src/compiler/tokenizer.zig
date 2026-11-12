@@ -1,663 +1,552 @@
-/// Ink source tokenizer — character-level scanner that produces a flat Token
-/// stream consumed by the parser.  The scanner is context-aware at the
-/// line level: structural markers (* + - ~ = ===) are only recognised at
-/// the start of a line (after optional leading whitespace).  Everything
-/// else is either a structural delimiter ({} [] # | \n -> <-) or plain
-/// text that the parser re-scans for finer-grained content.
-///
-/// Design notes (matches sample/Tokenizer.zig idioms):
-///   • Source is [:0]const u8 — the NUL sentinel is the EOF check, no
-///     per-character bounds test needed.
-///   • Token carries Loc{start,end: u32} offsets (8 bytes) instead of a
-///     fat []const u8 slice (16 bytes).  Call tok.loc.slice(src) to get
-///     the text.  Token total size: 16 bytes (was 32).
-///   • The main scan loop is a labeled-switch state machine
-///     (state: switch(State.start){ ... continue :state .foo; })
-///     which makes state transitions explicit and avoids re-entry overhead.
+//! The compiler's tokenizer (plan §4.11, P7.1). ink's grammar is context-sensitive, so the
+//! parser asks for one token at a time in the mode it is in:
+//! - `content`: text runs and the characters that end them, as InkParser's ContentText does
+//!   (`{ } | # \ newline`, and `->`, `<-`, `<>`); `content_choice` adds `[ ]` and
+//!   `content_string` adds `"`;
+//! - `expression`: identifiers (any run of ink's identifier characters, digits included:
+//!   the parser decides what is a number), operators, punctuation and whitespace;
+//! - `rest_of_line`: everything up to the newline (INCLUDE paths, author warnings).
+//! Whitespace and newlines are tokens, because ink's rules care where they are.
+//!
+//! Comments are removed first, as ink's CommentEliminator does (textually, keeping
+//! newlines), into a buffer the caller provides. Tokens store `start` and `end` (T2
+//! deviation). The scanner is a labeled switch (the D10 exception).
+
 const std = @import("std");
+const assert = std.debug.assert;
 
-// ── Token types ───────────────────────────────────────────────────────────────
-
-pub const TokenTag = enum {
-    text,
-    newline,
-    knot_marker, // === or ==
-    stitch_marker, // = (single)
-    choice_once, // * at line start
-    choice_sticky, // + at line start
-    gather, // - at line start (not followed by >)
-    logic_line, // ~ at line start
-    divert_arrow, // ->
-    divert_return, // ->->
-    thread_start, // <-
-    left_brace, // {
-    right_brace, // }
-    left_bracket, // [
-    right_bracket, // ]
-    hash, // #
-    colon, // :  (structural inside {})
-    pipe, // |
+pub const Tag = enum(u8) {
     eof,
-    // Line-start declaration keywords (recognised as text-token content by parser)
-    kw_var, // VAR
-    kw_const, // CONST
-    kw_list, // LIST
-    kw_include, // INCLUDE
-    kw_external, // EXTERNAL
-    // Expression / statement keywords
-    kw_ref, // ref
-    kw_end, // END
-    kw_done, // DONE
-    kw_return, // return
-    kw_temp, // temp
-    kw_and, // and
-    kw_or, // or
-    kw_not, // not
-    kw_mod, // mod
+    newline,
+    /// Spaces and tabs.
+    whitespace,
+    /// Content text; `escape` is `\` and the character after it.
+    text,
+    escape,
+    /// A run of identifier characters (letters, digits, `_`, ink's Unicode ranges).
+    word,
+    brace_open,
+    brace_close,
+    bracket_open,
+    bracket_close,
+    paren_open,
+    paren_close,
+    pipe,
+    hash,
+    quote,
+    divert,
+    thread,
+    glue,
+    comma,
+    dot,
+    colon,
+    tilde,
+    dollar,
+    plus,
+    minus,
+    star,
+    slash,
+    percent,
+    caret,
+    question,
+    equal,
+    bang,
+    less,
+    greater,
+    ampersand,
+    equal_equal,
+    bang_equal,
+    less_equal,
+    greater_equal,
+    and_and,
+    or_or,
+    bang_question,
+    plus_plus,
+    minus_minus,
+    plus_equal,
+    minus_equal,
+    /// A character no rule of the mode accepts.
+    invalid,
 };
+
+pub const Mode = enum { content, content_choice, content_string, expression, rest_of_line };
 
 pub const Token = struct {
-    tag: TokenTag,
-    /// Byte-offset range into the source string.
-    /// Use loc.slice(src) to recover the actual text.
-    loc: Loc,
-    /// Source line (1-based) where this token starts.
-    line: u32,
+    tag: Tag,
+    start: u32,
+    end: u32,
 
-    pub const Loc = struct {
-        start: u32,
-        end: u32,
-
-        pub fn slice(loc: Loc, src: []const u8) []const u8 {
-            return src[loc.start..loc.end];
-        }
-    };
+    pub fn slice(token: Token, source: []const u8) []const u8 {
+        assert(source.len < std.math.maxInt(u32));
+        assert(token.start <= token.end and token.end <= source.len);
+        return source[token.start..token.end];
+    }
 };
 
-// ── Tokenizer ─────────────────────────────────────────────────────────────────
-
-const State = enum { start, slash, line_comment, block_comment };
+/// ink's CommentEliminator: `//` to the end of the line and `/* ... */` are removed, a block
+/// comment leaving its newlines. Writes into `out` (at least `source.len` bytes) and returns
+/// the cleaned text.
+pub fn eliminate_comments(source: []const u8, out: []u8) []const u8 {
+    assert(out.len >= source.len);
+    var read: usize = 0;
+    var written: usize = 0;
+    while (read < source.len) {
+        if (std.mem.startsWith(u8, source[read..], "//")) {
+            read = std.mem.indexOfAnyPos(u8, source, read, "\n\r") orelse source.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, source[read..], "/*")) {
+            const close = std.mem.indexOfPos(u8, source, read + 2, "*/");
+            const end = if (close) |at| at + 2 else source.len;
+            const newlines = std.mem.count(u8, source[read..end], "\n");
+            @memset(out[written..][0..newlines], '\n');
+            written += newlines;
+            read = end;
+            continue;
+        }
+        out[written] = source[read];
+        written += 1;
+        read += 1;
+    }
+    assert(written <= read);
+    return out[0..written];
+}
 
 pub const Tokenizer = struct {
-    src: [:0]const u8,
-    pos: u32,
-    line: u32,
-    /// True at the very start of a line (before any non-whitespace has been
-    /// consumed on that line).  Structural markers are only emitted when
-    /// this flag is set; once a non-marker token is produced it is cleared.
-    at_line_start: bool,
+    source: []const u8,
+    at: u32 = 0,
 
-    pub fn init(src: [:0]const u8) Tokenizer {
-        return .{ .src = src, .pos = 0, .line = 1, .at_line_start = true };
+    pub fn init(source: []const u8) Tokenizer {
+        assert(source.len < std.math.maxInt(u32));
+        const tokenizer: Tokenizer = .{ .source = source };
+        assert(tokenizer.at == 0);
+        return tokenizer;
     }
 
-    // -- Public API -----------------------------------------------------------
-
-    /// Return the next token.  Never fails — at end of input returns .eof.
-    pub fn next(self: *Tokenizer) Token {
-        // ts / tl are set in .start and used by .slash / scanText.
-        var ts: u32 = 0;
-        var tl: u32 = 0;
-
-        state: switch (State.start) {
-            .start => {
-                // Skip leading whitespace at line start so that indented choices
-                // and gathers are recognised correctly.  Mid-line whitespace is
-                // significant (it stays part of text tokens).
-                if (self.at_line_start) {
-                    while (self.src[self.pos] == ' ' or self.src[self.pos] == '\t') {
-                        self.pos += 1;
-                    }
-                }
-
-                ts = self.pos;
-                tl = self.line;
-
-                switch (self.src[self.pos]) {
-                    0 => return .{ .tag = .eof, .loc = .{ .start = ts, .end = ts }, .line = tl },
-
-                    '\r' => {
-                        self.pos += 1;
-                        if (self.src[self.pos] == '\n') self.pos += 1;
-                        self.line += 1;
-                        self.at_line_start = true;
-                        return .{ .tag = .newline, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    '\n' => {
-                        self.pos += 1;
-                        self.line += 1;
-                        self.at_line_start = true;
-                        return .{ .tag = .newline, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-
-                    '{' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .left_brace, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    '}' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .right_brace, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    '[' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .left_bracket, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    ']' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .right_bracket, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    '#' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .hash, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    '|' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .pipe, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-                    ':' => {
-                        self.pos += 1;
-                        self.at_line_start = false;
-                        return .{ .tag = .colon, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                    },
-
-                    '-' => {
-                        self.pos += 1;
-                        if (self.src[self.pos] == '>') {
-                            self.pos += 1;
-                            // Check for ->->
-                            if (self.src[self.pos] == '-' and self.src[self.pos + 1] == '>') {
-                                self.pos += 2;
-                                self.at_line_start = false;
-                                return .{ .tag = .divert_return, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                            }
-                            self.at_line_start = false;
-                            return .{ .tag = .divert_arrow, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        if (self.at_line_start) {
-                            // Gather marker.  Keep at_line_start=true so that
-                            // consecutive '-' chars are each emitted as gather.
-                            return .{ .tag = .gather, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        // Bare '-' mid-line → accumulate as text.
-                        return self.scanText(ts, tl);
-                    },
-
-                    '<' => {
-                        self.pos += 1;
-                        if (self.src[self.pos] == '-') {
-                            self.pos += 1;
-                            self.at_line_start = false;
-                            return .{ .tag = .thread_start, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        // '<' as text char (e.g. '<>' glue stays in text).
-                        return self.scanText(ts, tl);
-                    },
-
-                    '*' => {
-                        if (self.at_line_start) {
-                            self.pos += 1;
-                            // Keep at_line_start so "* * choice" works.
-                            return .{ .tag = .choice_once, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        return self.scanText(ts, tl);
-                    },
-
-                    '+' => {
-                        if (self.at_line_start) {
-                            self.pos += 1;
-                            return .{ .tag = .choice_sticky, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        return self.scanText(ts, tl);
-                    },
-
-                    '~' => {
-                        if (self.at_line_start) {
-                            self.pos += 1;
-                            self.at_line_start = false;
-                            return .{ .tag = .logic_line, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        return self.scanText(ts, tl);
-                    },
-
-                    '=' => {
-                        if (self.at_line_start) {
-                            self.pos += 1;
-                            var count: u8 = 1;
-                            while (self.src[self.pos] == '=') {
-                                self.pos += 1;
-                                count += 1;
-                            }
-                            self.at_line_start = false;
-                            const tag: TokenTag = if (count >= 2) .knot_marker else .stitch_marker;
-                            return .{ .tag = tag, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
-                        }
-                        return self.scanText(ts, tl);
-                    },
-
-                    '/' => {
-                        self.pos += 1;
-                        continue :state .slash;
-                    },
-
-                    else => return self.scanText(ts, tl),
-                }
-            },
-
-            .slash => {
-                // ts/tl point to the leading '/' consumed in .start.
-                if (self.src[self.pos] == '/') {
-                    self.pos += 1;
-                    continue :state .line_comment;
-                }
-                if (self.src[self.pos] == '*') {
-                    self.pos += 1;
-                    continue :state .block_comment;
-                }
-                // Bare '/' — include in text token.
-                return self.scanText(ts, tl);
-            },
-
-            .line_comment => {
-                // Consume characters until newline or EOF, then restart.
-                // The newline itself is NOT consumed here so .start will emit
-                // a newline token for it (preserving line structure).
-                switch (self.src[self.pos]) {
-                    0, '\n' => continue :state .start,
-                    '\r' => {
-                        // CRLF: skip the \r but leave \n for .start to emit.
-                        self.pos += 1;
-                        continue :state .start;
-                    },
-                    else => {
-                        self.pos += 1;
-                        continue :state .line_comment;
-                    },
-                }
-            },
-
-            .block_comment => {
-                switch (self.src[self.pos]) {
-                    0 => continue :state .start, // unterminated; best-effort
-                    '\n' => {
-                        self.line += 1;
-                        self.pos += 1;
-                        continue :state .block_comment;
-                    },
-                    '\r' => {
-                        self.pos += 1;
-                        if (self.src[self.pos] == '\n') {
-                            self.line += 1;
-                            self.pos += 1;
-                        }
-                        continue :state .block_comment;
-                    },
-                    '*' => {
-                        self.pos += 1;
-                        if (self.src[self.pos] == '/') {
-                            self.pos += 1;
-                            continue :state .start;
-                        }
-                        continue :state .block_comment;
-                    },
-                    else => {
-                        self.pos += 1;
-                        continue :state .block_comment;
-                    },
-                }
-            },
-        }
-
-        comptime unreachable;
+    /// The next token in `mode`; at the end, `eof` at `source.len`, again and again.
+    pub fn next(tokenizer: *Tokenizer, mode: Mode) Token {
+        assert(tokenizer.at <= tokenizer.source.len);
+        const start = tokenizer.at;
+        const tag = if (start == tokenizer.source.len) Tag.eof else switch (mode) {
+            .content, .content_choice, .content_string => tokenizer.content(mode),
+            .expression => tokenizer.expression(),
+            .rest_of_line => tokenizer.rest_of_line(),
+        };
+        const token: Token = .{ .tag = tag, .start = start, .end = tokenizer.at };
+        // Every token but eof consumes input: the stream ends.
+        assert(token.tag == .eof or token.end > token.start);
+        return token;
     }
 
-    /// Accumulate a `text` token starting at `ts` (some chars may already
-    /// have been consumed).  Stops before the next structural delimiter.
-    fn scanText(self: *Tokenizer, ts: u32, tl: u32) Token {
-        while (true) {
-            switch (self.src[self.pos]) {
-                // EOF or hard structural stops.
-                0, '{', '}', '[', ']', '#', '|', '\n', '\r' => break,
-                // Stop before -> but keep bare -.
-                '-' => {
-                    if (self.src[self.pos + 1] == '>') break;
-                    self.pos += 1;
-                },
-                // Stop before <- but keep bare <.
-                '<' => {
-                    if (self.src[self.pos + 1] == '-') break;
-                    self.pos += 1;
-                },
-                // Stop before // or /* comments.
-                '/' => {
-                    const p = self.src[self.pos + 1];
-                    if (p == '/' or p == '*') break;
-                    self.pos += 1;
-                },
-                else => self.pos += 1,
-            }
+    fn peek(tokenizer: *const Tokenizer, offset: u32) u8 {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(offset <= 2);
+        const at = tokenizer.at + offset;
+        return if (at < tokenizer.source.len) tokenizer.source[at] else 0;
+    }
+
+    /// Newlines (`\n`, `\r\n`), whitespace and the shared punctuation of every mode.
+    fn common(tokenizer: *Tokenizer) ?Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(tokenizer.at < tokenizer.source.len);
+        const character = tokenizer.peek(0);
+        if (character == '\n' or (character == '\r' and tokenizer.peek(1) == '\n')) {
+            tokenizer.at += if (character == '\r') 2 else 1;
+            return .newline;
         }
-        self.at_line_start = false;
-        return .{ .tag = .text, .loc = .{ .start = ts, .end = self.pos }, .line = tl };
+        if (character == ' ' or character == '\t') {
+            while (tokenizer.peek(0) == ' ' or tokenizer.peek(0) == '\t') tokenizer.at += 1;
+            return .whitespace;
+        }
+        return null;
+    }
+
+    fn content(tokenizer: *Tokenizer, mode: Mode) Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(mode == .content or mode == .content_choice or mode == .content_string);
+        if (tokenizer.common()) |tag| {
+            // Whitespace is part of content text, unless it is a line's end.
+            const inline_space = tag == .whitespace and !tokenizer.at_line_end();
+            if (inline_space) return tokenizer.text_from_here(mode);
+            return tag;
+        }
+        const single: ?Tag = switch (tokenizer.peek(0)) {
+            '{' => .brace_open,
+            '}' => .brace_close,
+            '|' => .pipe,
+            '#' => .hash,
+            '[' => if (mode == .content_choice) .bracket_open else null,
+            ']' => if (mode == .content_choice) .bracket_close else null,
+            '"' => if (mode == .content_string) .quote else null,
+            else => null,
+        };
+        if (single) |tag| {
+            tokenizer.at += 1;
+            return tag;
+        }
+        if (tokenizer.peek(0) == '\\') {
+            tokenizer.at += @min(2, tokenizer.source.len - tokenizer.at);
+            return .escape;
+        }
+        if (tokenizer.arrow()) |tag| return tag;
+        if (tokenizer.peek(0) == '\r') {
+            // A lone `\r` is text in ink only when not before `\n`; it ends text runs.
+            tokenizer.at += 1;
+            return .text;
+        }
+        return tokenizer.text_from_here(mode);
+    }
+
+    /// After whitespace: whether only whitespace remains before the newline or the end
+    /// (ink trims it; the parser sees it as `whitespace` then `newline`).
+    fn at_line_end(tokenizer: *const Tokenizer) bool {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(tokenizer.source.len < std.math.maxInt(u32));
+        const character = tokenizer.peek(0);
+        const crlf = character == '\r' and tokenizer.peek(1) == '\n';
+        return character == '\n' or character == 0 or crlf;
+    }
+
+    fn arrow(tokenizer: *Tokenizer) ?Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(tokenizer.at < tokenizer.source.len);
+        const pair = [2]u8{ tokenizer.peek(0), tokenizer.peek(1) };
+        const tag: Tag = if (std.mem.eql(u8, &pair, "->"))
+            .divert
+        else if (std.mem.eql(u8, &pair, "<-"))
+            .thread
+        else if (std.mem.eql(u8, &pair, "<>"))
+            .glue
+        else
+            return null;
+        tokenizer.at += 2;
+        return tag;
+    }
+
+    /// Text up to the next character that ends content in `mode`, or an arrow or glue.
+    fn text_from_here(tokenizer: *Tokenizer, mode: Mode) Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(mode != .expression and mode != .rest_of_line);
+        const ends: []const u8 = switch (mode) {
+            .content => "{}|\n\r\\#",
+            .content_choice => "{}|\n\r\\#[]",
+            .content_string => "{}|\n\r\\#\"",
+            else => unreachable,
+        };
+        scan: switch (tokenizer.peek(0)) {
+            0 => {},
+            '-', '<' => {
+                const pair = [2]u8{ tokenizer.peek(0), tokenizer.peek(1) };
+                const stops = std.mem.eql(u8, &pair, "->") or std.mem.eql(u8, &pair, "<-") or
+                    std.mem.eql(u8, &pair, "<>");
+                if (stops) break :scan;
+                tokenizer.at += 1;
+                continue :scan tokenizer.peek(0);
+            },
+            ' ', '\t' => {
+                // Trailing whitespace before a line end isn't part of the text run.
+                const saved = tokenizer.at;
+                while (tokenizer.peek(0) == ' ' or tokenizer.peek(0) == '\t') tokenizer.at += 1;
+                if (tokenizer.at_line_end()) {
+                    tokenizer.at = saved;
+                    break :scan;
+                }
+                continue :scan tokenizer.peek(0);
+            },
+            else => |character| {
+                if (std.mem.indexOfScalar(u8, ends, character) != null) break :scan;
+                tokenizer.at += 1;
+                continue :scan tokenizer.peek(0);
+            },
+        }
+        return .text;
+    }
+
+    fn expression(tokenizer: *Tokenizer) Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(tokenizer.at < tokenizer.source.len);
+        if (tokenizer.common()) |tag| return tag;
+        if (identifier_length(tokenizer.source[tokenizer.at..])) |length| {
+            tokenizer.at += length;
+            return .word;
+        }
+        if (tokenizer.arrow()) |tag| {
+            // In expressions `<-` is `<` then `-`, and `<>` is `<` then `>`.
+            if (tag == .divert) return tag;
+            tokenizer.at -= 1;
+            return .less;
+        }
+        return tokenizer.operator();
+    }
+
+    const operators = [_]struct { []const u8, Tag }{
+        .{ "==", .equal_equal },   .{ "!=", .bang_equal },  .{ "<=", .less_equal },
+        .{ ">=", .greater_equal }, .{ "&&", .and_and },     .{ "||", .or_or },
+        .{ "!?", .bang_question }, .{ "++", .plus_plus },   .{ "--", .minus_minus },
+        .{ "+=", .plus_equal },    .{ "-=", .minus_equal }, .{ "{", .brace_open },
+        .{ "}", .brace_close },    .{ "[", .bracket_open }, .{ "]", .bracket_close },
+        .{ "(", .paren_open },     .{ ")", .paren_close },  .{ "|", .pipe },
+        .{ "#", .hash },           .{ "\"", .quote },       .{ ",", .comma },
+        .{ ".", .dot },            .{ ":", .colon },        .{ "~", .tilde },
+        .{ "$", .dollar },         .{ "+", .plus },         .{ "-", .minus },
+        .{ "*", .star },           .{ "/", .slash },        .{ "%", .percent },
+        .{ "^", .caret },          .{ "?", .question },     .{ "=", .equal },
+        .{ "!", .bang },           .{ "<", .less },         .{ ">", .greater },
+        .{ "&", .ampersand },
+    };
+
+    fn operator(tokenizer: *Tokenizer) Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(tokenizer.at < tokenizer.source.len);
+        const rest = tokenizer.source[tokenizer.at..];
+        for (operators) |entry| {
+            if (!std.mem.startsWith(u8, rest, entry[0])) continue;
+            tokenizer.at += @intCast(entry[0].len);
+            return entry[1];
+        }
+        // Not ink: one UTF-8 sequence (or byte) is invalid.
+        const length = std.unicode.utf8ByteSequenceLength(rest[0]) catch 1;
+        tokenizer.at += @min(length, @as(u32, @intCast(rest.len)));
+        return .invalid;
+    }
+
+    fn rest_of_line(tokenizer: *Tokenizer) Tag {
+        assert(tokenizer.at <= tokenizer.source.len);
+        assert(tokenizer.at < tokenizer.source.len);
+        if (tokenizer.common()) |tag| {
+            if (tag == .newline) return tag;
+        }
+        while (!tokenizer.at_line_end()) tokenizer.at += 1;
+        return .text;
     }
 };
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-const testing = std.testing;
-
-fn readOriginalFixture(alloc: std.mem.Allocator, comptime rel: []const u8) ![:0]u8 {
-    const path = "test/fixture/original/" ++ rel;
-    const io = std.testing.io;
-    const data = try std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024));
-    defer alloc.free(data);
-    return alloc.dupeSentinel(u8, data, 0);
-}
-
-/// Collect all tokens from a null-terminated source string (caller frees).
-fn tokenizeAll(alloc: std.mem.Allocator, src: [:0]const u8) ![]Token {
-    var list = std.ArrayList(Token).empty;
-    var t = Tokenizer.init(src);
-    while (true) {
-        const tk = t.next();
-        try list.append(alloc, tk);
-        if (tk.tag == .eof) break;
+/// The length of the identifier at the start of `text`: ink's identifier characters (ASCII
+/// letters, digits, `_`, and its Unicode ranges), or null.
+pub fn identifier_length(text: []const u8) ?u32 {
+    assert(text.len < std.math.maxInt(u32));
+    assert(@sizeOf(u21) <= 4);
+    var at: u32 = 0;
+    while (at < text.len) {
+        const length = std.unicode.utf8ByteSequenceLength(text[at]) catch break;
+        if (at + length > text.len) break;
+        const code = std.unicode.utf8Decode(text[at..][0..length]) catch break;
+        if (!is_identifier_character(code)) break;
+        at += length;
     }
-    return list.toOwnedSlice(alloc);
+    return if (at == 0) null else at;
 }
 
-test "Compiler tokenizer: empty input" {
-    var t = Tokenizer.init("");
-    const tk = t.next();
-    try testing.expectEqual(TokenTag.eof, tk.tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: Loc.slice" {
-    var t = Tokenizer.init("Hello world");
-    const tk = t.next();
-    try testing.expectEqual(TokenTag.text, tk.tag);
-    try testing.expectEqualStrings("Hello world", tk.loc.slice("Hello world"));
-}
-
-test "Compiler tokenizer: single newline" {
-    var t = Tokenizer.init("\n");
-    try testing.expectEqual(TokenTag.newline, t.next().tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: CRLF treated as single newline" {
-    var t = Tokenizer.init("\r\n");
-    const nl = t.next();
-    try testing.expectEqual(TokenTag.newline, nl.tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: structural delimiters" {
-    const src = "{}[]#|";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.left_brace, t.next().tag);
-    try testing.expectEqual(TokenTag.right_brace, t.next().tag);
-    try testing.expectEqual(TokenTag.left_bracket, t.next().tag);
-    try testing.expectEqual(TokenTag.right_bracket, t.next().tag);
-    try testing.expectEqual(TokenTag.hash, t.next().tag);
-    try testing.expectEqual(TokenTag.pipe, t.next().tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: divert arrow ->" {
-    const src = "-> knot";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.divert_arrow, t.next().tag);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings(" knot", text.loc.slice(src));
-}
-
-test "Compiler tokenizer: divert return ->->" {
-    var t = Tokenizer.init("->->");
-    try testing.expectEqual(TokenTag.divert_return, t.next().tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: -> and ->-> are distinct" {
-    const src = "-> ->";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.divert_arrow, t.next().tag);
-    const mid = t.next();
-    try testing.expectEqual(TokenTag.text, mid.tag);
-    try testing.expectEqualStrings(" ", mid.loc.slice(src));
-    try testing.expectEqual(TokenTag.divert_arrow, t.next().tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: thread_start <-" {
-    const src = "<- knot";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.thread_start, t.next().tag);
-    try testing.expectEqual(TokenTag.text, t.next().tag);
-}
-
-test "Compiler tokenizer: choice_once * at line start" {
-    const src = "* choice text";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.choice_once, t.next().tag);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings("choice text", text.loc.slice(src));
-}
-
-test "Compiler tokenizer: choice_sticky + at line start" {
-    const src = "+ sticky";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.choice_sticky, t.next().tag);
-    try testing.expectEqual(TokenTag.text, t.next().tag);
-}
-
-test "Compiler tokenizer: nested choices * * preserve nesting" {
-    const src = "* * nested";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.choice_once, t.next().tag);
-    try testing.expectEqual(TokenTag.choice_once, t.next().tag);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings("nested", text.loc.slice(src));
-}
-
-test "Compiler tokenizer: * in expression is plain text" {
-    const src = "{2 * 3}";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.left_brace, t.next().tag);
-    const expr = t.next();
-    try testing.expectEqual(TokenTag.text, expr.tag);
-    try testing.expect(std.mem.indexOf(u8, expr.loc.slice(src), "*") != null);
-    try testing.expectEqual(TokenTag.right_brace, t.next().tag);
-}
-
-test "Compiler tokenizer: gather - at line start" {
-    const src = "- gather";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.gather, t.next().tag);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings("gather", text.loc.slice(src));
-}
-
-test "Compiler tokenizer: nested gathers - -" {
-    var t = Tokenizer.init("- - nested");
-    try testing.expectEqual(TokenTag.gather, t.next().tag);
-    try testing.expectEqual(TokenTag.gather, t.next().tag);
-    try testing.expectEqual(TokenTag.text, t.next().tag);
-}
-
-test "Compiler tokenizer: - in expression is plain text not gather" {
-    const src = "{10 - 2}";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.left_brace, t.next().tag);
-    const expr = t.next();
-    try testing.expectEqual(TokenTag.text, expr.tag);
-    try testing.expect(std.mem.indexOf(u8, expr.loc.slice(src), "-") != null);
-    try testing.expectEqual(TokenTag.right_brace, t.next().tag);
-}
-
-test "Compiler tokenizer: divert arrow in mid-line text" {
-    const src = "go -> target";
-    var t = Tokenizer.init(src);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings("go ", text.loc.slice(src));
-    try testing.expectEqual(TokenTag.divert_arrow, t.next().tag);
-    const target = t.next();
-    try testing.expectEqual(TokenTag.text, target.tag);
-    try testing.expectEqualStrings(" target", target.loc.slice(src));
-}
-
-test "Compiler tokenizer: logic_line ~ at line start" {
-    const src = "~ x = 1";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.logic_line, t.next().tag);
-    try testing.expectEqual(TokenTag.text, t.next().tag);
-}
-
-test "Compiler tokenizer: knot_marker === and ==" {
-    {
-        var t = Tokenizer.init("=== knot_name ===");
-        try testing.expectEqual(TokenTag.knot_marker, t.next().tag);
+/// InkParser's identifier character set: `A-Z a-z 0-9 _` and the ranges of
+/// InkParser_CharacterRanges.cs.
+pub fn is_identifier_character(code: u21) bool {
+    assert(code <= 0x10FFFF);
+    assert(@sizeOf(u21) <= 4);
+    if (code < 0x80) return std.ascii.isAlphanumeric(@intCast(code)) or code == '_';
+    const ranges = [_][2]u21{
+        .{ 0x0080, 0x00FF }, .{ 0x0100, 0x017F }, .{ 0x0180, 0x024F }, .{ 0x0370, 0x03FF },
+        .{ 0x0400, 0x04FF }, .{ 0x0530, 0x058F }, .{ 0x0590, 0x05FF }, .{ 0x0600, 0x06FF },
+        .{ 0xAC00, 0xD7AF }, .{ 0x4E00, 0x9FFF }, .{ 0x3041, 0x3096 }, .{ 0x30A0, 0x30FC },
+    };
+    for (ranges) |range| {
+        if (code >= range[0] and code <= range[1]) return !is_excluded(code);
     }
-    {
-        var t = Tokenizer.init("== knot_name");
-        try testing.expectEqual(TokenTag.knot_marker, t.next().tag);
-    }
+    return false;
 }
 
-test "Compiler tokenizer: stitch_marker single =" {
-    const src = "= stitch_name";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.stitch_marker, t.next().tag);
-    try testing.expectEqual(TokenTag.text, t.next().tag);
+/// The characters InkParser_CharacterRanges.cs excludes from its ranges.
+fn is_excluded(code: u21) bool {
+    assert(code >= 0x80);
+    assert(code <= 0x10FFFF);
+    return switch (code) {
+        0x0378...0x0385, 0x0374, 0x0375, 0x0387, 0x038B, 0x038D, 0x03A2 => true,
+        0x0482...0x0489 => true,
+        0x0530, 0x0557...0x0560, 0x0588...0x058E => true,
+        else => false,
+    };
 }
 
-test "Compiler tokenizer: line_comment // skipped" {
-    const src = "// this is a comment\ntext";
-    var t = Tokenizer.init(src);
-    const first = t.next();
-    try testing.expectEqual(TokenTag.newline, first.tag);
-    const second = t.next();
-    try testing.expectEqual(TokenTag.text, second.tag);
-    try testing.expectEqualStrings("text", second.loc.slice(src));
-}
+/// Line starts, for `line:column` in diagnostics.
+pub const LineTable = struct {
+    starts: []const u32,
 
-test "Compiler tokenizer: inline comment // stops text token" {
-    const src = "Hello world // ignored\n";
-    var t = Tokenizer.init(src);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings("Hello world ", text.loc.slice(src));
-    try testing.expectEqual(TokenTag.newline, t.next().tag);
-    try testing.expectEqual(TokenTag.eof, t.next().tag);
-}
-
-test "Compiler tokenizer: block_comment /* */ skipped" {
-    const src = "before /* block\ncomment */ after";
-    var t = Tokenizer.init(src);
-    const before = t.next();
-    try testing.expectEqual(TokenTag.text, before.tag);
-    try testing.expectEqualStrings("before ", before.loc.slice(src));
-    const after = t.next();
-    try testing.expectEqual(TokenTag.text, after.tag);
-    try testing.expectEqualStrings(" after", after.loc.slice(src));
-}
-
-test "Compiler tokenizer: glue <> is plain text" {
-    const src = "text <> more";
-    var t = Tokenizer.init(src);
-    const all = t.next();
-    try testing.expectEqual(TokenTag.text, all.tag);
-    try testing.expect(std.mem.indexOf(u8, all.loc.slice(src), "<>") != null);
-}
-
-test "Compiler tokenizer: indented choice has leading whitespace skipped" {
-    const src = "    * indented";
-    var t = Tokenizer.init(src);
-    try testing.expectEqual(TokenTag.choice_once, t.next().tag);
-    const text = t.next();
-    try testing.expectEqual(TokenTag.text, text.tag);
-    try testing.expectEqualStrings("indented", text.loc.slice(src));
-}
-
-test "Compiler tokenizer: multiline sequence" {
-    const src = "line one\n* choice\n- gather\n-> END\n";
-    const alloc = testing.allocator;
-    const tokens = try tokenizeAll(alloc, src);
-    defer alloc.free(tokens);
-
-    try testing.expectEqual(TokenTag.text, tokens[0].tag);
-    try testing.expectEqual(TokenTag.newline, tokens[1].tag);
-    try testing.expectEqual(TokenTag.choice_once, tokens[2].tag);
-    try testing.expectEqual(TokenTag.text, tokens[3].tag);
-    try testing.expectEqual(TokenTag.newline, tokens[4].tag);
-    try testing.expectEqual(TokenTag.gather, tokens[5].tag);
-    try testing.expectEqual(TokenTag.text, tokens[6].tag);
-    try testing.expectEqual(TokenTag.newline, tokens[7].tag);
-    try testing.expectEqual(TokenTag.divert_arrow, tokens[8].tag);
-    try testing.expectEqual(TokenTag.text, tokens[9].tag);
-    try testing.expectEqual(TokenTag.newline, tokens[10].tag);
-    try testing.expectEqual(TokenTag.eof, tokens[11].tag);
-}
-
-test "Compiler tokenizer: hello_world.ink" {
-    const alloc = testing.allocator;
-    const src = try readOriginalFixture(alloc, "runtime/misc/hello_world.ink");
-    defer alloc.free(src);
-
-    var t = Tokenizer.init(src);
-
-    const t0 = t.next();
-    try testing.expectEqual(TokenTag.text, t0.tag);
-    try testing.expectEqualStrings("Hello world", t0.loc.slice(src));
-
-    const t1 = t.next();
-    const last = if (t1.tag == .newline) t.next() else t1;
-    try testing.expectEqual(TokenTag.eof, last.tag);
-}
-
-test "Compiler tokenizer: arithmetic.ink" {
-    const alloc = testing.allocator;
-    const src = try readOriginalFixture(alloc, "runtime/evaluation/arithmetic.ink");
-    defer alloc.free(src);
-
-    var t = Tokenizer.init(src);
-
-    var left_count: u32 = 0;
-    var right_count: u32 = 0;
-    var found_number = false;
-    var found_operator = false;
-
-    while (true) {
-        const tk = t.next();
-        switch (tk.tag) {
-            .eof => break,
-            .left_brace => left_count += 1,
-            .right_brace => right_count += 1,
-            .text => {
-                const text = tk.loc.slice(src);
-                if (std.mem.indexOfAny(u8, text, "0123456789") != null)
-                    found_number = true;
-                if (std.mem.indexOfAny(u8, text, "+-*/%") != null or
-                    std.mem.indexOf(u8, text, "mod") != null)
-                    found_operator = true;
-            },
-            else => {},
+    /// Fills `storage` with the offsets where lines start; returns the table.
+    pub fn build(source: []const u8, storage: []u32) error{TooManyLines}!LineTable {
+        assert(source.len < std.math.maxInt(u32));
+        assert(storage.len > 0);
+        storage[0] = 0;
+        var count: u32 = 1;
+        for (source, 0..) |character, position| {
+            if (character != '\n') continue;
+            if (count == storage.len) return error.TooManyLines;
+            storage[count] = @intCast(position + 1);
+            count += 1;
         }
+        return .{ .starts = storage[0..count] };
     }
 
-    try testing.expectEqual(@as(u32, 7), left_count);
-    try testing.expectEqual(@as(u32, 7), right_count);
-    try testing.expect(found_number);
-    try testing.expect(found_operator);
+    /// The 1-based line and column of `offset`.
+    pub fn locate(table: LineTable, offset: u32) struct { line: u32, column: u32 } {
+        assert(table.starts[0] == 0);
+        assert(table.starts.len > 0);
+        var low: usize = 0;
+        var high: usize = table.starts.len;
+        while (high - low > 1) {
+            const middle = (low + high) / 2;
+            if (table.starts[middle] <= offset) low = middle else high = middle;
+        }
+        return .{ .line = @intCast(low + 1), .column = offset - table.starts[low] + 1 };
+    }
+};
+
+fn expect_tokens(source: []const u8, mode: Mode, expected: []const Tag) !void {
+    assert(expected.len > 0);
+    assert(source.len > 0);
+    var tokenizer: Tokenizer = .init(source);
+    for (expected) |tag| {
+        const token = tokenizer.next(mode);
+        std.testing.expectEqual(tag, token.tag) catch |err| {
+            std.debug.print("at {d}: {s}\n", .{ token.start, token.slice(source) });
+            return err;
+        };
+    }
+    try std.testing.expectEqual(Tag.eof, tokenizer.next(mode).tag);
+}
+
+test "content stops where ink's ContentText does" {
+    try expect_tokens("Hello -> knot\n", .content, &.{ .text, .divert, .text, .newline });
+    try expect_tokens("a {x} b | c # tag", .content, &.{
+        .text,
+        .brace_open,
+        .text,
+        .brace_close,
+        .text,
+        .pipe,
+        .text,
+        .hash,
+        .text,
+    });
+    try expect_tokens("x - y < z <> w <- t", .content, &.{ .text, .glue, .text, .thread, .text });
+    try expect_tokens("\\{ not logic", .content, &.{ .escape, .text });
+    try expect_tokens("choice [only] rest", .content_choice, &.{
+        .text,
+        .bracket_open,
+        .text,
+        .bracket_close,
+        .text,
+    });
+    try expect_tokens("in \"string\"", .content_string, &.{ .text, .quote, .text, .quote });
+    try expect_tokens("trailing   \n", .content, &.{ .text, .whitespace, .newline });
+}
+
+test "expressions lex identifiers, operators and whitespace" {
+    try expect_tokens("x >= 2 and not y", .expression, &.{
+        .word,
+        .whitespace,
+        .greater_equal,
+        .whitespace,
+        .word,
+        .whitespace,
+        .word,
+        .whitespace,
+        .word,
+        .whitespace,
+        .word,
+    });
+    try expect_tokens("a<-b", .expression, &.{ .word, .less, .minus, .word });
+    try expect_tokens("-> knot.stitch", .expression, &.{
+        .divert,
+        .whitespace,
+        .word,
+        .dot,
+        .word,
+    });
+    try expect_tokens("count++ != 1.5", .expression, &.{
+        .word,
+        .plus_plus,
+        .whitespace,
+        .bang_equal,
+        .whitespace,
+        .word,
+        .dot,
+        .word,
+    });
+    try expect_tokens("café", .expression, &.{.word});
+    try expect_tokens("@", .expression, &.{.invalid});
+}
+
+test "comments are removed as ink's CommentEliminator removes them" {
+    var buffer: [64]u8 = undefined;
+    const cleaned = eliminate_comments("a // note\nb /* x\ny */ c\n", &buffer);
+    try std.testing.expectEqualStrings("a \nb \n c\n", cleaned);
+}
+
+test "the line table locates offsets" {
+    var storage: [8]u32 = undefined;
+    const table = try LineTable.build("ab\ncd\n\nef", &storage);
+    try std.testing.expectEqual(@as(u32, 4), @as(u32, @intCast(table.starts.len)));
+    const located = table.locate(4);
+    try std.testing.expectEqual(@as(u32, 2), located.line);
+    try std.testing.expectEqual(@as(u32, 2), located.column);
+}
+
+/// Tokenizes `source` line by line as the parser would at a first approximation: logic,
+/// declaration and knot lines in expression mode, other lines in content mode. Returns
+/// how many invalid tokens it met, and checks the stream ends with eof at the end.
+fn tokenize_by_lines(source: []const u8) !u32 {
+    assert(source.len < std.math.maxInt(u32));
+    var tokenizer: Tokenizer = .init(source);
+    var invalid: u32 = 0;
+    var at_line_start = true;
+    var mode: Mode = .content;
+    var tokens: u32 = 0;
+    while (true) : (tokens += 1) {
+        // The token count is bounded by the length plus the final eof.
+        assert(tokens <= source.len + 1);
+        if (at_line_start) mode = line_mode(source[tokenizer.at..]);
+        const token = tokenizer.next(mode);
+        if (token.tag == .eof) {
+            try std.testing.expectEqual(@as(u32, @intCast(source.len)), token.start);
+            return invalid;
+        }
+        if (token.tag == .invalid) invalid += 1;
+        at_line_start = token.tag == .newline;
+    }
+}
+
+fn line_mode(line: []const u8) Mode {
+    assert(line.len < std.math.maxInt(u32));
+    assert(@sizeOf(Mode) == 1);
+    const trimmed = std.mem.trimStart(u8, line, " \t");
+    const logic = [_][]const u8{ "~", "=", "VAR ", "CONST ", "LIST ", "EXTERNAL " };
+    for (logic) |prefix| {
+        if (std.mem.startsWith(u8, trimmed, prefix)) return .expression;
+    }
+    if (std.mem.startsWith(u8, trimmed, "INCLUDE ")) return .rest_of_line;
+    return .content;
+}
+
+test "every ink fixture tokenizes without invalid tokens" {
+    // Goal: P7.1. Method: each .ink under test/, comments removed, tokenized by lines.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var directory = try std.Io.Dir.cwd().openDir(io, "test", .{ .iterate = true });
+    defer directory.close(io);
+    var walker = try directory.walk(arena);
+    defer walker.deinit();
+    var files: u32 = 0;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ink")) continue;
+        const source = try directory.readFileAlloc(io, entry.path, arena, .limited(16 << 20));
+        const cleaned = eliminate_comments(source, try arena.alloc(u8, source.len));
+        const invalid = try tokenize_by_lines(cleaned);
+        std.testing.expectEqual(@as(u32, 0), invalid) catch |err| {
+            std.debug.print("{s}: {d} invalid tokens\n", .{ entry.path, invalid });
+            return err;
+        };
+        files += 1;
+    }
+    try std.testing.expect(files > 100);
 }

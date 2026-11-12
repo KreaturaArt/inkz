@@ -1,18 +1,17 @@
-//! `zig build bench` (plan P0.6, P6b, P9.4): the old runtime's baseline and the new runtime,
-//! in the build mode it was built with. Measures load time, play throughput, memory per
-//! instruction, compile time and peak RSS on crime_scene and on a generated large story,
-//! and writes sections of docs/benchmarks.md between markers for this mode.
+//! `zig build bench` (plan P0.6, P6b, P9.4): the runtime and the compiler, in the build mode
+//! it was built with. Measures load time, play throughput, memory per instruction, compile
+//! time and peak memory on crime_scene and on a generated large story, and writes sections of
+//! docs/benchmarks.md between markers for this mode.
 //!
-//! The old runtime plays the old compiler's JSON; the new runtime plays ink's JSON of the
-//! same stories (test/ground_truth/crime_scene.ink.json, test/fixture/bench/generated.ink.json),
-//! with the same seeded choices, so turns/s and lines/s compare.
+//! The runtime plays ink's JSON of the stories (test/ground_truth/crime_scene.ink.json,
+//! test/fixture/bench/generated.ink.json) with seeded choices, as the P0.6 baseline played the
+//! old runtime, so turns/s and lines/s compare with it; the baseline sections are kept as they
+//! were measured.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
-const Story = @import("runtime/story.zig").Story;
-const old_compiler = @import("compiler/compiler.zig");
-const new_compiler = @import("compiler_next/compile.zig");
+const new_compiler = @import("compiler/compile.zig");
 const CountingAllocator = @import("core/counting_allocator.zig").CountingAllocator;
 const DotnetRandom = @import("core/dotnet_random.zig").DotnetRandom;
 
@@ -42,80 +41,7 @@ fn elapsed_nanoseconds(io: std.Io, start: std.Io.Timestamp) u64 {
     return @intCast(nanoseconds);
 }
 
-fn measure_load(gpa: std.mem.Allocator, io: std.Io, json: []const u8) !f64 {
-    assert(json.len > 0);
-    const start = std.Io.Timestamp.now(io, .awake);
-    for (0..loads_count) |_| {
-        var story = try Story.initFromJson(gpa, json);
-        story.deinit();
-    }
-    const nanoseconds = elapsed_nanoseconds(io, start);
-    assert(nanoseconds > 0);
-    return @as(f64, @floatFromInt(nanoseconds)) / loads_count / 1000.0;
-}
-
 const PlayRate = struct { turns: f64, lines: f64, steps: f64 };
-
-/// Plays the story `plays_count` times with seeded random choices (seeds 1, 2, ...).
-fn measure_play(gpa: std.mem.Allocator, io: std.Io, json: []const u8) !PlayRate {
-    assert(json.len > 0);
-    var turns: u64 = 0;
-    var lines: u64 = 0;
-    var steps: u64 = 0;
-    const start = std.Io.Timestamp.now(io, .awake);
-    for (0..plays_count) |play| {
-        var story = try Story.initFromJson(gpa, json);
-        defer story.deinit();
-        var random = DotnetRandom.init(@intCast(play + 1));
-        var turn: u32 = 0;
-        while (turn < turns_max) : (turn += 1) {
-            while (story.canContinue()) {
-                const out = try story.cont();
-                lines += std.mem.count(u8, out, "\n");
-                gpa.free(out);
-            }
-            const choices_count = story.currentChoices().len;
-            if (choices_count == 0) break;
-            const index: usize = @intCast(@mod(random.next(), @as(i32, @intCast(choices_count))));
-            try story.chooseChoiceIndex(index);
-        }
-        turns += turn;
-        steps += story.steps_count;
-    }
-    const seconds = @as(f64, @floatFromInt(elapsed_nanoseconds(io, start))) / 1e9;
-    assert(seconds > 0);
-    return .{
-        .turns = @as(f64, @floatFromInt(turns)) / seconds,
-        .lines = @as(f64, @floatFromInt(lines)) / seconds,
-        .steps = @as(f64, @floatFromInt(steps)) / seconds,
-    };
-}
-
-const Footprint = struct { bytes: u64, objects: u64 };
-
-/// Bytes the loaded story keeps, and how many runtime objects (instructions) it holds.
-fn measure_footprint(gpa: std.mem.Allocator, json: []const u8) !Footprint {
-    var counting = CountingAllocator.init(gpa);
-    var story = try Story.initFromJson(counting.allocator(), json);
-    defer story.deinit();
-    var objects: u64 = 0;
-    for (story.containers) |container| objects += container.content.len;
-    assert(objects > 0);
-    assert(counting.bytes_live > 0);
-    return .{ .bytes = counting.bytes_live, .objects = objects };
-}
-
-fn measure_compile(gpa: std.mem.Allocator, io: std.Io, source: []const u8) !f64 {
-    assert(source.len > 0);
-    const start = std.Io.Timestamp.now(io, .awake);
-    for (0..compiles_count) |_| {
-        const json = try old_compiler.compile(gpa, source);
-        gpa.free(json);
-    }
-    const nanoseconds = elapsed_nanoseconds(io, start);
-    assert(nanoseconds > 0);
-    return @as(f64, @floatFromInt(nanoseconds)) / compiles_count / 1e6;
-}
 
 /// The new compiler's source to JSON (as the old compiler's `compile`).
 fn compile_new(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -138,59 +64,46 @@ const CompilerMeasurement = struct {
     new_peak_bytes: u64,
 };
 
-/// Both compilers from source to JSON: mean time over `compiles_count` runs, and peak bytes.
-fn measure_compilers(
+/// The old compiler's last measurements (source to JSON, by story, ReleaseSafe then
+/// ReleaseFast), taken before P9.2 deleted it.
+const OldCompiler = struct { milliseconds: f64, peak_bytes: u64 };
+const old_compiler_safe = [_]OldCompiler{
+    .{ .milliseconds = 0.27, .peak_bytes = 535_918 },
+    .{ .milliseconds = 4.53, .peak_bytes = 13_067_678 },
+};
+const old_compiler_fast = [_]OldCompiler{
+    .{ .milliseconds = 0.17, .peak_bytes = 513_047 },
+    .{ .milliseconds = 3.15, .peak_bytes = 12_680_076 },
+};
+
+/// The new compiler from source to JSON (mean time over `compiles_count` runs, and peak
+/// bytes), next to the old compiler's recorded numbers for story `story`.
+fn measure_compiler(
     gpa: std.mem.Allocator,
     io: std.Io,
     name: []const u8,
+    story: u32,
     source: []const u8,
 ) !CompilerMeasurement {
     assert(name.len > 0);
     assert(source.len > 0);
+    const old = if (builtin.mode == .fast) old_compiler_fast else old_compiler_safe;
     var result: CompilerMeasurement = .{
         .name = name,
-        .old_milliseconds = try measure_compile(gpa, io, source),
+        .old_milliseconds = old[story].milliseconds,
         .new_milliseconds = 0,
-        .old_peak_bytes = 0,
+        .old_peak_bytes = old[story].peak_bytes,
         .new_peak_bytes = 0,
     };
     const start = std.Io.Timestamp.now(io, .awake);
     for (0..compiles_count) |_| gpa.free(try compile_new(gpa, source));
     const nanoseconds: f64 = @floatFromInt(elapsed_nanoseconds(io, start));
     result.new_milliseconds = nanoseconds / compiles_count / 1e6;
-    var old_counting = CountingAllocator.init(gpa);
-    old_counting.allocator().free(try old_compiler.compile(old_counting.allocator(), source));
-    result.old_peak_bytes = old_counting.bytes_peak;
     var new_counting = CountingAllocator.init(gpa);
     new_counting.allocator().free(try compile_new(new_counting.allocator(), source));
     result.new_peak_bytes = new_counting.bytes_peak;
     assert(new_counting.bytes_live == 0);
     return result;
-}
-
-fn measure_story(
-    gpa: std.mem.Allocator,
-    io: std.Io,
-    name: []const u8,
-    source: []const u8,
-) !Measurement {
-    assert(name.len > 0);
-    const json = try old_compiler.compile(gpa, source);
-    defer gpa.free(json);
-    const rate = try measure_play(gpa, io, json);
-    const footprint = try measure_footprint(gpa, json);
-    const measurement: Measurement = .{
-        .name = name,
-        .load_microseconds = try measure_load(gpa, io, json),
-        .play_turns_per_second = rate.turns,
-        .play_lines_per_second = rate.lines,
-        .play_steps_per_second = rate.steps,
-        .loaded_bytes = footprint.bytes,
-        .runtime_objects_count = footprint.objects,
-        .compile_milliseconds = try measure_compile(gpa, io, source),
-    };
-    assert(measurement.load_microseconds > 0);
-    return measurement;
 }
 
 /// A large story: `generated_knots_count` knots, each with text, a variable update and two
@@ -224,7 +137,7 @@ fn ignore_message(context: ?*anyopaque, message: []const u8, severity: Severity)
     assert(message.len > 0 or severity == .warning);
 }
 
-/// Plays the new runtime `plays_count` times with the old bench's seeded choices.
+/// Plays the new runtime `plays_count` times with the baseline's seeded choices.
 fn measure_play_new(gpa: std.mem.Allocator, io: std.Io, program: *const Program) !PlayRate {
     assert(program.containers.len > 0);
     var story: NewStory = undefined;
@@ -311,10 +224,6 @@ pub fn main(init: std.process.Init) !void {
     defer gpa.free(crime_source);
     const generated = try generate_story(gpa);
     defer gpa.free(generated);
-    const measurements = [_]Measurement{
-        try measure_story(gpa, io, "crime_scene", crime_source),
-        try measure_story(gpa, io, "generated (1000 knots)", generated),
-    };
     const crime_json = try cwd.readFileAlloc(
         io,
         "test/ground_truth/crime_scene.ink.json",
@@ -334,51 +243,12 @@ pub fn main(init: std.process.Init) !void {
         try measure_story_new(gpa, io, "generated (1000 knots)", generated_json),
     };
     const compiler_measurements = [_]CompilerMeasurement{
-        try measure_compilers(gpa, io, "crime_scene", crime_source),
-        try measure_compilers(gpa, io, "generated (1000 knots)", generated),
+        try measure_compiler(gpa, io, "crime_scene", 0, crime_source),
+        try measure_compiler(gpa, io, "generated (1000 knots)", 1, generated),
     };
-    const usage = std.posix.getrusage(std.c.rusage.SELF);
-    // macOS reports bytes, Linux kilobytes.
-    const rss_unit: u64 = if (builtin.os.tag == .linux) 1024 else 1;
-    const rss_bytes: u64 = @as(u64, @intCast(usage.maxrss)) * rss_unit;
-    try write_report(init.arena.allocator(), io, &measurements, rss_bytes);
     try write_new_report(init.arena.allocator(), io, &new_measurements);
     try write_compiler_report(init.arena.allocator(), io, &compiler_measurements);
-    assert(measurements.len == 2);
-}
-
-fn write_report(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    measurements: []const Measurement,
-    rss_bytes: u64,
-) !void {
-    assert(measurements.len > 0);
-    const mode = mode_name();
-    var section: std.Io.Writer.Allocating = .init(arena);
-    const writer = &section.writer;
-    const start_marker = try std.fmt.allocPrint(arena, "<!-- bench:{s}:start -->", .{mode});
-    const end_marker = try std.fmt.allocPrint(arena, "<!-- bench:{s}:end -->", .{mode});
-    try writer.print("{s}\n### Old runtime, {s}\n\n", .{ start_marker, mode });
-    try writer.writeAll("| Story | Load (µs) | Turns/s | Lines/s | Steps/s | Loaded bytes | " ++
-        "Runtime objects | Bytes/object | Compile (ms) |\n|---|---|---|---|---|---|---|---|---|\n");
-    for (measurements) |m| {
-        const per_object = @as(f64, @floatFromInt(m.loaded_bytes)) /
-            @as(f64, @floatFromInt(m.runtime_objects_count));
-        assert(per_object > 0);
-        const row = "| {s} | {d:.1} | {d:.0} | {d:.0} | {d:.0} | {d} | {d} | {d:.1} | {d:.2} |\n";
-        try writer.print(row, .{
-            m.name,                  m.load_microseconds,     m.play_turns_per_second,
-            m.play_lines_per_second, m.play_steps_per_second, m.loaded_bytes,
-            m.runtime_objects_count, per_object,              m.compile_milliseconds,
-        });
-    }
-    try writer.print("\nPeak RSS of the whole run: {d} KiB. Plays use seeded random choices " ++
-        "(.NET Random, seeds 1..{d}), at most {d} turns each.\n{s}\n", .{
-        rss_bytes / 1024, plays_count, turns_max, end_marker,
-    });
-    try write_section(arena, io, section.written(), start_marker, end_marker);
-    std.debug.print("bench ({s}) written to {s}\n", .{ mode, report_path });
+    assert(new_measurements.len == compiler_measurements.len);
 }
 
 fn mode_name() []const u8 {
@@ -443,7 +313,8 @@ fn write_compiler_report(
             m.old_peak_bytes, m.new_peak_bytes,   ratio,
         });
     }
-    try writer.print("\nSource to JSON, both; the time is the mean of {d} compiles.\n{s}\n", .{
+    try writer.print("\nSource to JSON, both; the time is the mean of {d} compiles. The old " ++
+        "compiler's numbers are its last measurement, before P9.2 deleted it.\n{s}\n", .{
         compiles_count,
         end_marker,
     });

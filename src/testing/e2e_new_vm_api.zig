@@ -6,9 +6,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const compile = @import("../compiler_next/compile.zig");
-const oracle = @import("oracle.zig");
-const e2e_new_vm = @import("e2e_new_vm.zig");
+const compile = @import("../compiler/compile.zig");
 const vm = @import("../vm/api.zig");
 const Program = @import("../core/program.zig").Program;
 const Value = vm.Value;
@@ -32,12 +30,8 @@ const Fixture = struct {
         var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{});
         defer directory.close(io);
         const name = std.fs.path.basename(path);
-        fixture.program = compile.compile_file(gpa, io, directory, name) catch |err| {
-            if (try ledgered("e2e/api/" ++ path)) return error.SkipZigTest;
-            return err;
-        };
+        fixture.program = try compile.compile_file(gpa, io, directory, name);
         errdefer fixture.program.deinit(gpa);
-        if (try ledgered("e2e/api/" ++ path)) return error.StaleLedgerEntry;
         try fixture.story.init(gpa, &fixture.program, .{});
         assert(fixture.program.containers.len > 0);
     }
@@ -58,20 +52,6 @@ const Fixture = struct {
         return text;
     }
 };
-
-/// Whether the ledger has an e2e entry for `case`.
-fn ledgered(case: []const u8) !bool {
-    assert(std.mem.startsWith(u8, case, "e2e/"));
-    assert(case.len > 0);
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const ledger = try oracle.read_ledger(arena_state.allocator(), std.testing.io);
-    for (ledger) |entry| {
-        if (entry.corpus != .e2e or !std.mem.eql(u8, entry.engine, e2e_new_vm.engine)) continue;
-        if (std.mem.eql(u8, entry.case, case)) return true;
-    }
-    return false;
-}
 
 fn expect_contains(text: []const u8, part: []const u8) !void {
     assert(text.len < std.math.maxInt(u32));

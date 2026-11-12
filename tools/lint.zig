@@ -29,12 +29,10 @@ pub const files_max = 4096;
 /// Old code that predates the rules. Remove entries as the code is deleted (P9.1, P9.2).
 pub const grandfathered = [_][]const u8{
     "src/runtime/",
-    "src/compiler/",
     "src/test/",
     "src/ink_format.zig",
     "src/root.zig",
     "src/test_runtime.zig",
-    "src/test_compiler.zig",
 };
 
 pub const Rule = enum {

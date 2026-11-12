@@ -1,15 +1,8 @@
 pub const ink_format = @import("ink_format.zig");
 
 // ── Compiler ──────────────────────────────────────────────────────────────────
-pub const compiler = struct {
-    pub const parsed = @import("compiler/parsed.zig");
-    pub const tokenizer = @import("compiler/tokenizer.zig");
-    pub const parser = @import("compiler/parser.zig");
-    pub const codegen = @import("compiler/codegen.zig");
-    pub const serializer = @import("compiler/serializer.zig");
-    pub const compile = @import("compiler/compiler.zig");
-    pub const codegen_to_runtime = @import("compiler/codegen_to_runtime.zig");
-};
+/// The compiler (ink source to Program; ink_json.serialize writes ink's JSON).
+pub const compiler = @import("compiler/compile.zig");
 
 // ── Runtime ───────────────────────────────────────────────────────────────────
 pub const value = @import("runtime/value.zig");

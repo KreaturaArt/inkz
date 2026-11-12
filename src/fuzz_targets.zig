@@ -1,14 +1,12 @@
 //! Fuzz targets (plan P0.9), run with `zig build fuzz`: each one runs once on its seed corpus.
-//! `zig build fuzz --fuzz` starts Zig's fuzzer on them. They target the old runtime and
-//! compiler for now; the new code gets the same targets as it lands (P3.1, P6.2, P7.1).
+//! `zig build fuzz --fuzz` starts Zig's fuzzer on them: the JSON and save loaders, the
+//! tokenizer and the compiler (P3.1, P6.2, P7.1, P9.2).
 //!
 //! A target fails when the code under test crashes. Returning an error is fine: malformed input
 //! must be rejected, never trusted.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Tokenizer = @import("compiler/tokenizer.zig").Tokenizer;
-const parser = @import("compiler/parser.zig");
 const Story = @import("runtime/story.zig").Story;
 const ink_json = @import("core/ink_json.zig");
 
@@ -36,31 +34,6 @@ fn fuzz_input(smith: *std.testing.Smith, buffer: *[input_bytes_max + 1]u8) [:0]c
     const end = std.mem.indexOfScalar(u8, buffer[0..length], 0) orelse length;
     assert(end <= length);
     return buffer[0..end :0];
-}
-
-fn tokenize_all(_: void, smith: *std.testing.Smith) anyerror!void {
-    var buffer: [input_bytes_max + 1]u8 = undefined;
-    const source = fuzz_input(smith, &buffer);
-    assert(source.len <= input_bytes_max);
-    var tokenizer = Tokenizer.init(source);
-    var tokens: u32 = 0;
-    // Every token consumes at least one byte, apart from the final end-of-input token.
-    while (tokens <= source.len + 1) : (tokens += 1) {
-        const token = tokenizer.next();
-        assert(token.loc.start <= source.len);
-        if (token.tag == .eof) return;
-    }
-    return error.TokenizerDidNotTerminate;
-}
-
-fn parse_all(_: void, smith: *std.testing.Smith) anyerror!void {
-    var buffer: [input_bytes_max + 1]u8 = undefined;
-    const source = fuzz_input(smith, &buffer);
-    assert(source.len <= input_bytes_max);
-    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena.deinit();
-    _ = parser.parse(arena.allocator(), source) catch return;
-    assert(source.len <= input_bytes_max);
 }
 
 fn load_json(_: void, smith: *std.testing.Smith) anyerror!void {
@@ -101,14 +74,6 @@ fn save_round_trip(_: void, smith: *std.testing.Smith) anyerror!void {
     defer gpa.free(second);
     assert(first.len > 0);
     try std.testing.expectEqualStrings(first, second);
-}
-
-test "fuzz: tokenizer terminates on any input" {
-    try std.testing.fuzz({}, tokenize_all, .{ .corpus = &ink_corpus });
-}
-
-test "fuzz: parser never crashes" {
-    try std.testing.fuzz({}, parse_all, .{ .corpus = &ink_corpus });
 }
 
 test "fuzz: JSON loader never crashes" {
@@ -174,7 +139,7 @@ test "fuzz: the new runtime's save loader never crashes" {
     try std.testing.fuzz({}, load_save_new, .{ .corpus = &.{ "{}", writer.buffered() } });
 }
 
-const NextTokenizer = @import("compiler_next/tokenizer.zig");
+const NextTokenizer = @import("compiler/tokenizer.zig");
 
 /// The new tokenizer (P7.1): in any mode sequence, every token but eof consumes input, so it
 /// ends with eof at the input's end.
@@ -197,4 +162,20 @@ fn tokenize_next(_: void, smith: *std.testing.Smith) anyerror!void {
 
 test "fuzz: the new tokenizer ends in every mode" {
     try std.testing.fuzz({}, tokenize_next, .{ .corpus = &ink_corpus });
+}
+
+const compile = @import("compiler/compile.zig");
+
+/// The new compiler (P7, P8): any source either compiles or returns an error.
+fn compile_all(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buffer: [input_bytes_max + 1]u8 = undefined;
+    const source = fuzz_input(smith, &buffer);
+    assert(source.len <= input_bytes_max);
+    var program = compile.compile_source(std.testing.allocator, source) catch return;
+    defer program.deinit(std.testing.allocator);
+    assert(program.containers.len > 0);
+}
+
+test "fuzz: the new compiler never crashes" {
+    try std.testing.fuzz({}, compile_all, .{ .corpus = &ink_corpus });
 }
