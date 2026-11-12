@@ -24,4 +24,5 @@ pub const runtime = @import("runtime/root.zig");
 pub const compiler = @import("compiler/compile.zig");
 pub const core = @import("core/root.zig");
 pub const ink_json = @import("core/ink_json.zig");
+pub const program_image = @import("core/program_image.zig");
 pub const Program = @import("core/program.zig").Program;

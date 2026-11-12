@@ -126,3 +126,41 @@ fn compile_all(_: void, smith: *std.testing.Smith) anyerror!void {
 test "fuzz: the compiler never crashes" {
     try std.testing.fuzz({}, compile_all, .{ .corpus = &ink_corpus });
 }
+
+const program_image = @import("core/program_image.zig");
+
+/// The binary program image loader (P10.5): any bytes either load into a program that passes
+/// its check, or return a named error.
+fn load_image(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buffer: [input_bytes_max + 1]u8 = undefined;
+    const length = smith.slice(buffer[0..input_bytes_max]);
+    assert(length <= input_bytes_max);
+    var program = program_image.load(std.testing.allocator, buffer[0..length]) catch return;
+    defer program.deinit(std.testing.allocator);
+    assert(program.check() == .ok);
+}
+
+test "fuzz: the program image loader never crashes" {
+    // The corpus: images of the ink corpus' stories, small enough for the input limit.
+    const gpa = std.testing.allocator;
+    var images: [ink_corpus.len][]u8 = undefined;
+    var count: usize = 0;
+    defer for (images[0..count]) |image| gpa.free(image);
+    for (ink_corpus) |source| {
+        // Some corpus sources are fragments the compiler rejects; they have no image.
+        var program = compile.compile_source(gpa, source) catch continue;
+        defer program.deinit(gpa);
+        var image: std.Io.Writer.Allocating = .init(gpa);
+        errdefer image.deinit();
+        try program_image.write(&program, &image.writer);
+        if (image.written().len > input_bytes_max) {
+            image.deinit();
+            continue;
+        }
+        images[count] = try image.toOwnedSlice();
+        count += 1;
+    }
+    assert(count > 0);
+    const corpus: []const []const u8 = images[0..count];
+    try std.testing.fuzz({}, load_image, .{ .corpus = corpus });
+}
