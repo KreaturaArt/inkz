@@ -7,15 +7,14 @@ const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
 const OldEngine = @import("old_engine.zig").OldEngine;
 const NewEngine = @import("new_engine.zig").NewEngine;
-const old_compiler = @import("../compiler/compiler.zig");
 
 pub const cases_directory = "test/ground_truth";
 const file_bytes_max = 16 * 1024 * 1024;
 
 /// Engines the ground-truth gate runs:
 /// - `old`: the old runtime on the JSON compiled by ink v1.2.1;
-/// - `old_compiler`: the case's `.ink` compiled by the old compiler, on the old runtime.
-pub const engines = [_][]const u8{ "old", "old_compiler", "new" };
+/// - `new`: the new runtime on the same JSON.
+pub const engines = [_][]const u8{ "old", "new" };
 /// Engines the transcript gate runs; they read the compiled fixtures directly.
 pub const transcript_engines = [_][]const u8{ "old", "new" };
 
@@ -63,14 +62,6 @@ pub fn replay_with(
             error.FileNotFound => "play",
             else => return err,
         };
-    if (std.mem.eql(u8, engine, "old_compiler")) {
-        const source_file = try source_path(arena, io, id);
-        const source = try cwd.readFileAlloc(io, source_file, arena, .limited(file_bytes_max));
-        const json = old_compiler.compile(arena, source) catch |err| {
-            return std.fmt.allocPrint(arena, "exception: \"compile: {t}\"\n", .{err});
-        };
-        return replay_story(arena, "old", json, actions);
-    }
     return replay_json(arena, io, engine, json_path, actions);
 }
 

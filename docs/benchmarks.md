@@ -16,7 +16,7 @@ program plus the state's fixed budget at the default limits, so bytes per instru
 for a small story and falls as stories grow.
 
 The compiler sections (`bench-compile`, P8.6) compile both stories from source to JSON with
-the old compiler and with the new one (`src/compiler_next`, a faithful port of ink's
+the old compiler and with the new one (`src/compiler`, a faithful port of ink's
 compiler): mean time and peak allocated bytes. The new compiler peaks at less than half the
 old one's memory: its parse workspace is sized from the source length (doubled on at most
 `compile_retries_max` retries) and settled to what the parse used, and the object tree, the

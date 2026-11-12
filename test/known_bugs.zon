@@ -41,12 +41,17 @@
         .status = .not_expressible,
         .reason = "no ink-valid program found where it changes output; the new compiler scopes temps per knot and function",
     },
-    .{ .name = "INCLUDE is unresolved", .fix = "TASK-148.2", .status = .in_ledger, .case = "runtime/misc/include" },
+    .{
+        .name = "INCLUDE is unresolved",
+        .fix = "TASK-148.2",
+        .status = .fixed,
+        .reason = "the new compiler resolves INCLUDE (P8.2); the old compiler is deleted (P9.2)",
+    },
     .{ .name = "list auto-numbering is wrong", .fix = "TASK-148.3", .status = .not_reproduced, .case = "audit/list_auto_numbering" },
     .{
         .name = "compile() ignores errors",
         .fix = "TASK-147.8",
-        .status = .not_expressible,
-        .reason = "ink rejects the source, so there is no transcript; a skipped test in src/testing/known_bugs.zig shows it",
+        .status = .fixed,
+        .reason = "the new front end reports it (a test in src/testing/known_bugs.zig); the old compiler is deleted (P9.2)",
     },
 }
