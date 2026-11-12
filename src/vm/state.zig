@@ -19,6 +19,7 @@ const lists_module = @import("lists.zig");
 const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
+const flows = @import("flows.zig");
 const Limits = limits_module.Limits;
 const element_bytes = limits_module.element_bytes;
 const Value = value_module.Value;
@@ -129,6 +130,7 @@ pub const State = struct {
     patch: []PatchEntry,
     flows: []FlowRecord,
     parking: []u32,
+    current_flow: u32 = 0,
 
     pub const Fault = enum {
         ok,
@@ -190,7 +192,7 @@ pub const State = struct {
         state.observer_events.clear();
         state.errors.clear();
         state.warnings.clear();
-        for (state.flows) |*flow| flow.in_use = false;
+        flows.reset(state);
         state.verify();
     }
 
@@ -211,7 +213,8 @@ pub const State = struct {
         visit_temps(state.choices.temps.slice(), visitor);
         for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
-        // The lookahead snapshot and parked flows add their own references (P4.8, P4.9).
+        flows.visit_parked(state, visitor);
+        // The lookahead snapshot adds its own references (P4.9).
     }
 
     pub fn check(state: *State) Fault {
