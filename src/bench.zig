@@ -41,7 +41,7 @@ fn elapsed_nanoseconds(io: std.Io, start: std.Io.Timestamp) u64 {
     return @intCast(nanoseconds);
 }
 
-const PlayRate = struct { turns: f64, lines: f64, steps: f64 };
+const PlayRate = struct { turns: f64, lines: f64, steps: f64, usage: limits_module.Usage };
 
 /// The new compiler's source to JSON (as the old compiler's `compile`).
 fn compile_new(gpa: std.mem.Allocator, source: []const u8) ![]u8 {
@@ -128,6 +128,8 @@ fn generate_story(gpa: std.mem.Allocator) ![]u8 {
 }
 
 const ink_json = @import("core/ink_json.zig");
+const limits_module = @import("core/limits.zig");
+const Limits = limits_module.Limits;
 const Program = @import("core/program.zig").Program;
 const NewStory = @import("runtime/story.zig").Story;
 const Severity = @import("runtime/state.zig").Diagnostic.Severity;
@@ -138,10 +140,15 @@ fn ignore_message(context: ?*anyopaque, message: []const u8, severity: Severity)
 }
 
 /// Plays the new runtime `plays_count` times with the baseline's seeded choices.
-fn measure_play_new(gpa: std.mem.Allocator, io: std.Io, program: *const Program) !PlayRate {
+fn measure_play_new(
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    program: *const Program,
+    limits: Limits,
+) !PlayRate {
     assert(program.containers.len > 0);
     var story: NewStory = undefined;
-    try story.init(gpa, program, .{});
+    try story.init(gpa, program, limits);
     defer story.deinit(gpa);
     story.on_error = ignore_message;
     var turns: u64 = 0;
@@ -171,6 +178,7 @@ fn measure_play_new(gpa: std.mem.Allocator, io: std.Io, program: *const Program)
         .turns = @as(f64, @floatFromInt(turns)) / seconds,
         .lines = @as(f64, @floatFromInt(lines)) / seconds,
         .steps = @as(f64, @floatFromInt(steps)) / seconds,
+        .usage = story.usage(),
     };
 }
 
@@ -181,13 +189,21 @@ fn measure_story_new(
     io: std.Io,
     name: []const u8,
     json: []const u8,
+    fit: bool,
 ) !Measurement {
     assert(json.len > 0);
+    var limits: Limits = .{};
+    if (fit) {
+        // The limits a full bench play needs, with margin 2 (P10.2).
+        var measured = try ink_json.load(gpa, json);
+        defer measured.deinit(gpa);
+        limits = limits_module.fitted((try measure_play_new(gpa, io, &measured, .{})).usage, 2);
+    }
     const start = std.Io.Timestamp.now(io, .awake);
     for (0..loads_count) |_| {
         var program = try ink_json.load(gpa, json);
         var story: NewStory = undefined;
-        try story.init(gpa, &program, .{});
+        try story.init(gpa, &program, limits);
         story.deinit(gpa);
         program.deinit(gpa);
     }
@@ -197,9 +213,8 @@ fn measure_story_new(
     var program = try ink_json.load(counting.allocator(), json);
     defer program.deinit(counting.allocator());
     const program_bytes = counting.bytes_live;
-    const limits: @import("core/limits.zig").Limits = .{};
     const state_bytes = limits.bytes_total(@import("runtime/state.zig").State.shape_of(&program));
-    const rate = try measure_play_new(gpa, io, &program);
+    const rate = try measure_play_new(gpa, io, &program, limits);
     const measurement: Measurement = .{
         .name = name,
         .load_microseconds = load_microseconds,
@@ -239,8 +254,10 @@ pub fn main(init: std.process.Init) !void {
     );
     defer gpa.free(generated_json);
     const new_measurements = [_]Measurement{
-        try measure_story_new(gpa, io, "crime_scene", crime_json),
-        try measure_story_new(gpa, io, "generated (1000 knots)", generated_json),
+        try measure_story_new(gpa, io, "crime_scene", crime_json, false),
+        try measure_story_new(gpa, io, "crime_scene, fitted limits", crime_json, true),
+        try measure_story_new(gpa, io, "generated (1000 knots)", generated_json, false),
+        try measure_story_new(gpa, io, "generated, fitted limits", generated_json, true),
     };
     const compiler_measurements = [_]CompilerMeasurement{
         try measure_compiler(gpa, io, "crime_scene", 0, crime_source),
@@ -248,7 +265,7 @@ pub fn main(init: std.process.Init) !void {
     };
     try write_new_report(init.arena.allocator(), io, &new_measurements);
     try write_compiler_report(init.arena.allocator(), io, &compiler_measurements);
-    assert(new_measurements.len == compiler_measurements.len);
+    assert(new_measurements.len == 2 * compiler_measurements.len);
 }
 
 fn mode_name() []const u8 {
@@ -284,7 +301,8 @@ fn write_new_report(arena: std.mem.Allocator, io: std.Io, measurements: []const 
         });
     }
     try writer.print(
-        "\nThe state is the default limits' fixed budget, allocated once.\n{s}\n",
+        "\nThe state is the limits' fixed budget, allocated once: the defaults, or limits " ++
+            "fitted to the bench's own play with margin 2 (P10.2).\n{s}\n",
         .{end_marker},
     );
     try write_section(arena, io, section.written(), start_marker, end_marker);

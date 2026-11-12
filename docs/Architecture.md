@@ -226,8 +226,16 @@ stateDiagram-v2
     Discard --> Running
     Restore --> Finish: copy buffers back, undo the log,<br/>truncate the heap
     Check --> Finish: can't continue (choices, DONE, END,<br/>or out of content)
-    Finish --> [*]: clean the line, report errors,<br/>notify queued observers
+    Finish --> [*]: the cleaned line, report errors,<br/>notify queued observers
 ```
+
+Every check needs the current line's cleaned text: ink's `CleanOutputWhitespace` over the
+whole output stream. `runtime/text_cache.zig` (P10.1) keeps it between checks, with the
+cleaner's state and a copy of the items it came from. While the output only grows and no
+heap string changes (`StringHeap.generation`), only new items are cleaned. Any other change
+cleans from the start: glue, trimming, `/str`, a restore, a flow switch, a load, heap
+truncation or compaction. Debug builds compare every cached line with a full clean. Before
+the cache, cleaning took about half of play time; with it, play is 1.5–1.8× faster.
 
 While a snapshot is active, writes to shared arrays (globals, visit counts, turn indices,
 the random state) go through the undo log, so a restore needs no copy of them. When the
@@ -255,7 +263,7 @@ flowchart TB
             counts["visit counts, turn indices"]
             heap["string heap + list slab<br/>sliding mark-compact"]
             diagnostics["errors, warnings,<br/>observers, observer queue"]
-            line["line bytes<br/>(the cont() view)"]
+            line["text cache: cleaned line (the cont() view)<br/>+ its items; line bytes (scratch)"]
         end
         lookahead["lookahead copy of the live flow<br/>+ undo log (patch entries)"]
         parking["flow parking region<br/>(inactive flows, set-aside output)"]
@@ -269,3 +277,8 @@ flowchart TB
 The heap is compacted only when an allocation doesn't fit. Compaction keeps allocation
 order, so heap marks recorded by the lookahead snapshot stay valid after relocation.
 Running out of any buffer returns a named error (`error.HeapLimit`, `error.FlowLimit`, ...).
+
+Every buffer records its peak (P10.2). `Story.usage()` reports them, and `Limits.fitted(usage,
+margin)` sizes a story's limits from them. The default budget is about 2.2 MB per story.
+Fitted limits need about 40–50 KB for the stories measured, at the same speed, because play
+speed doesn't depend on the budget.
