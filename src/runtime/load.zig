@@ -51,6 +51,8 @@ pub fn load_json(story: *Story, json: []const u8) Error!void {
         error.JsonTooLarge, error.JsonTooDeep => error.SaveTooLarge,
         error.InvalidJson => error.InvalidSave,
     };
+    const nodes: u32 = @intCast(tree.nodes.len);
+    story.state.peaks.load_nodes = @max(story.state.peaks.load_nodes, nodes);
     if (tree.nodes[0].kind != .object) return error.InvalidSave;
     var checking: Loader = .{ .story = story, .tree = tree, .commit = false };
     try checking.document();

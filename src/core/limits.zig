@@ -170,6 +170,69 @@ pub const Limits = struct {
     }
 };
 
+/// What a story instance needed (P10.2): the peak of every limit that sizes a buffer, in
+/// that limit's unit. `Limits.fitted` turns it into limits with a margin.
+pub const Usage = struct {
+    evaluation_values: u32 = 0,
+    frames: u32 = 0,
+    threads: u32 = 0,
+    temps: u32 = 0,
+    output_items: u32 = 0,
+    output_bytes: u32 = 0,
+    string_marks: u32 = 0,
+    choices: u32 = 0,
+    tags: u32 = 0,
+    heap_bytes: u32 = 0,
+    list_words: u32 = 0,
+    flows: u32 = 0,
+    flow_parking_bytes: u32 = 0,
+    choice_snapshot_frames: u32 = 0,
+    choice_snapshot_temps: u32 = 0,
+    patch_entries: u32 = 0,
+    observers: u32 = 0,
+    observer_events: u32 = 0,
+    errors: u32 = 0,
+    warnings: u32 = 0,
+    container_depth: u32 = 0,
+    load_nodes: u32 = 0,
+
+    /// The larger of each field.
+    pub fn merge(usage: *Usage, other: Usage) void {
+        inline for (@typeInfo(Usage).@"struct".field_names) |name| {
+            @field(usage, name) = @max(@field(usage, name), @field(other, name));
+        }
+        assert(usage.frames >= other.frames);
+        assert(usage.heap_bytes >= other.heap_bytes);
+    }
+};
+
+/// The smallest value `Limits.fitted` gives a buffer, so a story that never used one (no
+/// errors, no saves loaded) still gets a few slots.
+const fitted_floor = 8;
+
+/// Limits sized from measured usage: each buffer gets its peak times `margin` (at least
+/// `fitted_floor`); limits that size no buffer keep their defaults where consistent.
+pub fn fitted(usage: Usage, margin: u32) Limits {
+    assert(margin >= 1);
+    assert(margin <= 16);
+    var limits: Limits = .{};
+    inline for (@typeInfo(Usage).@"struct".field_names) |name| {
+        const scaled = std.math.mul(u32, @field(usage, name), margin) catch std.math.maxInt(u32);
+        @field(limits, name ++ "_max") = @max(fitted_floor, scaled);
+    }
+    limits.heap_bytes_max = std.mem.alignForward(u32, limits.heap_bytes_max, 4);
+    limits.flow_parking_bytes_max = std.mem.alignForward(u32, limits.flow_parking_bytes_max, 4);
+    limits.output_bytes_max = @max(limits.output_bytes_max, limits.output_items_max);
+    limits.frames_max = @max(limits.frames_max, limits.threads_max);
+    limits.temps_per_frame_max = @min(limits.temps_per_frame_max, limits.temps_max);
+    limits.evaluate_depth_max = @min(limits.evaluate_depth_max, limits.frames_max);
+    const snapshot_frames_max = limits.frames_max * limits.choices_max;
+    const snapshot_frames = limits.choice_snapshot_frames_max;
+    limits.choice_snapshot_frames_max = @min(snapshot_frames, snapshot_frames_max);
+    assert(limits.check() == .ok);
+    return limits;
+}
+
 /// Bounds for one compilation.
 pub const CompilerLimits = struct {
     source_bytes_max: u32 = 16 * 1024 * 1024,
@@ -319,4 +382,34 @@ fn is_not_a_buffer(comptime name: []const u8) bool {
         if (comptime std.mem.eql(u8, candidate, name)) return true;
     }
     return false;
+}
+
+test "fitted limits cover the usage with a margin and stay consistent" {
+    // Goal: P10.2. Method: a usage with some zero fields, fitted with margin 2: every buffer
+    // holds twice its peak (at least the floor), and the result passes check.
+    const usage: Usage = .{
+        .evaluation_values = 10,
+        .frames = 6,
+        .threads = 9,
+        .temps = 40,
+        .output_items = 30,
+        .output_bytes = 20,
+        .choices = 4,
+        .heap_bytes = 1001,
+        .container_depth = 12,
+    };
+    const limits = fitted(usage, 2);
+    try std.testing.expectEqual(Limits.Fault.ok, limits.check());
+    try std.testing.expectEqual(@as(u32, 20), limits.evaluation_values_max);
+    try std.testing.expectEqual(@as(u32, 18), limits.frames_max); // at least the threads
+    try std.testing.expectEqual(@as(u32, 60), limits.output_bytes_max); // at least the items
+    try std.testing.expectEqual(@as(u32, 2004), limits.heap_bytes_max); // aligned to 4
+    try std.testing.expectEqual(@as(u32, fitted_floor), limits.errors_max);
+    try std.testing.expectEqual(@as(u32, 80), limits.temps_per_frame_max); // at most the temps
+    const default: Limits = .{};
+    try std.testing.expectEqual(default.steps_per_continue_max, limits.steps_per_continue_max);
+    var merged = usage;
+    merged.merge(.{ .frames = 50 });
+    try std.testing.expectEqual(@as(u32, 50), merged.frames);
+    try std.testing.expectEqual(@as(u32, 10), merged.evaluation_values);
 }

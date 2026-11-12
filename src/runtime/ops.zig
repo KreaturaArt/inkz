@@ -244,7 +244,15 @@ fn value_text(story: *Story, value: Value) Error![]const u8 {
         .null => {},
     }
     assert(writer.end <= story.state.line_bytes.len);
+    note_line_bytes(&story.state, writer.end);
     return writer.buffered();
+}
+
+/// Records how much of the line buffer scratch was used (P10.2).
+fn note_line_bytes(state: *state_module.State, used: usize) void {
+    assert(used <= state.line_bytes.len);
+    assert(state.line_bytes.len > 0);
+    state.peaks.line_bytes = @max(state.peaks.line_bytes, @as(u32, @intCast(used)));
 }
 
 /// Copies `text` into a new heap string. Text inside the heap is copied out first, since
@@ -258,6 +266,7 @@ fn store_string(story: *Story, text_raw: []const u8, keep: []Value) Error!String
         if (text.len > story.state.line_bytes.len) return error.OutputLimit;
         @memcpy(story.state.line_bytes[0..text.len], text);
         text = story.state.line_bytes[0..text.len];
+        note_line_bytes(&story.state, text.len);
     }
     const reference = story.state.allocate_string(@intCast(text.len), keep) catch
         return error.HeapLimit;
@@ -276,6 +285,7 @@ pub fn end_string(story: *Story) Error!vm.Signal {
         error.UnmatchedEndString => return fail(story, .unmatched_end_string),
         else => return error.OutputLimit,
     };
+    note_line_bytes(state, writer.end);
     const reference = try store_string(story, writer.buffered(), &.{});
     state.call_stack.current_frame().in_expression_evaluation = true;
     try vm.push_evaluation(story, .{ .string = reference });
@@ -306,6 +316,7 @@ pub fn end_tag(story: *Story) Error!vm.Signal {
         cleaner.write(whole[item.start..][0..item.length]) catch return error.OutputLimit;
     }
     state.output.items.truncate(@intCast(start));
+    note_line_bytes(state, writer.end);
     const reference = try store_string(story, writer.buffered(), &.{});
     try vm.push_evaluation(story, .{ .tag = reference });
     return .output;

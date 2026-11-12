@@ -66,10 +66,35 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 | Shared | 1,852,800 | 195,120 |
 | **Total per story** | **2,230,656** (2.13 MiB) | **254,768** (249 KiB) |
 
-The whole game, one main story and four side stories, needs 2,115,968 + 4 × 240,432 =
-3,077,696 bytes (2.94 MiB), fixed at load time. In the main story the 1 MiB string heap is
-about half of the total. It is the first limit to tune: measure the heap's high-water
-mark over a full playthrough, double it, and round up.
+The whole game, one main story and four side stories, needs 2,230,656 + 4 × 254,768 =
+3,249,728 bytes (3.10 MiB), fixed at load time. In the main story the 1 MiB string heap is
+about half of the total.
+
+### Fitted limits (P10.2)
+
+Limits size memory only: play speed is the same from 66 KB to 8 MB of state (the limits
+sweep of 2026-11-12). Every buffer records its peak, and `Story.usage()` reports them all.
+`fitted_limits(usage, margin)` (`Limits.fitted`) gives each buffer its peak times the margin,
+with a floor of 8, and keeps the limits that size no buffer at their defaults.
+
+`zig build simulate -- --case <id> --seeds 10000 --fit on` measures a ground-truth case's
+usage over the seeds, or `--json <story.ink.json>` for any story file. It prints the fitted
+limits (margin 2) as Zig source with their byte budget. Then it plays the same seeds again
+within them, and any limit hit counts as a failure. ReleaseSafe, 10,000 seeds, with saves,
+loads, flow switches and evaluate_function along the way:
+
+| Story | Default limits | Fitted limits | Replay within fitted |
+|---|---:|---:|---|
+| crime_scene | 2,202,864 | 47,152 (2.1%) | 20,000 runs, 0 failures |
+| generated (1000 knots) | 2,218,136 | 41,416 (1.9%) | 20,000 runs, 0 failures |
+| crime_scene, measured with `--compact-always on` | 2,202,864 | 22,144 (1.0%) | 20,000 runs, 0 failures |
+
+Compacting before every allocation keeps the heap at its live peak, so the last row's heap is
+the smallest that works. Within it the heap compacts more often than within the first row's.
+
+A fitted budget is only as good as the play that measured it. Measure every path the game
+can take, including saves and loads, and keep the margin. A limit hit is a named error, never
+undefined behaviour.
 
 ## Weave heuristics (P0.12)
 

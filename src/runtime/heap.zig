@@ -32,6 +32,8 @@ pub const StringHeap = struct {
     /// Bumped whenever existing bytes may change meaning (truncate, shrink, compact, reset),
     /// so the cleaned-text cache knows a reference may now read other text.
     generation: u32 = 0,
+    /// The most bytes in use at once since init (P10.2).
+    peak: u32 = 0,
 
     pub const Fault = enum { ok, used_exceeds_capacity, object_out_of_bounds, misaligned, marked };
 
@@ -58,6 +60,7 @@ pub const StringHeap = struct {
         std.mem.writeInt(u32, heap.bytes[at..][0..4], length, .little);
         std.mem.writeInt(u32, heap.bytes[at + 4 ..][0..4], 0, .little);
         heap.used += total;
+        heap.peak = @max(heap.peak, heap.used);
         assert(heap.used <= heap.bytes.len);
         return .heap(at);
     }

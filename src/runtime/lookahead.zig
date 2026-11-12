@@ -190,6 +190,7 @@ fn log(state: *State, kind: Kind, slot: u32, old: Value) Error!void {
     if (count == state.patch.len) return error.LookaheadLogLimit;
     state.patch[count] = .{ .target = target_of(kind, slot), .old = old };
     state.snapshot.patch_count = count + 1;
+    state.peaks.patch_entries = @max(state.peaks.patch_entries, count + 1);
     assert(state.snapshot.patch_count <= state.patch.len);
 }
 

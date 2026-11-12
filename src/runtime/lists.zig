@@ -34,6 +34,8 @@ pub const View = struct {
 pub const ListSlab = struct {
     words: []u32,
     used: u32 = 0,
+    /// The most words in use at once since init (P10.2).
+    peak: u32 = 0,
 
     /// A list is `[forward, items_count, origins_count, items..., origins...]`. `forward` is
     /// `unmarked` except during compaction (heap.zig), when it holds the list's new offset.
@@ -65,6 +67,7 @@ pub const ListSlab = struct {
         const origins_at = items_at + items.len;
         for (origins, 0..) |origin, offset| slab.words[origins_at + offset] = @backingInt(origin);
         slab.used += @intCast(words_count);
+        slab.peak = @max(slab.peak, slab.used);
         assert(slab.used <= slab.words.len);
         return @fromBackingInt(@intCast(at));
     }
