@@ -166,7 +166,7 @@ test "compaction keeps every root kind" {
     try state.evaluation.push(.{ .string = live_after_garbage(state, "evaluation") });
     try lookahead.set_global(state, .from_int(0), .{ .string = live_after_garbage(state, "new") });
     const used_before = state.strings.used;
-    state.compact();
+    state.compact(&.{});
     try std.testing.expect(state.strings.used < used_before);
     state.verify();
     try expect_text(state, state.evaluation.peek().?.string, "evaluation");
