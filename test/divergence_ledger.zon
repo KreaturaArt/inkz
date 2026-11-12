@@ -3,6 +3,10 @@
 // `zig build test -Dledger-update` adds new ones and drops fixed ones; reasons and
 // sources edited by hand are kept.
 .{
+    .{ .case = "audit/errors_divert_to_non_target", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"\" | got choices: 0", .fix = "TASK-145.10" },
+    .{ .case = "audit/errors_end_of_content", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 4: expected error: \"RUNTIME ERROR: ran out of content. Do you need a '-> DONE' or '-> END'?\" | got choices: 0", .fix = "TASK-145.10" },
+    .{ .case = "audit/errors_runtime_values", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"\" | got text: \"\\n\"", .fix = "TASK-145.10" },
+    .{ .case = "audit/errors_unfinished_tunnel", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected error: \"RUNTIME ERROR: unexpectedly reached end of content. Do you need a '->->' | got choices: 0", .fix = "TASK-145.10" },
     .{ .case = "audit/evaluate_function_side_effects", .engine = "old", .corpus = .ground_truth, .kind = .s1, .reason = "S1: evaluate_function must keep side effects on globals and visit counts; the old runtime restores state (and its adapter has no evaluate)", .fix = "TASK-145.8" },
     .{ .case = "audit/integer_and_float_fidelity", .engine = "old", .corpus = .ground_truth, .kind = .s8, .reason = "S8: ints are i64 instead of wrapping i32, floats are f64", .fix = "TASK-144.1" },
     .{ .case = "audit/lines_and_glue_lookahead", .engine = "old", .corpus = .ground_truth, .kind = .s2, .reason = "S2: cont() runs a whole turn; splitting it into lines leaves the space before glue", .fix = "TASK-145.5" },
@@ -107,6 +111,10 @@
     .{ .case = "runtime/weaves/conditional_choice_in_weave_2", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 2, line 7: expected text: \"the main gather\\n\" | got text: \"\\n\"" },
     .{ .case = "runtime/weaves/weave_within_sequence", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 2: expected text: \"\" | got text: \"\\n\"" },
     .{ .case = "smoke", .engine = "old", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"Hello, world.\\n\" | got text: \"Hello, world. \\n\"" },
+    .{ .case = "audit/errors_divert_to_non_target", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"\" | got choices: 0", .fix = "TASK-145.10" },
+    .{ .case = "audit/errors_end_of_content", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 4: expected error: \"RUNTIME ERROR: ran out of content. Do you need a '-> DONE' or '-> END'?\" | got choices: 0", .fix = "TASK-145.10" },
+    .{ .case = "audit/errors_runtime_values", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected text: \"\" | got text: \"\\n\"", .fix = "TASK-145.10" },
+    .{ .case = "audit/errors_unfinished_tunnel", .engine = "old_compiler", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected error: \"RUNTIME ERROR: unexpectedly reached end of content. Do you need a '->->' | got choices: 0", .fix = "TASK-145.10" },
     .{ .case = "audit/evaluate_function_side_effects", .engine = "old_compiler", .corpus = .ground_truth, .kind = .s1, .reason = "S1: evaluate_function must keep side effects on globals and visit counts; the old runtime restores state (and its adapter has no evaluate)", .fix = "TASK-145.8" },
     .{ .case = "audit/function_output_trimming", .engine = "old_compiler", .corpus = .ground_truth, .kind = .s10, .reason = "S10: function output trimming is a trailing-newline hack", .fix = "TASK-144.5" },
     .{ .case = "audit/integer_and_float_fidelity", .engine = "old_compiler", .corpus = .ground_truth, .kind = .s8, .reason = "S8: ints are i64 instead of wrapping i32, floats are f64", .fix = "TASK-144.1" },
@@ -208,5 +216,4 @@
     .{ .case = "runtime/multiflow/multi_flow_basics", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
     .{ .case = "runtime/multiflow/multi_flow_save_load_threads", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
     .{ .case = "runtime/tags/tags", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: global_tags", .fix = "TASK-146.3" },
-    .{ .case = "runtime/variables/temp_not_found", .engine = "new", .corpus = .ground_truth, .kind = .other, .reason = "turn 1, line 3: expected warning: \"RUNTIME WARNING: (0.1): Variable not found: 'x'. Using default value o | got text: \"hello\\n\"", .fix = "TASK-145.10" },
 }

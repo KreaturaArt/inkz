@@ -38,7 +38,11 @@ const Choices = choices_module.Choices;
 pub const Diagnostic = struct {
     /// A string argument, such as a variable name, or a reference to nothing.
     argument: StringReference,
-    number: i32,
+    /// Numbers the message prints, such as RANDOM's bounds.
+    number: i32 = 0,
+    other_number: i32 = 0,
+    /// Where the story was (ink prints `state.currentPointer.path`), or null.
+    pointer: call_stack_module.Pointer = .null,
     code: Code,
     severity: Severity,
 

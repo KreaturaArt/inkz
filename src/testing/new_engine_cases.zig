@@ -92,3 +92,17 @@ test "P5.4: functions, tunnels, threads and externals" {
         .{ .id = "runtime/logic/print_num" },
     });
 }
+
+test "P5.10: errors and warnings where ink raises them" {
+    // Goal: P5.10; ink's messages and prefixes, at ink's points: end-of-content errors,
+    // value errors, the variable-not-found warning. Method: replay.
+    try expect_cases_match(&.{
+        .{ .id = "audit/errors_end_of_content" },
+        .{ .id = "audit/errors_unfinished_tunnel" },
+        .{ .id = "audit/errors_divert_to_non_target" },
+        .{ .id = "audit/errors_runtime_values" },
+        .{ .id = "runtime/variables/temp_not_found" },
+        .{ .id = "runtime/variables/warn_variable_not_found_1" },
+        .{ .id = "runtime/variables/warn_variable_not_found_2" },
+    });
+}

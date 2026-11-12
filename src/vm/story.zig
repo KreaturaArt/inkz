@@ -14,6 +14,7 @@ const value_module = @import("value.zig");
 const lookahead = @import("lookahead.zig");
 const vm = @import("vm.zig");
 const ops = @import("ops.zig");
+const messages = @import("messages.zig");
 const State = state_module.State;
 const Pointer = call_stack_module.Pointer;
 const StringReference = value_module.StringReference;
@@ -69,6 +70,13 @@ pub const Binding = struct {
     lookahead_safe: bool = true,
 };
 
+/// Receives each error and warning message at the end of `cont`, as ink's onError does.
+pub const ErrorHandler = *const fn (
+    context: ?*anyopaque,
+    message: []const u8,
+    severity: state_module.Diagnostic.Severity,
+) void;
+
 /// The most arguments an external function can take.
 pub const external_arguments_max = 32;
 
@@ -91,6 +99,10 @@ pub const Story = struct {
     allow_external_function_fallbacks: bool = false,
     /// ink's _hasValidatedExternals: bindings are checked once, at the first `cont`.
     has_validated_externals: bool = false,
+    /// ink's onError. Without one, `cont` returns `error.StoryError` when the story
+    /// recorded an error or warning, and keeps them in `state` (ink throws instead).
+    on_error: ?ErrorHandler = null,
+    on_error_context: ?*anyopaque = null,
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
@@ -205,7 +217,34 @@ pub const Story = struct {
         story.state.output.clear();
         const length = try story.continue_internal();
         story.line_length = length;
+        try story.report_diagnostics();
         return story.state.line_bytes[0..length];
+    }
+
+    /// The end of ink's ContinueInternal: each error, then each warning, to the handler,
+    /// then ResetErrors.
+    fn report_diagnostics(story: *Story) Error!void {
+        const state = &story.state;
+        if (!state.has_error() and !state.has_warning()) return;
+        const handler = story.on_error orelse return error.StoryError;
+        var buffer: [2048]u8 = undefined;
+        const errors = state.errors.slice();
+        const lists = [_][]const state_module.Diagnostic{ errors, state.warnings.slice() };
+        for (lists) |list| {
+            for (list) |diagnostic| {
+                var writer: std.Io.Writer = .fixed(&buffer);
+                messages.write(story, diagnostic, &writer) catch {};
+                handler(story.on_error_context, writer.buffered(), diagnostic.severity);
+            }
+        }
+        if (state.diagnostics_dropped > 0) {
+            const dropped = state.diagnostics_dropped;
+            const text = std.fmt.bufPrint(&buffer, "RUNTIME ERROR: {d} more errors and " ++
+                "warnings didn't fit errors_max or warnings_max", .{dropped}) catch &buffer;
+            handler(story.on_error_context, text, .@"error");
+        }
+        state.reset_errors();
+        assert(!state.has_error());
     }
 
     /// ink's ContinueInternal, from the loop to the end-of-content checks; returns the
@@ -527,4 +566,56 @@ test "a step budget stops a story that loops without output" {
     var more: u32 = 0;
     try std.testing.expectEqual(vm.RunResult.budget_exhausted, try vm.run(&story, 50, &more));
     try std.testing.expectEqual(@as(u32, 50), more);
+}
+
+const Collected = struct {
+    count: u32 = 0,
+    last: [256]u8 = undefined,
+    last_length: u32 = 0,
+
+    fn handle(
+        context: ?*anyopaque,
+        message: []const u8,
+        severity: state_module.Diagnostic.Severity,
+    ) void {
+        const collected: *Collected = @ptrCast(@alignCast(context.?));
+        assert(severity == .@"error");
+        collected.count += 1;
+        collected.last_length = @intCast(@min(message.len, collected.last.len));
+        @memcpy(collected.last[0..collected.last_length], message[0..collected.last_length]);
+    }
+};
+
+test "an arithmetic fault is a story error, reported to the error handler" {
+    // Goal: D18 and P5.10; `1 / 0` is a story error with ink's prefix, not a panic; without
+    // a handler cont returns StoryError. Method: a two-line story dividing by zero.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.eval_start, {});
+    try builder.add(.integer, 1);
+    try builder.add(.integer, 0);
+    try builder.add(.divide, {});
+    try builder.add(.eval_output, {});
+    try builder.add(.eval_end, {});
+    try builder.add(.newline, {});
+    try builder.add(.done, {});
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    try std.testing.expectError(error.StoryError, story.cont());
+    try std.testing.expect(story.state.has_error());
+    try story.reset_state();
+    var collected: Collected = .{};
+    story.on_error = Collected.handle;
+    story.on_error_context = &collected;
+    _ = try story.cont();
+    try std.testing.expectEqual(@as(u32, 1), collected.count);
+    const message = collected.last[0..collected.last_length];
+    try std.testing.expectEqualStrings("RUNTIME ERROR: (3): Attempted to divide by zero.", message);
+    try std.testing.expect(!story.can_continue() and !story.state.has_error());
 }

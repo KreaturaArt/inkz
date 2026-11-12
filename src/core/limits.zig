@@ -23,7 +23,7 @@ pub const element_bytes = struct {
     pub const flow = 64; // name, directory ranges into the parking region
     pub const observer = 24; // global slot, callback, context
     pub const observer_event = 4; // GlobalSlot
-    pub const diagnostic = 12; // kind, code, argument
+    pub const diagnostic = 24; // argument, two numbers, pointer, code, severity
     pub const count_slot = 8; // visit count u32 + turn index i32
     pub const global = value * 2; // current value + default value (§4.10)
     pub const ancestor = 4; // ContainerIndex, for the visit-counting walk (§4.6)
@@ -235,7 +235,7 @@ test "the default byte budget is pinned" {
     // Method: compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 1_825_792), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 1_826_560), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories (P4.12).
@@ -271,13 +271,13 @@ test "the sizing example in docs/benchmarks.md" {
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 1_475_200), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 1_853_056), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 1_475_968), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 1_853_824), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 115_056), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 174_704), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 115_248), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 174_896), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {
