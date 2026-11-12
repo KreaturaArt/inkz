@@ -570,3 +570,44 @@ test "naming collisions, as ink's CheckForNamingCollisions" {
         try std.testing.expectEqual(want.kind, fixture.tree.kind(got.object));
     }
 }
+
+test "a resolve error in an included file reports that file's line and column" {
+    const gpa = std.testing.allocator;
+    const source_space = @import("source_space.zig");
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    const main_text = "INCLUDE other.ink\n-> k\n";
+    const other_text = "== k ==\nText.\n  -> nowhere\n";
+    try temporary.dir.writeFile(io, .{ .sub_path = "main.ink", .data = main_text });
+    try temporary.dir.writeFile(io, .{ .sub_path = "other.ink", .data = other_text });
+    var space = try source_space.load(gpa, io, temporary.dir, "main.ink", .{});
+    defer space.deinit(gpa);
+    var tree = try sema.build_space_tree(gpa, &space);
+    defer tree.deinit(gpa);
+    var resolution = try resolve(gpa, &space.parsed, &tree);
+    defer resolution.deinit(gpa);
+    // `-> k` resolves to the included knot; `-> nowhere` doesn't.
+    try std.testing.expectEqual(@as(usize, 1), resolution.diagnostics.len);
+    const diagnostic = resolution.diagnostics[0];
+    try std.testing.expectEqual(Code.target_not_found, diagnostic.code);
+    const where = space.location(sema.object_offset(&space.parsed, &tree, diagnostic.object));
+    try std.testing.expectEqualStrings("other.ink", where.path);
+    try std.testing.expectEqual(@as(u32, 3), where.line);
+    try std.testing.expectEqual(@as(u32, 6), where.column);
+}
+
+test "nested_include.ink resolves: the main file diverts to the included knot" {
+    const gpa = std.testing.allocator;
+    const source_space = @import("source_space.zig");
+    const misc = "test/fixture/original/runtime/misc";
+    var directory = try std.Io.Dir.cwd().openDir(std.testing.io, misc, .{});
+    defer directory.close(std.testing.io);
+    var space = try source_space.load(gpa, std.testing.io, directory, "nested_include.ink", .{});
+    defer space.deinit(gpa);
+    var tree = try sema.build_space_tree(gpa, &space);
+    defer tree.deinit(gpa);
+    var resolution = try resolve(gpa, &space.parsed, &tree);
+    defer resolution.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 0), resolution.diagnostics.len);
+}

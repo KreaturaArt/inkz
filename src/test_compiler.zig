@@ -21,4 +21,5 @@ test {
     _ = @import("compiler_next/parser_shape_tests.zig");
     _ = @import("compiler_next/sema.zig");
     _ = @import("compiler_next/resolve.zig");
+    _ = @import("compiler_next/source_space.zig");
 }
