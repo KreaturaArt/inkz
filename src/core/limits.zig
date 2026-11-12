@@ -124,7 +124,7 @@ pub const Limits = struct {
     }
 
     /// Buffers that belong to the active flow: call stack, evaluation, output and choices.
-    fn live_flow_bytes(limits: *const Limits) u64 {
+    pub fn live_flow_bytes(limits: *const Limits) u64 {
         const bytes = element_bytes;
         var total: u64 = 0;
         total += @as(u64, limits.evaluation_values_max) * bytes.value;
@@ -144,7 +144,7 @@ pub const Limits = struct {
     }
 
     /// Buffers shared by all flows: globals, counts, the heap, flows and diagnostics.
-    fn shared_bytes(limits: *const Limits, shape: ProgramShape) u64 {
+    pub fn shared_bytes(limits: *const Limits, shape: ProgramShape) u64 {
         const bytes = element_bytes;
         var total: u64 = 0;
         total += @as(u64, shape.globals_count) * bytes.global;
@@ -236,6 +236,48 @@ test "the default byte budget is pinned" {
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
     try std.testing.expectEqual(@as(u64, 1_825_792), limits.bytes_total(shape));
+}
+
+/// The limits of docs/benchmarks.md's sizing example for small side stories (P4.12).
+pub const small_story_limits: Limits = .{
+    .evaluation_values_max = 256,
+    .frames_max = 128,
+    .threads_max = 16,
+    .temps_max = 512,
+    .temps_per_frame_max = 64,
+    .output_items_max = 512,
+    .output_bytes_max = 8 * 1024,
+    .string_marks_max = 16,
+    .choices_max = 16,
+    .tags_max = 64,
+    .heap_bytes_max = 64 * 1024,
+    .list_words_max = 1024,
+    .flows_max = 4,
+    .flow_parking_bytes_max = 32 * 1024,
+    .choice_snapshot_frames_max = 64,
+    .choice_snapshot_temps_max = 256,
+    .patch_entries_max = 256,
+    .observers_max = 16,
+    .observer_events_max = 64,
+    .errors_max = 8,
+    .warnings_max = 8,
+    .container_depth_max = 64,
+};
+
+test "the sizing example in docs/benchmarks.md" {
+    // Goal: P4.12; the documented numbers are the computed ones. Method: the example's main
+    // story (default limits, four flows) and side story (small limits), part by part.
+    var main: Limits = .{};
+    main.flows_max = 4;
+    const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
+    try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
+    try std.testing.expectEqual(@as(u64, 1_475_200), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 1_853_056), main.bytes_total(main_shape));
+    const side = small_story_limits;
+    const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
+    try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
+    try std.testing.expectEqual(@as(u64, 115_056), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 174_704), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {
