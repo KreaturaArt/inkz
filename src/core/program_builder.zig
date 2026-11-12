@@ -32,6 +32,17 @@ const NamedEntry = container_module.NamedEntry;
 
 pub const path_components_max = 64;
 
+/// Everything building can fail with besides running out of memory.
+pub const Error = error{
+    StringPoolFull,
+    ExtraFull,
+    /// A container path longer than the path buffer.
+    NoSpaceLeft,
+    UnknownListItem,
+    UnknownListOrigin,
+    UnresolvedPaths,
+} || Allocator.Error;
+
 fn OperandOf(comptime opcode: Opcode) type {
     comptime assert(@sizeOf(Opcode) == 1);
     comptime assert(@typeInfo(Opcode).@"enum".field_names.len > 0);
@@ -335,7 +346,8 @@ pub const ProgramBuilder = struct {
         items: []const []const u8,
         origins: []const []const u8,
     ) !void {
-        assert(origins.len > 0 or items.len == 0);
+        // ink writes origins only for empty lists, which have no items to name them.
+        assert(items.len + origins.len < std.math.maxInt(u32));
         const gpa = builder.gpa;
         const record = try builder.extra.add(gpa, instruction_module.ListLiteral{
             .items_count = @intCast(items.len),
@@ -651,7 +663,11 @@ pub const ProgramBuilder = struct {
                 words[fixup.words_at + fixup.items_count + offset] = @backingInt(origin);
             }
         }
-        assert(builder.list_names.items.len >= builder.list_fixups.items.len);
+        var names_count: u64 = 0;
+        for (builder.list_fixups.items) |fixup| {
+            names_count += fixup.items_count + fixup.origins_count;
+        }
+        assert(names_count == builder.list_names.items.len);
     }
 
     /// ink finds the global declaration and external fallbacks by name at the root.

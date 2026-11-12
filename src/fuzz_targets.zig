@@ -10,6 +10,7 @@ const assert = std.debug.assert;
 const Tokenizer = @import("compiler/tokenizer.zig").Tokenizer;
 const parser = @import("compiler/parser.zig");
 const Story = @import("runtime/story.zig").Story;
+const ink_json = @import("core/ink_json.zig");
 
 const input_bytes_max = 4096;
 
@@ -112,6 +113,21 @@ test "fuzz: parser never crashes" {
 
 test "fuzz: JSON loader never crashes" {
     try std.testing.fuzz({}, load_json, .{ .corpus = &json_corpus });
+}
+
+/// The new loader (P3.1): any bytes either load into a program that passes its check, or
+/// return an error.
+fn load_json_new(_: void, smith: *std.testing.Smith) anyerror!void {
+    var buffer: [input_bytes_max + 1]u8 = undefined;
+    const json = fuzz_input(smith, &buffer);
+    assert(json.len <= input_bytes_max);
+    var program = ink_json.load(std.testing.allocator, json) catch return;
+    defer program.deinit(std.testing.allocator);
+    assert(program.check() == .ok);
+}
+
+test "fuzz: new JSON loader never crashes" {
+    try std.testing.fuzz({}, load_json_new, .{ .corpus = &json_corpus });
 }
 
 test "fuzz: loading a save never crashes" {

@@ -17,6 +17,7 @@ pub const container = @import("container.zig");
 pub const program = @import("program.zig");
 pub const program_builder = @import("program_builder.zig");
 pub const program_dump = @import("program_dump.zig");
+pub const ink_json = @import("ink_json.zig");
 
 test {
     _ = fault;
@@ -36,5 +37,6 @@ test {
     _ = program;
     _ = program_builder;
     _ = program_dump;
+    _ = ink_json;
     _ = @import("sizes_test.zig");
 }
