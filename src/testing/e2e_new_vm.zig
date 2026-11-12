@@ -1,13 +1,14 @@
-//! The old compiler's e2e tests on the new VM (plan P8.0): each story the e2e helpers play on
-//! the old runtime is also compiled by the old front end into a Program
-//! (src/compiler/codegen_to_program.zig) and played on the new VM with the same choices. The
+//! The old compiler's e2e tests on the new compiler and VM (plan P8.0, P8.4): each story the
+//! e2e helpers play on the old runtime is also compiled by the new compiler
+//! (src/compiler_next/compile.zig; P8.0 used the old front end through
+//! src/compiler/codegen_to_program.zig) and played on the new VM with the same choices. The
 //! two outputs must agree, or the case must be in the divergence ledger (corpus `e2e`,
-//! engine `old-compiler`) with what ink itself prints for it.
+//! engine `old-compiler`, as the old pipeline is the reference) with what ink prints for it.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const oracle = @import("oracle.zig");
-const codegen_to_program = @import("../compiler/codegen_to_program.zig");
+const compile = @import("../compiler_next/compile.zig");
 const vm = @import("../vm/api.zig");
 const Severity = @import("../vm/state.zig").Diagnostic.Severity;
 
@@ -32,9 +33,17 @@ fn ignore_error(_: ?*anyopaque, _: []const u8, _: Severity) void {}
 
 /// Plays `source` through `choices` on the new VM (choosing when it can't continue, as the
 /// old helpers do). Runtime errors don't stop it, as they don't on the old runtime.
-pub fn play(gpa: std.mem.Allocator, source: []const u8, choices: []const usize) ![]u8 {
+pub fn play(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    path: ?[]const u8,
+    choices: []const usize,
+) ![]u8 {
     assert(source.len < std.math.maxInt(u32));
-    var program = try codegen_to_program.compile(gpa, source);
+    var program = if (path) |file| try compile_file(gpa, file) else try compile.compile_source(
+        gpa,
+        source,
+    );
     defer program.deinit(gpa);
     var story: vm.Story = undefined;
     try story.init(gpa, &program, .{ .on_error = ignore_error });
@@ -58,10 +67,22 @@ pub fn play(gpa: std.mem.Allocator, source: []const u8, choices: []const usize) 
     return output.toOwnedSlice(gpa);
 }
 
+/// Compiles a fixture from its directory (so INCLUDEs resolve as in inklecate).
+fn compile_file(gpa: std.mem.Allocator, path: []const u8) !@import("../core/program.zig").Program {
+    assert(path.len > 0);
+    assert(std.mem.endsWith(u8, path, ".ink"));
+    const io = std.testing.io;
+    const directory_path = std.fs.path.dirname(path) orelse ".";
+    var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{});
+    defer directory.close(io);
+    return compile.compile_file(gpa, io, directory, std.fs.path.basename(path));
+}
+
 /// Plays the case on the new VM and checks it against `old_output` and the ledger.
 pub fn check(
     gpa: std.mem.Allocator,
     fixture: ?[]const u8,
+    path: ?[]const u8,
     source: []const u8,
     choices: []const usize,
     old_output: []const u8,
@@ -73,7 +94,7 @@ pub fn check(
     const arena = arena_state.allocator();
     var name_buffer: [case_bytes_max]u8 = undefined;
     const case = case_name(&name_buffer, fixture, source);
-    const new_output = play(arena, source, choices) catch |err| @errorName(err);
+    const new_output = play(arena, source, path, choices) catch |err| @errorName(err);
     const differs = !std.mem.eql(u8, new_output, old_output);
     const entry = find(try oracle.read_ledger(arena, std.testing.io), case);
     if (differs and entry == null) {
