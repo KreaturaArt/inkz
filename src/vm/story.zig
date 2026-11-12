@@ -221,6 +221,18 @@ pub const Story = struct {
         return story.state.line_bytes[0..length];
     }
 
+    /// ink's ContinueMaximally: every line until the story can't continue, written to
+    /// `writer`.
+    pub fn continue_maximally(story: *Story, writer: *std.Io.Writer) !void {
+        assert(story.state.line_bytes.len > 0);
+        var lines: u32 = 0;
+        while (story.can_continue()) : (lines += 1) {
+            assert(lines < std.math.maxInt(u32));
+            try writer.writeAll(try story.cont());
+        }
+        assert(!story.can_continue());
+    }
+
     /// The end of ink's ContinueInternal: each error, then each warning, to the handler,
     /// then ResetErrors.
     fn report_diagnostics(story: *Story) Error!void {
@@ -618,4 +630,28 @@ test "an arithmetic fault is a story error, reported to the error handler" {
     const message = collected.last[0..collected.last_length];
     try std.testing.expectEqualStrings("RUNTIME ERROR: (3): Attempted to divide by zero.", message);
     try std.testing.expect(!story.can_continue() and !story.state.has_error());
+}
+
+test "continue_maximally writes every line until the story stops" {
+    // Goal: P5.5; ink's ContinueMaximally. Method: two lines, then the end.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.text, try builder.intern("one"));
+    try builder.add(.newline, {});
+    try builder.add(.text, try builder.intern("two"));
+    try builder.add(.newline, {});
+    try builder.add(.end, {});
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    var buffer: [64]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try story.continue_maximally(&writer);
+    try std.testing.expectEqualStrings("one\ntwo\n", writer.buffered());
+    try std.testing.expect(!story.can_continue());
 }

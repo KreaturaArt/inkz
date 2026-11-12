@@ -241,6 +241,12 @@ fn apply_optional(engine: anytype, action: Action, writer: *std.Io.Writer) anyer
                 try writer.writeByte('\n');
             }
         },
+        .tags_at => {
+            if (!@hasDecl(Engine, "tags_at")) return error.Unsupported;
+            try writer.writeAll("tags: ");
+            try write_tags(writer, try engine.tags_at(action.argument));
+            try writer.writeByte('\n');
+        },
         .global_tags => {
             if (!@hasDecl(Engine, "global_tags")) return error.Unsupported;
             try writer.writeAll("tags: ");
