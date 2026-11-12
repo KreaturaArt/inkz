@@ -74,6 +74,8 @@ sealed class Transcript
             case "choices": WriteChoices(output); break;
             case "choose": story.ChooseChoiceIndex(ParseInt(argument)); break;
             case "play": Play(output); break;
+            case "play_seeded": PlaySeeded(ParseInt(argument), output); break;
+            case "globals": Globals(output); break;
             case "choose_path": story.ChoosePathString(argument); break;
             case "evaluate": Evaluate(argument, output); break;
             case "get": Line(output, "value", Value(story.variablesState[argument])); break;
@@ -151,6 +153,41 @@ sealed class Transcript
             story.ChooseChoiceIndex(0);
         }
         output.Append("turns_max reached\n");
+    }
+
+    // Like Play, but each choice index is `new Random(seed).Next() % count`, with one Random
+    // for the whole run (the transcript corpus's policy, plan P0.3).
+    void PlaySeeded(int seed, StringBuilder output)
+    {
+        var random = new Random(seed);
+        for (var turn = 0; turn < TurnsMax; turn += 1)
+        {
+            ContinueMaximally(output);
+            WriteChoices(output);
+            var count = story.currentChoices.Count;
+            if (count == 0)
+            {
+                output.Append("end\n");
+                return;
+            }
+            var index = random.Next() % count;
+            output.Append("choose: ").Append(index).Append('\n');
+            story.ChooseChoiceIndex(index);
+        }
+        output.Append("turns_max reached\n");
+    }
+
+    // Every global variable, sorted by name (ordinal), with its value.
+    void Globals(StringBuilder output)
+    {
+        var names = new List<string>();
+        foreach (var name in story.variablesState) names.Add(name);
+        names.Sort(StringComparer.Ordinal);
+        foreach (var name in names)
+        {
+            output.Append("global: ").Append(name).Append(" = ")
+                .Append(Value(story.variablesState[name])).Append('\n');
+        }
     }
 
     // evaluate <function> [<typed value>...]
