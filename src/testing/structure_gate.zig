@@ -126,3 +126,27 @@ test "the verified pair: loading the serialized program gives the same program" 
         try program_testing.expect_same_program(&compiled, &loaded);
     }
 }
+
+test "the verified pair holds for whole stories" {
+    // Goal: TASK-149.5; the round trip keeps even the string table's order on stories with
+    // nested named content. Method: crime_scene.ink and simple_taster_tutorial.ink compiled,
+    // serialized and loaded give the same program.
+    const gpa = std.testing.allocator;
+    const paths = [_][]const u8{
+        "test/fixture/crime_scene.ink",
+        "test/fixture/simple_taster_tutorial.ink",
+    };
+    for (paths) |path| {
+        const limit: std.Io.Limit = .limited(1 << 20);
+        const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, limit);
+        defer gpa.free(source);
+        var compiled = try compile.compile_source(gpa, source);
+        defer compiled.deinit(gpa);
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        try ink_json.serialize(gpa, &compiled, &out.writer);
+        var loaded = try ink_json.load(gpa, out.written());
+        defer loaded.deinit(gpa);
+        try program_testing.expect_same_program(&compiled, &loaded);
+    }
+}
