@@ -265,8 +265,10 @@ pub const State = struct {
         assert(!state.has_error() and !state.has_warning());
     }
 
-    /// Compacts the heap; the lookahead snapshot's heap tops follow their objects.
-    pub fn compact(state: *State) void {
+    /// Compacts the heap; the lookahead snapshot's heap tops follow their objects. `keep`
+    /// holds values the caller is still using that no root holds, such as popped operands;
+    /// they are updated in place.
+    pub fn compact(state: *State, keep: []Value) void {
         assert(state.strings.used <= state.strings.bytes.len);
         var string_tops = [1]u32{state.snapshot.strings_top};
         var list_tops = [1]u32{state.snapshot.lists_top};
@@ -274,13 +276,46 @@ pub const State = struct {
             .{ .strings = &string_tops, .lists = &list_tops }
         else
             .{};
-        _ = heap.compact(&state.strings, &state.lists, state, marks);
+        var roots: KeepingRoots = .{ .state = state, .keep = keep };
+        _ = heap.compact(&state.strings, &state.lists, &roots, marks);
         assert(state.lists.used <= state.lists.words.len);
         if (state.snapshot.active) {
             state.snapshot.strings_top = string_tops[0];
             state.snapshot.lists_top = list_tops[0];
         }
         assert(state.snapshot.strings_top <= state.strings.used or !state.snapshot.active);
+    }
+
+    /// Room for a heap string of `length` bytes, compacting once if the heap is full
+    /// (plan §4.5). `error.HeapLimit` when even the compacted heap has no room.
+    pub fn allocate_string(
+        state: *State,
+        length: u32,
+        keep: []Value,
+    ) error{HeapLimit}!StringReference {
+        assert(state.strings.used <= state.strings.bytes.len);
+        assert(keep.len < std.math.maxInt(u16));
+        if (state.strings.try_allocate(length)) |reference| return reference;
+        state.compact(keep);
+        const reference = state.strings.try_allocate(length) orelse return error.HeapLimit;
+        assert(reference.is_heap());
+        return reference;
+    }
+
+    /// Stores a list, compacting once if the slab is full. `error.ListLimit` when even the
+    /// compacted slab has no room.
+    pub fn store_list(
+        state: *State,
+        items: []const index.ListItemIndex,
+        origins: []const index.ListOriginIndex,
+        keep: []Value,
+    ) error{ListLimit}!value_module.ListReference {
+        assert(state.lists.used <= state.lists.words.len);
+        if (state.lists.store(items, origins)) |reference| return reference else |_| {}
+        state.compact(keep);
+        const reference = try state.lists.store(items, origins);
+        assert(state.lists.check_reference(reference));
+        return reference;
     }
 
     /// A hash of everything a story can observe or that later steps depend on: the live
@@ -402,6 +437,19 @@ fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
     for (records) |record| std.hash.autoHash(hasher, record);
     assert(@typeInfo(@TypeOf(records)) == .pointer);
 }
+
+/// State's roots plus values the caller holds outside the state.
+const KeepingRoots = struct {
+    state: *State,
+    keep: []Value,
+
+    pub fn visit(roots: *KeepingRoots, visitor: anytype) void {
+        assert(roots.keep.len < std.math.maxInt(u16));
+        assert(@typeInfo(@TypeOf(visitor)) == .pointer);
+        roots.state.visit(visitor);
+        visit_values(roots.keep, visitor);
+    }
+};
 
 /// Checks that every heap string reference is valid (State.check).
 const ReferenceChecker = struct {
@@ -584,4 +632,30 @@ test "errors and warnings are bounded and reset together" {
     state.reset_errors();
     try std.testing.expect(!state.has_error() and !state.has_warning());
     try std.testing.expectEqual(@as(u32, 0), state.diagnostics_dropped);
+}
+
+test "a full heap compacts once and keeps the caller's operands" {
+    // Goal: P4.3's trigger; an allocation that fails compacts, then retries, and a value only
+    // the caller holds survives. Method: fill a small heap with garbage and one kept string.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{ .heap_bytes_max = 64, .list_words_max = 8 });
+    defer state.deinit(gpa);
+    _ = try state.allocate_string(16, &.{}); // 24 bytes with the header
+    var keep = [_]Value{.{ .string = try state.allocate_string(4, &.{}) }};
+    @memcpy(state.strings.get(keep[0].string), "kept");
+    _ = try state.allocate_string(12, &.{}); // 56 of 64 bytes used
+    const fresh = try state.allocate_string(24, &keep);
+    try std.testing.expectEqualStrings("kept", state.strings.get(keep[0].string));
+    try std.testing.expectEqual(@as(u32, 0), keep[0].string.heap_offset());
+    try std.testing.expectEqual(@as(u32, 12), fresh.heap_offset());
+    try std.testing.expectError(error.HeapLimit, state.allocate_string(56, &keep));
+    _ = try state.store_list(&.{.from_int(1)}, &.{}, &.{});
+    keep[0] = .{ .list = try state.store_list(&.{.from_int(2)}, &.{}, &.{}) };
+    _ = try state.store_list(&.{.from_int(3)}, &.{}, &keep);
+    try std.testing.expectEqual(@as(u32, 2), state.lists.view(keep[0].list).items[0].to_int());
+    const long = [_]index.ListItemIndex{ .from_int(1), .from_int(2), .from_int(3) };
+    try std.testing.expectError(error.ListLimit, state.store_list(&long, &.{}, &keep));
 }

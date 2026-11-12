@@ -380,7 +380,7 @@ test "the heap tops follow a compaction during lookahead" {
     try state.evaluation.push(.{ .string = store_text(&state, "made in lookahead") });
     _ = store_text(&state, "garbage in lookahead");
     try set_global(&state, .from_int(0), .{ .integer = 1 });
-    state.compact();
+    state.compact(&.{});
     // "live" (12 bytes with its header) is all that stays below the mark; the old global
     // value is kept alive by the undo log.
     try std.testing.expectEqual(@as(u32, 12), state.snapshot.strings_top);
