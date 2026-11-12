@@ -206,6 +206,9 @@ pub const State = struct {
     output_stashes_count: u32 = 0,
     /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
     did_safe_exit: bool = false,
+    /// For the simulator (P5.12): compact before every heap allocation, so a reference held
+    /// across an allocation without being a root shows up at once.
+    compact_always: bool = false,
     snapshot: lookahead_module.Snapshot = .{},
 
     pub const Fault = enum {
@@ -376,6 +379,7 @@ pub const State = struct {
     ) error{HeapLimit}!StringReference {
         assert(state.strings.used <= state.strings.bytes.len);
         assert(keep.len < std.math.maxInt(u16));
+        if (state.compact_always) state.compact(keep);
         if (state.strings.try_allocate(length)) |reference| return reference;
         state.compact(keep);
         const reference = state.strings.try_allocate(length) orelse return error.HeapLimit;
@@ -392,6 +396,7 @@ pub const State = struct {
         keep: []Value,
     ) error{ListLimit}!value_module.ListReference {
         assert(state.lists.used <= state.lists.words.len);
+        if (state.compact_always) state.compact(keep);
         if (state.lists.store(items, origins)) |reference| return reference else |_| {}
         state.compact(keep);
         const reference = try state.lists.store(items, origins);
