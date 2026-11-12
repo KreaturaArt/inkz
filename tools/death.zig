@@ -1,4 +1,4 @@
-//! Runs one case from `src/core/death_cases.zig` by name, for `zig build test-death`.
+//! Runs one case from `src/death_cases.zig` by name, for `zig build test-death`.
 //! A case in `must_panic` should abort; returning exits with `did_not_die_exit_code`.
 
 const std = @import("std");
