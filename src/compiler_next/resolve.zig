@@ -59,6 +59,9 @@ pub const Code = enum(u8) {
     builtin_not_called,
     ambiguous_list_item,
     global_refers_to_variable,
+    duplicate_list_item,
+    constant_redefined,
+    unsupported_fold,
 };
 
 pub const Diagnostic = struct {
@@ -72,6 +75,8 @@ pub const Resolution = struct {
     references: []Reference,
     /// Diverts whose target is a variable (ink's variableDivertName).
     variable_diverts: std.DynamicBitSetUnmanaged,
+    /// A list item's value (ink's seriesValue), by object; 0 for other objects.
+    item_values: []i32,
     diagnostics: []Diagnostic,
 
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
@@ -79,6 +84,7 @@ pub const Resolution = struct {
         assert(resolution.variable_diverts.bit_length == resolution.targets.len);
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
+        gpa.free(resolution.item_values);
         resolution.variable_diverts.deinit(gpa);
         gpa.free(resolution.diagnostics);
         resolution.* = undefined;
@@ -143,6 +149,7 @@ pub const Context = struct {
     root_weaves: []ObjectIndex = &.{},
     targets: []ObjectIndex = &.{},
     references: []Reference = &.{},
+    item_values: []i32 = &.{},
     variable_diverts: std.DynamicBitSetUnmanaged = .{},
     /// Proxy diverts of built-in calls: ink never generates or resolves them.
     skipped: std.DynamicBitSetUnmanaged = .{},
@@ -168,6 +175,7 @@ pub const Context = struct {
         gpa.free(context.root_weaves);
         gpa.free(context.targets);
         gpa.free(context.references);
+        gpa.free(context.item_values);
         context.variable_diverts.deinit(gpa);
         context.skipped.deinit(gpa);
         context.had_error.deinit(gpa);
@@ -287,10 +295,12 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
         .targets = context.targets,
         .references = context.references,
         .variable_diverts = context.variable_diverts,
+        .item_values = context.item_values,
         .diagnostics = try context.diagnostics.toOwnedSlice(gpa),
     };
     context.targets = &.{};
     context.references = &.{};
+    context.item_values = &.{};
     context.variable_diverts = .{};
     assert(resolution.targets.len == tree.count());
     return resolution;
@@ -610,4 +620,31 @@ test "nested_include.ink resolves: the main file diverts to the included knot" {
     var resolution = try resolve(gpa, &space.parsed, &tree);
     defer resolution.deinit(gpa);
     try std.testing.expectEqual(@as(usize, 0), resolution.diagnostics.len);
+}
+
+test "constants may repeat only with the same value; list items may not repeat" {
+    var fixture: Fixture = undefined;
+    try fixture.init(
+        \\CONST a = 1
+        \\CONST a = 1
+        \\CONST b = 2
+        \\CONST b = 3
+        \\LIST l = x, y, x
+        \\{a} {b}
+        \\
+    );
+    defer fixture.deinit();
+    const expected = [_]Code{ .constant_redefined, .duplicate_list_item };
+    try std.testing.expectEqual(expected.len, fixture.codes().len);
+    for (expected, fixture.codes()) |code, diagnostic| {
+        try std.testing.expectEqual(code, diagnostic.code);
+    }
+    // The list's items are numbered all the same: 1, 2, 3.
+    const definition = fixture.nth(.list_definition, 0);
+    for (fixture.tree.children_of(definition), 1..) |element, value| {
+        try std.testing.expectEqual(
+            @as(i32, @intCast(value)),
+            fixture.resolution.item_values[element.to_int()],
+        );
+    }
 }
