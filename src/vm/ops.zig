@@ -1014,6 +1014,8 @@ fn call_bound(
     for (state.evaluation.slice()[first..], 0..) |value, position| {
         arguments[position] = host_value(story, value);
     }
+    story.callback_depth += 1;
+    defer story.callback_depth -= 1;
     const result = function(context, story, arguments[0..count]) catch
         return error.ExternalFunctionFailed;
     assert(state.evaluation.count >= first + count);

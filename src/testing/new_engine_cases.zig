@@ -172,3 +172,16 @@ test "P5.7: observers batched per cont, immediate outside it" {
         .{ .id = "runtime/bindings/variable_observer" },
     });
 }
+
+test "P5.8: evaluate_function on the live state" {
+    // Goal: P5.8; ink's EvaluateFunction: the output is set aside, side effects persist,
+    // text is cleaned, a divert target comes back as its path, and an external may
+    // evaluate (game_ink_back_and_forth). Method: replay.
+    try expect_cases_match(&.{
+        .{ .id = "audit/evaluate_function_side_effects" },
+        .{ .id = "runtime/evaluation/evaluating_ink_functions_from_game" },
+        .{ .id = "runtime/evaluation/evaluating_ink_functions_from_game_2" },
+        .{ .id = "runtime/evaluation/evaluating_function_variable_state_bug" },
+        .{ .id = "runtime/bindings/game_ink_back_and_forth" },
+    });
+}

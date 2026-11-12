@@ -132,7 +132,7 @@ fn create(state: *State, name: []const u8) Error!u32 {
 }
 
 /// The words in use in the parking region: parked flows are packed from the start.
-fn parking_used(state: *const State) u32 {
+pub fn parking_used(state: *const State) u32 {
     var used: u32 = 0;
     for (state.flows) |*record| {
         if (record.in_use) used = @max(used, record.parked_first + record.parked_words);

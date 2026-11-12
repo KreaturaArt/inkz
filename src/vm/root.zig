@@ -16,6 +16,7 @@ pub const ops = @import("ops.zig");
 pub const story = @import("story.zig");
 pub const messages = @import("messages.zig");
 pub const story_paths = @import("story_paths.zig");
+pub const evaluate = @import("evaluate.zig");
 const state_test = @import("state_test.zig");
 
 test {
@@ -34,5 +35,6 @@ test {
     _ = story;
     _ = messages;
     _ = story_paths;
+    _ = evaluate;
     _ = state_test;
 }
