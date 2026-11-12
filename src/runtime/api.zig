@@ -22,6 +22,9 @@ const messages = @import("messages.zig");
 const state_module = @import("state.zig");
 
 pub const Limits = limits_module.Limits;
+/// A story's measured needs (`Story.usage`), for `fitted_limits` (P10.2).
+pub const Usage = limits_module.Usage;
+pub const fitted_limits = limits_module.fitted;
 /// A value as the host sees it; strings are borrowed slices.
 pub const Value = story_module.HostValue;
 pub const Events = story_module.Events;
@@ -404,6 +407,14 @@ pub const Story = struct {
     // State.
 
     /// ink's state.ToJson, streamed.
+    /// What the story has needed since init: every buffer's peak (P10.2). Play it well
+    /// (every path, saves and loads), then size `Limits` with `fitted_limits(usage, 2)`.
+    pub fn usage(story: *const Story) Usage {
+        assert(story.core.state.memory.len > 0);
+        assert(story.core.program.containers.len > 0);
+        return story.core.usage();
+    }
+
     pub fn to_json(story: *Story, writer: *std.Io.Writer) !void {
         assert(story.core.state.memory.len > 0);
         assert(story.core.callback_depth == 0);

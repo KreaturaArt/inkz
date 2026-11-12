@@ -6,7 +6,8 @@ const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const Program = @import("../core/program.zig").Program;
-const Limits = @import("../core/limits.zig").Limits;
+const limits_module = @import("../core/limits.zig");
+const Limits = limits_module.Limits;
 const state_module = @import("state.zig");
 const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
@@ -164,6 +165,15 @@ pub const Story = struct {
         errdefer story.state.deinit(gpa);
         try story.reset_globals();
         assert(story.state.call_stack.depth() == 1);
+    }
+
+    /// What this story has needed since init (P10.2), for `Limits.fitted`.
+    pub fn usage(story: *const Story) limits_module.Usage {
+        assert(story.state.memory.len > 0);
+        assert(story.observers_count <= story.state.observers.len);
+        var result = story.state.usage();
+        result.observers = story.observers_count;
+        return result;
     }
 
     /// ink's ResetState: a fresh state, with the global declaration run again.
@@ -534,6 +544,7 @@ pub const Story = struct {
         const text = try state.text_cache.update(&state.output, strings, state.strings.generation);
         if (builtin.mode == .debug) story.expect_full_clean(text);
         assert(text.len <= state.text_cache.text.len);
+        state.peaks.line_bytes = @max(state.peaks.line_bytes, @as(u32, @intCast(text.len)));
         return @intCast(text.len);
     }
 

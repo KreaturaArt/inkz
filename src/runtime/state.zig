@@ -213,6 +213,17 @@ pub const State = struct {
     /// across an allocation without being a root shows up at once.
     compact_always: bool = false,
     snapshot: lookahead_module.Snapshot = .{},
+    /// High-water marks of the buffers that aren't stacks (the stacks keep their own, and
+    /// the heaps theirs); `usage` reports them all (P10.2).
+    peaks: Peaks = .{},
+
+    pub const Peaks = struct {
+        parking_words: u32 = 0,
+        patch_entries: u32 = 0,
+        line_bytes: u32 = 0,
+        load_nodes: u32 = 0,
+        flows: u32 = 1,
+    };
 
     pub const Fault = enum {
         ok,
@@ -256,6 +267,40 @@ pub const State = struct {
         assert(state.memory.len > 0);
         gpa.free(state.memory);
         state.* = undefined;
+    }
+
+    /// What this state has needed since init (P10.2): every buffer's peak, and the deepest
+    /// container nesting of the program (the visit-counting walk's scratch). Observers are
+    /// the story's (`Story.usage`).
+    pub fn usage(state: *const State) limits_module.Usage {
+        assert(state.memory.len > 0);
+        const stack = &state.call_stack;
+        const choices = &state.choices;
+        const result: limits_module.Usage = .{
+            .evaluation_values = state.evaluation.peak,
+            .frames = stack.frames.peak,
+            .threads = stack.threads.peak,
+            .temps = stack.temps.peak,
+            .output_items = state.output.items.peak,
+            .output_bytes = state.peaks.line_bytes,
+            .string_marks = state.output.string_marks.peak,
+            .choices = choices.records.peak,
+            .tags = choices.tags.peak,
+            .heap_bytes = state.strings.peak,
+            .list_words = state.lists.peak,
+            .flows = state.peaks.flows,
+            .flow_parking_bytes = state.peaks.parking_words * 4,
+            .choice_snapshot_frames = choices.frames.peak,
+            .choice_snapshot_temps = choices.temps.peak,
+            .patch_entries = state.peaks.patch_entries,
+            .observer_events = state.observer_events.peak,
+            .errors = state.errors.peak,
+            .warnings = state.warnings.peak,
+            .container_depth = container_depth(state.program),
+            .load_nodes = state.peaks.load_nodes,
+        };
+        assert(result.frames <= state.limits.frames_max);
+        return result;
     }
 
     /// The story's starting state: one thread at the root, empty output and choices, zeroed
@@ -578,6 +623,20 @@ const Carver = struct {
         return slice;
     }
 };
+
+/// The deepest nesting of containers in the program (root alone is 1).
+fn container_depth(program: *const Program) u32 {
+    assert(program.containers.len > 0);
+    var deepest: u32 = 0;
+    for (0..program.containers.len) |position| {
+        var depth: u32 = 0;
+        var container: ContainerIndex = .from_int(@intCast(position));
+        while (!container.is_none()) : (depth += 1) container = program.parent(container);
+        deepest = @max(deepest, depth);
+    }
+    assert(deepest >= 1);
+    return deepest;
+}
 
 fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []align(8) u8) State {
     assert(carver.used == 0);

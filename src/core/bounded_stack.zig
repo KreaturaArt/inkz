@@ -13,6 +13,8 @@ pub fn BoundedStack(comptime T: type) type {
     return struct {
         buffer: []T,
         count: u32,
+        /// The highest count since init (P10.2): what the buffer actually needed.
+        peak: u32 = 0,
 
         const Self = @This();
 
@@ -68,6 +70,7 @@ pub fn BoundedStack(comptime T: type) type {
             const count_before = stack.count;
             stack.buffer[stack.count] = value;
             stack.count += 1;
+            stack.peak = @max(stack.peak, stack.count);
             assert(stack.count == count_before + 1);
             assert(stack.count <= stack.buffer.len);
         }
@@ -79,6 +82,7 @@ pub fn BoundedStack(comptime T: type) type {
             const count_before = stack.count;
             @memcpy(stack.buffer[stack.count..][0..values.len], values);
             stack.count += @intCast(values.len);
+            stack.peak = @max(stack.peak, stack.count);
             assert(stack.count == count_before + values.len);
         }
 
@@ -190,4 +194,18 @@ test "check reports a corrupted count" {
     try std.testing.expectEqual(BoundedStack(u32).Fault.ok, stack.check());
     stack.count = 4;
     try std.testing.expectEqual(BoundedStack(u32).Fault.count_exceeds_capacity, stack.check());
+}
+
+test "the peak remembers the highest count" {
+    // Goal: P10.2's usage measurement. Method: push, pop and push_slice; clearing keeps it.
+    var buffer: [8]u32 = undefined;
+    var stack = BoundedStack(u32).init(&buffer);
+    try stack.push(1);
+    try stack.push(2);
+    try stack.push(3);
+    _ = stack.pop();
+    try std.testing.expectEqual(@as(u32, 3), stack.peak);
+    try stack.push_slice(&.{ 4, 5, 6 });
+    stack.clear();
+    try std.testing.expectEqual(@as(u32, 5), stack.peak);
 }

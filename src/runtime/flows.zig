@@ -126,6 +126,9 @@ fn create(state: *State, name: []const u8) Error!u32 {
         };
         @memcpy(record.name[0..name.len], name);
         assert(position > 0);
+        var in_use: u32 = 0;
+        for (state.flows) |*flow| in_use += @intFromBool(flow.in_use);
+        state.peaks.flows = @max(state.peaks.flows, in_use);
         return @intCast(position);
     }
     return error.FlowLimit;
@@ -193,6 +196,7 @@ fn park_current(state: *State) Error!void {
     const record = &state.flows[state.current_flow];
     record.parked_first = at;
     record.parked_words = writer.at - at;
+    state.peaks.parking_words = @max(state.peaks.parking_words, writer.at);
     assert(record.parked_words >= header_words);
 }
 
