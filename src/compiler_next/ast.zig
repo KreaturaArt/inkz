@@ -5,8 +5,8 @@
 //! - `list`: the word is the first of the children, and the first child is a `count` node
 //!   whose word is how many items follow it.
 //! Children are contiguous because the parser builds nodes with zirp's scratch stack and
-//! `wrap` (see the P7.0 spike). `none` and `missing` fill optional and absent required
-//! slots, so fixed shapes stay fixed.
+//! `wrap` (as in the P7.0 spike, docs/compiler_spike.md). `none` and `missing` fill optional
+//! and absent required slots, so fixed shapes stay fixed.
 //!
 //! `shape` is one switch with no `else`, so a new tag can't be added without deciding its
 //! shape, and `to_typed` turns a node into a view generated from that shape at compile time.
