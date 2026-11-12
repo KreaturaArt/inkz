@@ -1,4 +1,4 @@
-//! `zig build transcripts`: regenerates `test/transcripts/` from the old runtime (plan P0.3).
+//! `zig build transcripts`: regenerates `test/transcripts/` from the runtime (plan P0.3).
 
 const std = @import("std");
 const assert = std.debug.assert;

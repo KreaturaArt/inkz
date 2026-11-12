@@ -14,7 +14,7 @@ const assert = std.debug.assert;
 const fault = @import("core/fault.zig");
 const index = @import("core/index.zig");
 const string_pool = @import("core/string_pool.zig");
-const api = @import("vm/api.zig");
+const api = @import("runtime/api.zig");
 
 pub const did_not_die_exit_code = 3;
 

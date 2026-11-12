@@ -1,5 +1,5 @@
 // The audit bugs (plan P0.7), each with the issue that fixes it; all must be fixed by the end
-// of P9. Status: in_ledger (the case's divergence is in test/divergence_ledger.zon),
+// of P9 (all are). Status: in_ledger (the case's divergence is in test/divergence_ledger.zon),
 // not_reproduced (the case matches ink and stays as a regression guard), not_expressible (no
 // transcript can show it; see reason), fixed. Checked by src/testing/known_bugs.zig.
 .{
@@ -10,10 +10,34 @@
         .status = .fixed,
         .reason = "crashed under Zig 0.17; the keys are copied since commit a328cf0",
     },
-    .{ .name = "divert targets are saved as null", .fix = "TASK-146.1", .status = .in_ledger, .case = "audit/save_divert_target" },
-    .{ .name = "saved strings are truncated at 2048 bytes", .fix = "TASK-146.1", .status = .in_ledger, .case = "audit/save_long_string" },
-    .{ .name = "choices, tags and the seed are not saved", .fix = "TASK-146.1", .status = .in_ledger, .case = "audit/save_choices_and_seed" },
-    .{ .name = "previous_random is missing and SEED_RANDOM takes abs", .fix = "TASK-145.9", .status = .in_ledger, .case = "audit/random_seed_and_sequence" },
+    .{
+        .name = "divert targets are saved as null",
+        .fix = "TASK-146.1",
+        .status = .fixed,
+        .case = "audit/save_divert_target",
+        .reason = "the runtime matches ink on audit/save_divert_target (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "saved strings are truncated at 2048 bytes",
+        .fix = "TASK-146.1",
+        .status = .fixed,
+        .case = "audit/save_long_string",
+        .reason = "the runtime matches ink on audit/save_long_string (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "choices, tags and the seed are not saved",
+        .fix = "TASK-146.1",
+        .status = .fixed,
+        .case = "audit/save_choices_and_seed",
+        .reason = "the runtime matches ink on audit/save_choices_and_seed (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "previous_random is missing and SEED_RANDOM takes abs",
+        .fix = "TASK-145.9",
+        .status = .fixed,
+        .case = "audit/random_seed_and_sequence",
+        .reason = "the runtime matches ink on audit/random_seed_and_sequence (ground truth); the old runtime is deleted (P9.1)",
+    },
     .{
         .name = "variable lookup walks every frame",
         .fix = "TASK-145.3",

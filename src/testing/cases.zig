@@ -5,18 +5,16 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
-const OldEngine = @import("old_engine.zig").OldEngine;
 const NewEngine = @import("new_engine.zig").NewEngine;
 
 pub const cases_directory = "test/ground_truth";
 const file_bytes_max = 16 * 1024 * 1024;
 
 /// Engines the ground-truth gate runs:
-/// - `old`: the old runtime on the JSON compiled by ink v1.2.1;
-/// - `new`: the new runtime on the same JSON.
-pub const engines = [_][]const u8{ "old", "new" };
+/// - `new`: the runtime on the JSON compiled by ink v1.2.1.
+pub const engines = [_][]const u8{"new"};
 /// Engines the transcript gate runs; they read the compiled fixtures directly.
-pub const transcript_engines = [_][]const u8{ "old", "new" };
+pub const transcript_engines = [_][]const u8{"new"};
 
 /// A case's source: `test/ground_truth/<id>.ink`, or the fixture or story it came from.
 pub fn source_path(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
@@ -87,17 +85,9 @@ fn replay_story(
     actions: []const u8,
 ) ![]const u8 {
     assert(json.len > 0);
-    if (std.mem.eql(u8, engine, "new")) return replay_new(arena, json, actions);
-    if (!std.mem.eql(u8, engine, "old")) return error.UnknownEngine;
-    var output: std.Io.Writer.Allocating = .init(arena);
-    var old = OldEngine.init(arena, json) catch |err| {
-        try output.writer.print("exception: \"{t}\"\n", .{err});
-        return output.written();
-    };
-    defer old.deinit();
-    try transcript.replay(&old, actions, &output.writer);
-    assert(output.written().len > 0 or actions.len == 0);
-    return output.written();
+    assert(engine.len > 0);
+    if (!std.mem.eql(u8, engine, "new")) return error.UnknownEngine;
+    return replay_new(arena, json, actions);
 }
 
 fn replay_new(arena: std.mem.Allocator, json: []const u8, actions: []const u8) ![]const u8 {

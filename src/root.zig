@@ -1,28 +1,25 @@
-pub const ink_format = @import("ink_format.zig");
+//! inkz: an ink runtime and compiler. The runtime's API is at the top level (plan §4.7);
+//! `compiler` compiles ink source to a Program, `core` holds the shared program image.
 
-// ── Compiler ──────────────────────────────────────────────────────────────────
-/// The compiler (ink source to Program; ink_json.serialize writes ink's JSON).
+const api = @import("runtime/api.zig");
+
+pub const Story = api.Story;
+pub const Value = api.Value;
+pub const Choice = api.Choice;
+pub const ChooseOptions = api.ChooseOptions;
+pub const BindOptions = api.BindOptions;
+pub const Limits = api.Limits;
+pub const Events = api.Events;
+pub const ErrorHandler = api.ErrorHandler;
+pub const Observer = api.Observer;
+pub const ExternalFunction = api.ExternalFunction;
+pub const Severity = api.Severity;
+pub const Error = api.Error;
+pub const SetError = api.SetError;
+pub const Borrowed = api.Borrowed;
+
+pub const runtime = @import("runtime/root.zig");
 pub const compiler = @import("compiler/compile.zig");
-
-// ── Runtime ───────────────────────────────────────────────────────────────────
-pub const value = @import("runtime/value.zig");
-pub const path = @import("runtime/path.zig");
-pub const pointer = @import("runtime/pointer.zig");
-pub const json_loader = @import("runtime/json_loader.zig");
-pub const variables = @import("runtime/variables.zig");
-pub const choices = @import("runtime/choices.zig");
-pub const callstack = @import("runtime/callstack.zig");
-pub const state = @import("runtime/state.zig");
-pub const evaluation = @import("runtime/evaluation.zig");
-pub const story = @import("runtime/story.zig");
-pub const lists = @import("runtime/lists.zig");
-
-pub const Story = story.Story;
-pub const RuntimeObject = value.RuntimeObject;
-pub const Value = value.RuntimeObject;
-
 pub const core = @import("core/root.zig");
-
-/// The new runtime's public API (plan §4.7); it becomes the top-level API when the old
-/// runtime is removed (P9.1).
-pub const vm = @import("vm/api.zig");
+pub const ink_json = @import("core/ink_json.zig");
+pub const Program = @import("core/program.zig").Program;

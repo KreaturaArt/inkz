@@ -1,315 +1,229 @@
+//! Runtime values (plan §4.3, D14): 12 bytes, scalars exactly as C# ink has them (32-bit
+//! wrapping integers, 32-bit floats). Strings and lists live elsewhere (the program's string
+//! pool, the state heap, the list slab) and values hold references.
+
 const std = @import("std");
-const lists = @import("lists.zig");
-pub const InkList = lists.InkList;
+const assert = std.debug.assert;
+const index = @import("../core/index.zig");
+const limits = @import("../core/limits.zig");
+const ContainerIndex = index.ContainerIndex;
+const StringId = index.StringId;
 
-pub const ControlCommand = enum {
-    eval_start,
-    eval_end,
-    output,
-    pop_eval_stack,
-    duplicate,
-    pop_function,
-    pop_tunnel,
-    begin_string,
-    end_string,
-    no_op,
-    choice_count,
-    turns_since,
-    read_count,
-    turn_index,
-    visit_index,
-    sequence_shuffle_index,
-    seed_random,
-    start_tag,
-    end_tag,
-    list_from_int,
-    list_range,
-    list_random,
-    begin_thread,
-    done,
-    end_of_story,
+/// A string in the program's pool or in the state heap. The high bit selects the heap.
+pub const StringReference = enum(u32) {
+    _,
 
-    pub fn fromString(s: []const u8) ?ControlCommand {
-        const map = std.StaticStringMap(ControlCommand).initComptime(.{
-            .{ "ev", .eval_start },
-            .{ "/ev", .eval_end },
-            .{ "out", .output },
-            .{ "pop", .pop_eval_stack },
-            .{ "du", .duplicate },
-            .{ "~ret", .pop_function },
-            .{ "->->", .pop_tunnel },
-            .{ "str", .begin_string },
-            .{ "/str", .end_string },
-            .{ "nop", .no_op },
-            .{ "choiceCnt", .choice_count },
-            .{ "turns", .turns_since },
-            .{ "readc", .read_count },
-            .{ "turn", .turn_index },
-            .{ "visit", .visit_index },
-            .{ "seq", .sequence_shuffle_index },
-            .{ "srnd", .seed_random },
-            .{ "#", .start_tag },
-            .{ "/#", .end_tag },
-            .{ "listInt", .list_from_int },
-            .{ "range", .list_range },
-            .{ "lrnd", .list_random },
-            .{ "thread", .begin_thread },
-            .{ "done", .done },
-            .{ "end", .end_of_story },
-        });
-        return map.get(s);
+    const heap_bit: u32 = 1 << 31;
+
+    /// No string: not a heap reference, and past every program string id.
+    pub const none: StringReference = @fromBackingInt(heap_bit - 1);
+
+    pub fn program(id: StringId) StringReference {
+        const raw = id.to_int();
+        assert(raw & heap_bit == 0);
+        const reference: StringReference = @fromBackingInt(@intCast(raw));
+        assert(!reference.is_heap());
+        return reference;
+    }
+
+    pub fn heap(offset: u32) StringReference {
+        assert(offset & heap_bit == 0);
+        const reference: StringReference = @fromBackingInt(@intCast(offset | heap_bit));
+        assert(reference.is_heap());
+        return reference;
+    }
+
+    pub fn is_heap(reference: StringReference) bool {
+        assert(@sizeOf(StringReference) == 4);
+        const raw = @backingInt(reference);
+        const result = raw & heap_bit != 0;
+        assert(result or raw < heap_bit);
+        return result;
+    }
+
+    pub fn program_id(reference: StringReference) StringId {
+        assert(!reference.is_heap());
+        const id = StringId.from_int(@backingInt(reference));
+        assert(@backingInt(id) < heap_bit);
+        return id;
+    }
+
+    pub fn heap_offset(reference: StringReference) u32 {
+        assert(reference.is_heap());
+        const offset = @backingInt(reference) & ~heap_bit;
+        assert(offset < heap_bit);
+        return offset;
     }
 };
 
-pub const NativeFunction = enum {
-    add,
-    subtract,
-    multiply,
-    divide,
-    mod,
-    negate,
-    equal,
-    not_equal,
-    greater,
-    less,
-    greater_or_equal,
-    less_or_equal,
-    not,
-    and_,
-    or_,
-    min,
-    max,
-    list_intersect,
-    list_has,
-    list_hasnt,
-    list_min,
-    list_max,
-    list_all,
-    list_invert,
-    list_count,
-    list_value,
-    int_cast,
-    float_cast,
-    floor,
-    ceiling,
+/// A list value in the state's list slab.
+pub const ListReference = enum(u32) { _ };
 
-    pub fn fromString(s: []const u8) ?NativeFunction {
-        const map = std.StaticStringMap(NativeFunction).initComptime(.{
-            .{ "+", .add },
-            .{ "-", .subtract },
-            .{ "*", .multiply },
-            .{ "/", .divide },
-            .{ "%", .mod },
-            .{ "_", .negate },
-            .{ "==", .equal },
-            .{ "!=", .not_equal },
-            .{ ">", .greater },
-            .{ "<", .less },
-            .{ ">=", .greater_or_equal },
-            .{ "<=", .less_or_equal },
-            .{ "!", .not },
-            .{ "&&", .and_ },
-            .{ "||", .or_ },
-            .{ "MIN", .min },
-            .{ "MAX", .max },
-            .{ "L^", .list_intersect },
-            .{ "?", .list_has },
-            .{ "!?", .list_hasnt },
-            .{ "LIST_MIN", .list_min },
-            .{ "LIST_MAX", .list_max },
-            .{ "LIST_ALL", .list_all },
-            .{ "LIST_INVERT", .list_invert },
-            .{ "LIST_COUNT", .list_count },
-            .{ "LIST_VALUE", .list_value },
-            .{ "INT()", .int_cast },
-            .{ "INT", .int_cast },
-            .{ "FLOAT()", .float_cast },
-            .{ "FLOAT", .float_cast },
-            .{ "FLOOR()", .floor },
-            .{ "FLOOR", .floor },
-            .{ "CEILING()", .ceiling },
-            .{ "CEILING", .ceiling },
-        });
-        return map.get(s);
-    }
+pub const VariablePointer = struct {
+    name: StringId,
+    /// ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
+    context: i32,
 };
 
-pub const PushPopType = enum { function, tunnel };
-
-pub const Divert = struct {
-    target: []const u8,
-    is_variable: bool = false,
-    is_conditional: bool = false,
-    push_pop_type: ?PushPopType = null,
-    external_args: u32 = 0,
-};
-
-/// Flags stored in the container's "#f" metadata field.
-/// bit 0: visits_should_be_counted
-/// bit 1: turn_index_should_be_counted
-/// bit 2: count_at_start_only
-pub const ContainerFlags = packed struct(u8) {
-    visits_should_be_counted: bool = false,
-    turn_index_should_be_counted: bool = false,
-    count_at_start_only: bool = false,
-    _pad: u5 = 0,
-};
-
-/// Sentinel index meaning "no container" (replaces null pointer).
-pub const null_container_idx: u32 = std.math.maxInt(u32);
-
-/// Entry in the global flat named-child table.
-pub const NamedEntry = struct {
-    name: []const u8,
-    container_idx: u32,
-};
-
-/// A container holds a sequence of RuntimeObjects plus optional named sub-containers.
-/// Container and RuntimeObject are mutually recursive, so both live in this file.
-/// Named children are stored in a global flat NamedEntry slice; each Container holds
-/// the range [first_named, first_named+named_len) into that slice.
-pub const Container = struct {
-    name: ?[]const u8 = null,
-    content: []RuntimeObject = &.{},
-    /// Offset into Story.named_entries for this container's named children.
-    first_named: u32 = 0,
-    named_len: u32 = 0,
-    flags: ContainerFlags = .{},
-    path: []const u8 = "",
-    /// Index of parent container in Story.containers; null_container_idx if no parent.
-    parent_idx: u32 = null_container_idx,
-    /// Index in parent.content; -1 if accessed only via named content.
-    index_in_parent: i32 = -1,
-};
-
-/// The RuntimeObject represents every possible value in the Ink virtual machine.
-pub const RuntimeObject = union(enum) {
-    void,
-    string: []const u8,
-    int: i64,
-    float: f64,
+pub const Value = union(enum(u8)) {
+    null,
+    integer: i32,
+    float: f32,
     bool: bool,
-    glue,
-    /// Path string to a divert target: {"^->": "path"}
-    divert_target: []const u8,
-    variable_pointer: struct { name: []const u8, context_index: i32 },
-    control_command: ControlCommand,
-    native_function: NativeFunction,
-    divert: Divert,
-    choice_point: struct { path: []const u8, flags: u8 },
-    variable_assignment: struct { name: []const u8, is_new_decl: bool, is_global: bool },
-    variable_reference: struct { name: []const u8, path_for_count: ?[]const u8 },
-    /// An Ink list value; heap-allocated so the union remains copyable.
-    list: *InkList,
-    /// Index into Story.containers (was *Container).
-    container: u32,
+    string: StringReference,
+    divert_target: ContainerIndex,
+    variable_pointer: VariablePointer,
+    list: ListReference,
+    /// A v21 tag on the evaluation stack.
+    tag: StringReference,
+
+    pub const Tag = std.meta.Tag(Value);
+
+    /// ink's coercion order (Value.cs `ValueType`): a binary operation converts both operands
+    /// to the higher of their two types. Null and tags don't take part in arithmetic.
+    pub fn rank(value: Value) ?i8 {
+        assert(@sizeOf(Value) == 12);
+        const result: ?i8 = switch (value) {
+            .bool => -1,
+            .integer => 0,
+            .float => 1,
+            .list => 2,
+            .string => 3,
+            .divert_target => 4,
+            .variable_pointer => 5,
+            .null, .tag => null,
+        };
+        if (result) |order| assert(order >= -1 and order <= 5);
+        return result;
+    }
+
+    /// ink's `isTruthy`. Divert targets, variable pointers and tags have no truth value.
+    pub fn is_truthy(value: Value, list_count: anytype) error{NoTruthValue}!bool {
+        assert(@sizeOf(Value) == 12);
+        const result = switch (value) {
+            .bool => |flag| flag,
+            .integer => |number| number != 0,
+            .float => |number| number != 0,
+            .list => |list| list_count.count(list) > 0,
+            .string => |text| list_count.string_length(text) > 0,
+            .null, .divert_target, .variable_pointer, .tag => return error.NoTruthValue,
+        };
+        assert(value != .null);
+        return result;
+    }
 };
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-test "ControlCommand.fromString" {
-    // All 24 command strings
-    try std.testing.expectEqual(ControlCommand.eval_start, ControlCommand.fromString("ev").?);
-    try std.testing.expectEqual(ControlCommand.eval_end, ControlCommand.fromString("/ev").?);
-    try std.testing.expectEqual(ControlCommand.output, ControlCommand.fromString("out").?);
-    try std.testing.expectEqual(ControlCommand.pop_eval_stack, ControlCommand.fromString("pop").?);
-    try std.testing.expectEqual(ControlCommand.duplicate, ControlCommand.fromString("du").?);
-    try std.testing.expectEqual(ControlCommand.pop_function, ControlCommand.fromString("~ret").?);
-    try std.testing.expectEqual(ControlCommand.pop_tunnel, ControlCommand.fromString("->->").?);
-    try std.testing.expectEqual(ControlCommand.begin_string, ControlCommand.fromString("str").?);
-    try std.testing.expectEqual(ControlCommand.end_string, ControlCommand.fromString("/str").?);
-    try std.testing.expectEqual(ControlCommand.no_op, ControlCommand.fromString("nop").?);
-    try std.testing.expectEqual(ControlCommand.choice_count, ControlCommand.fromString("choiceCnt").?);
-    try std.testing.expectEqual(ControlCommand.turns_since, ControlCommand.fromString("turns").?);
-    try std.testing.expectEqual(ControlCommand.turn_index, ControlCommand.fromString("turn").?);
-    try std.testing.expectEqual(ControlCommand.visit_index, ControlCommand.fromString("visit").?);
-    try std.testing.expectEqual(ControlCommand.sequence_shuffle_index, ControlCommand.fromString("seq").?);
-    try std.testing.expectEqual(ControlCommand.seed_random, ControlCommand.fromString("srnd").?);
-    try std.testing.expectEqual(ControlCommand.start_tag, ControlCommand.fromString("#").?);
-    try std.testing.expectEqual(ControlCommand.end_tag, ControlCommand.fromString("/#").?);
-    try std.testing.expectEqual(ControlCommand.list_from_int, ControlCommand.fromString("listInt").?);
-    try std.testing.expectEqual(ControlCommand.list_range, ControlCommand.fromString("range").?);
-    try std.testing.expectEqual(ControlCommand.list_random, ControlCommand.fromString("lrnd").?);
-    try std.testing.expectEqual(ControlCommand.begin_thread, ControlCommand.fromString("thread").?);
-    try std.testing.expectEqual(ControlCommand.done, ControlCommand.fromString("done").?);
-    try std.testing.expectEqual(ControlCommand.end_of_story, ControlCommand.fromString("end").?);
-    try std.testing.expectEqual(@as(?ControlCommand, null), ControlCommand.fromString("unknown"));
+comptime {
+    assert(@sizeOf(Value) == limits.element_bytes.value);
+    assert(@sizeOf(VariablePointer) == 8);
 }
 
-test "NativeFunction.fromString" {
-    try std.testing.expectEqual(NativeFunction.add, NativeFunction.fromString("+").?);
-    try std.testing.expectEqual(NativeFunction.list_intersect, NativeFunction.fromString("L^").?);
-    try std.testing.expectEqual(NativeFunction.list_has, NativeFunction.fromString("?").?);
-    try std.testing.expectEqual(NativeFunction.int_cast, NativeFunction.fromString("INT()").?);
-    try std.testing.expectEqual(@as(?NativeFunction, null), NativeFunction.fromString("unknown"));
+pub const float_text_bytes_max = 24;
+
+/// Formats `value` as .NET 8's `float.ToString(CultureInfo.InvariantCulture)`: the shortest
+/// digits that round-trip, in fixed notation for decimal exponents from -4 to 8 and in
+/// scientific notation (`1.5E+09`, `1E-05`) otherwise. Checked against .NET in
+/// test/ground_truth/dotnet_floats.expected.
+pub fn format_float(value: f32, buffer: *[float_text_bytes_max]u8) []const u8 {
+    if (std.math.isNan(value)) return copy(buffer, "NaN");
+    if (std.math.isInf(value)) return copy(buffer, if (value > 0) "Infinity" else "-Infinity");
+    if (value == 0) return copy(buffer, if (std.math.signbit(value)) "-0" else "0");
+    // Zig's shortest round-trip digits, as d.ddddde±x.
+    var scientific_buffer: [float_text_bytes_max]u8 = undefined;
+    const scientific = std.fmt.bufPrint(&scientific_buffer, "{e}", .{value}) catch unreachable;
+    const exponent_at = std.mem.indexOfScalar(u8, scientific, 'e').?;
+    const exponent = std.fmt.parseInt(i32, scientific[exponent_at + 1 ..], 10) catch unreachable;
+    const negative = scientific[0] == '-';
+    var digits_buffer: [16]u8 = undefined;
+    var digits_count: u32 = 0;
+    for (scientific[@intFromBool(negative)..exponent_at]) |character| {
+        if (character == '.') continue;
+        digits_buffer[digits_count] = character;
+        digits_count += 1;
+    }
+    const digits = std.mem.trimEnd(u8, digits_buffer[0..digits_count], "0");
+    assert(digits.len > 0);
+    var writer: std.Io.Writer = .fixed(buffer);
+    if (negative) writer.writeByte('-') catch unreachable;
+    if (exponent >= 9 or exponent < -4) {
+        write_scientific(&writer, digits, exponent) catch unreachable;
+    } else {
+        write_fixed(&writer, digits, exponent) catch unreachable;
+    }
+    assert(writer.end > 0);
+    return writer.buffered();
 }
 
-test "RuntimeObject variants" {
-    // All variants can be created and their tag read
-    const obj_void: RuntimeObject = .void;
-    try std.testing.expectEqual(std.meta.Tag(RuntimeObject).void, std.meta.activeTag(obj_void));
-
-    const obj_string: RuntimeObject = .{ .string = "hello" };
-    try std.testing.expectEqualStrings("hello", obj_string.string);
-
-    const obj_int: RuntimeObject = .{ .int = 42 };
-    try std.testing.expectEqual(@as(i64, 42), obj_int.int);
-
-    const obj_float: RuntimeObject = .{ .float = 3.14 };
-    try std.testing.expectEqual(@as(f64, 3.14), obj_float.float);
-
-    const obj_bool: RuntimeObject = .{ .bool = true };
-    try std.testing.expect(obj_bool.bool);
-
-    const obj_glue: RuntimeObject = .glue;
-    try std.testing.expectEqual(std.meta.Tag(RuntimeObject).glue, std.meta.activeTag(obj_glue));
-
-    const obj_dt: RuntimeObject = .{ .divert_target = "knot.stitch" };
-    try std.testing.expectEqualStrings("knot.stitch", obj_dt.divert_target);
-
-    const obj_vp: RuntimeObject = .{ .variable_pointer = .{ .name = "x", .context_index = 1 } };
-    try std.testing.expectEqualStrings("x", obj_vp.variable_pointer.name);
-    try std.testing.expectEqual(@as(i32, 1), obj_vp.variable_pointer.context_index);
-
-    const obj_cc: RuntimeObject = .{ .control_command = .done };
-    try std.testing.expectEqual(ControlCommand.done, obj_cc.control_command);
-
-    const obj_nf: RuntimeObject = .{ .native_function = .add };
-    try std.testing.expectEqual(NativeFunction.add, obj_nf.native_function);
-
-    const obj_div: RuntimeObject = .{ .divert = .{
-        .target = "knot",
-        .is_variable = true,
-        .is_conditional = false,
-        .push_pop_type = .tunnel,
-        .external_args = 2,
-    } };
-    try std.testing.expect(obj_div.divert.is_variable);
-    try std.testing.expectEqual(PushPopType.tunnel, obj_div.divert.push_pop_type.?);
-
-    const obj_cp: RuntimeObject = .{ .choice_point = .{ .path = "choice.0", .flags = 0x03 } };
-    try std.testing.expectEqual(@as(u8, 0x03), obj_cp.choice_point.flags);
-
-    const obj_va: RuntimeObject = .{ .variable_assignment = .{ .name = "score", .is_new_decl = true, .is_global = true } };
-    try std.testing.expectEqualStrings("score", obj_va.variable_assignment.name);
-    try std.testing.expect(obj_va.variable_assignment.is_global);
-
-    const obj_vr: RuntimeObject = .{ .variable_reference = .{ .name = "score", .path_for_count = null } };
-    try std.testing.expectEqualStrings("score", obj_vr.variable_reference.name);
-    try std.testing.expectEqual(@as(?[]const u8, null), obj_vr.variable_reference.path_for_count);
-
-    const obj_container: RuntimeObject = .{ .container = 42 };
-    try std.testing.expectEqual(@as(u32, 42), obj_container.container);
+fn copy(buffer: *[float_text_bytes_max]u8, text: []const u8) []const u8 {
+    assert(text.len <= buffer.len);
+    @memcpy(buffer[0..text.len], text);
+    assert(text.len > 0);
+    return buffer[0..text.len];
 }
 
-test "ContainerFlags" {
-    const f3: ContainerFlags = @bitCast(@as(u8, 3));
-    try std.testing.expect(f3.visits_should_be_counted);
-    try std.testing.expect(f3.turn_index_should_be_counted);
-    try std.testing.expect(!f3.count_at_start_only);
+fn write_scientific(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !void {
+    assert(digits.len > 0);
+    try writer.writeByte(digits[0]);
+    if (digits.len > 1) {
+        try writer.writeByte('.');
+        try writer.writeAll(digits[1..]);
+    }
+    const sign: u8 = if (exponent < 0) '-' else '+';
+    try writer.print("E{c}{d:0>2}", .{ sign, @abs(exponent) });
+    assert(exponent >= 9 or exponent < -4);
+}
 
-    const f0: ContainerFlags = @bitCast(@as(u8, 0));
-    try std.testing.expect(!f0.visits_should_be_counted);
-    try std.testing.expect(!f0.turn_index_should_be_counted);
-    try std.testing.expect(!f0.count_at_start_only);
+fn write_fixed(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !void {
+    assert(digits.len > 0);
+    assert(exponent >= -4 and exponent < 9);
+    if (exponent < 0) {
+        try writer.writeAll("0.");
+        for (0..@as(u32, @intCast(-exponent - 1))) |_| try writer.writeByte('0');
+        try writer.writeAll(digits);
+        return;
+    }
+    const whole: u32 = @intCast(exponent + 1);
+    if (digits.len <= whole) {
+        try writer.writeAll(digits);
+        for (0..whole - digits.len) |_| try writer.writeByte('0');
+        return;
+    }
+    try writer.writeAll(digits[0..whole]);
+    try writer.writeByte('.');
+    try writer.writeAll(digits[whole..]);
+}
+
+test "float formatting matches .NET 8" {
+    // Goal: plan D17; floats print exactly as ink on .NET 8. Method: every value in
+    // test/ground_truth/dotnet_floats.expected, given as raw bits.
+    const io = std.testing.io;
+    const gpa = std.testing.allocator;
+    const path = "test/ground_truth/dotnet_floats.expected";
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(1 << 20));
+    defer gpa.free(text);
+    var lines = std.mem.tokenizeScalar(u8, text, '\n');
+    var checked: u32 = 0;
+    while (lines.next()) |line| {
+        if (line[0] == '#') continue;
+        const bits = try std.fmt.parseInt(u32, line[0..8], 16);
+        var buffer: [float_text_bytes_max]u8 = undefined;
+        const formatted = format_float(@bitCast(bits), &buffer);
+        std.testing.expectEqualStrings(line[9..], formatted) catch |err| {
+            std.debug.print("bits {x:0>8}\n", .{bits});
+            return err;
+        };
+        checked += 1;
+    }
+    try std.testing.expect(checked > 50);
+}
+
+test "a value is 12 bytes and string references keep their source" {
+    // Goal: plan D14 sizes and the pool/heap split. Method: size and round trips.
+    try std.testing.expectEqual(12, @sizeOf(Value));
+    const in_program = StringReference.program(.from_int(5));
+    try std.testing.expect(!in_program.is_heap());
+    try std.testing.expectEqual(StringId.from_int(5), in_program.program_id());
+    const in_heap = StringReference.heap(1234);
+    try std.testing.expect(in_heap.is_heap());
+    try std.testing.expectEqual(@as(u32, 1234), in_heap.heap_offset());
 }

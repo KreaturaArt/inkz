@@ -1,4 +1,4 @@
-//! The new runtime (`src/vm/`) behind the engine-neutral layer (plan P0.11, P5.1). It is
+//! The new runtime (`src/runtime/`) behind the engine-neutral layer (plan P0.11, P5.1). It is
 //! line-based like ink, so `continue_line` is one `cont()` and tags are per line.
 
 const std = @import("std");
@@ -6,14 +6,14 @@ const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
-const story_module = @import("../vm/story.zig");
+const story_module = @import("../runtime/story.zig");
 const Story = story_module.Story;
-const story_paths = @import("../vm/story_paths.zig");
-const evaluate_module = @import("../vm/evaluate.zig");
-const save_module = @import("../vm/save.zig");
-const load_module = @import("../vm/load.zig");
-const value_module = @import("../vm/value.zig");
-const Severity = @import("../vm/state.zig").Diagnostic.Severity;
+const story_paths = @import("../runtime/story_paths.zig");
+const evaluate_module = @import("../runtime/evaluate.zig");
+const save_module = @import("../runtime/save.zig");
+const load_module = @import("../runtime/load.zig");
+const value_module = @import("../runtime/value.zig");
+const Severity = @import("../runtime/state.zig").Diagnostic.Severity;
 
 pub const NewEngine = struct {
     pub const tags_per_line = true;

@@ -51,7 +51,12 @@ pub fn build(b: *std.Build) void {
     // `test` runs every suite once; each suite also has its own step.
     const test_all = b.step("test", "Run all unit tests");
     const suites = [_]TestSuite{
-        .{ .step = "test-runtime", .root = "src/test_runtime.zig", .description = "Run runtime tests" },
+        .{
+            .step = "test-runtime",
+            .root = "src/test_runtime.zig",
+            .description = "Run runtime tests",
+            .own_filters = &.{ "runtime.", "death_cases.", "testing." },
+        },
         .{
             .step = "test-compiler",
             .root = "src/test_compiler.zig",
@@ -59,12 +64,6 @@ pub fn build(b: *std.Build) void {
             .own_filters = &.{ "compiler.", "e2e_new_vm.", "e2e_new_vm_api.", "structure_gate.", "e2e_tests." },
         },
         .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
-        .{
-            .step = "test-vm",
-            .root = "src/test_vm.zig",
-            .description = "Run new runtime tests",
-            .own_filters = &.{ "vm.", "death_cases." },
-        },
         .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
     };
     const test_options: TestOptions = .{
@@ -100,7 +99,7 @@ pub fn build(b: *std.Build) void {
     write_transcripts.root_module.addOptions("build_options", build_options);
     const run_transcripts = b.addRunArtifact(write_transcripts);
     run_transcripts.setCwd(b.path("."));
-    const transcripts_step = b.step("transcripts", "Regenerate test/transcripts (old runtime)");
+    const transcripts_step = b.step("transcripts", "Regenerate test/transcripts");
     transcripts_step.dependOn(&run_transcripts.step);
 
     // Benchmarks in both release modes, one after the other (they write the same report).
@@ -149,18 +148,6 @@ pub fn build(b: *std.Build) void {
     run_lint.addArgs(&.{ "src", "tools" });
     b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
 
-    const inventory = b.addExecutable(.{
-        .name = "test_inventory",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/test_inventory.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_inventory = b.addRunArtifact(inventory);
-    run_inventory.setCwd(b.path("."));
-    const inventory_step = b.step("test-inventory", "Count old-runtime tests that use internals");
-    inventory_step.dependOn(&run_inventory.step);
 }
 
 const death_cases = @import("src/death_cases.zig");

@@ -1,10 +1,9 @@
-//! `zig build simulate -- [--engine old|new] [--seed 1] [--seeds 10] [--case <id>]
+//! `zig build simulate -- [--engine new] [--seed 1] [--seeds 10] [--case <id>]
 //! [--compact-always on]` (plan P0.9, P5.12): plays every ground-truth case (or one) with
 //! seeded random choices for each seed and reports failures with the command that reproduces
 //! them. Exits with 1 if any run failed.
 //!
-//! The old engine runs each story in a child process and reports crashes. The new engine runs
-//! in process with the full action mix (save and load points, flow switches,
+//! The engine runs in process with the full action mix (save and load points, flow switches,
 //! evaluate_function, set_variable) and State.check after every cont; `--compact-always on`
 //! compacts the heap before every allocation.
 
@@ -14,7 +13,7 @@ const simulation = @import("testing/simulation.zig");
 const ground_truth = @import("testing/ground_truth_test.zig");
 
 const Options = struct {
-    engine: []const u8 = "old",
+    engine: []const u8 = "new",
     seed_first: i32 = 1,
     seeds_count: u32 = 10,
     case: ?[]const u8 = null,
@@ -122,4 +121,4 @@ fn simulate_new(
 }
 
 const ink_json = @import("core/ink_json.zig");
-const Story = @import("vm/story.zig").Story;
+const Story = @import("runtime/story.zig").Story;

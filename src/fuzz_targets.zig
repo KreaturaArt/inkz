@@ -7,7 +7,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Story = @import("runtime/story.zig").Story;
 const ink_json = @import("core/ink_json.zig");
 
 const input_bytes_max = 4096;
@@ -36,50 +35,6 @@ fn fuzz_input(smith: *std.testing.Smith, buffer: *[input_bytes_max + 1]u8) [:0]c
     return buffer[0..end :0];
 }
 
-fn load_json(_: void, smith: *std.testing.Smith) anyerror!void {
-    var buffer: [input_bytes_max + 1]u8 = undefined;
-    const json = fuzz_input(smith, &buffer);
-    assert(json.len <= input_bytes_max);
-    var story = Story.initFromJson(std.testing.allocator, json) catch return;
-    defer story.deinit();
-    assert(json.len > 0);
-}
-
-/// Loads arbitrary bytes as a save into a valid story.
-fn load_save(_: void, smith: *std.testing.Smith) anyerror!void {
-    var buffer: [input_bytes_max + 1]u8 = undefined;
-    const save = fuzz_input(smith, &buffer);
-    assert(json_corpus[0].len > 0);
-    var story = try Story.initFromJson(std.testing.allocator, json_corpus[0]);
-    defer story.deinit();
-    story.loadStateFromJson(save) catch return;
-    assert(save.len <= input_bytes_max);
-}
-
-/// Plays a valid story a fuzzed number of steps, saves, loads the save into a fresh story
-/// and saves again; both saves must be equal.
-fn save_round_trip(_: void, smith: *std.testing.Smith) anyerror!void {
-    const gpa = std.testing.allocator;
-    var story = try Story.initFromJson(gpa, json_corpus[0]);
-    defer story.deinit();
-    var continues = smith.value(u8) % 4;
-    assert(continues < 4);
-    while (continues > 0 and story.canContinue()) : (continues -= 1) gpa.free(try story.cont());
-    const first = try story.toJson(gpa);
-    defer gpa.free(first);
-    var fresh = try Story.initFromJson(gpa, json_corpus[0]);
-    defer fresh.deinit();
-    try fresh.loadStateFromJson(first);
-    const second = try fresh.toJson(gpa);
-    defer gpa.free(second);
-    assert(first.len > 0);
-    try std.testing.expectEqualStrings(first, second);
-}
-
-test "fuzz: JSON loader never crashes" {
-    try std.testing.fuzz({}, load_json, .{ .corpus = &json_corpus });
-}
-
 /// The new loader (P3.1): any bytes either load into a program that passes its check, or
 /// return an error.
 fn load_json_new(_: void, smith: *std.testing.Smith) anyerror!void {
@@ -91,21 +46,13 @@ fn load_json_new(_: void, smith: *std.testing.Smith) anyerror!void {
     assert(program.check() == .ok);
 }
 
-test "fuzz: new JSON loader never crashes" {
+test "fuzz: the JSON loader never crashes" {
     try std.testing.fuzz({}, load_json_new, .{ .corpus = &json_corpus });
 }
 
-test "fuzz: loading a save never crashes" {
-    try std.testing.fuzz({}, load_save, .{ .corpus = &.{"{}"} });
-}
-
-test "fuzz: a save survives a round trip" {
-    try std.testing.fuzz({}, save_round_trip, .{ .corpus = &.{ "\x00", "\x03" } });
-}
-
-const NewStory = @import("vm/story.zig").Story;
-const new_save = @import("vm/save.zig");
-const new_load = @import("vm/load.zig");
+const Story = @import("runtime/story.zig").Story;
+const new_save = @import("runtime/save.zig");
+const new_load = @import("runtime/load.zig");
 
 /// The new runtime's load_json (P6.2): any bytes either load into a state that passes its
 /// check, or fail and leave the state as it was.
@@ -116,7 +63,7 @@ fn load_save_new(_: void, smith: *std.testing.Smith) anyerror!void {
     const gpa = std.testing.allocator;
     var program = try ink_json.load(gpa, json_corpus[0]);
     defer program.deinit(gpa);
-    var story: NewStory = undefined;
+    var story: Story = undefined;
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
     const before = story.state.hash();
@@ -127,12 +74,12 @@ fn load_save_new(_: void, smith: *std.testing.Smith) anyerror!void {
     assert(story.state.check() == .ok);
 }
 
-test "fuzz: the new runtime's save loader never crashes" {
+test "fuzz: the save loader never crashes" {
     var good: [1024]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&good);
     var program = try ink_json.load(std.testing.allocator, json_corpus[0]);
     defer program.deinit(std.testing.allocator);
-    var story: NewStory = undefined;
+    var story: Story = undefined;
     try story.init(std.testing.allocator, &program, .{});
     defer story.deinit(std.testing.allocator);
     try new_save.to_json(&story, &writer);
@@ -160,7 +107,7 @@ fn tokenize_next(_: void, smith: *std.testing.Smith) anyerror!void {
     return error.TokenizerDidNotTerminate;
 }
 
-test "fuzz: the new tokenizer ends in every mode" {
+test "fuzz: the tokenizer ends in every mode" {
     try std.testing.fuzz({}, tokenize_next, .{ .corpus = &ink_corpus });
 }
 
@@ -176,6 +123,6 @@ fn compile_all(_: void, smith: *std.testing.Smith) anyerror!void {
     assert(program.containers.len > 0);
 }
 
-test "fuzz: the new compiler never crashes" {
+test "fuzz: the compiler never crashes" {
     try std.testing.fuzz({}, compile_all, .{ .corpus = &ink_corpus });
 }

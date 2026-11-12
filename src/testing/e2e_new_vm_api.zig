@@ -7,10 +7,10 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const vm = @import("../vm/api.zig");
+const vm = @import("../runtime/api.zig");
 const Program = @import("../core/program.zig").Program;
 const Value = vm.Value;
-const VmStory = @import("../vm/story.zig").Story;
+const VmStory = @import("../runtime/story.zig").Story;
 
 const fixtures = "test/fixture/original/";
 

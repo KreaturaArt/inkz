@@ -129,8 +129,8 @@ fn generate_story(gpa: std.mem.Allocator) ![]u8 {
 
 const ink_json = @import("core/ink_json.zig");
 const Program = @import("core/program.zig").Program;
-const NewStory = @import("vm/story.zig").Story;
-const Severity = @import("vm/state.zig").Diagnostic.Severity;
+const NewStory = @import("runtime/story.zig").Story;
+const Severity = @import("runtime/state.zig").Diagnostic.Severity;
 
 fn ignore_message(context: ?*anyopaque, message: []const u8, severity: Severity) void {
     assert(context == null);
@@ -198,7 +198,7 @@ fn measure_story_new(
     defer program.deinit(counting.allocator());
     const program_bytes = counting.bytes_live;
     const limits: @import("core/limits.zig").Limits = .{};
-    const state_bytes = limits.bytes_total(@import("vm/state.zig").State.shape_of(&program));
+    const state_bytes = limits.bytes_total(@import("runtime/state.zig").State.shape_of(&program));
     const rate = try measure_play_new(gpa, io, &program);
     const measurement: Measurement = .{
         .name = name,
