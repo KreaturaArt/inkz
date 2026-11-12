@@ -124,8 +124,55 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             if (is_builtin(name) or is_list) context.skipped.set(proxy.to_int());
         },
         .divert => try generate_divert(context, object),
+        .knot, .stitch => try check_flow(context, object),
         else => {},
     }
+}
+
+/// FlowBase.GenerateRuntimeObject's checks: a function's CheckForDisallowedFunctionFlowControl
+/// (no stitches, diverts or choices), and a knot's or stitch's first `return` otherwise.
+fn check_flow(context: *Context, flow: ObjectIndex) !void {
+    assert(context.tree.is_flow(flow));
+    assert(context.tree.kind(flow) != .story);
+    const tree = context.tree;
+    if (!tree.has(flow, Flags.function)) {
+        const found = try tree.find(context.gpa, flow, is_return) orelse return;
+        return context.report(.return_outside_function, found);
+    }
+    if (tree.kind(flow) == .stitch) try context.report(.function_is_stitch, flow);
+    const children = tree.children_of(flow);
+    for (children) |child| {
+        if (tree.is_flow(child)) try context.report(.function_has_stitch, child);
+    }
+    // A flow's root weave is its first child; a function without one has nothing more.
+    if (children.len == 0 or tree.kind(children[0]) != .weave) return;
+    var found: std.ArrayList(ObjectIndex) = .empty;
+    defer found.deinit(context.gpa);
+    try tree.find_all(context.gpa, children[0], is_disallowed_divert, &found);
+    for (found.items) |divert| try context.report(.function_has_divert, divert);
+    found.clearRetainingCapacity();
+    try tree.find_all(context.gpa, children[0], is_choice, &found);
+    for (found.items) |choice| try context.report(.function_has_choice, choice);
+}
+
+fn is_return(tree: *const Tree, object: ObjectIndex) bool {
+    assert(object.to_int() < tree.count());
+    assert(tree.count() > 0);
+    return tree.kind(object) == .@"return";
+}
+
+fn is_choice(tree: *const Tree, object: ObjectIndex) bool {
+    assert(object.to_int() < tree.count());
+    assert(tree.count() > 0);
+    return tree.kind(object) == .choice;
+}
+
+/// A divert a function may not contain: not a function call's, not a divert target's.
+fn is_disallowed_divert(tree: *const Tree, object: ObjectIndex) bool {
+    assert(object.to_int() < tree.count());
+    assert(tree.count() > 0);
+    if (tree.kind(object) != .divert or tree.has(object, Flags.function_call)) return false;
+    return tree.kind(tree.parent(object)) != .divert_target;
 }
 
 /// FlowBase.TryAddNewVariableDeclaration.

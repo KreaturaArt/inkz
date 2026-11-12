@@ -170,6 +170,55 @@ pub const Tree = struct {
         return current;
     }
 
+    /// ink's Object.FindAll: every object of `root`'s subtree (itself included) that `query`
+    /// accepts, in pre-order (so the first is ink's Object.Find).
+    pub fn find_all(
+        tree: *const Tree,
+        gpa: Allocator,
+        root_object: ObjectIndex,
+        comptime query: fn (*const Tree, ObjectIndex) bool,
+        found: *std.ArrayList(ObjectIndex),
+    ) !void {
+        assert(root_object.to_int() < tree.count());
+        assert(found.items.len < tree.count());
+        var stack: std.ArrayList(ObjectIndex) = .empty;
+        defer stack.deinit(gpa);
+        try stack.append(gpa, root_object);
+        while (stack.pop()) |object| {
+            if (query(tree, object)) try found.append(gpa, object);
+            const children = tree.children_of(object);
+            var position = children.len;
+            while (position > 0) {
+                position -= 1;
+                try stack.append(gpa, children[position]);
+            }
+        }
+    }
+
+    /// ink's Object.Find: the first object of `root`'s subtree that `query` accepts.
+    pub fn find(
+        tree: *const Tree,
+        gpa: Allocator,
+        root_object: ObjectIndex,
+        comptime query: fn (*const Tree, ObjectIndex) bool,
+    ) !?ObjectIndex {
+        assert(root_object.to_int() < tree.count());
+        assert(tree.kinds.len == tree.parents.len);
+        var stack: std.ArrayList(ObjectIndex) = .empty;
+        defer stack.deinit(gpa);
+        try stack.append(gpa, root_object);
+        while (stack.pop()) |object| {
+            if (query(tree, object)) return object;
+            const children = tree.children_of(object);
+            var position = children.len;
+            while (position > 0) {
+                position -= 1;
+                try stack.append(gpa, children[position]);
+            }
+        }
+        return null;
+    }
+
     pub fn deinit(tree: *Tree, gpa: Allocator) void {
         assert(tree.kinds.len == tree.parents.len);
         assert(tree.kinds.len > 0);
@@ -185,8 +234,8 @@ pub const Tree = struct {
     }
 };
 
-/// Where an object starts in the source: its syntax node's first token (the object's
-/// parent's, for objects ink synthesizes).
+/// Where an object starts in the source: its syntax node's first token, or as ink's
+/// debugMetadata, its parent's (for objects ink synthesizes, or with no text of their own).
 pub fn object_offset(
     parsed: *const grammar.Parsed,
     tree: *const Tree,
@@ -195,18 +244,49 @@ pub fn object_offset(
     assert(object_initial.to_int() < tree.count());
     assert(tree.nodes.len == tree.kinds.len);
     var object = object_initial;
-    while (tree.node(object).is_none()) object = tree.parent(object);
+    while (!object.is_none()) : (object = tree.parent(object)) {
+        // The "\n" ink ends a line with has the line's position: its content's.
+        if (tree.kind(object) == .text and tree.has(object, Flags.newline)) {
+            if (line_start(parsed, tree, object)) |offset| return offset;
+        }
+        if (tree.node(object).is_none()) continue;
+        if (first_token(parsed, tree.node(object))) |token| {
+            return parsed.workspace.token_starts[token];
+        }
+    }
+    return 0;
+}
+
+/// Where the content before a newline starts: its nearest earlier sibling with a token.
+fn line_start(parsed: *const grammar.Parsed, tree: *const Tree, newline: ObjectIndex) ?u32 {
+    assert(tree.kind(newline) == .text);
+    const siblings = tree.children_of(tree.parent(newline));
+    var position = std.mem.indexOfScalar(ObjectIndex, siblings, newline).?;
+    assert(position < siblings.len);
+    while (position > 0) {
+        position -= 1;
+        const sibling = siblings[position];
+        if (tree.kind(sibling) == .text and tree.has(sibling, Flags.newline)) return null;
+        if (tree.node(sibling).is_none()) continue;
+        const token = first_token(parsed, tree.node(sibling)) orelse continue;
+        return parsed.workspace.token_starts[token];
+    }
+    return null;
+}
+
+/// The first token under a syntax node, if any.
+fn first_token(parsed: *const grammar.Parsed, root: NodeIndex) ?u32 {
+    assert(!root.is_none());
     const ast = &parsed.tree;
+    assert(root.to_int() < ast.tags.len);
     var stack: [64]NodeIndex = undefined;
     var depth: u32 = 1;
-    stack[0] = tree.node(object);
+    stack[0] = root;
     while (depth > 0) {
         depth -= 1;
         const node = stack[depth];
         switch (ast_module.shape(ast.tag(node))) {
-            .leaf => if (has_token(ast.tag(node))) {
-                return parsed.workspace.token_starts[ast.data[node.to_int()]];
-            },
+            .leaf => if (has_token(ast.tag(node))) return ast.data[node.to_int()],
             .fixed => |count| {
                 var position: u32 = count;
                 while (position > 0 and depth < stack.len) : (depth += 1) {
@@ -223,7 +303,7 @@ pub fn object_offset(
             },
         }
     }
-    return 0;
+    return null;
 }
 
 fn has_token(tag: Tag) bool {

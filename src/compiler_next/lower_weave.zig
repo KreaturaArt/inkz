@@ -14,6 +14,7 @@ const lower = @import("lower.zig");
 const sema = @import("sema.zig");
 const ir_module = @import("lower_ir.zig");
 const expressions = @import("lower_expressions.zig");
+const termination = @import("lower_termination.zig");
 const Lowering = lower.Lowering;
 const Result = lower.Result;
 const ObjectIndex = sema.ObjectIndex;
@@ -21,11 +22,14 @@ const Flags = sema.Flags;
 const ContainerId = ir_module.ContainerId;
 
 const Passed = struct { ancestor: ObjectIndex, from: ObjectIndex, loose_end: ObjectIndex };
+const Kept = struct { weave: ObjectIndex, loose_end: ObjectIndex };
 
 pub const States = struct {
     gpa: Allocator,
     /// Loose ends passed up by finished weaves, in the order ink passes them.
     passed: std.ArrayList(Passed) = .empty,
+    /// A flow's root weave's final loose ends, for the flow's termination check.
+    kept: std.ArrayList(Kept) = .empty,
 
     pub fn init(gpa: Allocator) States {
         assert(@sizeOf(Generation) > 0);
@@ -37,6 +41,7 @@ pub const States = struct {
         assert(states.passed.capacity >= states.passed.items.len);
         assert(states.passed.items.len < std.math.maxInt(u32));
         states.passed.deinit(states.gpa);
+        states.kept.deinit(states.gpa);
     }
 };
 
@@ -82,7 +87,34 @@ pub fn generate_weave(lowering: *Lowering, weave: ObjectIndex) !Result {
         }
     }
     try pass_to_ancestors(lowering, &generation, weave);
+    try termination.check_nested(lowering, weave, generation.loose_ends.items);
+    if (lowering.tree.is_flow(lowering.tree.parent(weave))) {
+        for (generation.loose_ends.items) |loose_end| {
+            const kept: Kept = .{ .weave = weave, .loose_end = loose_end };
+            try lowering.weaves.kept.append(lowering.gpa, kept);
+        }
+    }
     return .{ .container = root };
+}
+
+/// FlowBase's check of its root weave's final loose ends (taken from `kept`).
+pub fn check_flow_termination(lowering: *Lowering, flow: ObjectIndex) !void {
+    assert(lowering.tree.is_flow(flow));
+    const kept = &lowering.weaves.kept;
+    const children = lowering.tree.children_of(flow);
+    const weave = if (children.len > 0) children[0] else ObjectIndex.none;
+    var loose_ends: std.ArrayList(ObjectIndex) = .empty;
+    defer loose_ends.deinit(lowering.gpa);
+    var position: usize = 0;
+    while (position < kept.items.len) {
+        if (kept.items[position].weave != weave) {
+            position += 1;
+            continue;
+        }
+        try loose_ends.append(lowering.gpa, kept.orderedRemove(position).loose_end);
+    }
+    try termination.check_flow(lowering, flow, loose_ends.items);
+    assert(position == kept.items.len);
 }
 
 /// Adds the loose ends that weaves under `item` passed to this weave, in their order.
