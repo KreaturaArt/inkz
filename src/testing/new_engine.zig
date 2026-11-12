@@ -8,6 +8,7 @@ const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const story_module = @import("../vm/story.zig");
 const Story = story_module.Story;
+const story_paths = @import("../vm/story_paths.zig");
 const value_module = @import("../vm/value.zig");
 const Severity = @import("../vm/state.zig").Diagnostic.Severity;
 
@@ -270,6 +271,49 @@ pub const NewEngine = struct {
         assert(a.ptr != b.ptr or a.len == b.len);
         assert(a.len > 0 and b.len > 0);
         return std.mem.order(u8, a, b) == .lt;
+    }
+
+    pub fn choose_path(engine: *NewEngine, path: []const u8) !void {
+        assert(path.len > 0);
+        story_paths.choose_path_string(engine.story, path, true) catch |err| {
+            if (err == error.PathNotFound) try engine.path_exception(path);
+            return err;
+        };
+        assert(engine.story.state.choices.count() == 0);
+    }
+
+    fn path_exception(engine: *NewEngine, path: []const u8) !void {
+        assert(engine.story.state.memory.len > 0);
+        assert(path.len > 0);
+        try engine.set_exception("Failed to find content at path '{s}', and no approximation " ++
+            "of it was possible.", .{path});
+    }
+
+    pub fn visit_count(engine: *NewEngine, path: []const u8) !u32 {
+        assert(engine.story.state.memory.len > 0);
+        assert(path.len > 0);
+        return story_paths.visit_count_at_path_string(engine.story, path);
+    }
+
+    pub fn global_tags(engine: *NewEngine) ![]const []const u8 {
+        assert(engine.tags.items.len < 1 << 16);
+        assert(engine.story.state.memory.len > 0);
+        engine.clear_tags();
+        try story_paths.global_tags(engine.story, engine);
+        try engine.finish_tags();
+        return engine.tags.items;
+    }
+
+    pub fn tags_at(engine: *NewEngine, path: []const u8) ![]const []const u8 {
+        assert(engine.tags.items.len < 1 << 16);
+        assert(path.len > 0);
+        engine.clear_tags();
+        story_paths.tags_at_path(engine.story, path, engine) catch |err| {
+            if (err == error.PathNotFound) try engine.path_exception(path);
+            return err;
+        };
+        try engine.finish_tags();
+        return engine.tags.items;
     }
 
     /// ink's ValidateExternalBindings message.

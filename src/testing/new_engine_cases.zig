@@ -106,3 +106,34 @@ test "P5.10: errors and warnings where ink raises them" {
         .{ .id = "runtime/variables/warn_variable_not_found_2" },
     });
 }
+
+test "P5.5: line-based cont with glue, newlines, tags and default choices" {
+    // Goal: P5.5; ink's Continue line by line: the newline lookahead with glue, tags on the
+    // right line (including tags after a newline), invisible default choices, DONE and END.
+    // Method: replay.
+    try expect_cases_match(&.{
+        .{ .id = "audit/lines_and_glue_lookahead" },
+        .{ .id = "runtime/glue/implicit_inline_glue" },
+        .{ .id = "runtime/glue/implicit_inline_glue_b" },
+        .{ .id = "runtime/glue/implicit_inline_glue_c" },
+        .{ .id = "runtime/glue/left_right_glue_matching" },
+        .{ .id = "runtime/glue/simple_glue" },
+        .{ .id = "runtime/newlines/newline_at_start_of_multiline_conditional" },
+        .{ .id = "runtime/newlines/newline_consistency_1" },
+        .{ .id = "runtime/newlines/newline_consistency_2" },
+        .{ .id = "runtime/newlines/newline_consistency_3" },
+        .{ .id = "runtime/newlines/newlines_with_string_eval" },
+        .{ .id = "runtime/tags/tags" },
+        .{ .id = "runtime/tags/tags_dynamic_content" },
+        .{ .id = "runtime/tags/tags_in_choice" },
+        .{ .id = "runtime/tags/tags_in_seq" },
+        .{ .id = "runtime/choices/default_choices" },
+        .{ .id = "runtime/choices/fallback_choice_on_thread" },
+        .{ .id = "runtime/choices/choice_diverts_to_done" },
+        .{ .id = "runtime/choices/various_default_choices" },
+        .{ .id = "runtime/choices/state_rollback_over_default_choice" },
+        .{ .id = "audit/errors_end_of_content" },
+        .{ .id = "audit/errors_unfinished_tunnel" },
+        .{ .id = "crime_scene" },
+    });
+}

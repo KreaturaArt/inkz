@@ -207,13 +207,10 @@
     .{ .case = "audit/save_long_string", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: save", .fix = "TASK-146.1" },
     .{ .case = "runtime/bindings/game_ink_back_and_forth", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: bind", .fix = "TASK-145.4" },
     .{ .case = "runtime/bindings/variable_observer", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: observe", .fix = "TASK-145.7" },
-    .{ .case = "runtime/builtins/visit_counts_when_choosing", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: visit_count", .fix = "TASK-146.3" },
-    .{ .case = "runtime/callstack/clean_callstack_reset_on_path_choice", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: choose_path", .fix = "TASK-146.3" },
     .{ .case = "runtime/choices/choice_thread_forking", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: save", .fix = "TASK-146.1" },
     .{ .case = "runtime/evaluation/evaluating_function_variable_state_bug", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: evaluate", .fix = "TASK-145.8" },
     .{ .case = "runtime/evaluation/evaluating_ink_functions_from_game", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: evaluate", .fix = "TASK-145.8" },
     .{ .case = "runtime/lists/list_save_load", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: save", .fix = "TASK-146.1" },
     .{ .case = "runtime/multiflow/multi_flow_basics", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
     .{ .case = "runtime/multiflow/multi_flow_save_load_threads", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
-    .{ .case = "runtime/tags/tags", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: global_tags", .fix = "TASK-146.3" },
 }
