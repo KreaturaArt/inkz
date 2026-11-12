@@ -1,71 +1,748 @@
+//! The runtime state of one story (plan §4.5). Every buffer comes from one allocation of
+//! exactly `Limits.bytes_total()` bytes, made in `init`; nothing allocates afterwards.
+//!
+//! The live flow (evaluation stack, call stack, output, choices) is what the lookahead
+//! snapshot copies (P4.9) and what flows park (P4.8). Globals, counts, the heap, the random
+//! state and the diagnostics are shared by every flow.
+
 const std = @import("std");
-const value = @import("value.zig");
-const callstack_mod = @import("callstack.zig");
-const variables_mod = @import("variables.zig");
-const choices_mod = @import("choices.zig");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const index = @import("../core/index.zig");
+const limits_module = @import("../core/limits.zig");
+const fault = @import("../core/fault.zig");
+const BoundedStack = @import("../core/bounded_stack.zig").BoundedStack;
+const Program = @import("../core/program.zig").Program;
+const value_module = @import("value.zig");
+const heap = @import("heap.zig");
+const lists_module = @import("lists.zig");
+const call_stack_module = @import("call_stack.zig");
+const output_module = @import("output.zig");
+const choices_module = @import("choices.zig");
+const flows = @import("flows.zig");
+const json_tree = @import("json_tree.zig");
+const lookahead_module = @import("lookahead.zig");
+const Limits = limits_module.Limits;
+const element_bytes = limits_module.element_bytes;
+const Value = value_module.Value;
+const StringReference = value_module.StringReference;
+const ContainerIndex = index.ContainerIndex;
+const GlobalSlot = index.GlobalSlot;
+const Frame = call_stack_module.Frame;
+const Thread = call_stack_module.Thread;
+const Temp = call_stack_module.Temp;
+const CallStack = call_stack_module.CallStack;
+const Output = output_module.Output;
+const Choices = choices_module.Choices;
 
-pub const RuntimeObject = value.RuntimeObject;
-pub const CallStack = callstack_mod.CallStack;
-pub const VariablesState = variables_mod.VariablesState;
-pub const Choice = choices_mod.Choice;
+/// A runtime error or warning, as ink's currentErrors and currentWarnings hold them.
+pub const Diagnostic = struct {
+    /// A string argument, such as a variable name, or a reference to nothing.
+    argument: StringReference,
+    /// Numbers the message prints, such as RANDOM's bounds.
+    number: i32 = 0,
+    other_number: i32 = 0,
+    /// Where the story was (ink prints `state.currentPointer.path`), or null.
+    pointer: call_stack_module.Pointer = .null,
+    code: Code,
+    severity: Severity,
 
-pub const StoryState = struct {
+    pub const Severity = enum(u8) { @"error", warning };
+    /// Filled in by the VM's error handling (P5.10).
+    pub const Code = enum(u16) {
+        story_error,
+        evaluation_stack_empty,
+        glue_in_expression,
+        divert_variable_not_found,
+        divert_variable_not_target,
+        turns_since_expected_target,
+        tunnel_return_not_target,
+        pop_mismatch,
+        unmatched_end_string,
+        unexpected_command_in_tag,
+        no_truth_value,
+        division_by_zero,
+        integer_overflow,
+        float_to_integer_out_of_range,
+        void_operand,
+        unsupported_operation,
+        variable_not_found,
+        variable_pointer_cycle,
+        temp_not_found,
+        choice_text_not_string,
+        random_invalid_minimum,
+        random_invalid_maximum,
+        random_range_too_large,
+        random_range_empty,
+        seed_invalid,
+        shuffle_invalid,
+        thread_left_to_pop,
+        unexpected_end_of_tunnel,
+        unexpected_end_of_function,
+        ran_out_of_content,
+        unexpected_end_unknown,
+        list_from_int_not_int,
+        list_not_found,
+        list_range_arguments,
+        list_random_not_list,
+        external_unsafe_in_string,
+        external_not_bound,
+        external_fallback_missing,
+        too_many_arguments,
+        unsupported,
+        _,
+    };
+};
+
+/// One undo record of the lookahead change log (P4.9): what a shared value was before.
+pub const PatchEntry = struct {
+    /// What changed; see lookahead.zig.
+    target: u32,
+    old: Value,
+};
+
+/// A variable observer registered by the host (P5.7, P6.3).
+pub const Observer = struct {
+    callback: ?*const anyopaque,
+    context: ?*anyopaque,
+    slot: GlobalSlot,
+};
+
+/// A flow's directory entry (P4.8). Flow names are stored inline.
+pub const FlowRecord = struct {
+    name: [flow_name_bytes_max]u8,
+    parked_first: u32,
+    parked_words: u32,
+    thread_counter: u32,
+    name_length: u8,
+    in_use: bool,
+};
+
+pub const flow_name_bytes_max = 50;
+
+pub const output_stashes_max = 8;
+
+/// A parked output stream: `items` items then `marks` string marks, from word `first`.
+pub const OutputStash = struct {
+    first: u32,
+    items: u32,
+    marks: u32,
+};
+
+/// A turn index for a container that has never been visited.
+pub const never_visited: i32 = std.math.minInt(i32);
+
+comptime {
+    assert(@sizeOf(Diagnostic) == element_bytes.diagnostic);
+    assert(@sizeOf(PatchEntry) == element_bytes.patch_entry);
+    assert(@sizeOf(Observer) == element_bytes.observer);
+    assert(@sizeOf(FlowRecord) == element_bytes.flow);
+    assert(@sizeOf(choices_module.Snapshot) == element_bytes.snapshot);
+}
+
+/// The buffers of one live flow: the live one, or its lookahead copy.
+pub const FlowBuffers = struct {
+    evaluation: []Value,
+    frames: []Frame,
+    threads: []Thread,
+    temps: []Temp,
+    items: []output_module.Item,
+    marks: []u32,
+    choices: []choices_module.Choice,
+    tags: []StringReference,
+    snapshots: []choices_module.Snapshot,
+    snapshot_frames: []Frame,
+    snapshot_temps: []Temp,
+};
+
+pub const State = struct {
+    program: *const Program,
+    limits: Limits,
+    memory: []align(8) u8,
+
+    // The live flow.
+    evaluation: BoundedStack(Value),
     call_stack: CallStack,
-    output_stream: std.ArrayList(RuntimeObject),
-    evaluation_stack: std.ArrayList(RuntimeObject),
-    current_choices: std.ArrayList(Choice),
-    variables_state: VariablesState,
-    current_turn_index: i32,
-    story_seed: u32,
-    did_safe_exit: bool,
-    allocator: std.mem.Allocator,
-    /// Depth of nested str/str string-eval blocks. Avoids O(n) scan of output_stream
-    /// to detect string-eval mode; incremented by begin_string, decremented by end_string.
-    string_eval_depth: u32 = 0,
+    output: Output,
+    choices: Choices,
 
-    pub fn init(allocator: std.mem.Allocator) !StoryState {
-        return StoryState{
-            .call_stack = try CallStack.init(allocator),
-            .output_stream = std.ArrayList(RuntimeObject).empty,
-            .evaluation_stack = std.ArrayList(RuntimeObject).empty,
-            .current_choices = std.ArrayList(Choice).empty,
-            .variables_state = VariablesState.init(),
-            .current_turn_index = 0,
-            .story_seed = 0,
-            .did_safe_exit = false,
-            .allocator = allocator,
+    // Shared by all flows.
+    globals: []Value,
+    global_defaults: []Value,
+    visit_counts: []u32,
+    /// The turn each container was last visited in, or `never_visited` (ink keeps only
+    /// visited ones; turn -1 is a real turn, before the first choice).
+    turn_indices: []i32,
+    turn_index: i32 = -1,
+    story_seed: i32 = 0,
+    previous_random: i32 = 0,
+    strings: heap.StringHeap,
+    lists: lists_module.ListSlab,
+    /// The current line's text and tags, assembled by `cont()`.
+    line_bytes: []u8,
+    observers: []Observer,
+    observer_events: BoundedStack(GlobalSlot),
+    /// ink's currentErrors and currentWarnings (P4.10). They are not saved (ink doesn't
+    /// save them), the lookahead restore drops ones added since its snapshot, and
+    /// `reset_errors` clears them once `cont()` has reported them (P5.10).
+    errors: BoundedStack(Diagnostic),
+    warnings: BoundedStack(Diagnostic),
+    /// Diagnostics that didn't fit; reported as a count after the kept ones.
+    diagnostics_dropped: u32 = 0,
+    /// Scratch for the visit-counting walk (plan §4.6).
+    ancestors: []ContainerIndex,
+    /// The fixed scratch `load_json` tokenizes a save into (plan §4.10).
+    load_nodes: []json_tree.Node,
+
+    // The lookahead snapshot (P4.9) and parked flows (P4.8).
+    lookahead: FlowBuffers,
+    patch: []PatchEntry,
+    flows: []FlowRecord,
+    parking: []u32,
+    current_flow: u32 = 0,
+    /// Output streams set aside by evaluate_function (ink's outputStreamBefore), parked
+    /// after the flows in `parking`; compaction roots.
+    output_stashes: [output_stashes_max]OutputStash = undefined,
+    output_stashes_count: u32 = 0,
+    /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
+    did_safe_exit: bool = false,
+    /// For the simulator (P5.12): compact before every heap allocation, so a reference held
+    /// across an allocation without being a root shows up at once.
+    compact_always: bool = false,
+    snapshot: lookahead_module.Snapshot = .{},
+
+    pub const Fault = enum {
+        ok,
+        call_stack,
+        output,
+        choices,
+        strings,
+        evaluation,
+        counts_length,
+        string_reference,
+        list_reference,
+        flows,
+        lookahead,
+    };
+
+    pub fn shape_of(program: *const Program) Limits.ProgramShape {
+        assert(program.globals.len < std.math.maxInt(u32));
+        assert(program.containers.len > 0);
+        return .{
+            .count_slots = program.count_slots_count,
+            .globals_count = @intCast(program.globals.len),
         };
     }
 
-    pub fn deinit(self: *StoryState) void {
-        self.call_stack.deinit();
-        self.output_stream.deinit(self.allocator);
-        self.evaluation_stack.deinit(self.allocator);
-        self.current_choices.deinit(self.allocator);
-        self.variables_state.deinit(self.allocator);
+    /// Allocates every buffer in one block of `limits.bytes_total()` bytes.
+    pub fn init(state: *State, gpa: Allocator, program: *const Program, limits: Limits) !void {
+        limits.verify();
+        if (limits.heap_bytes_max % 4 != 0 or limits.flow_parking_bytes_max % 4 != 0) {
+            return error.InvalidLimits;
+        }
+        const total = limits.bytes_total(shape_of(program));
+        const memory = try gpa.alignedAlloc(u8, .@"8", @intCast(total));
+        var carver: Carver = .{ .memory = memory };
+        state.* = carve(&carver, program, limits, memory);
+        assert(carver.used == memory.len);
+        state.reset();
+    }
+
+    pub fn deinit(state: *State, gpa: Allocator) void {
+        assert(state.memory.len == state.limits.bytes_total(shape_of(state.program)));
+        assert(state.memory.len > 0);
+        gpa.free(state.memory);
+        state.* = undefined;
+    }
+
+    /// The story's starting state: one thread at the root, empty output and choices, zeroed
+    /// counts, globals undefined until the global declaration has run (P5).
+    pub fn reset(state: *State) void {
+        assert(state.memory.len > 0);
+        state.evaluation.clear();
+        state.call_stack.reset(.start_of(Program.root));
+        state.output.clear();
+        state.choices.clear();
+        @memset(state.globals, .null);
+        @memset(state.global_defaults, .null);
+        @memset(state.visit_counts, 0);
+        @memset(state.turn_indices, never_visited);
+        state.turn_index = -1;
+        state.previous_random = 0;
+        state.strings.used = 0;
+        state.lists.used = 0;
+        state.observer_events.clear();
+        state.errors.clear();
+        state.reset_errors();
+        state.did_safe_exit = false;
+        state.output_stashes_count = 0;
+        state.snapshot = .{};
+        flows.reset(state);
+        state.verify();
+    }
+
+    /// Calls `visitor.string` and `visitor.list` for every heap reference the state holds:
+    /// the root set of heap compaction (plan §4.5).
+    pub fn visit(state: *State, visitor: anytype) void {
+        assert(@TypeOf(visitor) != void);
+        assert(state.memory.len > 0);
+        visit_values(state.evaluation.slice(), visitor);
+        visit_values(state.globals, visitor);
+        visit_values(state.global_defaults, visitor);
+        visit_temps(state.call_stack.temps.slice(), visitor);
+        for (state.output.items.slice()) |*item| {
+            if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
+        }
+        for (state.choices.records.slice()) |*choice| visitor.string(&choice.text);
+        for (state.choices.tags.slice()) |*tag| visitor.string(tag);
+        visit_temps(state.choices.temps.slice(), visitor);
+        for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
+        for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
+        flows.visit_parked(state, visitor);
+        for (state.output_stashes[0..state.output_stashes_count]) |stash| {
+            const words = state.parking[stash.first..][0 .. stash.items * 3];
+            const items: []output_module.Item = @alignCast(std.mem.bytesAsSlice(
+                output_module.Item,
+                std.mem.sliceAsBytes(words),
+            ));
+            for (items) |*item| {
+                if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
+            }
+        }
+        lookahead_module.visit(state, visitor);
+    }
+
+    /// ink's AddError. When the list is full the diagnostic is counted, not kept: the first
+    /// ones are usually the cause of the rest.
+    pub fn add_diagnostic(state: *State, diagnostic: Diagnostic) void {
+        const list = switch (diagnostic.severity) {
+            .@"error" => &state.errors,
+            .warning => &state.warnings,
+        };
+        assert(list.buffer.len > 0);
+        assert(list.count <= list.buffer.len);
+        list.push(diagnostic) catch {
+            state.diagnostics_dropped += 1;
+        };
+        assert(list.count > 0 or list.buffer.len == 0);
+    }
+
+    /// ink's hasError, which also stops `can_continue`.
+    pub fn has_error(state: *const State) bool {
+        assert(state.errors.count <= state.errors.buffer.len);
+        // Limits are never zero, so a dropped error always has a kept one before it.
+        assert(state.errors.buffer.len > 0);
+        return state.errors.count > 0;
+    }
+
+    pub fn has_warning(state: *const State) bool {
+        assert(state.warnings.count <= state.warnings.buffer.len);
+        return state.warnings.count > 0;
+    }
+
+    /// ink's ResetErrors.
+    pub fn reset_errors(state: *State) void {
+        assert(state.errors.buffer.len > 0 and state.warnings.buffer.len > 0);
+        state.errors.clear();
+        state.warnings.clear();
+        state.diagnostics_dropped = 0;
+        assert(!state.has_error() and !state.has_warning());
+    }
+
+    /// Compacts the heap; the lookahead snapshot's heap tops follow their objects. `keep`
+    /// holds values the caller is still using that no root holds, such as popped operands;
+    /// they are updated in place.
+    pub fn compact(state: *State, keep: []Value) void {
+        assert(state.strings.used <= state.strings.bytes.len);
+        var string_tops = [1]u32{state.snapshot.strings_top};
+        var list_tops = [1]u32{state.snapshot.lists_top};
+        const marks: heap.Marks = if (state.snapshot.active)
+            .{ .strings = &string_tops, .lists = &list_tops }
+        else
+            .{};
+        var roots: KeepingRoots = .{ .state = state, .keep = keep };
+        _ = heap.compact(&state.strings, &state.lists, &roots, marks);
+        assert(state.lists.used <= state.lists.words.len);
+        if (state.snapshot.active) {
+            state.snapshot.strings_top = string_tops[0];
+            state.snapshot.lists_top = list_tops[0];
+        }
+        assert(state.snapshot.strings_top <= state.strings.used or !state.snapshot.active);
+    }
+
+    /// Room for a heap string of `length` bytes, compacting once if the heap is full
+    /// (plan §4.5). `error.HeapLimit` when even the compacted heap has no room.
+    pub fn allocate_string(
+        state: *State,
+        length: u32,
+        keep: []Value,
+    ) error{HeapLimit}!StringReference {
+        assert(state.strings.used <= state.strings.bytes.len);
+        assert(keep.len < std.math.maxInt(u16));
+        if (state.compact_always) state.compact(keep);
+        if (state.strings.try_allocate(length)) |reference| return reference;
+        state.compact(keep);
+        const reference = state.strings.try_allocate(length) orelse return error.HeapLimit;
+        assert(reference.is_heap());
+        return reference;
+    }
+
+    /// Stores a list, compacting once if the slab is full. `error.ListLimit` when even the
+    /// compacted slab has no room.
+    pub fn store_list(
+        state: *State,
+        items: []const index.ListItemIndex,
+        origins: []const index.ListOriginIndex,
+        keep: []Value,
+    ) error{ListLimit}!value_module.ListReference {
+        assert(state.lists.used <= state.lists.words.len);
+        if (state.compact_always) state.compact(keep);
+        if (state.lists.store(items, origins)) |reference| return reference else |_| {}
+        state.compact(keep);
+        const reference = try state.lists.store(items, origins);
+        assert(state.lists.check_reference(reference));
+        return reference;
+    }
+
+    /// A hash of everything a story can observe or that later steps depend on: the live
+    /// flow, the shared arrays and scalars, and the used heap. Values hash by tag and payload,
+    /// so padding never counts. For tests of take and restore, and of determinism.
+    pub fn hash(state: *const State) u64 {
+        assert(state.memory.len > 0);
+        var hasher: std.hash.Wyhash = .init(0);
+        hash_values(&hasher, state.evaluation.slice());
+        hash_values(&hasher, state.globals);
+        hash_records(&hasher, state.call_stack.frames.slice());
+        hash_records(&hasher, state.call_stack.threads.slice());
+        hash_temps(&hasher, state.call_stack.temps.slice());
+        hash_records(&hasher, state.output.items.slice());
+        hash_records(&hasher, state.output.string_marks.slice());
+        hash_records(&hasher, state.choices.records.slice());
+        hash_records(&hasher, state.choices.tags.slice());
+        hash_records(&hasher, state.choices.snapshots.slice());
+        hash_records(&hasher, state.choices.frames.slice());
+        hash_temps(&hasher, state.choices.temps.slice());
+        hash_records(&hasher, state.visit_counts);
+        hash_records(&hasher, state.turn_indices);
+        hash_records(&hasher, state.observer_events.slice());
+        hash_records(&hasher, state.errors.slice());
+        hash_records(&hasher, state.warnings.slice());
+        hasher.update(state.strings.bytes[0..state.strings.used]);
+        hash_records(&hasher, state.lists.words[0..state.lists.used]);
+        const scalars = [_]i32{
+            state.turn_index,             @bitCast(state.call_stack.thread_counter),
+            state.story_seed,             state.previous_random,
+            @bitCast(state.current_flow), @intFromBool(state.snapshot.active),
+        };
+        hash_records(&hasher, &scalars);
+        assert(state.lists.used <= state.lists.words.len);
+        return hasher.final();
+    }
+
+    pub fn check(state: *State) Fault {
+        assert(state.memory.len > 0);
+        if (state.call_stack.check() != .ok) return .call_stack;
+        if (state.output.check() != .ok) return .output;
+        if (state.choices.check() != .ok) return .choices;
+        if (state.strings.check() != .ok) return .strings;
+        if (state.evaluation.check() != .ok) return .evaluation;
+        if (state.visit_counts.len != state.program.count_slots_count) return .counts_length;
+        if (flows.check(state) != .ok) return .flows;
+        if (lookahead_module.check(state) != .ok) return .lookahead;
+        var checker: ReferenceChecker = .{ .strings = &state.strings, .lists = &state.lists };
+        state.visit(&checker);
+        if (!checker.strings_ok) return .string_reference;
+        if (!checker.lists_ok) return .list_reference;
+        assert(state.turn_indices.len == state.visit_counts.len);
+        return .ok;
+    }
+
+    pub fn verify(state: *State) void {
+        assert(state.memory.len > 0);
+        fault.verify(state.check());
     }
 };
 
-// ── Tests ─────────────────────────────────────────────────────────────────────
-
-test "StoryState init and deinit" {
-    const alloc = std.testing.allocator;
-    var s = try StoryState.init(alloc);
-    defer s.deinit();
-
-    try std.testing.expectEqual(@as(i32, 0), s.current_turn_index);
-    try std.testing.expectEqual(@as(u32, 0), s.story_seed);
-    try std.testing.expect(!s.did_safe_exit);
-    try std.testing.expectEqual(@as(usize, 0), s.output_stream.items.len);
-    try std.testing.expectEqual(@as(usize, 0), s.evaluation_stack.items.len);
-    try std.testing.expectEqual(@as(usize, 0), s.current_choices.items.len);
+pub fn visit_values(values: []Value, visitor: anytype) void {
+    assert(@TypeOf(visitor) != void);
+    assert(values.len < std.math.maxInt(u32));
+    for (values) |*value| {
+        switch (value.*) {
+            .string => |*reference| visitor.string(reference),
+            .tag => |*reference| visitor.string(reference),
+            .list => |*reference| visitor.list(reference),
+            else => {},
+        }
+    }
 }
 
-test "StoryState deinit after pushing items" {
-    const alloc = std.testing.allocator;
-    var s = try StoryState.init(alloc);
-    defer s.deinit();
+pub fn visit_temps(temps: []Temp, visitor: anytype) void {
+    assert(@TypeOf(visitor) != void);
+    assert(temps.len < std.math.maxInt(u32));
+    for (temps) |*temp| {
+        switch (temp.value) {
+            .string => |*reference| visitor.string(reference),
+            .tag => |*reference| visitor.string(reference),
+            .list => |*reference| visitor.list(reference),
+            else => {},
+        }
+    }
+}
 
-    try s.output_stream.append(alloc, .{ .string = "hello" });
-    try s.evaluation_stack.append(alloc, .{ .int = 42 });
+fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
+    assert(values.len < std.math.maxInt(u32));
+    for (values) |value| hash_value(hasher, value);
+    assert(@typeInfo(@TypeOf(hasher)) == .pointer);
+}
+
+fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
+    assert(@sizeOf(Value) == 12);
+    hasher.update(&.{@backingInt(value)});
+    switch (value) {
+        .null => {},
+        .variable_pointer => |pointer| {
+            std.hash.autoHash(hasher, pointer.name);
+            std.hash.autoHash(hasher, pointer.context);
+        },
+        inline else => |payload| hasher.update(std.mem.asBytes(&payload)),
+    }
+}
+
+fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
+    assert(temps.len < std.math.maxInt(u32));
+    for (temps) |temp| {
+        std.hash.autoHash(hasher, temp.name);
+        hash_value(hasher, temp.value);
+    }
+    assert(@sizeOf(Temp) == element_bytes.temp);
+}
+
+/// Field by field, so struct padding never counts.
+fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
+    assert(records.len < std.math.maxInt(u32));
+    for (records) |record| std.hash.autoHash(hasher, record);
+    assert(@typeInfo(@TypeOf(records)) == .pointer);
+}
+
+/// State's roots plus values the caller holds outside the state.
+const KeepingRoots = struct {
+    state: *State,
+    keep: []Value,
+
+    pub fn visit(roots: *KeepingRoots, visitor: anytype) void {
+        assert(roots.keep.len < std.math.maxInt(u16));
+        assert(@typeInfo(@TypeOf(visitor)) == .pointer);
+        roots.state.visit(visitor);
+        visit_values(roots.keep, visitor);
+    }
+};
+
+/// Checks that every heap string reference is valid (State.check).
+const ReferenceChecker = struct {
+    strings: *const heap.StringHeap,
+    lists: *const lists_module.ListSlab,
+    strings_ok: bool = true,
+    lists_ok: bool = true,
+
+    pub fn string(checker: *ReferenceChecker, reference: *StringReference) void {
+        assert(@sizeOf(StringReference) == 4);
+        assert(checker.strings.used <= checker.strings.bytes.len);
+        if (!reference.is_heap()) return;
+        if (checker.strings.check_reference(reference.*) != .ok) checker.strings_ok = false;
+    }
+
+    pub fn list(checker: *ReferenceChecker, reference: *value_module.ListReference) void {
+        assert(@sizeOf(value_module.ListReference) == 4);
+        assert(checker.lists.used <= checker.lists.words.len);
+        if (!checker.lists.check_reference(reference.*)) checker.lists_ok = false;
+    }
+};
+
+/// Hands out typed slices of one block, largest alignment first so nothing is padded.
+const Carver = struct {
+    memory: []align(8) u8,
+    used: u32 = 0,
+
+    fn take(carver: *Carver, comptime T: type, count: u32) []T {
+        assert(carver.used % @alignOf(T) == 0);
+        const bytes: u32 = count * @sizeOf(T);
+        assert(carver.used + bytes <= carver.memory.len);
+        const raw = carver.memory[carver.used..][0..bytes];
+        const slice: []T = @alignCast(std.mem.bytesAsSlice(T, raw));
+        carver.used += bytes;
+        return slice;
+    }
+};
+
+fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []align(8) u8) State {
+    assert(carver.used == 0);
+    const shape = State.shape_of(program);
+    // 8-byte aligned first.
+    const observers = carver.take(Observer, limits.observers_max);
+    const live = carve_flow(carver, limits);
+    const lookahead = carve_flow(carver, limits);
+    const result: State = .{
+        .program = program,
+        .limits = limits,
+        .memory = memory,
+        .evaluation = .init(live.evaluation),
+        .call_stack = .init(live.frames, live.threads, live.temps, limits.temps_per_frame_max),
+        .output = .init(live.items, live.marks),
+        .choices = .init(.{
+            .records = live.choices,
+            .tags = live.tags,
+            .snapshots = live.snapshots,
+            .frames = live.snapshot_frames,
+            .temps = live.snapshot_temps,
+        }),
+        .globals = carver.take(Value, shape.globals_count),
+        .global_defaults = carver.take(Value, shape.globals_count),
+        .visit_counts = carver.take(u32, shape.count_slots),
+        .turn_indices = carver.take(i32, shape.count_slots),
+        .lists = .init(carver.take(u32, limits.list_words_max)),
+        .observer_events = .init(carver.take(GlobalSlot, limits.observer_events_max)),
+        .errors = .init(carver.take(Diagnostic, limits.errors_max)),
+        .warnings = .init(carver.take(Diagnostic, limits.warnings_max)),
+        .ancestors = carver.take(ContainerIndex, limits.container_depth_max),
+        .load_nodes = carver.take(json_tree.Node, limits.load_nodes_max),
+        .lookahead = lookahead,
+        .patch = carver.take(PatchEntry, limits.patch_entries_max),
+        .flows = carver.take(FlowRecord, limits.flows_max),
+        .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
+        .strings = .init(carver.take(u8, limits.heap_bytes_max)),
+        .line_bytes = carver.take(u8, limits.output_bytes_max),
+        .observers = observers,
+    };
+    assert(result.globals.len == program.globals.len);
+    return result;
+}
+
+fn carve_flow(carver: *Carver, limits: Limits) FlowBuffers {
+    assert(carver.used % 4 == 0);
+    const buffers: FlowBuffers = .{
+        .evaluation = carver.take(Value, limits.evaluation_values_max),
+        .frames = carver.take(Frame, limits.frames_max),
+        .threads = carver.take(Thread, limits.threads_max),
+        .temps = carver.take(Temp, limits.temps_max),
+        .items = carver.take(output_module.Item, limits.output_items_max),
+        .marks = carver.take(u32, limits.string_marks_max),
+        .choices = carver.take(choices_module.Choice, limits.choices_max),
+        .tags = carver.take(StringReference, limits.tags_max),
+        .snapshots = carver.take(choices_module.Snapshot, limits.choices_max),
+        .snapshot_frames = carver.take(Frame, limits.choice_snapshot_frames_max),
+        .snapshot_temps = carver.take(Temp, limits.choice_snapshot_temps_max),
+    };
+    assert(buffers.frames.len == limits.frames_max);
+    return buffers;
+}
+
+const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllocator;
+const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
+
+fn test_program(gpa: Allocator) !Program {
+    assert(@sizeOf(State) > 0);
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{ .flags = .{ .visits_counted = true } });
+    try builder.add(.global_get, try builder.global("score"));
+    try builder.add(.done, {});
+    try builder.end_container();
+    const program = try builder.finish();
+    assert(program.count_slots_count == 1);
+    return program;
+}
+
+test "init allocates exactly the byte budget, once" {
+    // Goal: P4.12; Story.init's memory is Limits.bytes_total, in one allocation. Method: a
+    // counting allocator around init.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var counting = CountingAllocator.init(gpa);
+    var state: State = undefined;
+    const limits: Limits = .{};
+    try state.init(counting.allocator(), &program, limits);
+    defer state.deinit(counting.allocator());
+    try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
+    try std.testing.expectEqual(limits.bytes_total(State.shape_of(&program)), counting.bytes_live);
+    try std.testing.expectEqual(State.Fault.ok, state.check());
+}
+
+test "a fresh state starts at the root with nothing pending" {
+    // Goal: reset matches ink's initial state. Method: inspect after init.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{});
+    defer state.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 1), state.call_stack.depth());
+    try std.testing.expectEqual(Program.root, state.call_stack.current_frame().pointer.container);
+    try std.testing.expectEqual(@as(i32, -1), state.turn_index);
+    try std.testing.expectEqual(@as(u32, 0), state.visit_counts[0]);
+    try std.testing.expectEqual(@as(u32, 0), state.choices.count());
+}
+
+test "check catches a dangling heap string" {
+    // Goal: P4.11 negative space; a reference past the heap's used part. Method: put one in
+    // the evaluation stack.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{});
+    defer state.deinit(gpa);
+    try state.evaluation.push(.{ .string = .heap(64) });
+    try std.testing.expectEqual(State.Fault.string_reference, state.check());
+}
+
+test "errors and warnings are bounded and reset together" {
+    // Goal: P4.10; ink's AddError, hasError and ResetErrors, within errors_max. Method: add
+    // more errors than fit, then a warning, then reset.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{ .errors_max = 2, .warnings_max = 1 });
+    defer state.deinit(gpa);
+    try std.testing.expect(!state.has_error());
+    const diagnostic: Diagnostic =
+        .{ .argument = .none, .number = 0, .code = .story_error, .severity = .@"error" };
+    for (0..3) |_| state.add_diagnostic(diagnostic);
+    try std.testing.expect(state.has_error() and !state.has_warning());
+    try std.testing.expectEqual(@as(u32, 2), state.errors.count);
+    try std.testing.expectEqual(@as(u32, 1), state.diagnostics_dropped);
+    var warning = diagnostic;
+    warning.severity = .warning;
+    state.add_diagnostic(warning);
+    try std.testing.expect(state.has_warning());
+    state.reset_errors();
+    try std.testing.expect(!state.has_error() and !state.has_warning());
+    try std.testing.expectEqual(@as(u32, 0), state.diagnostics_dropped);
+}
+
+test "a full heap compacts once and keeps the caller's operands" {
+    // Goal: P4.3's trigger; an allocation that fails compacts, then retries, and a value only
+    // the caller holds survives. Method: fill a small heap with garbage and one kept string.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{ .heap_bytes_max = 64, .list_words_max = 8 });
+    defer state.deinit(gpa);
+    _ = try state.allocate_string(16, &.{}); // 24 bytes with the header
+    var keep = [_]Value{.{ .string = try state.allocate_string(4, &.{}) }};
+    @memcpy(state.strings.get(keep[0].string), "kept");
+    _ = try state.allocate_string(12, &.{}); // 56 of 64 bytes used
+    const fresh = try state.allocate_string(24, &keep);
+    try std.testing.expectEqualStrings("kept", state.strings.get(keep[0].string));
+    try std.testing.expectEqual(@as(u32, 0), keep[0].string.heap_offset());
+    try std.testing.expectEqual(@as(u32, 12), fresh.heap_offset());
+    try std.testing.expectError(error.HeapLimit, state.allocate_string(56, &keep));
+    _ = try state.store_list(&.{.from_int(1)}, &.{}, &.{});
+    keep[0] = .{ .list = try state.store_list(&.{.from_int(2)}, &.{}, &.{}) };
+    _ = try state.store_list(&.{.from_int(3)}, &.{}, &keep);
+    try std.testing.expectEqual(@as(u32, 2), state.lists.view(keep[0].list).items[0].to_int());
+    const long = [_]index.ListItemIndex{ .from_int(1), .from_int(2), .from_int(3) };
+    try std.testing.expectError(error.ListLimit, state.store_list(&long, &.{}, &keep));
 }

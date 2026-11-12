@@ -1,5 +1,5 @@
 //! The compiler's end-to-end tests (plan P9.2): each story is compiled by the new compiler
-//! (src/compiler/compile.zig) and played on the new VM (src/vm/api.zig) through a fixed
+//! (src/compiler/compile.zig) and played on the new VM (src/runtime/api.zig) through a fixed
 //! list of choices, choosing whenever the story can't continue (e2e_new_vm.play). These are
 //! the old compiler's e2e tests (src/test/compiler_helpers.zig) with their expectations; where
 //! the old pipeline differed from ink (the `e2e` corpus of the divergence ledger), the
@@ -11,9 +11,9 @@ const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
 const ink_json = @import("../core/ink_json.zig");
 const e2e_new_vm = @import("e2e_new_vm.zig");
-const vm = @import("../vm/api.zig");
+const vm = @import("../runtime/api.zig");
 const Program = @import("../core/program.zig").Program;
-const Severity = @import("../vm/state.zig").Diagnostic.Severity;
+const Severity = @import("../runtime/state.zig").Diagnostic.Severity;
 
 const fixtures = "test/fixture/original/";
 const steps_max = 100_000;

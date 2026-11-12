@@ -1,4 +1,4 @@
-//! The public API of the new runtime (plan §4.7, P6.3, D5, D8, D22). It wraps the runtime's
+//! The public API of the runtime (plan §4.7, P6.3, D5, D8, D22). It wraps the runtime's
 //! Story with ink's host calls, in snake_case.
 //!
 //! Views (line text, choice text and tags, variable strings, flow names) are borrowed: valid

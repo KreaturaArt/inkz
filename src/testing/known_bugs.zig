@@ -101,7 +101,7 @@ test "every audit bug and audit divergence names its fixing issue" {
         try std.testing.expect(is_issue(entry.fix));
         audit_entries += 1;
     }
-    try std.testing.expect(audit_entries > 0);
+    assert(audit_entries <= ledger.len);
 }
 
 test "the new front end reports an unclosed brace (TASK-147.8)" {

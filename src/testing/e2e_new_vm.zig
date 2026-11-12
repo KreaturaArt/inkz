@@ -5,8 +5,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const vm = @import("../vm/api.zig");
-const Severity = @import("../vm/state.zig").Diagnostic.Severity;
+const vm = @import("../runtime/api.zig");
+const Severity = @import("../runtime/state.zig").Diagnostic.Severity;
 
 const steps_max = 100_000;
 

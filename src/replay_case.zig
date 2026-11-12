@@ -7,7 +7,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const cases = @import("testing/cases.zig");
-const old_engine = @import("testing/old_engine.zig");
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
@@ -30,11 +29,4 @@ pub fn main(init: std.process.Init) !void {
     try file_writer.interface.writeAll(text);
     try file_writer.interface.flush();
     assert(file_writer.interface.end == 0);
-    // For `zig build heuristics-report` (plan P0.12); not part of the transcript.
-    const totals = old_engine.heuristic_totals;
-    std.debug.print("heuristics: loop_back_gather_tail={d} " ++
-        "divert_ancestor_of_choice_source={d}\n", .{
-        totals.loop_back_gather_tail,
-        totals.divert_ancestor_of_choice_source,
-    });
 }

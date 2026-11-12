@@ -1,6 +1,6 @@
 //! The two oracle gates over every engine (plan P0.4, P0.10):
 //! - ground truth: each case in `test/ground_truth`, compared with ink v1.2.1;
-//! - transcripts: each fixture in `test/transcripts`, compared with the old runtime.
+//! - transcripts: each fixture in `test/transcripts`, compared with the stored transcript.
 //! Each story runs in its own process (`src/replay_case.zig`), so a crash is a result.
 
 const std = @import("std");
@@ -125,7 +125,7 @@ test "oracle: ground truth on every engine" {
 }
 
 test "oracle: transcripts on every engine" {
-    // Goal: P0.4. Method: every difference from the old runtime's transcripts is ledgered.
+    // Goal: P0.4. Method: every difference from the stored transcripts is ledgered.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

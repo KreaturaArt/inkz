@@ -3,9 +3,8 @@
 //! run in its own process, and reports runs that crash. A run depends only on its engine,
 //! case and seed, so every report carries the command that reproduces it.
 //!
-//! In P0 it drives the old runtime with random choices only. P5.12 enables the full action mix
-//! (save/load points, flow switches, `evaluate_function`, `set_variable`, compact-always) and
-//! `State.verify()` after every `cont()` on the new engine.
+//! P5.12 added the full action mix (save/load points, flow switches, `evaluate_function`,
+//! `set_variable`, compact-always) and `State.verify()` after every `cont()`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -51,13 +50,13 @@ test "a simulation run is reproducible by seed" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     const id = "runtime/weaves/weave_gathers";
-    const first = try run_seed(arena, io, "old", id, 7);
-    const again = try run_seed(arena, io, "old", id, 7);
+    const first = try run_seed(arena, io, "new", id, 7);
+    const again = try run_seed(arena, io, "new", id, 7);
     try std.testing.expectEqual(Outcome.ok, first.outcome);
     try std.testing.expectEqualStrings(first.transcript, again.transcript);
     var differs = false;
     for ([_]i32{ 1, 2, 3, 4, 5, 6 }) |seed| {
-        const other = try run_seed(arena, io, "old", id, seed);
+        const other = try run_seed(arena, io, "new", id, seed);
         differs = differs or !std.mem.eql(u8, other.transcript, first.transcript);
     }
     try std.testing.expect(differs);
@@ -66,12 +65,12 @@ test "a simulation run is reproducible by seed" {
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
-const story_module = @import("../vm/story.zig");
-const state_module = @import("../vm/state.zig");
-const flows_module = @import("../vm/flows.zig");
-const save_module = @import("../vm/save.zig");
-const load_module = @import("../vm/load.zig");
-const evaluate_module = @import("../vm/evaluate.zig");
+const story_module = @import("../runtime/story.zig");
+const state_module = @import("../runtime/state.zig");
+const flows_module = @import("../runtime/flows.zig");
+const save_module = @import("../runtime/save.zig");
+const load_module = @import("../runtime/load.zig");
+const evaluate_module = @import("../runtime/evaluate.zig");
 const Story = story_module.Story;
 
 /// What the new engine's simulation found in one run.
@@ -131,7 +130,7 @@ pub fn simulate_new(story: *Story, seed: i32, save_buffer: []u8) !Finding {
 
 /// Saves, loads the save into the same story, and saves again: both saves must match.
 fn round_trip(story: *Story, save_buffer: []u8) !bool {
-    assert(!@import("../vm/lookahead.zig").active(&story.state));
+    assert(!@import("../runtime/lookahead.zig").active(&story.state));
     assert(save_buffer.len % 2 == 0);
     const half = save_buffer.len / 2;
     var first: std.Io.Writer = .fixed(save_buffer[0..half]);
@@ -171,7 +170,7 @@ fn set_some_variable(story: *Story, random: *DotnetRandom) !void {
     const slot: usize = @intCast(@rem(random.next(), @as(i32, @intCast(globals.len))));
     const value = story.state.globals[slot];
     const name = story.program.strings.get(globals[slot].name);
-    const changed: @import("../vm/value.zig").Value = switch (value) {
+    const changed: @import("../runtime/value.zig").Value = switch (value) {
         .integer => |number| .{ .integer = number +% 1 },
         .bool => |flag| .{ .bool = !flag },
         .float => |number| .{ .float = number + 0.5 },

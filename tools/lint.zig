@@ -1,8 +1,8 @@
 //! TigerStyle lint for inkz (plan §3, P0.8), run with `zig build lint`.
 //!
 //! Rules: function length, line length, recursion (a name-based call graph), `usize` struct
-//! fields, snake_case file names and assertion density (`assert` and `verify` calls). Old
-//! code listed in `grandfathered` is skipped until it is deleted (plan P9).
+//! fields, snake_case file names and assertion density (`assert` and `verify` calls), on all
+//! code (the old code that predated the rules was deleted in P9.1 and P9.2).
 //!
 //! Suppressions are comments that must give a reason:
 //! - `// lint: allow function_length: <reason>` or `// lint: allow recursion: <reason>` in the
@@ -25,15 +25,6 @@ pub const line_columns_max = 100;
 pub const assertions_per_function_min = 2;
 pub const file_bytes_max = 16 * 1024 * 1024;
 pub const files_max = 4096;
-
-/// Old code that predates the rules. Remove entries as the code is deleted (P9.1, P9.2).
-pub const grandfathered = [_][]const u8{
-    "src/runtime/",
-    "src/test/",
-    "src/ink_format.zig",
-    "src/root.zig",
-    "src/test_runtime.zig",
-};
 
 pub const Rule = enum {
     syntax,
@@ -88,15 +79,6 @@ const SourceFile = struct {
     /// Names bound to `std`, `builtin` or something inside them, such as `const mem = std.mem`.
     external_aliases: std.ArrayList([]const u8),
 };
-
-pub fn is_grandfathered(path: []const u8) bool {
-    assert(path.len > 0);
-    for (grandfathered) |prefix| {
-        assert(prefix.len > 0);
-        if (std.mem.startsWith(u8, path, prefix)) return true;
-    }
-    return false;
-}
 
 /// Collects files, then reports every rule violation in `finish`. All memory comes from
 /// `arena`, which the caller frees.
@@ -203,7 +185,7 @@ pub const Linter = struct {
         const nodes_count: u32 = @intCast(tree.nodes.len);
         var node_raw: u32 = 1;
         while (node_raw < nodes_count) : (node_raw += 1) {
-            const node: Ast.Node.Index = @enumFromInt(node_raw);
+            const node: Ast.Node.Index = @fromBackingInt(@intCast(node_raw));
             switch (tree.nodeTag(node)) {
                 .fn_decl => try linter.add_function(file_index, node),
                 .container_field_init,
@@ -304,7 +286,7 @@ pub const Linter = struct {
         const nodes_count: u32 = @intCast(file.tree.nodes.len);
         var node_raw: u32 = 1;
         while (node_raw < nodes_count) : (node_raw += 1) {
-            const node: Ast.Node.Index = @enumFromInt(node_raw);
+            const node: Ast.Node.Index = @fromBackingInt(@intCast(node_raw));
             var buffer: [1]Ast.Node.Index = undefined;
             const call = file.tree.fullCall(&buffer, node) orelse continue;
             const caller = linter.enclosing_function(file_index, call.ast.lparen) orelse continue;
@@ -660,7 +642,7 @@ fn diagnostic_less_than(_: void, a: Diagnostic, b: Diagnostic) bool {
     const order = std.mem.order(u8, a.path, b.path);
     if (order != .eq) return order == .lt;
     if (a.line != b.line) return a.line < b.line;
-    return @intFromEnum(a.rule) < @intFromEnum(b.rule);
+    return @backingInt(a.rule) < @backingInt(b.rule);
 }
 
 pub fn is_snake_case_file_name(name: []const u8) bool {
@@ -753,12 +735,7 @@ pub fn main(init: std.process.Init) !void {
     std.mem.sort([]const u8, paths.items, {}, path_less_than);
 
     var linter = Linter.init(arena);
-    var skipped_count: u32 = 0;
     for (paths.items) |path| {
-        if (is_grandfathered(path)) {
-            skipped_count += 1;
-            continue;
-        }
         const source = try std.Io.Dir.cwd().readFileAllocOptions(
             io,
             path,
@@ -770,21 +747,13 @@ pub fn main(init: std.process.Init) !void {
         try linter.add_file(path, source);
     }
     const diagnostics = try linter.finish();
-    assert(skipped_count <= paths.items.len);
-    try print_report(io, diagnostics, .{
-        .files_count = @intCast(paths.items.len - skipped_count),
-        .skipped_count = skipped_count,
-    });
+    assert(paths.items.len <= files_max);
+    try print_report(io, diagnostics, @intCast(paths.items.len));
     if (diagnostics.len > 0) std.process.exit(1);
 }
 
-const ReportCounts = struct {
-    files_count: u32,
-    skipped_count: u32,
-};
-
-fn print_report(io: std.Io, diagnostics: []const Diagnostic, counts: ReportCounts) !void {
-    assert(counts.files_count <= files_max);
+fn print_report(io: std.Io, diagnostics: []const Diagnostic, files_count: u32) !void {
+    assert(files_count <= files_max);
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buffer);
     const writer = &file_writer.interface;
@@ -796,11 +765,7 @@ fn print_report(io: std.Io, diagnostics: []const Diagnostic, counts: ReportCount
             diagnostic.message,
         });
     }
-    try writer.print("lint: {d} files checked, {d} grandfathered, {d} problems\n", .{
-        counts.files_count,
-        counts.skipped_count,
-        diagnostics.len,
-    });
+    try writer.print("lint: {d} files checked, {d} problems\n", .{ files_count, diagnostics.len });
     try writer.flush();
     assert(file_writer.interface.end == 0);
 }
@@ -1073,14 +1038,10 @@ test "a suppressed false positive is not reported" {
     try expect_rules(diagnostics, &.{});
 }
 
-test "unparsable files and grandfathered paths" {
-    // Goal: syntax errors are reported, and old code is skipped. Method: lint a broken file;
-    // check the grandfathered prefixes directly.
+test "unparsable files are reported" {
+    // Goal: syntax errors are reported. Method: lint a broken file.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/core/broken.zig", "fn (" }});
     try expect_rules(diagnostics, &.{.syntax});
-    try std.testing.expect(is_grandfathered("src/runtime/story.zig"));
-    try std.testing.expect(!is_grandfathered("src/core/index.zig"));
-    try std.testing.expect(!is_grandfathered("tools/lint.zig"));
 }
