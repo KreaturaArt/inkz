@@ -50,3 +50,9 @@ deleted once P7.3's parser core replaces it). Its five tests parse hand-picked h
   spike's subject; P7.5 follows InkParser's exact rules, checked against ink's compiler.
 - **Function calls and unary minus** need a call frame on the operator stack (argument
   counts) and ink's precedence table (InkParser_Expressions.cs).
+
+**Outcome (2026-11-12).** The spike's code was deleted once the grammar landed (P7.4-P7.8).
+The grammar kept the go decision's design: an explicit frame stack with checkpoints, the
+scratch stack and `wrap`. It differs in being a faithful port of InkParser rather than a
+shunting-yard parser: each InkParser method that can recurse is a rule frame, expressions
+use precedence climbing through frames, and ink's whitespace rules come from InkParser.

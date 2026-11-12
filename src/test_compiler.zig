@@ -9,7 +9,6 @@ test {
     _ = @import("compiler/compiler.zig");
     _ = @import("compiler/codegen_to_runtime.zig");
     _ = @import("test/compiler_helpers.zig");
-    _ = @import("compiler_next/spike.zig");
     _ = @import("compiler_next/tokenizer.zig");
     _ = @import("compiler_next/ast.zig");
     _ = @import("compiler_next/core.zig");
