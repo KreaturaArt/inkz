@@ -674,6 +674,7 @@ test "malformed input returns an error instead of crashing" {
 
 /// Counts the resolved targets in `program`, failing on any divert or choice that has none.
 fn count_resolved_targets(program: *const Program) !u32 {
+    assert(program.instructions.len > 0);
     assert(program.check() == .ok);
     const extra = @import("extra.zig");
     var resolved: u32 = 0;
@@ -720,4 +721,76 @@ test "every path is resolved at load time" {
         }
     }
     try std.testing.expect(targets > 1000);
+}
+
+/// Checks a loaded program against ink's `.paths` listing: every container, in any order,
+/// with the same path, shuffle hash, counting flags and content count.
+fn expect_paths_match(gpa: Allocator, program: *const Program, listing: []const u8) !void {
+    assert(program.containers.len > 0);
+    assert(listing.len > 0);
+    var lines = std.mem.splitScalar(u8, listing, '\n');
+    var listed: u32 = 0;
+    while (lines.next()) |line| {
+        if (line.len == 0 or line[0] == '#') continue;
+        const quote_end = std.mem.lastIndexOfScalar(u8, line, '"').?;
+        const parsed = try std.json.parseFromSlice([]const u8, gpa, line[0 .. quote_end + 1], .{});
+        defer parsed.deinit();
+        const container = find_by_path(program, parsed.value) orelse {
+            std.debug.print("ink has container \"{s}\", the program doesn't\n", .{parsed.value});
+            return error.MissingContainer;
+        };
+        var words_after = std.mem.tokenizeScalar(u8, line[quote_end + 1 ..], ' ');
+        const hash = try std.fmt.parseInt(u32, words_after.next().?, 10);
+        var flags: @import("container.zig").ContainerFlags = .{};
+        var content: u32 = 0;
+        while (words_after.next()) |word| {
+            if (std.mem.eql(u8, word, "visits")) flags.visits_counted = true;
+            if (std.mem.eql(u8, word, "turns")) flags.turns_counted = true;
+            if (std.mem.eql(u8, word, "start_only")) flags.count_start_only = true;
+            if (std.mem.eql(u8, word, "content")) content = try std.fmt.parseInt(
+                u32,
+                words_after.next().?,
+                10,
+            );
+        }
+        const info = program.table().get(container);
+        try std.testing.expectEqual(hash, info.path_hash);
+        try std.testing.expectEqual(flags, info.flags);
+        try std.testing.expectEqual(content, info.instruction_count);
+        listed += 1;
+    }
+    try std.testing.expectEqual(@as(usize, listed), program.containers.len);
+}
+
+fn find_by_path(program: *const Program, path: []const u8) ?@import("index.zig").ContainerIndex {
+    assert(path.len < 1 << 20);
+    const id = program.strings.find(path) orelse return null;
+    for (program.containers.items(.path), 0..) |container_path, position| {
+        if (container_path == id) return .from_int(@intCast(position));
+    }
+    return null;
+}
+
+test "container paths, hashes and flags match ink" {
+    // Goal: P3.3 (moved from P2.4). Method: load each story and compare every container with
+    // the listing ink v1.2.1 printed for it (mise run reference:paths).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const stories = [_][]const u8{ "crime_scene", "simple_taster_tutorial", "audit/unicode_paths" };
+    for (stories) |story| {
+        const json_path = try std.fmt.allocPrint(gpa, "test/ground_truth/{s}.ink.json", .{story});
+        defer gpa.free(json_path);
+        const listing_path = try std.fmt.allocPrint(gpa, "test/ground_truth/{s}.paths", .{story});
+        defer gpa.free(listing_path);
+        var program = try load_file(gpa, json_path);
+        defer program.deinit(gpa);
+        const listing = try std.Io.Dir.cwd().readFileAlloc(
+            io,
+            listing_path,
+            gpa,
+            .limited(1 << 22),
+        );
+        defer gpa.free(listing);
+        try expect_paths_match(gpa, &program, listing);
+    }
 }
