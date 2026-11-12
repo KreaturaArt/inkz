@@ -16,4 +16,5 @@ test {
     _ = @import("compiler_next/grammar.zig");
     _ = @import("compiler_next/dump.zig");
     _ = @import("compiler_next/grammar_snapshots.zig");
+    _ = @import("compiler_next/parser_shape_tests.zig");
 }
