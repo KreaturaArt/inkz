@@ -707,7 +707,7 @@ pub fn turns_since(story: *Story, container: ContainerIndex) i32 {
     const info = story.program.table().get(container);
     if (info.count_slot == container_module.no_count_slot) return -1;
     const recorded = story.state.turn_indices[info.count_slot];
-    if (recorded < 0) return -1;
+    if (recorded == state_module.never_visited) return -1;
     return story.state.turn_index -% recorded;
 }
 
