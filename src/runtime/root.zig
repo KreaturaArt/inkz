@@ -6,6 +6,7 @@ pub const lists = @import("lists.zig");
 pub const heap = @import("heap.zig");
 pub const call_stack = @import("call_stack.zig");
 pub const output = @import("output.zig");
+pub const text_cache = @import("text_cache.zig");
 pub const choices = @import("choices.zig");
 pub const state = @import("state.zig");
 pub const flows = @import("flows.zig");
@@ -30,6 +31,7 @@ test {
     _ = heap;
     _ = call_stack;
     _ = output;
+    _ = text_cache;
     _ = choices;
     _ = state;
     _ = flows;

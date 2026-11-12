@@ -29,6 +29,9 @@ const poison: u8 = 0xAA;
 pub const StringHeap = struct {
     bytes: []u8,
     used: u32 = 0,
+    /// Bumped whenever existing bytes may change meaning (truncate, shrink, compact, reset),
+    /// so the cleaned-text cache knows a reference may now read other text.
+    generation: u32 = 0,
 
     pub const Fault = enum { ok, used_exceeds_capacity, object_out_of_bounds, misaligned, marked };
 
@@ -66,6 +69,7 @@ pub const StringHeap = struct {
         assert(at + object_bytes(heap.length_at(at)) == heap.used);
         std.mem.writeInt(u32, heap.bytes[at..][0..4], length, .little);
         heap.used = at + object_bytes(length);
+        heap.generation +%= 1;
     }
 
     /// Drops every object from `top` on; `top` must be an object boundary, such as a
@@ -75,6 +79,7 @@ pub const StringHeap = struct {
         assert(top % 4 == 0);
         if (std.debug.runtime_safety) @memset(heap.bytes[top..heap.used], poison);
         heap.used = top;
+        heap.generation +%= 1;
     }
 
     fn length_at(heap: *const StringHeap, at: u32) u32 {
@@ -280,6 +285,7 @@ fn slide_strings(heap: *StringHeap) void {
     }
     if (std.debug.runtime_safety) @memset(heap.bytes[next..heap.used], poison);
     heap.used = next;
+    heap.generation +%= 1;
     assert(heap.used <= heap.bytes.len);
 }
 
@@ -423,4 +429,25 @@ test "a stale reference after compaction is caught" {
         strings.check_reference(forgotten),
     );
     try std.testing.expectEqual(poison, bytes[strings.used]);
+}
+
+test "truncating, shrinking and compacting the heap start a new generation" {
+    // Goal: P10.1; the text cache sees every change that can give a reference other text.
+    // Method: each operation once; allocating alone keeps the generation.
+    var bytes: [256]u8 align(4) = undefined;
+    var words: [16]u32 = undefined;
+    var strings = StringHeap.init(&bytes);
+    var lists = ListSlab.init(&words);
+    const first = store_text(&strings, "first").?;
+    try std.testing.expectEqual(@as(u32, 0), strings.generation);
+    const top = strings.used;
+    const second = store_text(&strings, "second").?;
+    strings.shrink_last(second, 3);
+    try std.testing.expectEqual(@as(u32, 1), strings.generation);
+    strings.truncate(top);
+    try std.testing.expectEqual(@as(u32, 2), strings.generation);
+    var values = [_]value_module.Value{.{ .string = first }};
+    var roots: TestRoots = .{ .values = &values };
+    _ = compact(&strings, &lists, &roots, .{});
+    try std.testing.expectEqual(@as(u32, 3), strings.generation);
 }
