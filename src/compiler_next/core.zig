@@ -370,6 +370,46 @@ pub fn Machine(comptime Grammar: type) type {
             try machine.push_node(tag, first);
         }
 
+        /// Starts the next region of a shared source space (plan §4.11): `source` ends where
+        /// the region ends, and parsing starts at `start`. Tokens, nodes and diagnostics
+        /// accumulate across regions, so their indices are global.
+        pub fn begin_region(machine: *Self, source: []const u8, start: u32) void {
+            assert(machine.frames_count == 0 and machine.scratch_count == 0);
+            assert(start <= source.len);
+            machine.source = source;
+            machine.tokenizer = .init(source);
+            machine.tokenizer.at = start;
+            machine.outcome = .none;
+            machine.flags = 0;
+            machine.plain_flags = 0;
+        }
+
+        /// Moves a region's finished tree (the one scratch value) into the node arrays.
+        pub fn commit_root(machine: *Self) Error!ast.NodeIndex {
+            assert(machine.frames_count == 0);
+            assert(machine.scratch_count == 1);
+            const workspace = machine.workspace;
+            if (machine.nodes_count == workspace.node_tags.len) return error.WorkspaceFull;
+            const root = machine.nodes_count;
+            workspace.node_tags[root] = workspace.scratch_tags[0];
+            workspace.node_data[root] = workspace.scratch_data[0];
+            machine.nodes_count += 1;
+            machine.scratch_count = 0;
+            return .from_int(root);
+        }
+
+        /// The tree of all committed regions, rooted at `root`.
+        pub fn finish_regions(machine: *const Self, root: ast.NodeIndex) ast.Ast {
+            assert(machine.scratch_count == 0);
+            assert(root.to_int() < machine.nodes_count);
+            const workspace = machine.workspace;
+            return .{
+                .tags = workspace.node_tags[0..machine.nodes_count],
+                .data = workspace.node_data[0..machine.nodes_count],
+                .root = root,
+            };
+        }
+
         /// The finished tree: the one value left on the scratch stack becomes the root.
         pub fn finish(machine: *Self) Error!ast.Ast {
             assert(machine.frames_count == 0);
