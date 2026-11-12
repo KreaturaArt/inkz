@@ -1,6 +1,7 @@
 // Ground-truth generator for inkz (plan D19). Commands:
 //
 //   compile <story.ink> <story.ink.json> [--count-all-visits]   compile like inklecate
+//   warnings <story.ink>                     compile, print errors and warnings as inklecate
 //   random <count> <seed>...                 System.Random(seed).Next() sequences
 //   paths <story.ink.json>                   every container: path, shuffle hash, flags
 //   floats                                   float.ToString() for a fixed set of values
@@ -35,6 +36,8 @@ static class Program
                 return Compile(arguments[1], arguments[2], false);
             case "compile" when arguments.Length == 4 && arguments[3] == "--count-all-visits":
                 return Compile(arguments[1], arguments[2], true);
+            case "warnings" when arguments.Length == 2:
+                return Warnings(arguments[1]);
             case "random" when arguments.Length >= 3:
                 return RandomSequences(arguments);
             case "floats" when arguments.Length == 1:
@@ -87,6 +90,28 @@ static class Program
                 return 1;
             }
             File.WriteAllText(fullOutput, story.ToJson(), new UTF8Encoding(true));
+            return 0;
+        }
+        finally
+        {
+            Directory.SetCurrentDirectory(previousDirectory);
+        }
+    }
+
+    // Every error and warning, as inklecate prints them (the story is not written).
+    static int Warnings(string sourcePath)
+    {
+        var fullSource = Path.GetFullPath(sourcePath);
+        var previousDirectory = Directory.GetCurrentDirectory();
+        Directory.SetCurrentDirectory(Path.GetDirectoryName(fullSource));
+        try
+        {
+            var compiler = new Compiler(File.ReadAllText(fullSource), new Compiler.Options
+            {
+                sourceFilename = Path.GetFileName(fullSource),
+                errorHandler = (message, type) => Console.Out.WriteLine(message),
+            });
+            compiler.Compile();
             return 0;
         }
         finally

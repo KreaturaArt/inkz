@@ -27,4 +27,5 @@ test {
     _ = @import("compiler_next/lower_ir.zig");
     _ = @import("compiler_next/compile.zig");
     _ = @import("compiler_next/lowering_tests.zig");
+    _ = @import("compiler_next/termination_tests.zig");
 }

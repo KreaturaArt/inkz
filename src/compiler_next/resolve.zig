@@ -63,6 +63,25 @@ pub const Code = enum(u8) {
     list_item_not_found,
     constant_redefined,
     unsupported_fold,
+    // FlowBase.GenerateRuntimeObject's flow checks.
+    function_is_stitch,
+    function_has_stitch,
+    function_has_divert,
+    function_has_choice,
+    return_outside_function,
+    // Weave.ValidateTermination (lowering): a weave nested in a conditional or sequence.
+    nested_choice_needs_divert,
+    /// The same, for a conditional with one choice ("Choices with conditions should be
+    /// written: '* {condition} choice'...").
+    conditional_choice_syntax,
+    /// A warning: "Apparent loose end exists where the flow runs out...".
+    loose_end,
+
+    pub fn is_warning(code: Code) bool {
+        assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
+        assert(@sizeOf(Code) == 1);
+        return code == .loose_end;
+    }
 };
 
 pub const Diagnostic = struct {

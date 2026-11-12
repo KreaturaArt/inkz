@@ -79,6 +79,7 @@ fn lower_parsed(
     lowering.count_all_visits = options.count_all_visits;
     try lowering.generate_all();
     try lowering.finish_story();
+    if (lowering.failed()) return error.CompileFailed;
     layout_module.set_count_flags(&lowering);
     try layout_module.flatten(&lowering);
     return lowering.into_lowered();

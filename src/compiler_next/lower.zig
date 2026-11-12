@@ -72,6 +72,8 @@ pub const Lowering = struct {
     /// ink's countAllVisits compiler option: every flow, gather and choice counts visits.
     count_all_visits: bool = false,
     root: ContainerId = .none,
+    /// ink's errors and warnings from lowering (the termination checks).
+    diagnostics: std.ArrayList(resolve.Diagnostic) = .empty,
 
     pub fn init(
         gpa: Allocator,
@@ -121,6 +123,7 @@ pub const Lowering = struct {
         lowering.gpa.free(lowering.runtime_containers);
         lowering.weaves.deinit();
         lowering.externals.deinit(lowering.gpa);
+        lowering.diagnostics.deinit(lowering.gpa);
         lowering.ir.deinit();
         lowering.* = undefined;
     }
@@ -151,6 +154,28 @@ pub const Lowering = struct {
         lowering.ir = .init(lowering.gpa);
         lowering.deinit();
         return lowered;
+    }
+
+    /// Records an error or a warning on `object`; as in ink, an object gets at most one of
+    /// each.
+    pub fn report(lowering: *Lowering, code: resolve.Code, object: ObjectIndex) !void {
+        assert(object.to_int() < lowering.tree.count());
+        assert(lowering.diagnostics.items.len < std.math.maxInt(u32));
+        for (lowering.diagnostics.items) |diagnostic| {
+            if (diagnostic.object != object) continue;
+            if (diagnostic.code.is_warning() == code.is_warning()) return;
+        }
+        try lowering.diagnostics.append(lowering.gpa, .{ .code = code, .object = object });
+    }
+
+    /// Whether lowering found an error (warnings don't stop compilation).
+    pub fn failed(lowering: *const Lowering) bool {
+        assert(lowering.results.len == lowering.tree.count());
+        assert(lowering.diagnostics.items.len < std.math.maxInt(u32));
+        for (lowering.diagnostics.items) |diagnostic| {
+            if (!diagnostic.code.is_warning()) return true;
+        }
+        return false;
     }
 
     pub fn ast(lowering: *const Lowering) *const ast_module.Ast {
@@ -361,6 +386,7 @@ pub const Lowering = struct {
             }
             try ir.add_named(container, sub_flow);
         }
+        try weave.check_flow_termination(lowering, flow);
         return .{ .container = container };
     }
 
