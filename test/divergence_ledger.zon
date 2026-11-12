@@ -214,6 +214,5 @@
     .{ .case = "audit/save_long_string", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: save", .fix = "TASK-146.1" },
     .{ .case = "runtime/choices/choice_thread_forking", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: save", .fix = "TASK-146.1" },
     .{ .case = "runtime/lists/list_save_load", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: save", .fix = "TASK-146.1" },
-    .{ .case = "runtime/multiflow/multi_flow_basics", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
     .{ .case = "runtime/multiflow/multi_flow_save_load_threads", .engine = "new", .corpus = .ground_truth, .kind = .unsupported, .reason = "engine lacks it: unsupported: switch_flow", .fix = "TASK-146.3" },
 }

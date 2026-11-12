@@ -15,6 +15,7 @@ const lookahead = @import("lookahead.zig");
 const vm = @import("vm.zig");
 const ops = @import("ops.zig");
 const messages = @import("messages.zig");
+const flows = @import("flows.zig");
 const State = state_module.State;
 const Pointer = call_stack_module.Pointer;
 const StringReference = value_module.StringReference;
@@ -152,6 +153,27 @@ pub const Story = struct {
         story.state.story_seed = seed;
         story.state.previous_random = 0;
         assert(story.state.story_seed == seed);
+    }
+
+    /// ink's SwitchFlow: makes flow `name` current, creating it at the root if it's new.
+    pub fn switch_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
+        assert(name.len > 0);
+        if (story.callback_depth > 0) return error.Reentrant;
+        try flows.switch_flow(&story.state, name);
+        assert(std.mem.eql(u8, flows.current_name(&story.state), name));
+    }
+
+    /// ink's SwitchToDefaultFlow.
+    pub fn switch_to_default_flow(story: *Story) (Error || flows.Error)!void {
+        assert(story.state.flows.len > 0);
+        try story.switch_flow(flows.default_name);
+    }
+
+    /// ink's RemoveFlow.
+    pub fn remove_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
+        assert(name.len > 0);
+        if (story.callback_depth > 0) return error.Reentrant;
+        try flows.remove_flow(&story.state, name);
     }
 
     /// ink's BindExternalFunctionGeneral. Names the story never calls are ignored.
