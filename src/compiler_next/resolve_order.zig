@@ -188,6 +188,13 @@ fn check(context: *Context, object: ObjectIndex) !void {
     switch (context.tree.kind(object)) {
         .divert => try check_divert(context, object),
         .variable_reference => try check_variable_reference(context, object),
+        .list_literal => try check_list_literal(context, object),
+        .function_call => {
+            // A list's name called as a function makes a list (ink's ResolveList).
+            const name = context.leaf_text(context.ast().child(context.tree.node(object), 0));
+            const list = context.lookup(&context.lists, Tree.root, name);
+            context.targets[object.to_int()] = list orelse .none;
+        },
         .variable_assignment => try check_assignment(context, object),
         .increment => try check_increment(context, object),
         .story, .knot, .stitch => try collisions.check_flow(context, object),
@@ -257,15 +264,19 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
     const path = context.path_of(context.ast().child(node, 0));
     assert(path.count > 0);
     const references = context.references;
-    if (path.count == 1 and context.lookup(&context.constants, Tree.root, path.first()) != null) {
-        references[reference.to_int()] = .constant;
-        return;
+    if (path.count == 1) {
+        if (context.lookup(&context.constants, Tree.root, path.first())) |constant| {
+            references[reference.to_int()] = .constant;
+            context.targets[reference.to_int()] = constant;
+            return;
+        }
     }
     if (path.count <= 2) {
         const list_name: ?[]const u8 = if (path.count == 2) path.components[0] else null;
         const item = path.components[path.count - 1];
-        if (try lookups.resolve_list_item(context, list_name, item, reference) != null) {
+        if (try lookups.resolve_list_item(context, list_name, item, reference)) |element| {
             references[reference.to_int()] = .list_item;
+            context.targets[reference.to_int()] = element;
             return;
         }
     }
@@ -281,6 +292,23 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
     const found = lookups.resolve_variable(context, path.first(), reference);
     references[reference.to_int()] = found orelse .unresolved;
     if (found == null) try context.report(.unresolved_variable, reference);
+}
+
+/// List.GenerateIntoContainer's lookups: each item of a list literal must exist.
+fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    const ast = context.ast();
+    const node = context.tree.node(literal);
+    for (0..ast.list(node).count) |position| {
+        const text = context.leaf_text(ast.item(node, position));
+        const dot = std.mem.indexOfScalar(u8, text, '.');
+        const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
+        const item = if (dot) |at| text[at + 1 ..] else text;
+        if (try lookups.resolve_list_item(context, list_name, item, literal) == null) {
+            try context.report(.list_item_not_found, literal);
+        }
+    }
+    assert(context.tree.kind(literal) == .list_literal);
 }
 
 /// VariableAssignment.ResolveReferences.

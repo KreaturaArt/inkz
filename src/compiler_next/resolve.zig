@@ -60,6 +60,7 @@ pub const Code = enum(u8) {
     ambiguous_list_item,
     global_refers_to_variable,
     duplicate_list_item,
+    list_item_not_found,
     constant_redefined,
     unsupported_fold,
 };
@@ -70,13 +71,16 @@ pub const Diagnostic = struct {
 };
 
 pub const Resolution = struct {
-    /// A divert's target content, a read count's target, or none.
+    /// A divert's target content, a read count's target, a constant reference's
+    /// declaration, a list item reference's element, a list constructor's definition.
     targets: []ObjectIndex,
     references: []Reference,
     /// Diverts whose target is a variable (ink's variableDivertName).
     variable_diverts: std.DynamicBitSetUnmanaged,
     /// A list item's value (ink's seriesValue), by object; 0 for other objects.
     item_values: []i32,
+    /// The list definitions in declaration order (ink's _listDefs).
+    lists: []ObjectIndex,
     diagnostics: []Diagnostic,
 
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
@@ -85,6 +89,7 @@ pub const Resolution = struct {
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
         gpa.free(resolution.item_values);
+        gpa.free(resolution.lists);
         resolution.variable_diverts.deinit(gpa);
         gpa.free(resolution.diagnostics);
         resolution.* = undefined;
@@ -296,6 +301,7 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
         .references = context.references,
         .variable_diverts = context.variable_diverts,
         .item_values = context.item_values,
+        .lists = try context.list_order.toOwnedSlice(gpa),
         .diagnostics = try context.diagnostics.toOwnedSlice(gpa),
     };
     context.targets = &.{};

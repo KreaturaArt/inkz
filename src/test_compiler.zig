@@ -23,4 +23,7 @@ test {
     _ = @import("compiler_next/resolve.zig");
     _ = @import("compiler_next/source_space.zig");
     _ = @import("compiler_next/values.zig");
+    _ = @import("compiler_next/lower_ir.zig");
+    _ = @import("compiler_next/compile.zig");
+    _ = @import("compiler_next/lowering_tests.zig");
 }
