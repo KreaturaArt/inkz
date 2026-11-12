@@ -35,6 +35,11 @@ pub const ListSlab = struct {
     words: []u32,
     used: u32 = 0,
 
+    /// A list is `[forward, items_count, origins_count, items..., origins...]`. `forward` is
+    /// `unmarked` except during compaction (heap.zig), when it holds the list's new offset.
+    pub const header_words = 3;
+    pub const unmarked = std.math.maxInt(u32);
+
     pub fn init(words: []u32) ListSlab {
         assert(words.len <= std.math.maxInt(u32));
         const slab: ListSlab = .{ .words = words };
@@ -42,35 +47,46 @@ pub const ListSlab = struct {
         return slab;
     }
 
-    /// Stores a list and returns its reference.
+    /// Stores a list and returns its reference; `error.ListLimit` when the slab is full.
     pub fn store(
         slab: *ListSlab,
         items: []const ListItemIndex,
         origins: []const ListOriginIndex,
     ) error{ListLimit}!ListReference {
         assert(slab.used <= slab.words.len);
-        const words_count = 2 + items.len + origins.len;
+        const words_count = header_words + items.len + origins.len;
         if (words_count > slab.words.len - slab.used) return error.ListLimit;
         const at = slab.used;
-        slab.words[at] = @intCast(items.len);
-        slab.words[at + 1] = @intCast(origins.len);
-        for (items, 0..) |item, offset| slab.words[at + 2 + offset] = @backingInt(item);
-        const origins_at = at + 2 + items.len;
+        slab.words[at] = unmarked;
+        slab.words[at + 1] = @intCast(items.len);
+        slab.words[at + 2] = @intCast(origins.len);
+        const items_at = at + header_words;
+        for (items, 0..) |item, offset| slab.words[items_at + offset] = @backingInt(item);
+        const origins_at = items_at + items.len;
         for (origins, 0..) |origin, offset| slab.words[origins_at + offset] = @backingInt(origin);
         slab.used += @intCast(words_count);
         assert(slab.used <= slab.words.len);
         return @fromBackingInt(@intCast(at));
     }
 
+    /// The words the list at `at` takes, header included.
+    pub fn object_words(slab: *const ListSlab, at: u32) u32 {
+        assert(at + header_words <= slab.used);
+        const count = header_words + slab.words[at + 1] + slab.words[at + 2];
+        assert(at + count <= slab.used);
+        return count;
+    }
+
     pub fn view(slab: *const ListSlab, list: ListReference) View {
+        assert(slab.used <= slab.words.len);
         const at = @backingInt(list);
-        assert(at + 2 <= slab.used);
-        const items_count = slab.words[at];
-        const origins_count = slab.words[at + 1];
-        assert(at + 2 + items_count + origins_count <= slab.used);
-        const items: []const ListItemIndex = @ptrCast(slab.words[at + 2 ..][0..items_count]);
-        const origins_words = slab.words[at + 2 + items_count ..][0..origins_count];
-        return .{ .items = items, .origins = @ptrCast(origins_words) };
+        const total = slab.object_words(at);
+        const items_count = slab.words[at + 1];
+        const origins_count = slab.words[at + 2];
+        assert(total == header_words + items_count + origins_count);
+        const items_words = slab.words[at + header_words ..][0..items_count];
+        const origins_words = slab.words[at + header_words + items_count ..][0..origins_count];
+        return .{ .items = @ptrCast(items_words), .origins = @ptrCast(origins_words) };
     }
 };
 
@@ -533,7 +549,7 @@ test "a list prints ordered by value, then origin name" {
 
 test "a full slab returns ListLimit" {
     // Goal: the slab never grows. Method: fill a tiny one.
-    var words: [5]u32 = undefined;
+    var words: [6]u32 = undefined;
     var slab = ListSlab.init(&words);
     _ = try slab.store(&.{ red, green }, &.{colours});
     try std.testing.expectError(error.ListLimit, slab.store(&.{red}, &.{}));
