@@ -17,7 +17,7 @@ const file_bytes_max = 16 * 1024 * 1024;
 /// - `old_compiler`: the case's `.ink` compiled by the old compiler, on the old runtime.
 pub const engines = [_][]const u8{ "old", "old_compiler", "new" };
 /// Engines the transcript gate runs; they read the compiled fixtures directly.
-pub const transcript_engines = [_][]const u8{"old"};
+pub const transcript_engines = [_][]const u8{ "old", "new" };
 
 /// A case's source: `test/ground_truth/<id>.ink`, or the fixture or story it came from.
 pub fn source_path(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
