@@ -287,3 +287,19 @@ once. It costs `output_items_max` × 12 + `output_bytes_max` bytes: 114,688 at t
 14,336 at `small_story_limits`, a few hundred with fitted limits. Same-session gains:
 1.67× and 1.51× (crime_scene, generated) in ReleaseSafe, 1.83× and 1.67× in ReleaseFast.
 With the cache, VM dispatch (`perform`, `next_content`) is the largest cost in play.
+
+### The binary program image (P10.4–P10.6)
+
+The "New runtime" sections above add image load next to JSON load. Both include
+`Story.init`, and both are averages of 200 loads.
+
+| Story | ReleaseSafe: JSON → image | ReleaseFast: JSON → image | JSON → image size |
+|---|---|---|---|
+| crime_scene, fitted limits | 389 → 63 µs (6.1×) | 268 → 44 µs (6.1×) | 26,635 → 39,536 B |
+| generated, fitted limits | 5,605 → 764 µs (7.3×) | 4,273 → 648 µs (6.6×) | 378,714 → 505,080 B |
+
+With the default limits, `Story.init` in ReleaseSafe adds about 180 µs: Zig's safety fill
+writes the 2.2 MB budget. That cuts crime_scene's gain to 2.6×. Against the P0.6 baseline's
+old-runtime load (440 µs and 9,049 µs in ReleaseSafe), an image with fitted limits loads
+7.0× and 11.8× faster. Plan §9's 2× load target is met when images are used. The format is in
+`docs/program_image.md`.

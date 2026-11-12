@@ -80,6 +80,33 @@ defer story.deinit(gpa);
 You can also embed the JSON with `@embedFile("story.ink.json")`. The story does not keep a
 reference to `json` after `init_from_json` returns.
 
+### Loading from a program image
+
+JSON has to be parsed. A program image is the `Program`'s arrays as bytes, so loading one
+copies and checks them instead, 6–7× faster than JSON (`docs/program_image.md`). Write the
+image once, at build time or the first time a story is loaded, and load it from then on:
+
+```zig
+// Once: compile (or ink_json.load) and write the image.
+var program = try inkz.compiler.compile_source(gpa, "Hello from an image.\n");
+defer program.deinit(gpa);
+var image: std.Io.Writer.Allocating = .init(gpa);
+defer image.deinit();
+try inkz.program_image.write(&program, &image.writer);
+
+// Every run: load the image. It is checked, and the bytes are copied.
+var loaded = try inkz.program_image.load(gpa, image.written());
+defer loaded.deinit(gpa);
+var story: inkz.Story = undefined;
+try story.init(gpa, &loaded, .{});
+defer story.deinit(gpa);
+```
+
+`load` treats the image as untrusted. A wrong, truncated or corrupted image returns a named
+error (`error.NotAProgramImage`, `error.InvalidImage`, ...), never a crash. Images carry a
+format version. After an inkz update that changes it, `load` returns
+`error.UnsupportedFormatVersion`; write the image again from the JSON or the source.
+
 `Story.Options` has these fields:
 
 | Field | Default | Meaning |
