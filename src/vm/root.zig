@@ -3,8 +3,10 @@
 
 pub const value = @import("value.zig");
 pub const native = @import("native.zig");
+pub const lists = @import("lists.zig");
 
 test {
     _ = value;
     _ = native;
+    _ = lists;
 }
