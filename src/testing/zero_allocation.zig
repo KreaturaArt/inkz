@@ -11,6 +11,8 @@ const story_module = @import("../runtime/story.zig");
 const state_module = @import("../runtime/state.zig");
 const flows = @import("../runtime/flows.zig");
 const evaluate = @import("../runtime/evaluate.zig");
+const save = @import("../runtime/save.zig");
+const load = @import("../runtime/load.zig");
 const cases = @import("cases.zig");
 const ground_truth_test = @import("ground_truth_test.zig");
 const Story = story_module.Story;
@@ -132,5 +134,30 @@ test "evaluate_function allocates nothing" {
     const second = try evaluate.evaluate_function(&story, "add", &.{.{ .integer = 4 }}, &writer);
     try std.testing.expectEqual(@as(i32, 3), first.integer);
     try std.testing.expectEqual(@as(i32, 7), second.integer);
+    try std.testing.expectEqual(before, counting.growths());
+}
+
+test "load_json allocates nothing" {
+    // Goal: plan §9 for load_json. Method: crime_scene played a few turns and saved to a
+    // fixed buffer; loading that save into the story, twice, leaves the growths unchanged.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const path = cases.cases_directory ++ "/crime_scene.ink.json";
+    const json = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, arena, .limited(1 << 20));
+    var program = try ink_json.load(arena, json);
+    var counting = CountingAllocator.init(std.testing.allocator);
+    var story: Story = undefined;
+    try story.init(counting.allocator(), &program, .{});
+    defer story.deinit(counting.allocator());
+    try exercise(&story);
+    const buffer = try arena.alloc(u8, 1 << 20);
+    var writer: std.Io.Writer = .fixed(buffer);
+    try save.to_json(&story, &writer);
+    const saved = writer.buffered();
+    assert(saved.len > 0);
+    const before = counting.growths();
+    try load.load_json(&story, saved);
+    try load.load_json(&story, saved);
     try std.testing.expectEqual(before, counting.growths());
 }
