@@ -261,6 +261,13 @@ pub const Ast = struct {
         return .{ .first = .from_int(counter + 1), .count = count };
     }
 
+    /// Item `position` of a list node.
+    pub fn item(ast: *const Ast, node: NodeIndex, position: usize) NodeIndex {
+        const items = ast.list(node);
+        assert(position < items.count);
+        return .from_int(items.first.to_int() + @as(u32, @intCast(position)));
+    }
+
     /// The node as its typed view (T6).
     pub fn to_typed(ast: *const Ast, node: NodeIndex) Typed {
         const node_tag = ast.tag(node);
