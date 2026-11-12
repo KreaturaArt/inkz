@@ -671,3 +671,53 @@ test "malformed input returns an error instead of crashing" {
         } else |_| {}
     }
 }
+
+/// Counts the resolved targets in `program`, failing on any divert or choice that has none.
+fn count_resolved_targets(program: *const Program) !u32 {
+    assert(program.check() == .ok);
+    const extra = @import("extra.zig");
+    var resolved: u32 = 0;
+    const opcodes = program.instructions.items(.opcode);
+    for (opcodes, program.instructions.items(.operand)) |opcode, operand| {
+        switch (opcode) {
+            .divert => {
+                const divert = extra.get(instruction_module.Divert, program.extra, operand).data;
+                if (divert.flags.variable) continue;
+                if (divert.target_container.is_none()) return error.UnresolvedTarget;
+                resolved += 1;
+            },
+            .choice_point => {
+                const Choice = instruction_module.ChoicePoint;
+                const choice = extra.get(Choice, program.extra, operand).data;
+                if (choice.target_container.is_none()) return error.UnresolvedTarget;
+                resolved += 1;
+            },
+            .divert_target, .read_count => {
+                if (operand >= program.containers.len) return error.UnresolvedTarget;
+                resolved += 1;
+            },
+            else => {},
+        }
+    }
+    assert(resolved <= opcodes.len);
+    return resolved;
+}
+
+test "every path is resolved at load time" {
+    // Goal: P3.2; the hot path never sees a path string. Method: for every story, every
+    // divert, choice, divert-target and read-count operand points at a container, and the
+    // program passes its check. Operands are typed, so none can hold a path string.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const gpa = std.testing.allocator;
+    var targets: u32 = 0;
+    for ([_][]const u8{ "test/fixture/compiled", "test/ground_truth" }) |directory| {
+        for (try collect_json(arena, directory)) |path| {
+            var program = try load_file(gpa, path);
+            defer program.deinit(gpa);
+            targets += try count_resolved_targets(&program);
+        }
+    }
+    try std.testing.expect(targets > 1000);
+}
