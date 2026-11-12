@@ -155,8 +155,7 @@ pub const NewEngine = struct {
 
     pub fn seed(engine: *NewEngine, value: i32) void {
         assert(engine.story.state.memory.len > 0);
-        engine.story.state.story_seed = value;
-        engine.story.state.previous_random = 0;
+        engine.story.set_random_seed(value);
         assert(engine.story.state.story_seed == value);
     }
 

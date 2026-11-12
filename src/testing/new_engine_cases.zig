@@ -185,3 +185,19 @@ test "P5.8: evaluate_function on the live state" {
         .{ .id = "runtime/bindings/game_ink_back_and_forth" },
     });
 }
+
+test "P5.9: RANDOM, SEED_RANDOM, LIST_RANDOM and shuffles" {
+    // Goal: P5.9; .NET Random seeded with storySeed + previousRandom, a fixed storySeed,
+    // shuffles seeded by the UTF-16 path hash, and RANDOM's range overflow error. Method:
+    // replay.
+    try expect_cases_match(&.{
+        .{ .id = "audit/random_seed_and_sequence" },
+        .{ .id = "audit/random_range_limits" },
+        .{ .id = "audit/unicode_paths" },
+        .{ .id = "runtime/lists/list_random" },
+        .{ .id = "runtime/sequences/all_sequence_types" },
+        .{ .id = "runtime/sequences/shuffle_stack_muddying" },
+        .{ .id = "runtime/sequences/blanks_in_inline_sequences" },
+        .{ .id = "runtime/sequences/empty_sequence_content" },
+    });
+}
