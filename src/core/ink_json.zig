@@ -311,25 +311,10 @@ const Loader = struct {
         try loader.builder.add(.integer, value);
     }
 
-    /// A string content item: text, a newline, or a command or function word.
     fn add_word(loader: *Loader, word: []const u8) Error!void {
         assert(loader.builder.frames.items.len > 0);
-        if (word.len == 0) return error.UnknownContent;
-        if (word[0] == '^') return loader.builder.add(.text, try loader.builder.intern(word[1..]));
-        if (std.mem.eql(u8, word, "\n")) return loader.builder.add(.newline, {});
-        const opcode = words.get(word) orelse {
-            std.log.debug("unknown content word: {s}", .{word});
-            return error.UnknownContent;
-        };
-        assert(instruction_module.operand_kind(opcode) == .none);
-        try loader.add_bare(opcode);
-    }
-
-    fn add_bare(loader: *Loader, opcode: Opcode) Error!void {
-        assert(instruction_module.operand_kind(opcode) == .none);
-        const count_before = loader.builder.scratch.len;
-        try loader.builder.scratch.append(loader.builder.gpa, .{ .opcode = opcode, .operand = 0 });
-        assert(loader.builder.scratch.len == count_before + 1);
+        assert(loader.frames_count > 0);
+        try add_word_to(&loader.builder, word);
     }
 
     /// The fields of a content object; ink defines which keys appear together.
@@ -483,43 +468,21 @@ const Loader = struct {
     }
 
     fn add_variable_pointer(loader: *Loader, name: []const u8, context: i32) Error!void {
-        const builder = &loader.builder;
         assert(name.len > 0);
-        const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
-            .name = try builder.intern(name),
-            .context = context,
-        });
-        try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
-        assert(at < builder.extra.count());
+        assert(loader.frames_count > 0);
+        try add_variable_pointer_to(&loader.builder, name, context);
     }
 
     fn add_divert_object(loader: *Loader, fields: *const Fields) Error!void {
         assert(fields.target != null);
-        const builder = &loader.builder;
-        const key = fields.divert_key.?;
-        const target = fields.target.?;
-        if (std.mem.eql(u8, key, "x()")) {
-            const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
-                .external = try builder.external(target),
-                .arguments_count = fields.external_arguments,
-                .conditional = fields.conditional,
-            });
-            return builder.add(.call_external, @fromBackingInt(@intCast(at)));
-        }
-        const kind: instruction_module.DivertKind = if (std.mem.eql(u8, key, "f()"))
-            .function
-        else if (std.mem.eql(u8, key, "->t->"))
-            .tunnel
-        else
-            .plain;
-        const flags: instruction_module.DivertFlags = .{
-            .kind = kind,
+        assert(fields.divert_key != null);
+        try add_divert_object_to(&loader.builder, .{
+            .key = fields.divert_key.?,
+            .target = fields.target.?,
             .conditional = fields.conditional,
             .variable = fields.variable,
-        };
-        if (fields.variable) return builder.add_divert_variable(target, flags);
-        try builder.add_divert(target, flags);
-        assert(!flags.variable);
+            .external_arguments = fields.external_arguments,
+        });
     }
 
     /// `"listDefs": {"origin": {"item": value, ...}, ...}`
@@ -551,6 +514,75 @@ const Loader = struct {
         assert(items.items.len < std.math.maxInt(u32));
     }
 };
+
+/// A string content item: text (`^...`), a newline, or a command or function word. Shared
+/// with the old compiler's adapter (src/compiler/codegen_to_program.zig).
+pub fn add_word_to(builder: *ProgramBuilder, word: []const u8) Error!void {
+    assert(builder.frames.items.len > 0);
+    if (word.len == 0) return error.UnknownContent;
+    if (word[0] == '^') return builder.add(.text, try builder.intern(word[1..]));
+    if (std.mem.eql(u8, word, "\n")) return builder.add(.newline, {});
+    const opcode = words.get(word) orelse {
+        std.log.debug("unknown content word: {s}", .{word});
+        return error.UnknownContent;
+    };
+    assert(instruction_module.operand_kind(opcode) == .none);
+    const count_before = builder.scratch.len;
+    try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
+    assert(builder.scratch.len == count_before + 1);
+}
+
+/// `{"^var": name, "ci": context}`.
+pub fn add_variable_pointer_to(
+    builder: *ProgramBuilder,
+    name: []const u8,
+    context: i32,
+) Error!void {
+    assert(name.len > 0);
+    const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
+        .name = try builder.intern(name),
+        .context = context,
+    });
+    try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
+    assert(at < builder.extra.count());
+}
+
+/// A divert-like content object: `->`, `f()`, `->t->` or `x()` with its fields.
+pub const DivertObject = struct {
+    key: []const u8,
+    target: []const u8,
+    conditional: bool = false,
+    variable: bool = false,
+    external_arguments: u32 = 0,
+};
+
+pub fn add_divert_object_to(builder: *ProgramBuilder, object: DivertObject) Error!void {
+    assert(object.target.len > 0);
+    assert(builder.frames.items.len > 0);
+    const key = object.key;
+    const target = object.target;
+    if (std.mem.eql(u8, key, "x()")) {
+        const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
+            .external = try builder.external(target),
+            .arguments_count = object.external_arguments,
+            .conditional = object.conditional,
+        });
+        return builder.add(.call_external, @fromBackingInt(@intCast(at)));
+    }
+    const kind: instruction_module.DivertKind = if (std.mem.eql(u8, key, "f()"))
+        .function
+    else if (std.mem.eql(u8, key, "->t->"))
+        .tunnel
+    else
+        .plain;
+    const flags: instruction_module.DivertFlags = .{
+        .kind = kind,
+        .conditional = object.conditional,
+        .variable = object.variable,
+    };
+    if (object.variable) return builder.add_divert_variable(target, flags);
+    try builder.add_divert(target, flags);
+}
 
 fn load_file(gpa: Allocator, path: []const u8) !Program {
     assert(std.mem.endsWith(u8, path, ".json"));
