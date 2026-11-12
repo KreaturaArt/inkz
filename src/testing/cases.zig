@@ -15,7 +15,7 @@ const file_bytes_max = 16 * 1024 * 1024;
 /// Engines the ground-truth gate runs:
 /// - `old`: the old runtime on the JSON compiled by ink v1.2.1;
 /// - `old_compiler`: the case's `.ink` compiled by the old compiler, on the old runtime.
-pub const engines = [_][]const u8{ "old", "old_compiler" };
+pub const engines = [_][]const u8{ "old", "old_compiler", "new" };
 /// Engines the transcript gate runs; they read the compiled fixtures directly.
 pub const transcript_engines = [_][]const u8{"old"};
 
