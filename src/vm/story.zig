@@ -145,6 +145,15 @@ pub const Story = struct {
         assert(story.state.call_stack.depth() == 1);
     }
 
+    /// Seeds RANDOM and shuffles (`Options.random_seed`): ink's storySeed, with
+    /// previousRandom reset. ink seeds from the clock; this runtime starts at 0.
+    pub fn set_random_seed(story: *Story, seed: i32) void {
+        assert(story.state.memory.len > 0);
+        story.state.story_seed = seed;
+        story.state.previous_random = 0;
+        assert(story.state.story_seed == seed);
+    }
+
     /// ink's BindExternalFunctionGeneral. Names the story never calls are ignored.
     pub fn bind_external_function(
         story: *Story,
