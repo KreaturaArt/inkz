@@ -260,6 +260,7 @@ pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
         if (label.len > 0) ir.container(container).name = try ir.text(label);
     }
     ir.container(container).flags |= ir_module.count_start_only;
+    if (lowering.count_all_visits) ir.container(container).flags |= ir_module.count_visits;
     lowering.runtime_containers[gather.to_int()] = container;
     return .{ .container = container };
 }
@@ -312,7 +313,8 @@ pub fn generate_choice(lowering: *Lowering, choice: ObjectIndex) !Result {
     if (parts.start != null) try add_return_to_start(lowering, inner, start_container);
     try ir.add_contents_of(inner, lowering.result(parts.inner).container);
     ir.container(inner).flags |= ir_module.count_start_only;
-    if (flags & once_only != 0) ir.container(inner).flags |= ir_module.count_visits;
+    const counted = flags & once_only != 0 or lowering.count_all_visits;
+    if (counted) ir.container(inner).flags |= ir_module.count_visits;
     return .{ .container = outer };
 }
 

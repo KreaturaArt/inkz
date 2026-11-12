@@ -50,6 +50,8 @@ pub const Corpus = enum {
     transcripts,
     /// The old compiler's e2e tests on the new VM, compared with the old runtime (P8.0).
     e2e,
+    /// The new compiler's JSON for each ground-truth case, compared with inklecate's (P8.5).
+    structure,
 };
 
 pub const Entry = struct {

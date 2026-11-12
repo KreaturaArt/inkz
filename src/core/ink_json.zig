@@ -64,6 +64,9 @@ const words = std.StaticStringMap(Opcode).initComptime(.{
     .{ "void", .void },
 });
 
+/// Writes a program as ink's JSON (src/core/ink_json_write.zig).
+pub const serialize = @import("ink_json_write.zig").serialize;
+
 /// Loads `json`. The returned program is owned by the caller (`Program.deinit(gpa)`).
 pub fn load(gpa: Allocator, json: []const u8) !Program {
     assert(json.len < std.math.maxInt(u32));
