@@ -1,5 +1,5 @@
-//! Saving and loading on the new runtime (plan P6.1, P6.2), beyond the ground-truth
-//! transcripts (whose C# saves the new engine already reproduces byte for byte):
+//! Saving and loading, beyond the ground-truth transcripts (whose C# saves the runtime
+//! reproduces byte for byte):
 //! - a save and load at every turn of every case doesn't change the play;
 //! - every C# save recorded in the ground truth loads, and saves back to the same JSON;
 //! - a corrupted save leaves the story unchanged.
