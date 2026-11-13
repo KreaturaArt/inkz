@@ -419,12 +419,7 @@ fn render_label(
     };
     const leaf = token_node orelse return;
     if (ast.tag(leaf) == .none) return;
-    const token = ast.data[leaf.to_int()];
-    const workspace = &parsed.workspace;
-    try out.print(
-        " \"{s}\"",
-        .{parsed.source[workspace.token_starts[token]..workspace.token_ends[token]]},
-    );
+    try out.print(" \"{s}\"", .{parsed.leaf_text(leaf)});
 }
 
 fn expect_tree(source: []const u8, expected: []const u8) !void {

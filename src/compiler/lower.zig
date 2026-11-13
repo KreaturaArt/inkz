@@ -67,8 +67,6 @@ pub const Lowering = struct {
     runtime_containers: []ContainerId,
     /// Weave state that outlives a weave's generation (its loose ends go to an ancestor).
     weaves: weave.States,
-    /// EXTERNAL names (ink's story.externals).
-    externals: std.StringHashMapUnmanaged(void) = .empty,
     /// ink's countAllVisits compiler option: every flow, gather and choice counts visits.
     count_all_visits: bool = false,
     root: ContainerId = .none,
@@ -89,20 +87,6 @@ pub const Lowering = struct {
         const runtime_containers = try gpa.alloc(ContainerId, tree.count());
         errdefer gpa.free(runtime_containers);
         @memset(runtime_containers, .none);
-        var externals: std.StringHashMapUnmanaged(void) = .empty;
-        errdefer externals.deinit(gpa);
-        for (0..tree.count()) |position| {
-            const object: ObjectIndex = .from_int(@intCast(position));
-            if (tree.kind(object) != .external_declaration) continue;
-            const name_node = parsed.tree.child(tree.node(object), 0);
-            const token = parsed.tree.data[name_node.to_int()];
-            const workspace = &parsed.workspace;
-            try externals.put(
-                gpa,
-                parsed.source[workspace.token_starts[token]..workspace.token_ends[token]],
-                {},
-            );
-        }
         return .{
             .gpa = gpa,
             .parsed = parsed,
@@ -112,7 +96,6 @@ pub const Lowering = struct {
             .results = results,
             .runtime_containers = runtime_containers,
             .weaves = .init(gpa),
-            .externals = externals,
         };
     }
 
@@ -122,7 +105,6 @@ pub const Lowering = struct {
         lowering.gpa.free(lowering.results);
         lowering.gpa.free(lowering.runtime_containers);
         lowering.weaves.deinit();
-        lowering.externals.deinit(lowering.gpa);
         lowering.diagnostics.deinit(lowering.gpa);
         lowering.ir.deinit();
         lowering.* = undefined;
@@ -184,30 +166,15 @@ pub const Lowering = struct {
         return &lowering.parsed.tree;
     }
 
-    /// The text of a leaf's token.
-    pub fn token_text(lowering: *const Lowering, leaf: NodeIndex) []const u8 {
-        assert(lowering.results.len == lowering.tree.count());
-        const tree = lowering.ast();
-        const tag = tree.tag(leaf);
-        if (tag == .none or tag == .missing) return "";
-        assert(ast_module.shape(tag) == .leaf);
-        const token = tree.data[leaf.to_int()];
-        const workspace = &lowering.parsed.workspace;
-        return lowering.parsed.source[workspace.token_starts[token]..workspace.token_ends[token]];
-    }
-
     /// The name in an object's syntax node child `position` (an identifier leaf).
     pub fn child_name(lowering: *const Lowering, object: ObjectIndex, position: u32) []const u8 {
-        assert(lowering.results.len == lowering.tree.count());
-        const node = lowering.tree.node(object);
-        assert(!node.is_none());
-        return lowering.token_text(lowering.ast().child(node, position));
+        return lowering.parsed.child_text(lowering.tree.node(object), position);
     }
 
+    /// Whether `name` is an EXTERNAL function (ink's story.externals).
     pub fn is_external(lowering: *const Lowering, name: []const u8) bool {
-        assert(lowering.results.len == lowering.tree.count());
         assert(name.len < std.math.maxInt(u32));
-        return lowering.externals.contains(name);
+        return lowering.resolution.externals.contains(.{ .scope = Tree.root, .name = name });
     }
 
     /// Whether a divert is a built-in call's proxy, which ink never generates.
@@ -326,7 +293,7 @@ pub const Lowering = struct {
         const node = tree.node(object);
         const tag = lowering.ast().tag(node);
         if (tag == .error_text) return "<ERROR IN FLOW>";
-        const raw = lowering.token_text(node);
+        const raw = lowering.parsed.leaf_text(node);
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) {
             // Without escapes the text is the source itself; text_space's space usually is too.
             if (tag != .text_space) return raw;
@@ -390,7 +357,7 @@ pub const Lowering = struct {
         while (position > 0) {
             position -= 1;
             const parameter = lowering.ast().item(parameters, position);
-            const name = try lowering.ir.text(lowering.token_text(parameter));
+            const name = try lowering.ir.text(lowering.parsed.leaf_text(parameter));
             _ = try lowering.ir.add(
                 container,
                 .{ .assignment = .{ .name = name, .global = false, .new = true } },

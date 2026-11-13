@@ -175,8 +175,8 @@ pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const
     assert(lowering.results.len == lowering.tree.count());
     const ast = lowering.ast();
     const path = ast.child(lowering.tree.node(reference), 0);
-    const first = lowering.token_text(ast.item(path, 0));
-    const last = lowering.token_text(ast.item(path, ast.list(path).count - 1));
+    const first = lowering.parsed.leaf_text(ast.item(path, 0));
+    const last = lowering.parsed.leaf_text(ast.item(path, ast.list(path).count - 1));
     // The components are one run of the source (`a.b`), so the name is that range.
     const start = @intFromPtr(first.ptr) - @intFromPtr(lowering.parsed.source.ptr);
     const end = @intFromPtr(last.ptr) + last.len - @intFromPtr(lowering.parsed.source.ptr);
@@ -222,7 +222,7 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
     const object = frame.object;
     const node = tree.node(object);
     const name = try ir.text(if (tree.has(object, Flags.by_expression))
-        lowering.token_text(lowering.ast().child(node, 0))
+        lowering.parsed.child_text(node, 0)
     else
         reference_name_of_node(lowering, lowering.ast().child(node, 0)));
     const children = tree.children_of(object);
@@ -243,7 +243,7 @@ fn reference_name_of_node(lowering: *const Lowering, reference: ast_module.NodeI
     assert(lowering.results.len == lowering.tree.count());
     const ast = lowering.ast();
     assert(ast.tag(reference) == .variable_reference);
-    return lowering.token_text(ast.item(ast.child(reference, 0), 0));
+    return lowering.parsed.leaf_text(ast.item(ast.child(reference, 0), 0));
 }
 
 /// FunctionCall.GenerateIntoContainer: a built-in's arguments then its command or native
@@ -327,7 +327,7 @@ fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
     const arena = lowering.ir.arena.allocator();
     var items: std.ArrayList(ir_module.ListItem) = .empty;
     for (0..ast.list(node).count) |position| {
-        const text = lowering.token_text(ast.item(node, position));
+        const text = lowering.parsed.leaf_text(ast.item(node, position));
         const dot = std.mem.indexOfScalar(u8, text, '.');
         const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
         const item_name = if (dot) |at| text[at + 1 ..] else text;
