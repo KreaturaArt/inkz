@@ -11,7 +11,6 @@ const limits_module = @import("../core/limits.zig");
 const Limits = limits_module.Limits;
 const state_module = @import("state.zig");
 const call_stack_module = @import("call_stack.zig");
-const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
 const value_module = @import("value.zig");
 const lookahead = @import("lookahead.zig");
@@ -839,13 +838,6 @@ const TagCounter = struct {
         counter.count += 1;
     }
 };
-
-pub const pop_call_stack = ops.pop_call_stack;
-pub const try_exit_function_evaluation_from_game = ops.try_exit_function_evaluation_from_game;
-
-comptime {
-    _ = output_module;
-}
 
 const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
 

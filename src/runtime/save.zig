@@ -6,7 +6,6 @@ const std = @import("std");
 const assert = std.debug.assert;
 const profile = @import("../core/profile.zig");
 const container_module = @import("../core/container.zig");
-const index = @import("../core/index.zig");
 const value_module = @import("value.zig");
 const output_module = @import("output.zig");
 const call_stack_module = @import("call_stack.zig");
@@ -461,8 +460,4 @@ fn write_escaped(writer: *Writer, text: []const u8) Writer.Error!void {
             else => if (character >= ' ') try writer.writeByte(character),
         }
     }
-}
-
-comptime {
-    _ = index;
 }
