@@ -1,227 +1,219 @@
-# Architecture and Development
+# Architecture and development
 
-## Overview
+This is a tour of the code for people who work on inkz. `docs/Architecture.md` has the
+diagrams; `docs/Guidelines.md` has the rules every change follows; `docs/RunningYourInk.md`
+is the host API guide. Each source file starts with a `//!` comment that says what it does
+and which part of `docs/DODMigrationPlan.md` it implements; read those next.
 
-The ink pipeline broadly consists of 3 stages:
+The ```zig blocks in this file are compiled by `zig build doctest`. Excerpts of internal
+code are ```text blocks, because the library doesn't export those modules.
 
-* The ink parser - interprets the ink text files to a hierarchy of objects
-* The runtime code generation
-* The runtime engine itself
+## The pieces
 
-The following is a fairly brief tour of these 3 stages, hopefully enough to give you a foundation for exploring the codebase yourself.
+| Directory | What it holds |
+|---|---|
+| `src/core/` | The program image both halves share: `Program`, `ProgramBuilder`, the string pool, index newtypes, limits, `BoundedStack`, ink path strings, .NET's seeded random, and ink's JSON (`ink_json.load`, `ink_json.serialize`). |
+| `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public API (`api.zig`). |
+| `src/compiler/` | The compiler: parser, object tree, name resolution and lowering to a `Program`. Entry points in `compile.zig`. |
+| `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle and divergence ledger, end-to-end tests, the simulator and the zero-allocation gate. |
+| `tools/` | Lint, doctest, snapshot files, ground-truth file checks, the death-test runner, and the C# reference harness (`tools/ink_harness/`). |
 
-## Ink parser
+`src/root.zig` is the library module, imported as `inkz`. It re-exports the runtime API at
+the top level (`inkz.Story`, `inkz.Value`, `inkz.Choice`, `inkz.Limits`, ...) and the
+modules `inkz.compiler`, `inkz.runtime`, `inkz.core`, `inkz.ink_json` and the type
+`inkz.Program`.
 
-The parser takes a root ink file (which may reference other ink files), and constructs a hierarchy of `Parsed.Object` values that closely resemble the structure within the original ink files, as closely as possible to how it was written.
+## One image, two producers
 
-The parser is a hand-written recursive descent parser built on top of `StringParser`, which allows a hierarchy of parse rules to be composed using Zig function pointers. At the top level, `ink_parser.zig` contains a function called `parse()`, which returns a `Parsed.Story` value.
+Everything the runtime runs is a `Program` (`src/core/program.zig`): an immutable,
+pre-resolved story image. Two producers make one, and both drive the same
+`ProgramBuilder`:
 
-Within `parse()`, rules are evaluated, each of which may contain more rules. Rules are simply functions that return the result of parsing or `null` if parsing failed (though there are exceptions to this).
+- the JSON loader, `ink_json.load(gpa, json)`, from ink's compiled `.ink.json`;
+- the compiler, `inkz.compiler.compile_source(gpa, source)` or `compile_file`, from `.ink`.
 
-Crucially however, parse rules are wrapped in either `parseObject(rule)` or `parse(T, rule)`. These functions know how to rewind the state of the parser when a rule fails. This is important, since the rule may get part way through before it realises that it's not parsing what it wanted. By way of illustration, here's the start of the parse rule for a stitch:
+`ink_json.serialize` writes a `Program` back as inklecate's JSON. The structural gate
+(`src/testing/structure_gate.zig`) checks that the compiler's JSON equals inklecate's for
+every ground-truth story, and that `load(serialize(compile(source)))` equals
+`compile(source)` field by field.
+
+A `Program` is struct-of-arrays data addressed by `u32` index newtypes, with no pointers:
+
+- **Instructions:** a one-byte opcode plus a 32-bit operand, 5 bytes, in two arrays. One ink
+  content item is exactly one instruction. Operands too wide for 32 bits (a divert's target
+  and flags, a choice point) live in the `extra` word table and the operand is their index.
+- **Containers:** ink's unit of addressing. Each one is a contiguous range of the one
+  instruction array, plus its parent, depth, name, path, counting flags and a range of the
+  `named` table (knots, stitches, labelled gathers). A nested container appears as an
+  `enter_container` instruction at its position in the parent.
+- **Strings:** one frozen `StringPool`; instructions hold `StringId`s.
+- **Globals, list origins, list items, externals:** small tables indexed by their newtypes.
+
+Every target is resolved to a container index or a `{container, index}` pair when the
+program is built, so the VM never sees a path string. `Program.verify()` runs after every
+build and load.
+
+This dump shows the layout. `inkz.core.program_dump.dump` lists any program:
 
 ```zig
-fn stitchDefinition(p: *Parser) ?*Parsed.Stitch {
-    // Wrap the 'stitchDeclaration' rule in a parse(...) call,
-    // so that it will return to the correct point in the ink
-    // file if parsing fails.
-    const saved = p.save();
-    const decl = p.parse(stitchDeclaration) orelse {
-        p.restore(saved);
-        return null;
-    };
+var program = try inkz.compiler.compile_source(gpa, "Hello, world!\n");
+defer program.deinit(gpa);
 
-    // ... (continue parsing the StitchDefinition)
+var listing: std.Io.Writer.Allocating = .init(gpa);
+defer listing.deinit();
+try inkz.core.program_dump.dump(&program, &listing.writer);
+std.debug.print("{s}", .{listing.written()});
+
+const json = try inkz.compiler.compile_to_json(gpa, "Hello, world!\n");
+defer gpa.free(json);
+std.debug.print("{s}\n", .{json});
 ```
 
-If a rule isn't wrapped in a `parse` function, then it's an indication that rewinding definitely isn't strictly necessary within the scope, for example if a sub-rule is both optional and atomic. Or, when success and failure of the rule is handled manually.
+## The compiler
 
-## StringParser structuring
+The compiler is a faithful, non-recursive port of ink's `InkParser` and `ParsedHierarchy`
+(C#, ink v1.2.1). Each stage is a file or a few; their `//!` comments name the C# classes
+they follow.
 
-The base type `StringParser` contains a number of helper functions to help with parsing.
+1. **Source space** (`source_space.zig`): every file of a compilation, with comments removed
+   (ink's `CommentEliminator`), laid end to end in one buffer. `INCLUDE`d files are appended
+   as they are found. Token and node indices are therefore global, and a file table maps
+   offsets back to `file:line:column`.
+2. **Parser** (`core.zig`, `grammar*.zig`): ink's backtracking rules, run on an explicit
+   stack instead of the native one. A rule is a step function with numbered phases. Each
+   step returns an `Action`: `call` another rule, `peek` at one, `succeed`, `fail`, or run
+   `again`. A call pushes a frame that holds a checkpoint (input position, token, node and
+   scratch counts); a failed rule restores it. That gives StringParser's
+   `BeginRule`/`FailRule`/`SucceedRule`, and so `OneOf`, `Optional` and `Interleave`. The
+   frame stack is bounded by `parse_depth_max`, and a gas counter bounds the steps by the
+   input length. Like ink's StringParser, the rules read characters themselves; a token is
+   the `start` and `end` of a name or a text run they record (`lexical.zig` holds the
+   comment removal and ink's identifier characters).
+3. **Syntax tree** (`ast.zig`): a node is a one-byte tag and one `u32` word (5 bytes, two
+   arrays). Children are contiguous; a parent's word is the index of its first child.
+4. **Object tree** (`sema.zig`, `sema_build.zig`, `sema_includes.zig`): ink's parsed
+   hierarchy, built the way ink's constructors build it. A flow's statements are split into
+   its weave and its sub-flows; a weave nests its choices and gathers by indentation.
+5. **Resolution** (`resolve*.zig`): ink's two phases. While generating, in tree order,
+   declarations are registered and each divert's target is resolved. Then
+   `ResolveReferences` runs children first. Naming collisions are checked here.
+6. **Lowering** (`lower*.zig`): each object's `GenerateRuntimeObject` into an IR of ink's
+   runtime container tree (`lower_ir.zig`), then ink's `ExportRuntime` steps: the
+   `global decl` container, count flags, `FlattenContainersIn`, runtime paths, termination
+   checks, and emission through `ProgramBuilder` (`lower_emit.zig`).
 
-Functions like `parseString`, `parseSingleCharacter`, `parseInt`, etc can be used to read text and values at the lowest level.
+Every walk uses an explicit stack or a post-order layout. The object tree, the resolution
+and the syntax are freed before layout and emission, which keeps peak memory low.
 
-Higher level structuring functions can be used to compose rules together. For example:
+A rule from `grammar_weave.zig`, abridged, shows the shape of the parser:
 
-```zig
-pub fn oneOrMore(p: *Parser, comptime T: type, rule: *const fn(*Parser) ?T) ![]T
-```
-
-...acts a bit like the `+` operator in regular expressions. So for example, in multiline conditionals, we have:
-
-```zig
-const multiple_conditions = try p.oneOrMore(Condition, singleMultilineCondition);
-```
-
-Similarly, but even more powerfully, the `interleave` function matches patterns of the form ABABA etc. Frequently, this is used to interleave some core content with whitespace. Here's an example that parses the arguments to a flow (e.g. knot, stitch or function), that is a series of identifiers separated by commas:
-
-```zig
-const flow_arguments = try p.interleave(
-    Argument,
-    p.spaced(flowDeclArgument),
-    p.exclude(p.string(",")),
-);
-```
-
-The above example also demonstrates another concept: rule transformers and builders. In the above example, `spaced` takes a rule, and produces a new rule that also allows for optional whitespace on either side of the content that is parsed.
-
-The `exclude` transformer takes a rule, and if it succeeds, prevents its result from being included in the `interleave`'s returned slice (to remove the commas from the parsed results).
-
-The `string` rule is like `parseString` except that it **constructs rules** rather than parsing immediately, which is useful for conveniently constructing declarative expressions like the one above.
-
-Other transformers and structuring concepts exist, but hopefully this should give you enough of a taste to get started.
-
-## DOP AST construction (compiler code generation)
-
-The parsed hierarchy closely resembles the ink as it was originally written. The compiler's job is to convert it into the **Data Oriented Programming (DOP) AST** — a flat, container-based representation that is shared by both the compiler and the runtime.
-
-The DOP AST is built out of smaller, more fundamental units (sort of like byte code, though not that low level). This AST is serialized to a JSON-based format (`.ink.json`) by the compiler, and deserialized back into the **same DOP AST structure** by the runtime at startup. For more information on the JSON format, [see the documentation](ink_JSON_runtime_format.md).
-
-> **Key architectural constraint**: the runtime has **no dynamic memory allocation** during story execution. All DOP AST nodes are allocated once during `Story.initFromJson()` and remain immutable for the lifetime of the story.
-
-In the DOP AST, there's no concept of Knots, Stitches, Weave, or other high level ink structures. Instead, the AST consists mainly of general purpose `Container` objects and content, represented as `RuntimeObject` tagged unions.
-
-These DOP AST nodes are built from the `Parsed.Object` hierarchy, however not immediately. The `init` functions of `Parsed.Object` types are kept as lightweight as possible, since the rewinding of the parser when rules fail can potentially cause them to be built and destroyed multiple times before a final successful hierarchy is produced.
-
-Instead, the hard work of converting the parsed hierarchy into the DOP AST is saved for two steps done later:
-
-* Main DOP AST construction
-* Resolving of references
-
-In most cases, a single `Parsed.Object` is converted to one or more `RuntimeObject` nodes, through the following function:
-
-```zig
-pub fn generateRuntimeObject(self: *Parsed.Object, allocator: Allocator) !*RuntimeObject { ... }
-```
-
-At the top level, this construction process is kicked off by the `Parsed.Story` in:
-
-```zig
-pub fn exportRuntime(self: *Parsed.Story, allocator: Allocator) !*Story
-```
-
-Once the full DOP AST has been constructed, references are resolved. This has to be done in a separate pass, since the target of references (such as divert targets — knot names etc) may not exist until the full AST exists.
-
-Each `Parsed.Object` can implement:
-
-```zig
-pub fn resolveReferences(self: *Parsed.Object, context: *Story) void
-```
-
-...in order to participate in this process. For example in `divert.zig`, the function contains this (as well as other things):
-
-```zig
-if (self.target_content) |target| {
-    self.runtime_divert.target_path = target.runtimePath();
+```text
+pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
+    switch (frame.phase) {
+        0 => {
+            // Bullets, an optional (label), then the first condition.
+            ...
+            frame.phase = 1;
+            return .{ .call = .choice_single_condition };
+        },
+        1 => return choice_conditions(machine, frame),
+        ...
+        3 => {
+            // machine.outcome says whether the rule called in phase 2 matched.
+            if (machine.outcome == .succeeded) frame.locals[2] |= choice_option;
+            frame.phase = 4;
+            return .{ .call = .mixed_text_and_logic };
+        },
+        ...
+    }
 }
 ```
 
-After reference resolution, the fully linked DOP AST is serialized to `.ink.json`. The runtime then deserializes this JSON back into the same DOP AST structure via `Story.initFromJson()`, with all allocation happening at that point.
+## The runtime
 
-## Runtime ink engine
+`Story` (`src/runtime/story.zig`) is a borrowed `*const Program`, one `State`, and ink's
+Continue loop. The public `inkz.Story` (`api.zig`) wraps it with the host calls and the
+borrowed-view checks.
 
-The runtime operates directly on the **DOP AST** deserialized from `.ink.json` at startup. Because the compiler and runtime share the same AST structure, there is no translation step at runtime — `Story.initFromJson()` allocates all nodes once, and `step()` traverses them with zero further allocation.
+- **State** (`state.zig`) is carved out of one allocation of exactly
+  `Limits.bytes_total()` bytes, made in `init`. Nothing allocates afterwards; the
+  zero-allocation gate checks this on every ground-truth case. The live flow (evaluation
+  stack, call stack, output, choices) is separate from what all flows share (globals, visit
+  counts, turn indices, the random state, the heap, diagnostics).
+- **Values** (`value.zig`) are 12 bytes: `i32` with wrapping arithmetic and `f32`, as in C#
+  ink. Strings are references into the program's pool or the state's heap; lists are
+  references into the list slab.
+- **The VM** (`vm.zig`) is ink's `Step`, `NextContent` and `PerformLogicAndFlowControl`
+  over the flat program. `step` runs one instruction; `run` steps until the output changes,
+  a choice appears, the flow ends, or the step budget runs out. The semantics of each
+  instruction are in `ops.zig` (variables, strings, tags, choices, randomness) and
+  `native.zig` (ink's operators).
+- **The Continue loop** (`story.zig`, `lookahead.zig`) is ink's `ContinueInternal`. When the
+  output ends in a newline it takes a snapshot of the live flow and starts an undo log of
+  shared values. If new text or tags then extend the line, it restores the snapshot and
+  returns the line. That is how `cont()` returns one line and still joins glue.
+- **The heap** (`heap.zig`) holds runtime strings and lists in fixed buffers, reclaimed by
+  sliding mark-compact only when an allocation doesn't fit.
+- **Flows** (`flows.zig`) park the used part of each live buffer in a bounded region on a
+  switch, so a switch costs a copy of what is used, not of the limits.
+- **Saves** (`save.zig`, `load.zig`, `json_tree.zig`) stream ink's save format v10 with no
+  allocation, and load into fixed scratch, validating the whole save before touching the
+  state.
 
-All the higher level structures, including the story itself, any knots and stitches, and even choices, are built out of containers. Within the containers, content is iterated through sequentially, and appended to the output.
+### What changed for hosts
 
-This structure is loaded by the ink engine from a [JSON based format](ink_JSON_runtime_format.md).
+The rewrite changed the host API in three ways (plan decisions D5, D8, D12):
 
-### Containers
+- `cont()` returns a `Borrowed([]const u8)` view into the story's memory, valid until the
+  next mutating call; `cont_alloc(gpa)` returns a copy. In safety-checked builds, `.get()`
+  on a stale view fails an assertion.
+- All public names are snake_case: `can_continue`, `choose_choice_index`, `get_variable`.
+- `cont()` is line-based with ink's newline lookahead; `continue_maximally(writer)` plays
+  until the story can't continue, which is what the old `cont()` did.
 
-The `Runtime.Container` is general purpose, and can work as either an array or a dictionary, or both. Therefore, it can have ordered (indexed content) that's designed to be iterated through sequentially, and can also have named content, that's designed to be accessed by a string key.
+`docs/RunningYourInk.md` ends with the full table from old names to new ones.
 
-For example, a `Parsed.Choice` compiles down to a `Runtime.Container` that contains, amongst other things, the initial sequential content that forms the text of the choice, the minimal `Runtime.ChoicePoint` itself, as well as a named sub-container that contains the content that is run when the choice is picked by the player.
+## Working on inkz
 
-### Content
+Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 
-As with ink itself, the runtime engine's fundamental unit is content, rather than code. As such, a simple "Hello world" ink file would be compiled down to a single `Runtime.Container` with a single `Runtime.StringValue` in it (as well as a terminator).
+| Step | What it does |
+|---|---|
+| `zig build test` | Every suite below, the death tests and the doctests. |
+| `zig build test-runtime`, `test-compiler`, `test-core`, `test-tools` | One suite. `-Dtest-filter=<text>` narrows it. |
+| `zig build test-death` | Cases that must panic, one child process each. |
+| `zig build doctest` | Compiles the ```zig blocks of the docs against the library. |
+| `zig build lint` | The TigerStyle checks (see `docs/Guidelines.md`). |
+| `zig build fuzz` | One fuzz target per pipeline stage, on its corpus; add `--fuzz` (and `-Doptimize=ReleaseSafe`) to fuzz. See `docs/fuzzing.md`. |
+| `zig build simulate` | Plays every ground-truth case with seeded random choices, saves, loads and flow switches. |
+| `zig build transcripts` | Regenerates `test/transcripts/`. |
+| `zig build replay` | Installs `replay_case`, which replays one case and prints its transcript. |
+| `zig build bench` | Benchmarks in ReleaseSafe and ReleaseFast; writes `docs/benchmarks.md`. |
+| `zig build bench-io` | Program load and store, ink's JSON against the binary image, in ReleaseSafe and ReleaseFast; appends to `bench/load_store.jsonl` (see `docs/benchmarks.md`). |
+| `zig build bench-profile` | Time per pipeline stage (profile zones, ReleaseFast): prints each workload's zones and the worst zones of one pass; appends to `bench/profile.jsonl`. `zig build test-profile` checks the zones. |
 
-Each piece of content that is encountered is appended to the `output_stream` within the `Runtime.Story`.
+### Ground truth
 
-### Control commands
+Correct means "what ink v1.2.1 does on .NET 8". The C# harness in `tools/ink_harness/` builds
+ink's own compiler and runtime from a pinned commit and writes the expected outputs, saves
+and random sequences into `test/ground_truth/`, with a provenance header. It runs through
+mise (`mise run reference:setup`, `mise run reference:expected`) and is never part of
+`zig build`, so the Zig suite doesn't need .NET.
 
-Alongside the content that's designed to be seen by the player, additional commands are used to control the flow and evaluation of the content. Some examples, all of which are in the enum `Runtime.ControlCommand.CommandType`:
+Tests describe host actions once, as `.actions` lines, and replay them on the engine
+(`src/testing/transcript.zig`). The oracle compares the result with ink's transcript; every
+known difference must be listed, with a reason, in `test/divergence_ledger.zon`, and an
+entry whose case no longer differs fails too.
 
-* `eval_start` and `eval_end`: the content objects between are appended to the `evaluation_stack` rather than the `output_stream`. As functions and operators are encountered, they pop values off the stack, process them, and push a value back on the stack. Meanwhile, `eval_output` pops a value off the evaluation stack, and pushes it onto the output stream.
-* `choice_count`: how many choices have been produced in the current turn? Push the value to the output stream (or evaluation stack if in evaluation mode).
-* `done`: Indicates that the current flow is safe to end.
+### Debugging tips
 
-### Story
-
-Some important and useful features of the main runtime engine in `story.zig`:
-
-* `cont()` is the top level point where iteration of the content happens, and has this rough structure internally:
-
-```zig
-while (try self.step() or self.tryFollowDefaultInvisibleChoice()) {}
-```
-
-* `step()` iterates through a single element of content, and returns `false` if it runs out of content.
-* `performLogicAndFlowControl(content_object)` is called from `step`, and handles the majority of the non-content objects such as Diverts, Control Commands, etc.
-
-## Compiler development and debugging tips
-
-While testing modifications to the compiler, it's useful to run the **ink_testbed** executable. Inside `ink_testbed.zig` there is a suite of useful tools.
-
-The main entry point is `run()`. By default it simply calls `play()`, which will load up a pre-existing `test.ink` (that you can put your test ink in). `play()` has a basic choice loop that also serves as a good introduction to some of the built-in convenience functions.
-
-However if you want to automate the testing of a particular flow, you could write something like:
-
-```zig
-pub fn run(tb: *TestBed) !void {
-    try tb.compileFile();
-
-    try tb.continueMaximally();
-    try tb.choose(0);
-
-    try tb.continueMaximally();
-    try tb.choose(1);
-
-    try tb.continueMaximally();
-}
-```
-
-`buildStringOfHierarchy()` is a method in `Runtime.Story` that's useful when debugging. Call it while debugging to see a representation of the runtime hierarchy, as well as an arrow that points at where execution currently is in the hierarchy. For example, the following ink:
-
-    This is a test.
-    * [A choice]
-    - The end -> DONE
-
-...is at the time of writing represented, somewhat verbosely, as:
-
-    [
-        [
-            This is a test.
-    ,
-            [
-                eval_start,  <---
-                begin_string,
-                A choice,
-                end_string,
-                eval_end,
-                Choice: ->  line 2
-                -- named: --
-                [ (c)
-                    Divert (line 3)
-                ]
-            ]
-            -- named: --
-            [ (g-0)
-                The end
-    ,
-                done
-            ]
-        ],
-        End
-    ]
-
-The `<---` is the pointer to the current object being evaluated.
-
-In this representation, containers are represented as:
-
-    [
-        ...content...
-        -- named: --
-        ...named content...
-    ]
+- `inkz.core.program_dump.dump` (above) lists a program's containers and instructions in
+  layout order.
+- `inkz.compiler.compile_to_json` shows what the compiler made, in a form you can compare
+  with inklecate's output.
+- `replay_case <case id>` replays a ground-truth case in its own process; the
+  simulator prints the exact command that reproduces each failure it finds.
+- `State.check()` and `Program.check()` return a named `Fault` for the first broken
+  invariant. `verify()` asserts on it at the boundaries: when a program is built or loaded,
+  when the state is reset, saved or loaded, around lookahead snapshots and flow switches,
+  and around heap compaction.

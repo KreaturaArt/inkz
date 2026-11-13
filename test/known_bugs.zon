@@ -1,0 +1,81 @@
+// The audit bugs (plan P0.7), each with the issue that fixes it; all must be fixed by the end
+// of P9 (all are). Status: in_ledger (the case's divergence is in test/divergence_ledger.zon),
+// not_reproduced (the case matches ink and stays as a regression guard), not_expressible (no
+// transcript can show it; see reason), fixed. Checked by src/testing/known_bugs.zig.
+.{
+    // Runtime.
+    .{
+        .name = "loadStateFromJson keeps keys that point into freed memory",
+        .fix = "TASK-140.1",
+        .status = .fixed,
+        .reason = "crashed under Zig 0.17; the keys are copied since commit a328cf0",
+    },
+    .{
+        .name = "divert targets are saved as null",
+        .fix = "TASK-146.1",
+        .status = .fixed,
+        .case = "audit/save_divert_target",
+        .reason = "the runtime matches ink on audit/save_divert_target (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "saved strings are truncated at 2048 bytes",
+        .fix = "TASK-146.1",
+        .status = .fixed,
+        .case = "audit/save_long_string",
+        .reason = "the runtime matches ink on audit/save_long_string (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "choices, tags and the seed are not saved",
+        .fix = "TASK-146.1",
+        .status = .fixed,
+        .case = "audit/save_choices_and_seed",
+        .reason = "the runtime matches ink on audit/save_choices_and_seed (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "previous_random is missing and SEED_RANDOM takes abs",
+        .fix = "TASK-145.9",
+        .status = .fixed,
+        .case = "audit/random_seed_and_sequence",
+        .reason = "the runtime matches ink on audit/random_seed_and_sequence (ground truth); the old runtime is deleted (P9.1)",
+    },
+    .{
+        .name = "variable lookup walks every frame",
+        .fix = "TASK-145.3",
+        .status = .not_expressible,
+        .reason = "ink's compiler rejects programs where the lookup order would show; the new runtime scans only the current frame",
+    },
+    .{
+        .name = "aliveFlowNames doesn't compile",
+        .fix = "TASK-144.8",
+        .status = .not_expressible,
+        .reason = "calling it is a compile error, so no test or adapter can use it",
+    },
+    .{
+        .name = "the 33rd temp of a frame is undefined behaviour",
+        .fix = "TASK-144.4",
+        .status = .not_reproduced,
+        .case = "audit/many_temps",
+        .reason = "40 temps matched ink in Debug; the new runtime bounds temps with a named error",
+    },
+    // Compiler.
+    .{ .name = "label names collide globally across knots", .fix = "TASK-148.1", .status = .not_reproduced, .case = "audit/labels_per_knot" },
+    .{
+        .name = "temp_names is never reset",
+        .fix = "TASK-148.1",
+        .status = .not_expressible,
+        .reason = "no ink-valid program found where it changes output; the new compiler scopes temps per knot and function",
+    },
+    .{
+        .name = "INCLUDE is unresolved",
+        .fix = "TASK-148.2",
+        .status = .fixed,
+        .reason = "the new compiler resolves INCLUDE (P8.2); the old compiler is deleted (P9.2)",
+    },
+    .{ .name = "list auto-numbering is wrong", .fix = "TASK-148.3", .status = .not_reproduced, .case = "audit/list_auto_numbering" },
+    .{
+        .name = "compile() ignores errors",
+        .fix = "TASK-147.8",
+        .status = .fixed,
+        .reason = "the new front end reports it (a test in src/testing/known_bugs.zig); the old compiler is deleted (P9.2)",
+    },
+}

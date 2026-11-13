@@ -1,0 +1,7 @@
+// Known differences (plan P0.4, P0.10), one per case and corpus. Kinds: s1..s11
+// (plan §1.1), unsupported, exception, crash, tags, whitespace, other.
+// `zig build test -Dledger-update` adds new ones and drops fixed ones; reasons and
+// sources edited by hand are kept.
+.{
+    .{ .case = "runtime/lists/more_list_operations", .corpus = .structure, .kind = .other, .reason = "a story-level temp reassigned with += is global to ink (ResolveVariableWithName skips the story's temps, then finds the name among the story's declarations), so inklecate writes {\"VAR=\": \"t\", \"re\": true}; the program has no global slot for it and keeps a temp assignment (loading inklecate's JSON does the same), so it serializes as temp=; same output" },
+}

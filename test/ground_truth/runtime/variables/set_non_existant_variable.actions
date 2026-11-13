@@ -1,0 +1,3 @@
+# Tests.cs TestSetNonExistantVariable: setting an undeclared global throws.
+continue
+set y string "earth"

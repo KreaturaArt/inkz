@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^Before random","\n","ev",5,1,"rnd","/ev",{"temp=":"x"},"\n","^After random ","ev",{"VAR?":"x"},"out","/ev","\n","end",["done",{"#n":"g-0"}],null],"done",{"global decl":["ev","/ev","end",null]}],"listDefs":{}}

@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["ev",3,{"x()":"beep","exArgs":1},"pop","/ev","\n","ev",1,{"x()":"beep","exArgs":1},"out","/ev","\n","done",["done",{"#n":"g-0"}],null],"done",{"beep":[{"temp=":"times"},"ev",{"VAR?":"times"},"/ev","~ret",null]}],"listDefs":{}}

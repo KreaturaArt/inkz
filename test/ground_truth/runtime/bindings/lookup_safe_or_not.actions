@@ -1,0 +1,8 @@
+# Tests.cs TestLookupSafeOrNot: a lookahead-safe binding is called twice (once during the
+# newline lookahead), a lookahead-unsafe one only once.
+bind myAction record
+continue_maximally
+reset
+unbind myAction
+bind myAction record lookahead_unsafe
+continue_maximally

@@ -1,0 +1,58 @@
+(story
+  (statements
+    (content_list
+      (conditional none (branches
+          (conditional_branch (greater (variable_reference (path identifier"x")) integer"1") (statements
+              text"big"
+              newline))
+          (conditional_branch (equal (variable_reference (path identifier"x")) integer"1") (statements
+              text"one"
+              newline))
+          (else_branch (statements
+              text"small"
+              newline)))))
+    newline
+    (content_list
+      (conditional (variable_reference (path identifier"x")) (branches
+          (conditional_branch integer"1" (statements
+              text"one"
+              newline))
+          (conditional_branch integer"2" (statements
+              text"two"
+              newline))
+          (else_branch (statements
+              text"many"
+              newline)))))
+    newline
+    (content_list
+      (conditional (variable_reference (path identifier"flag")) (branches
+          (conditional_branch none (statements
+              text"true branch"
+              newline))
+          (else_branch (statements
+              text"false branch"
+              newline)))))
+    newline
+    (content_list
+      (conditional (variable_reference (path identifier"flag")) (branches
+          (conditional_branch none (statements
+              text"yes"
+              newline))
+          (conditional_branch none (statements
+              text"no"
+              newline)))))
+    newline
+    (content_list
+      (conditional (variable_reference (path identifier"x")) (branches
+          (conditional_branch integer"1" none)
+          (conditional_branch integer"2" (statements
+              text"two"
+              newline)))))
+    newline
+    (content_list
+      (conditional (variable_reference (path identifier"flag")) (branches
+          (conditional_branch none none)
+          (else_branch (statements
+              text"only else"
+              newline)))))
+    newline))

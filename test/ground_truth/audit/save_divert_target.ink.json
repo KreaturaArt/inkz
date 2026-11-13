@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^First.","\n","ev","str","^Go","/str","/ev",{"*":"0.c-0","flg":20},{"c-0":["^ ",{"->":"destination","var":true},"\n",{"->":"0.g-0"},{"#f":5}],"g-0":["done",null]}],"done",{"second":["^Second.","\n","end",{"#f":3}],"global decl":["ev",{"^->":"second"},{"VAR=":"destination"},"/ev","end",null]}],"listDefs":{}}

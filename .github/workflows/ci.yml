@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dod-rework]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Keep in step with mise.toml (tools/ci_test.zig checks it).
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - name: zig build ci
+        run: zig build ci --summary failures

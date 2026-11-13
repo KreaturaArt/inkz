@@ -3,37 +3,315 @@ const std = @import("std");
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const test_filters = b.option(
+        []const []const u8,
+        "test-filter",
+        "Only run tests whose names contain this text (repeatable)",
+    ) orelse &.{};
+    const ledger_update = b.option(
+        bool,
+        "ledger-update",
+        "Rewrite test/divergence_ledger.zon from the ground-truth comparison",
+    ) orelse false;
+    // Snapshot tests (tools/snapshot.zig) also read SNAP_UPDATE=1 when they run (reading
+    // the environment here would defeat the configure cache).
+    const snap_update = b.option(
+        bool,
+        "snap-update",
+        "Rewrite snapshot files instead of checking them (or set SNAP_UPDATE=1)",
+    ) orelse false;
+    const build_options = b.addOptions();
+    build_options.addOption(bool, "ledger_update", ledger_update);
+    build_options.addOption(bool, "snap_update", snap_update);
+    // The ground-truth gate replays each case in its own process (src/replay_case.zig).
+    const replay_case = add_executable(b, "replay_case", "src/replay_case.zig", target, optimize);
+    build_options.addOptionPath("replay_case_path", replay_case.getEmittedBin());
+    // `zig build replay` installs it, for replaying one case by hand.
+    const replay_step = b.step("replay", "Install replay_case (replay one case and print its transcript)");
+    replay_step.dependOn(&b.addInstallArtifact(replay_case, .{}).step);
 
-    const root_module = b.createModule(.{
+    // The library's module, for packages that depend on inkz (`b.dependency("inkz", ...)
+    // .module("inkz")`) and for the doctests.
+    const inkz_module = b.addModule("inkz", .{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
         .optimize = optimize,
     });
-
     const lib = b.addLibrary(.{
         .name = "inkz",
-        .root_module = root_module,
+        .root_module = inkz_module,
         .linkage = .static,
     });
     b.installArtifact(lib);
 
-    // Tests need access to test fixtures via @embedFile
-    // We create a separate test module with root set to the project root
-    const test_module = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
+    // `test` runs every suite once; each suite also has its own step.
+    const test_all = b.step("test", "Run all unit tests");
+    const suites = [_]TestSuite{
+        .{
+            .step = "test-runtime",
+            .root = "src/test_runtime.zig",
+            .description = "Run runtime tests",
+            .own_filters = &.{ "runtime.", "death_cases.", "testing." },
+        },
+        .{
+            .step = "test-compiler",
+            .root = "src/test_compiler.zig",
+            .description = "Run compiler tests",
+            .own_filters = &.{ "compiler.", "e2e_api.", "structure_gate.", "e2e_tests." },
+        },
+        .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
+        .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
+    };
+    const test_options: TestOptions = .{
         .target = target,
         .optimize = optimize,
-    });
-    _ = test_module;
+        .filters = test_filters,
+        .build_options = build_options,
+    };
+    for (suites) |suite| {
+        test_all.dependOn(add_test_suite(b, suite, test_options));
+    }
 
-    const tests = b.addTest(.{
+    test_all.dependOn(add_death_tests(b, target));
+
+    // The profile zones with profiling compiled in (a test's root can't enable them).
+    const profile_check = "src/profile_check.zig";
+    const run_profile_check = b.addRunArtifact(
+        add_executable(b, "profile_check", profile_check, target, optimize),
+    );
+    const test_profile = b.step("test-profile", "Check the profile zones with profiling on");
+    test_profile.dependOn(&run_profile_check.step);
+    test_all.dependOn(test_profile);
+    test_all.dependOn(add_doctests(b, inkz_module, test_options));
+
+    // Fuzz targets: each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
+    // Zig's fuzzer writes its log to <cache>/tmp and fails if that directory is missing.
+    std.Io.Dir.cwd().createDirPath(b.graph.io, ".zig-cache/tmp") catch {};
+    const fuzz_corpus = add_test_suite(b, .{
+        .step = "fuzz",
+        .root = "src/fuzz_targets.zig",
+        .description = "Run fuzz targets on their corpus (add --fuzz to fuzz)",
+        .own_filters = &.{"fuzz: "},
+    }, test_options);
+
+    const write_transcripts =
+        add_executable(b, "write_transcripts", "src/write_transcripts.zig", target, optimize);
+    write_transcripts.root_module.addOptions("build_options", build_options);
+    const run_transcripts = b.addRunArtifact(write_transcripts);
+    run_transcripts.setCwd(b.path("."));
+    const transcripts_step = b.step("transcripts", "Regenerate test/transcripts");
+    transcripts_step.dependOn(&run_transcripts.step);
+
+    // Benchmarks. Each run is a new measurement, so they always run.
+    const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast");
+    add_release_benches(b, bench_step, "bench", "src/bench.zig", target);
+    // Program load and store, as ink's JSON and as the binary image; results are appended to
+    // bench/load_store.jsonl.
+    const bench_io_step = b.step("bench-io", "Benchmark JSON and binary image load/store");
+    add_release_benches(b, bench_io_step, "bench_io", "src/bench_io.zig", target);
+    // Profile zones per pipeline stage (src/core/profile.zig), in ReleaseFast; results are
+    // appended to bench/profile.jsonl.
+    const bench_profile_step = b.step("bench-profile", "Profile each pipeline stage");
+    const bench_profile = add_bench(b, "bench_profile", "src/bench_profile.zig", target, .fast);
+    bench_profile_step.dependOn(&bench_profile.step);
+
+    const simulate = add_executable(b, "simulate", "src/simulate.zig", target, optimize);
+    simulate.root_module.addOptions("build_options", build_options);
+    const run_simulate = b.addRunArtifact(simulate);
+    run_simulate.setCwd(b.path("."));
+    run_simulate.addPassthruArgs();
+    b.step("simulate", "Play every case with seeded random choices").dependOn(&run_simulate.step);
+
+    const lint = add_executable(b, "lint", "tools/lint.zig", target, optimize);
+    const run_lint = b.addRunArtifact(lint);
+    run_lint.setCwd(b.path("."));
+    run_lint.addArgs(&.{ "src", "tools" });
+    b.step("lint", "Check TigerStyle rules").dependOn(&run_lint.step);
+
+    const code_size = add_executable(b, "code_size", "tools/code_size.zig", target, optimize);
+    const run_code_size = b.addRunArtifact(code_size);
+    run_code_size.setCwd(b.path("."));
+    run_code_size.addArgs(&.{ "src", "tools", "build.zig" });
+    run_code_size.has_side_effects = true;
+    b.step("code-size", "Count lines of Zig per module").dependOn(&run_code_size.step);
+
+    const fmt = b.addFmt(.{
+        .paths = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("tools") },
+        .check = true,
+    });
+    b.step("fmt", "Check that the Zig sources are formatted").dependOn(&fmt.step);
+
+    // `zig build ci` (.github/workflows/ci.yml): everything a change must pass. It needs no
+    // reference harness (no dotnet, no reference/).
+    const ci_step = b.step("ci", "Run formatting, lint, every test and the fuzz corpus");
+    ci_step.dependOn(&fmt.step);
+    ci_step.dependOn(&run_lint.step);
+    ci_step.dependOn(test_all);
+    ci_step.dependOn(fuzz_corpus);
+}
+
+fn add_executable(
+    b: *std.Build,
+    name: []const u8,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = name,
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/root.zig"),
+            .root_source_file = b.path(root),
             .target = target,
             .optimize = optimize,
         }),
     });
-    const run_tests = b.addRunArtifact(tests);
-    const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_tests.step);
+}
+
+/// A benchmark's run, in the project directory and every time.
+fn add_bench(
+    b: *std.Build,
+    name: []const u8,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Run {
+    const run = b.addRunArtifact(add_executable(b, name, root, target, optimize));
+    run.setCwd(b.path("."));
+    run.has_side_effects = true;
+    return run;
+}
+
+/// Runs the benchmark in ReleaseSafe, then in ReleaseFast (never both at once: they would
+/// measure each other, and they write the same files).
+fn add_release_benches(
+    b: *std.Build,
+    step: *std.Build.Step,
+    name: []const u8,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+) void {
+    var previous: ?*std.Build.Step = null;
+    for ([_]std.builtin.OptimizeMode{ .safe, .fast }) |mode| {
+        const run = add_bench(b, b.fmt("{s}_{t}", .{ name, mode }), root, target, mode);
+        if (previous) |before| run.step.dependOn(before);
+        previous = &run.step;
+        step.dependOn(&run.step);
+    }
+}
+
+/// The docs whose ```zig blocks are compiled by `zig build doctest` (tools/doctest.zig).
+const doctest_docs = [_][]const u8{
+    "docs/RunningYourInk.md",
+    "docs/ArchitectureAndDevOverview.md",
+    "docs/Guidelines.md",
+    "docs/Architecture.md",
+};
+
+/// `zig build doctest`: extracts the docs' Zig samples into a generated test
+/// root and compiles it against the library module.
+fn add_doctests(
+    b: *std.Build,
+    inkz_module: *std.Build.Module,
+    options: TestOptions,
+) *std.Build.Step {
+    const generator = b.addExecutable(.{
+        .name = "doctest",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/doctest.zig"),
+            .target = b.graph.host,
+        }),
+    });
+    const generate = b.addRunArtifact(generator);
+    const directory = generate.addOutputDirectoryArg("doctest");
+    for (doctest_docs) |doc| generate.addFileArg(b.path(doc));
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = directory.path(b, "root.zig"),
+            .target = options.target,
+            .optimize = options.optimize,
+            .imports = &.{.{ .name = "inkz", .module = inkz_module }},
+        }),
+        .filters = options.filters,
+    });
+    const run = b.addRunArtifact(tests);
+    const step = b.step("doctest", "Compile the Zig samples in docs/*.md against the library");
+    step.dependOn(&run.step);
+    return &run.step;
+}
+
+const death_cases = @import("src/death_cases.zig");
+
+/// `zig build test-death`: runs each case in `src/death_cases.zig` as its own
+/// child process and checks how it ends. Always built in Debug, so assertions are on.
+fn add_death_tests(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
+    const runner = add_executable(b, "death", "tools/death.zig", target, .debug);
+    runner.root_module.addAnonymousImport("death_cases", .{
+        .root_source_file = b.path("src/death_cases.zig"),
+    });
+    const step = b.step("test-death", "Run cases that must panic, one process each");
+    const Expected = std.process.Child.Term;
+    const aborted: Expected = .{ .signal = .ABRT };
+    const caught: Expected = .{ .exited = death_cases.did_not_die_exit_code };
+    const returned: Expected = .{ .exited = 0 };
+    add_death_group(b, runner, step, death_cases.must_panic, aborted);
+    add_death_group(b, runner, step, death_cases.self_test_must_panic, caught);
+    add_death_group(b, runner, step, death_cases.must_return, returned);
+    return step;
+}
+
+fn add_death_group(
+    b: *std.Build,
+    runner: *std.Build.Step.Compile,
+    step: *std.Build.Step,
+    comptime group: type,
+    expected: std.process.Child.Term,
+) void {
+    inline for (comptime std.meta.declarations(group)) |declaration| {
+        const run = b.addRunArtifact(runner);
+        run.setName(b.fmt("death {s}", .{declaration}));
+        run.addArg(declaration);
+        run.addCheck(.{ .expect_term = expected });
+        // Capturing stderr keeps the expected panic traces out of the build output, and makes
+        // sure an abort really came from a panic.
+        const stderr_match = if (expected == .signal) "panic: " else "";
+        run.addCheck(.{ .expect_stderr_match = stderr_match });
+        step.dependOn(&run.step);
+    }
+}
+
+const TestSuite = struct {
+    step: []const u8,
+    root: []const u8,
+    description: []const u8,
+    /// Test-name prefixes that belong to this suite. The compiler imports the runtime, so
+    /// without these the runtime's tests would also run in `test-compiler`.
+    own_filters: []const []const u8 = &.{},
+};
+
+const TestOptions = struct {
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    filters: []const []const u8,
+    build_options: *std.Build.Step.Options,
+};
+
+fn add_test_suite(b: *std.Build, suite: TestSuite, options: TestOptions) *std.Build.Step {
+    // A user filter narrows the suite; it doesn't widen it past the suite's own tests.
+    const filters = if (options.filters.len > 0) options.filters else suite.own_filters;
+    const tests = b.addTest(.{
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(suite.root),
+            .target = options.target,
+            .optimize = options.optimize,
+        }),
+        .filters = filters,
+    });
+    tests.root_module.addOptions("build_options", options.build_options);
+    tests.root_module.addAnonymousImport("snapshot", .{ .root_source_file = b.path("tools/snapshot.zig") });
+    const run = b.addRunArtifact(tests);
+    // Tests read files under test/ (fixtures, ground truth, the ledger) that the build cache
+    // doesn't track, so they run every time.
+    run.has_side_effects = true;
+    b.step(suite.step, suite.description).dependOn(&run.step);
+    return &run.step;
 }

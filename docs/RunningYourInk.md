@@ -1,492 +1,641 @@
 # Running your ink
 
-## Quick Start
+This guide shows how a Zig program loads and plays an ink story with inkz. Every ```zig
+block here is compiled against the library by `zig build doctest` (see `tools/doctest.zig`
+for the convention). A block that is not a whole file is a snippet: it is compiled inside a
+function that has `gpa: std.mem.Allocator`, `io: std.Io` and `story: *inkz.Story` in scope.
 
-* Compile your `.ink` source file to JSON using the `inkz` compiler:
-  
-  ```sh
-  inkz compile story.ink -o story.ink.json
-  ```
+If you used the old runtime, the [migration table](#migrating-from-the-old-api) at the end
+lists every renamed call.
 
-* Add `inkz` as a dependency in your `build.zig.zon` and import the `ink` module in your `build.zig`.
+## Quick start
 
-* Load the compiled JSON and run the story (see **Getting started with the runtime API**, below).
+1. Add inkz to your package with `zig fetch --save <url of inkz>`, then import its module in
+   `build.zig`:
 
-## Further information
+   ```text
+   const inkz = b.dependency("inkz", .{ .target = target, .optimize = optimize });
+   exe.root_module.addImport("inkz", inkz.module("inkz"));
+   ```
 
-Ink uses an intermediate `.json` format, which is compiled from the original `.ink` files. You can compile them on the command line using the `inkz` compiler. See **Using inkz on the command line** in the [README](http://www.github.com/inkle/ink) for more information.
+2. Compile your story. inkz has no command-line compiler yet; use ink's `inklecate` to write
+   a `.ink.json` file, or compile the `.ink` source in your program
+   (see [Using the compiler](#using-the-compiler)).
 
-We recommend that you create a wrapper struct for the `ink.Story`. Here, we'll call the struct `Script` — in the "film script" sense, rather than the "code module" sense:
+3. Load the story and play it:
 
 ```zig
-const ink = @import("ink");
+const std = @import("std");
+const inkz = @import("inkz");
 
-pub const Script = struct {
-    story: ink.Story,
+test "a story compiled from source, played to the end" {
+    const gpa = std.testing.allocator;
+    var program = try inkz.compiler.compile_source(gpa,
+        \\Hello, world!
+        \\* Hello back
+        \\  Nice to hear from you.
+        \\- -> END
+        \\
+    );
+    defer program.deinit(gpa);
 
-    pub fn init(allocator: Allocator, json_asset: []const u8) !Script {
-        return .{ .story = try ink.Story.initFromJson(allocator, json_asset) };
+    var story: inkz.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+
+    try std.testing.expectEqualStrings("Hello, world!\n", (try story.cont()).get());
+    try std.testing.expect(!story.can_continue());
+    try std.testing.expectEqual(@as(u32, 1), story.current_choices_count());
+    try std.testing.expectEqualStrings("Hello back", story.current_choice(0).get().text);
+
+    try story.choose_choice_index(0);
+    const rest = try story.continue_maximally_alloc(gpa);
+    defer gpa.free(rest);
+    try std.testing.expectEqualStrings("Hello back\nNice to hear from you.\n", rest);
+    try std.testing.expect(!story.can_continue());
+}
+```
+
+## Loading a story
+
+There are two ways to make a `Story`:
+
+- `story.init(gpa, &program, options)` runs a `Program` you own. The program is immutable
+  and must outlive the story. Several stories, on any threads, can share one program.
+- `story.init_from_json(gpa, json, options)` loads ink's compiled JSON (versions 18 to 21)
+  into a program that the story owns and frees in `deinit`.
+
+`Story` is initialised in place and must not move afterwards, so declare it `undefined` and
+call `init` on it. `deinit(gpa)` frees exactly what `init` allocated.
+
+```zig
+const json = try std.Io.Dir.cwd().readFileAlloc(io, "story.ink.json", gpa, .limited(1 << 24));
+defer gpa.free(json);
+
+var story: inkz.Story = undefined;
+try story.init_from_json(gpa, json, .{ .random_seed = 42 });
+defer story.deinit(gpa);
+```
+
+You can also embed the JSON with `@embedFile("story.ink.json")`. The story does not keep a
+reference to `json` after `init_from_json` returns.
+
+### Loading from a program image
+
+JSON has to be parsed. A program image is the `Program`'s arrays as bytes, so loading one
+copies and checks them instead (`docs/program_image.md`).
+
+**If you compile at build time, ship the image, not the JSON.** Reading ink's JSON is most
+of a JSON load, and the image skips it entirely:
+
+| Story | JSON load | Image load |
+|---|---:|---:|
+| crime_scene | 188 µs | 9.3 µs |
+| generated (1000 knots) | 3.1 ms | 0.18 ms |
+
+The image loads 18–20× faster (`zig build bench-profile`, ReleaseFast, Apple M3). Keep
+loading JSON only when stories come from somewhere you don't build, such as inklecate output
+from players. Write the image once, at build time or the first time a story is loaded, and
+load it from then on:
+
+```zig
+// Once: compile (or ink_json.load) and write the image.
+var program = try inkz.compiler.compile_source(gpa, "Hello from an image.\n");
+defer program.deinit(gpa);
+var image: std.Io.Writer.Allocating = .init(gpa);
+defer image.deinit();
+try inkz.program_image.write(&program, &image.writer);
+
+// Every run: load the image. It is checked, and the bytes are copied.
+var loaded = try inkz.program_image.load(gpa, image.written());
+defer loaded.deinit(gpa);
+var story: inkz.Story = undefined;
+try story.init(gpa, &loaded, .{});
+defer story.deinit(gpa);
+```
+
+`load` treats the image as untrusted. A wrong, truncated or corrupted image returns a named
+error (`error.NotAProgramImage`, `error.InvalidImage`, ...), never a crash. Images carry a
+format version. After an inkz update that changes it, `load` returns
+`error.UnsupportedFormatVersion`; write the image again from the JSON or the source.
+
+`Story.Options` has these fields:
+
+| Field | Default | Meaning |
+|---|---|---|
+| `limits` | `.{}` | The size of every buffer (see [Memory and limits](#memory-and-limits)). |
+| `random_seed` | `0` | ink's story seed. ink seeds from the clock; inkz is deterministic unless you pass a seed. |
+| `allow_external_function_fallbacks` | `false` | ink's `allowExternalFunctionFallbacks`. |
+| `events` | `.{}` | ink's host events (see [Host events](#host-events)). |
+| `on_error`, `error_context` | `null` | ink's `onError` (see [Errors](#errors)). |
+
+## Playing: lines and choices
+
+The story is played in two repeating stages.
+
+1. **Present content.** While `can_continue()` is true, `cont()` returns the next line,
+   as ink's `Continue()` does. A line ends at a newline, but `cont()` looks ahead past it:
+   if glue (`<>`) later joins the next text onto this line, the joined text is one line.
+   Call `cont()` only while `can_continue()` is true.
+2. **Make a choice.** When the story can't continue, show its choices and pass the player's
+   pick to `choose_choice_index`. Then go back to step 1. If there are no choices, the story
+   has ended.
+
+```zig
+var stdout_buffer: [4096]u8 = undefined;
+var stdout = std.Io.File.stdout().writer(io, &stdout_buffer);
+const out = &stdout.interface;
+
+while (true) {
+    while (story.can_continue()) {
+        const line = try story.cont();
+        try out.writeAll(line.get());
     }
+    const count = story.current_choices_count();
+    if (count == 0) break;
+    var position: u32 = 0;
+    while (position < count) : (position += 1) {
+        const choice = story.current_choice(position).get();
+        try out.print("{d}: {s}\n", .{ position + 1, choice.text });
+    }
+    try out.flush();
+    const picked: u32 = 0; // The player's pick, from your input handling.
+    try story.choose_choice_index(picked);
+}
+try out.flush();
+```
 
-    pub fn deinit(self: *Script) void {
-        self.story.deinit();
+`continue_maximally(writer)` runs `cont()` until the story can't continue and writes every
+line to `writer`; `continue_maximally_alloc(gpa)` returns the text in memory you own. Use
+them when you show a whole passage at once. Use `cont()` when you show one line at a time, or
+when your UI reacts between lines (tags, variable changes).
+
+`current_text()` returns the text of the last line again.
+
+### Borrowed views
+
+`cont()`, `current_text()`, `current_choice()`, `current_choice_tag()`, `get_variable()`,
+`evaluate_function()` and `current_flow_name()` return a `Borrowed(T)`: a view into the
+story's own memory, with no allocation. Read it with `.get()`. A view is valid **until the
+next mutating call** on the story. The mutating calls are `cont`, `cont_alloc`,
+`continue_maximally`, `choose_choice_index`, `choose_path_string`, `set_variable`,
+`evaluate_function`, `switch_flow`, `switch_to_default_flow`, `remove_flow`, `load_json`,
+`reset_state` and `reset_errors`.
+
+In builds with runtime safety (Debug, ReleaseSafe), each view remembers the story's
+generation, and `.get()` asserts that no mutating call happened since. Copy what you need
+to keep:
+
+```zig
+const first = try story.cont();
+const kept = try gpa.dupe(u8, first.get()); // Still valid after the next cont().
+defer gpa.free(kept);
+```
+
+`cont_alloc(gpa)` does the same in one call.
+
+## Tags
+
+Tags are reported to a *sink*: a pointer to any value with a method
+`pub fn tag(self, text: []const u8) !void`. The tag text is valid only during the call.
+
+```zig
+const Tags = struct {
+    count: u32 = 0,
+
+    pub fn tag(tags: *@This(), text: []const u8) !void {
+        std.debug.print("tag: {s}\n", .{text});
+        tags.count += 1;
     }
 };
+
+var tags: Tags = .{};
+_ = try story.cont();
+try story.current_tags(&tags); // The tags of the line cont() returned.
+try story.global_tags(&tags); // The tags at the top of the main ink file.
+try story.tags_for_content_at_path("Munich", &tags); // The tags at the top of a knot.
 ```
 
-## Getting started with the runtime API
+Where tags come from in ink:
 
-As mentioned above, your `.ink` file(s) are compiled to a single `.ink.json` file. This file contains the serialized **Data Oriented Programming (DOP) AST** — the shared intermediate representation used by both the compiler and the runtime. When you load it with `Story.initFromJson()`, all DOP AST nodes are allocated once at startup; there is **zero dynamic heap allocation** during story execution. You can embed this file directly in your binary at compile time or load it from disk at startup.
+```ink
+# author: Joseph Humfrey
+# title: My Wonderful Ink Story
 
-The API for loading and running your story is very straightforward. Construct a new `Story` by passing in the JSON string. For example:
+Passepartout: Really, Monsieur. # surly # really_monsieur.ogg
 
-```zig
-var script = try Script.init(allocator, @embedFile("story.ink.json"));
-defer script.deinit();
+=== Munich ===
+# location: Germany
+First line of content in the knot.
+
+* A choice! # a tag on both choice and content
+* [A choice # a choice tag not on the content]
 ```
 
-From there, you make calls to the story in a loop. There are two repeating stages:
+The first line of the story carries the global tags too, and the first line of a knot
+carries the knot's tags, as in ink. Tags are dynamic: they may contain inline ink, such as
+`#{character}_greeting.jpg`.
 
-1. **Present content:** You repeatedly call `cont()` on it, which returns individual lines of string content, until `canContinue()` returns false. For example:
+A choice's tags are read by position:
 
 ```zig
-while (script.story.canContinue()) {
-    const line = try script.story.cont();
-    std.debug.print("{s}", .{line});
+const choice = story.current_choice(0).get();
+var tag: u32 = 0;
+while (tag < choice.tags_count) : (tag += 1) {
+    std.debug.print("choice tag: {s}\n", .{story.current_choice_tag(0, tag).get()});
 }
 ```
 
-    A simpler way to achieve the above is through one call to `script.story.continueMaximally()`. However, in many stories it's useful to pause the story at each line, for example when stepping through dialogue. Also, in such games, there may be state changes that should be reflected in the UI, such as resource counters.
-
-2. **Make choice:** When there isn't any more content, you should check to see whether there any choices to present to the player. To do so, use something like:
+## Jumping to a knot or stitch
 
 ```zig
-if (script.story.currentChoices().len > 0) {
-    for (script.story.currentChoices(), 0..) |choice, i| {
-        std.debug.print("{d}: {s}\n", .{i + 1, choice.text});
-    }
+try story.choose_path_string("Munich", .{});
+try story.choose_path_string("Munich.station", .{});
+```
+
+`ChooseOptions` has `reset_callstack` (default `true`, as in ink: the current flow's call
+stack is ended and its choices are cleared) and `arguments`, for a knot with parameters:
+
+```zig
+try story.choose_path_string("greet", .{ .arguments = &.{.{ .string = "Ada" }} });
+```
+
+The path is a runtime path: `knot` or `knot.stitch`. Gather and choice labels can't be
+reached this way. An unknown path returns `error.PathNotFound`. Without
+`reset_callstack`, calling it from inside an ink function is an error, as in ink.
+
+## Variables
+
+```zig
+try story.set_variable("player_health", .{ .integer = 100 });
+try story.set_variable("player_name", .{ .string = "Ada" }); // Copied into the story.
+
+if (story.get_variable("player_health")) |health| {
+    std.debug.print("health: {d}\n", .{health.get().integer});
 }
-
-// ...and when the player provides input:
-
-try script.story.chooseChoiceIndex(index);
-
-// And now you're ready to return to step 1, and present content again.
 ```
 
-### Saving and loading
+`inkz.Value` is a tagged union: `.null`, `.integer` (`i32`), `.float` (`f32`), `.bool`,
+`.string` (a borrowed slice), `.list` (an opaque reference into the story's list storage)
+and `.divert_target`. Integers wrap and floats are 32-bit, as in C# ink.
 
-To save the state of your story within your game, call:
+`set_variable` works only on declared globals (`error.VariableNotDeclared` otherwise), and
+type-checks as ink does. It notifies observers at once, since it happens outside `cont()`.
+`get_variable` returns `null` for an unknown name. To list the globals:
 
 ```zig
-const saved_json = try story.state.toJson(allocator);
-defer allocator.free(saved_json);
+var position: u32 = 0;
+while (position < story.global_variable_count()) : (position += 1) {
+    std.debug.print("{s}\n", .{story.global_variable_name(position)});
+}
 ```
 
-...and then to load it again:
+## Visit counts
 
 ```zig
-try story.state.loadJson(saved_json);
+const visits = story.visit_count_at_path_string("Munich.station");
+std.debug.print("visited {d} times\n", .{visits});
 ```
-
-### Error handling
-
-If you made a mistake in your ink that the compiler can't catch, then the story will return an error. To handle errors gracefully and get structured error output instead, you can assign an error handler when you create your story:
-
-```zig
-var story = try ink.Story.initFromJson(allocator, json_asset);
-
-story.on_error = struct {
-    fn handler(msg: []const u8, err_type: ink.ErrorType) void {
-        switch (err_type) {
-            .warning => std.log.warn("{s}", .{msg}),
-            .err     => std.log.err("{s}", .{msg}),
-        }
-    }
-}.handler;
-```
-
-### Is that it?
-
-That's it! You can achieve a lot with just those simple steps, but for more advanced usage, including deep integration with your game, read on.
-
-## Engine usage and philosophy
-
-We recommend using your own wrapper struct to encapsulate `ink.Story`. The runtime **ink** engine has been designed to be reasonably general purpose and have a simple API. We also recommend wrapping rather than embedding the story directly in domain objects, so that you can expose to your game only the functionality that you need.
-
-Often when designing the flow for your game, the sequence of interactions between the player and the story may not precisely match the way the **ink** is evaluated. For example, with a classic choose-your-own-adventure type story, you may want to show multiple lines (paragraphs) of text and choices all at once. For a visual novel, you may want to display one line per screen.
-
-Additionally, since the **ink** engine outputs lines of plain text, it can be effectively used for your own simple sub-formats. For example, for a dialog based game, you could write:
-
-    *   Lisa: Where did he go?
-        Joe:  I think he jumped over the garden fence.
-        * *   Lisa: Let's take a look.
-        * *   Lisa: So he's gone for good?
-
-As far as the **ink** engine is concerned, the `:` characters are just text. But as the lines of text and choices are produced by the game, you can do some simple text parsing of your own to turn the string `Joe: What's up?` into a game-specific dialog object that references the speaker and the text (or even audio).
-
-This approach can be taken even further to text that flexibly indicates non-content directives. Again, these directives come out of the engine as text, but can be parsed by your game for a specific purpose:
-
-    PROPLIST table, chair, apple, orange
-
-The above approach is used in our current game for the writer to declare the props that they expect to be in the scene. These might be picked up in the game editor in order to automatically fill a scene with placeholder objects, or just to validate that the level designer has populated the scene correctly.
-
-To mark up content more explicitly, you may want to use *tags* or *external functions* - see below. At inkle, we find that we use a mixture, but we actually find the above approach useful for a very large portion of our interaction with the game - it's very flexible.
-
-## Marking up your ink content with tags
-
-Tags can be used to add metadata to your game content that isn't intended to appear to the player. Within ink, add a `#` character followed by any string content you want to pass over to the game. There are three main places where you can add these hash tags:
-
-### Line by line tags
-
-One use case is for a graphic adventure that has different art for characters depending on their facial expression. So, you could do:
-
-    Passepartout: Really, Monsieur. # surly
-
-On the game side, every time you get content with `story.cont()`, you can get a slice of tags with `story.currentTags()`, which will return a `[][]const u8`, in the above case with just one element: `"surly"`.
-
-To add more than one tag, simply delimit them with more `#` characters:
-
-    Passepartout: Really, Monsieur. # surly # really_monsieur.ogg
-
-The above demonstrate another possible use case: providing full voice-over for your game, by marking up your ink with the audio filenames.
-
-Tags for a line can be written above it, or on the end of the line:
-
-    # the first tag
-    # the second tag
-    This is the line of content. # the third tag
-
-All of the above tags will be included in the `currentTags()` slice.
-
-### Knot tags
-
-Any tags that you include at the very top of a knot:
-
-    === Munich ==
-    # location: Germany
-    # overview: munich.ogg
-    # require: Train ticket
-    First line of content in the knot.
-
-...are accessible by calling `story.tagsForContentAtPath("your_knot")`, which is useful for getting metadata from a knot before you actually want the game to go there.
-
-Note that these tags will also appear in the `currentTags()` slice for the first line of content in the knot.
-
-### Global tags
-
-Any tags provided at the very top of the main ink file are accessible via the story's `globalTags()` method, which also returns a `[][]const u8`. Any top level story metadata can be included there.
-
-We suggest the following by convention, if you wish to share your ink stories publicly:
-
-    # author: Joseph Humfrey
-    # title: My Wonderful Ink Story
-
-Note that [Inky](https://github.com/inkle/inky) will use the title tag in this format as the `<h1>` tag in a story exported for web.
-
-#### Choice tags
-
-Tags can also be applied to choices. Depending where the tag is placed inside the ink line, the tag will appear on both the choice and the content generated by that choice; on just the choice; or just on the output:
-
-    * A choice! #a tag on both choice and content
-    * [A choice #a choice tag not on content ]
-    * A choice[!] which continues. #a tag on output content only
-
-You can use all three in the same ink line:
-
-    * A choice #shared_tag [ with detail #choice_tag ] and content # content_tag
-
-The choice tags are stored inside the `tags` slice on the choice object.
-
-#### Advanced: Tags are dynamic
-
-Note that the content of a tag can contain any inline **ink**, such as shuffles, cycles, function calls and variable replacements.
-
-    {character}: Hello there! #{character}_greeting.jpg
-    
-    I open the door. #suspense_music{RANDOM(1, 4)}.mp3
-
-## Jumping to a particular "scene"
-
-Top level named sections in **ink** are called knots (see [the writing tutorial](WritingWithInk.md)). You can tell the runtime engine to jump to a particular named knot:
-
-```zig
-try story.choosePathString("myKnotName");
-```
-
-And then call `cont()` as usual.
-
-To jump directly to a stitch within a knot, use a `.` as a separator:
-
-```zig
-try story.choosePathString("myKnotName.theStitchWithin");
-```
-
-(Note that this path string is a *runtime* path rather than the path as used within the **ink** format. It's just been designed so that for the basics of knots and stitches, the format works out the same. Unfortunately however, you can't reference gather or choice labels this way.)
-
-## Setting/getting ink variables
-
-The state of the variables in the **ink** engine is, appropriately enough, stored within the `variables_state` field within the `story`. You can both get and set variables directly on this object:
-
-```zig
-try story.variables_state.set("player_health", .{ .int = 100 });
-
-const health = story.variables_state.get("player_health").?.int;
-```
-
-## Read/Visit counts
-
-To find out the number of times that a knot or stitch has been visited by the ink engine, you can use this API:
-
-```zig
-const count = story.state.visitCountAtPathString("...");
-```
-
-The path string is in the form `"yourKnot"` for knots, and `"yourKnot.yourStitch"` for stitches.
 
 ## Variable observers
 
-You can register a callback function to be called whenever a particular variable changes. This can be useful to reflect the state of certain **ink** variables directly in the UI. For example:
+An observer is called with the global's name and its new value. Observers of changes made
+during `cont()` are called once per variable, at the end of that `cont()` call, with the
+value then (as ink's batched observation does). Every callback takes the `context` pointer
+it was registered with.
 
 ```zig
-try story.observeVariable("health", struct {
-    fn onChange(_: []const u8, new_value: ink.Value) void {
-        setHealthInUi(new_value.int);
+const Hud = struct {
+    health: i32 = 0,
+
+    fn on_change(context: ?*anyopaque, name: []const u8, value: inkz.Value) void {
+        const hud: *@This() = @ptrCast(@alignCast(context.?));
+        if (std.mem.eql(u8, name, "health")) hud.health = value.integer;
     }
-}.onChange);
+};
+
+var hud: Hud = .{};
+try story.observe_variable("health", &hud, Hud.on_change);
+try story.observe_variable("stamina", &hud, Hud.on_change);
 ```
 
-The reason that the variable name is passed in is so that you can have a single observer function that observes multiple different variables:
+A string value passed to an observer is valid only during the call.
+
+## Running ink functions
+
+`evaluate_function(name, arguments, text_writer)` runs an ink function to its end, as
+ink's `EvaluateFunction` does. Text the function prints goes to `text_writer`, line by line.
+Its return value comes back as a borrowed `Value` (`.null` if it returns nothing). Other side
+effects (globals, visit counts, the random state) persist.
 
 ```zig
-try story.observeVariable("health", onStatChanged);
-try story.observeVariable("stamina", onStatChanged);
-
-fn onStatChanged(var_name: []const u8, new_value: ink.Value) void {
-    if (std.mem.eql(u8, var_name, "health"))
-        setHealthInUi(new_value.int)
-    else if (std.mem.eql(u8, var_name, "stamina"))
-        setStaminaInUi(new_value.int);
-}
+var text: std.Io.Writer.Allocating = .init(gpa);
+defer text.deinit();
+const result = try story.evaluate_function("multiply", &.{ .{ .integer = 6 }, .{ .integer = 7 } }, &text.writer);
+std.debug.print("{d}, printed: {s}\n", .{ result.get().integer, text.written() });
 ```
 
-## Running functions
-
-You can run ink functions directly using `evaluateFunction`.
-
-You can pass the expected arguments for the ink function, if any.
-
-If the ink function has a return value, it will be returned by `evaluateFunction`.
-You do not need to call `cont()` over any text lines that may exist in the function; it runs to the end. Any content is written to `text_output`, with a line break between each line.
-
-```zig
-var text_output = std.ArrayList(u8).init(allocator);
-defer text_output.deinit();
-
-const return_value = try story.evaluateFunction("myFunctionName", &text_output, params);
-```
+An unknown function returns `error.FunctionNotFound`.
 
 ## External functions
 
-You can define game-side functions in Zig that can be called directly from **ink**. To do so:
+Declare the function in ink:
 
-1. Declare an external function using something like this at the top of one of your **ink** files, in global scope:
-   
-        EXTERNAL playSound(soundName)
+```ink
+EXTERNAL play_sound(name)
+~ play_sound("whack")
+```
 
-2. Bind your Zig function. For example:
+and bind a Zig function to it before the first `cont()`. An external function receives its
+`context`, the runtime's story and the arguments, and returns a `Value` (`.null` for none).
 
 ```zig
-try story.bindExternalFunction("playSound", struct {
-    fn call(args: []const ink.Value) ?ink.Value {
-        audio_controller.play(args[0].asString());
-        return null;
+const Audio = struct {
+    played: u32 = 0,
+
+    fn play_sound(
+        context: ?*anyopaque,
+        runtime_story: *inkz.runtime.story.Story,
+        arguments: []const inkz.Value,
+    ) anyerror!inkz.Value {
+        _ = runtime_story;
+        const audio: *@This() = @ptrCast(@alignCast(context.?));
+        std.debug.print("play {s}\n", .{arguments[0].string});
+        audio.played += 1;
+        return .null;
     }
-}.call, .{});
+};
+
+var audio: Audio = .{};
+try story.bind_external_function("play_sound", .{ .lookahead_safe = false }, &audio, Audio.play_sound);
 ```
 
-3. You can then call that function within the **ink**:
-   
-        ~ playSound("whack")
+- Argument strings are valid only during the call. A returned string is copied into the
+  story before it continues.
+- Calling a mutating story method from inside a callback returns `error.Reentrant`. The one
+  exception is `inkz.runtime.evaluate.evaluate_function(runtime_story, ...)`, which may nest
+  up to `Limits.evaluate_depth_max` deep, as in ink.
+- If any external function the story declares has no binding (and no usable fallback), the
+  first `cont()` returns `error.MissingExternalBinding`, as ink's binding validation does.
+  Binding a name the story doesn't declare does nothing.
+- `unbind_external_function(name)` removes a binding. Binding a name twice returns
+  `error.AlreadyBound`.
 
-The types you can use as parameters and return values are `.int`, `.float`, `.bool` (automatically converted from **ink**'s internal ints) and `.string`.
+### Actions and pure functions: `lookahead_safe`
 
-#### Alternatives to external functions
+To find where a line ends, `cont()` runs past each newline to see whether glue joins the
+next text on. Functions called during that lookahead run before the line they belong to is
+shown.
 
-Remember that in addition to external functions, there are other good ways to communicate between your ink and your game:
+- An **action** (plays a sound, changes game state) should not run early. Bind it with
+  `.lookahead_safe = false`: when the lookahead reaches it, the line ends there, and the
+  function runs during the next `cont()`.
+- A **pure function** (a calculation, harmless to call more than once) can be bound with
+  `.lookahead_safe = true`, the default, so it doesn't break glue:
 
-* You can set up a variable observer if you just want the game to know when some state has changed. This is perfect for say, changing the score in the UI.
-
-* You can use [tags](RunningYourInk.md#marking-up-your-ink-content-with-tags) to add invisible metadata to a line in ink.
-
-* In inkle's games such as [Heaven's Vault](https://www.inklestudios.com/heavensvault), we use the text itself to write instructions to the game, and then have a game-specific text parser decide what to do with it. This is a very flexible approach, and allows us to have a different style of writing on each project. For example, we use the following syntax to ask the game to set up a particular camera shot:
-  
-  `>>> SHOT: view_over_bridge`
-
-#### Actions v.s. Pure functions
-
-**Warning:** The following section is subtly complex! However, don't worry - you can probably ignore it and use default behaviour. If you find a situation where glue isn't working the way you expect and there's an external function in there somewhere, or if you're just plain curious, read on...
-
-There are two kinds of external functions:
-
-* **Actions** - for example, to play sounds, show images, etc. Generally, these may change game state in some way.
-* **Pure functions** - those that don't cause side effects. Specifically 1) **it should be harmless to call them more than once**, and 2) **they shouldn't affect game state**. For example, a mathematical calculation, or pure inspection of game state.
-
-By default, external functions are treated as Actions, since we think this is the primary use-case for most people. However, the distinction can be important for subtle reasons to do with the way that glue works.
-
-When the engine looks at content, it may look ahead further than you would expect *just in case* there is glue in future content that would turn two separate lines into one.
-
-However, external functions that are intended to be run as actions, you don't want them to be run prospectively, since the player is likely to notice, so for this kind we cancel any attempt to glue content together. If it was in the middle of prospectively looking ahead and it sees an action, it'll stop before running it.
-
-Conversely, if all you're doing is a mathematical calculation for example, you don't want your glue to break. For example:
-
-```
+```ink
 The square root of 9
 ~ temp x = sqrt(9)
 <> is {x}.
 ```
 
-You can define how you want your function to behave when you bind it, using the `lookahead_safe` option:
+### Fallbacks
 
-```zig
-pub fn bindExternalFunction(
-    story: *Story,
-    func_name: []const u8,
-    func: *const fn([]const ink.Value) ?ink.Value,
-    options: BindOptions,
-) !void
+With `Options.allow_external_function_fallbacks`, an unbound external function runs the ink
+function of the same name, if the story has one:
+
+```ink
+EXTERNAL multiply(x, y)
+=== function multiply(x, y) ===
+~ return x * y
 ```
 
-where `BindOptions` is:
+## Saving and loading
+
+`to_json(writer)` streams the state as ink's save format (version 10), with no allocation.
+`load_json(json)` loads a save written by inkz or by C# ink (versions 8 to 10). A save that
+doesn't load leaves the story unchanged.
 
 ```zig
-pub const BindOptions = struct {
-    lookahead_safe: bool = false,
+var saved: std.Io.Writer.Allocating = .init(gpa);
+defer saved.deinit();
+try story.to_json(&saved.writer);
+
+try story.load_json(saved.written());
+```
+
+`load_json` returns `error.InvalidSave`, `error.SaveVersionTooOld`,
+`error.SaveDoesNotMatchStory` (the story changed since the save) or `error.SaveTooLarge`
+(the save doesn't fit the story's limits). `reset_state()` starts the story over, as ink's
+`ResetState` does.
+
+## Errors
+
+ink records runtime errors and warnings (for example "ran out of content"). With an error
+handler, `cont()` passes each message to it and carries on:
+
+```zig
+const Log = struct {
+    fn on_error(context: ?*anyopaque, message: []const u8, severity: inkz.Severity) void {
+        _ = context;
+        switch (severity) {
+            .warning => std.log.warn("{s}", .{message}),
+            .@"error" => std.log.err("{s}", .{message}),
+        }
+    }
 };
+
+var story: inkz.Story = undefined;
+try story.init_from_json(gpa, "{\"inkVersion\":21,\"root\":[\"done\",null],\"listDefs\":{}}", .{
+    .on_error = Log.on_error,
+});
+defer story.deinit(gpa);
 ```
 
-* **Actions** should have `lookahead_safe = false` (the default)
-* **Pure functions** should have `lookahead_safe = true`
-
-### Fallbacks for external functions
-
-When testing your story in [Inky](/inkle/inky) or the `inkz` player, you don't get an opportunity to bind a game function before running the story. To get around this, you can define a *fallback function* within ink, which is run if the `EXTERNAL` function can't be found. To do so, simply create an ink function with the same name and parameters. For example, for the above `multiply` example, create the ink function:
-
-```
-=== function multiply(x,y) ===
-// Usually external functions can only return placeholder
-// results, otherwise they'd be defined in ink!
-~ return 1
-```
-
-## Multiple parallel flows (BETA)
-
-It is possible to have multiple parallel "flows" - allowing the following examples:
-
-- A background conversation between two characters while the protagonist talks to someone else. The protagonist could then leave and interject in the background conversation.
-- Non-blocking interactions: you could interact with an object with generates a bunch of choices, but "pause" them, and go and interact with something else. The original object's choices won't block you from interacting with something new, and you can resume them later.
-
-The API is relatively simple:
-
-- `story.switchFlow("Your flow name")` - create a new Flow context, or switch to an existing one. The name can be anything you like, though you may choose to use the same name as an entry knot that you would go on to choose with `story.choosePathString("knotName")`.
-- `story.switchToDefaultFlow()` - before you start switching Flows there's an implicit default Flow. To return to it, call this method.
-- `story.removeFlow("Your flow name")` - destroy a previously created Flow. If the Flow is already active, it returns to the default flow.
-- `story.aliveFlowNames()` - the names of currently alive flows. A flow is alive if it's previously been switched to and hasn't been destroyed. Does not include default flow.
-- `story.currentFlowIsDefaultFlow()` - true if the default flow is currently active. By definition, will also return true if not using flow functionality.
-- `story.currentFlowName()` — a string containing the name of the currently active flow. May contain internal identifier for default flow, so use `currentFlowIsDefaultFlow()` to check first.
-
-## Working with LISTs
-
-Ink lists are a more complex type used in the ink engine, so interacting with them is a bit more involved than with ints, floats and strings.
-
-Lists always need to know the origin of their items. For example, in ink you can do:
-
-    ~ myList = (Orange, House)
-
-...even though `Orange` may have come from a list called `fruit` and `House` may have come from a list called `places`. In ink these *origin* lists are automatically resolved for you when writing. However when working in game code, you have to be more explicit, and tell the engine which origin lists your items belong to.
-
-To create a list with items from a single origin, and assign it to a variable in the game:
+Without a handler, `cont()` returns `error.StoryError` and keeps the diagnostics, so you can
+read and clear them:
 
 ```zig
-var new_list = try ink.InkList.initFromOrigin(allocator, "fruit", &story);
-defer new_list.deinit();
-try new_list.addItem("Orange");
-try new_list.addItem("Apple");
-try story.variables_state.set("myList", .{ .list = new_list });
-```
-
-If you're modifying a list, and you know that it has/had elements from a particular origin already:
-
-```zig
-var fruit = story.variables_state.get("fruit").?.list;
-try fruit.addItem("Apple");
-```
-
-Note that single list items in ink, such as:
-
-    VAR lunch = Apple
-
-...are actually just lists with single items in them rather than a different type. So to create them on the game side, just use the techniques above to create a list with just one item.
-
-You can also create lists from items if you explicitly know all the metadata for the items - i.e. the origin name as well as the int value assigned to it. This is useful if you're building a list out of existing lists. Note that `InkList` uses a hash map where the key is an `InkListItem` (which has `origin_name` and `item_name` fields), and the value is the int value:
-
-```zig
-var new_list = ink.InkList.init(allocator);
-defer new_list.deinit();
-const fruit = story.variables_state.get("fruit").?.list;
-const places = story.variables_state.get("places").?.list;
-var it = fruit.iterator();
-while (it.next()) |entry| try new_list.add(entry.key, entry.value);
-it = places.iterator();
-while (it.next()) |entry| try new_list.add(entry.key, entry.value);
-try story.variables_state.set("myList", .{ .list = new_list });
-```
-
-To test if your list contains a particular item:
-
-```zig
-const fruit = story.variables_state.get("fruit").?.list;
-if (fruit.containsItemNamed("Apple")) {
-    // We're eating apples tonight!
+if (story.cont()) |line| {
+    std.debug.print("{s}", .{line.get()});
+} else |err| switch (err) {
+    error.StoryError => {
+        var message: std.Io.Writer.Allocating = .init(gpa);
+        defer message.deinit();
+        var position: u32 = 0;
+        while (position < story.error_count()) : (position += 1) {
+            try story.write_error(position, &message.writer);
+        }
+        std.debug.print("{s}\n", .{message.written()});
+        story.reset_errors();
+    },
+    else => return err,
 }
 ```
 
-Lists also expose many of the operations you can do in ink:
+`has_error()`, `has_warning()`, `warning_count()` and `write_warning()` complete the set.
+Running out of a limit returns its own error, such as `error.FrameLimit`, `error.HeapLimit`
+or `error.StepLimit`; see `inkz.Error`. ink throws in these cases. Here, when it happens in
+the lookahead past a line's newline, the story goes back to the end of that line: it saves,
+and the next `cont` tries the same steps again. Anywhere else the step is half done and the
+story fails closed: `can_continue()` is false, there are no choices, and `cont`,
+`choose_choice_index`, `choose_path_string`, `evaluate_function` and `to_json` return
+`error.StoryFailed` until `reset_state()` or a successful `load_json`.
+
+## Host events
+
+`Options.events` holds ink's host events, each optional and each called with
+`events.context`: `on_did_continue` (after each `cont`), `on_make_choice` (before a choice is
+taken), `on_evaluate_function` and `on_complete_evaluate_function` (around
+`evaluate_function`) and `on_choose_path_string`.
 
 ```zig
-list.minItem                // equivalent to calling LIST_MIN(list) in ink
-list.maxItem                // equivalent to calling LIST_MAX(list) in ink
-list.inverse                // equivalent to LIST_INVERT(list) in ink
-list.all                    // equivalent to LIST_ALL(list) in ink
-list.union(other_list)      // equivalent to (list + other_list) in ink
-list.intersect(other_list)  // equivalent to (list ^ other_list) in ink
-list.without(other_list)    // equivalent to (list - other_list) in ink
-list.contains(other_list)   // equivalent to (list ? other_list) in ink
+const Counter = struct {
+    lines: u32 = 0,
+
+    fn on_did_continue(context: ?*anyopaque) void {
+        const counter: *@This() = @ptrCast(@alignCast(context.?));
+        counter.lines += 1;
+    }
+};
+
+var counter: Counter = .{};
+const options: inkz.Story.Options = .{
+    .events = .{ .context = &counter, .on_did_continue = Counter.on_did_continue },
+};
+_ = options; // Pass to story.init or story.init_from_json.
 ```
+
+## Parallel flows
+
+A flow has its own call stack, output and choices; globals, visit counts and the random
+state are shared, as in ink.
+
+```zig
+try story.switch_flow("background"); // Creates the flow, starting at the root.
+try story.choose_path_string("gossip", .{});
+const line = try story.cont();
+std.debug.print("{s}", .{line.get()});
+try story.switch_to_default_flow();
+try story.remove_flow("background");
+std.debug.print("now in {s}\n", .{story.current_flow_name().get()});
+```
+
+The default flow is named `DEFAULT_FLOW`. `alive_flow_names(sink)` calls
+`sink.name(text)` for every flow except the default one. The number of flows and the room
+to park inactive ones are limits (`flows_max`, `flow_parking_bytes_max`).
+
+## Lists
+
+List values come back from `get_variable` as `.list`, an opaque reference that can be
+stored back with `set_variable` while the story runs. The host API has no calls yet to build
+a list or read its items; use ink functions through `evaluate_function` (for example one
+that returns `LIST_COUNT(list)` or tests `list ? item`).
+
+## Memory and limits
+
+Each story makes exactly one allocation, in `init`, of `Limits.bytes_total()` bytes, and
+none after that: `cont`, choosing, saving, loading and the rest run in that memory. Running
+out of a buffer returns a named error such as `error.OutputLimit`, never undefined
+behaviour. The defaults take about 2.2 MB per story and suit most stories. Play speed doesn't
+depend on the limits, so a smaller budget costs nothing but headroom. A small side story can
+use less:
+
+```zig
+var limits: inkz.Limits = .{};
+limits.flows_max = 2;
+limits.heap_bytes_max = 64 * 1024;
+const options: inkz.Story.Options = .{ .limits = limits };
+_ = options;
+```
+
+### Fitting limits to a story
+
+Every buffer records its peak. Play the story as widely as you can with the default limits,
+including every path, saves and loads. Then read `usage()` and fit the limits with a margin:
+
+```zig
+// After a thorough play of `story` with the default limits:
+const limits = inkz.fitted_limits(story.usage(), 2);
+var fitted: inkz.Story = undefined;
+try fitted.init(gpa, story.get_program(), .{ .limits = limits });
+defer fitted.deinit(gpa);
+```
+
+`zig build simulate -- --json story.ink.json --seeds 10000 --fit on` does this over 10,000
+seeded random playthroughs, with saves, loads and flow switches along the way. It prints the
+fitted limits as Zig source with their byte budget, then replays the same seeds within them.
+crime_scene fits in 47 KB instead of 2.2 MB. A fitted budget is only as good as the play that
+measured it: a story that later needs more gets a named limit error, so keep the margin.
+
+`docs/benchmarks.md` has a worked sizing example and the measurements.
 
 ## Using the compiler
 
-Precompiling your stories to `.ink.json` is strongly recommended. The compiler builds the DOP AST and serializes it once; the runtime then deserializes it at startup with no further allocation during execution. Loading `.ink` directly at runtime skips the serialization step but produces the same in-memory DOP AST — useful for development, but less efficient for shipped builds. It can be done with the following code:
+`inkz.compiler` compiles ink source to a `Program`, as inklecate does:
+
+- `compile_source(gpa, source)` compiles one file's text (no `INCLUDE`).
+- `compile_file(gpa, io, directory, path)` compiles `path` in `directory` and the files it
+  includes; `compile_file_with(gpa, io, directory, path, .{ .count_all_visits = true })`
+  sets ink's `countAllVisits`.
+- `compile_to_json(gpa, source)` returns the story as inklecate's `.ink.json`.
+
+A story with errors returns `error.CompileFailed`. The compiler doesn't report its
+diagnostics through this API yet.
 
 ```zig
-// ink_source: e.g. @embedFile("story.ink") or loaded from disk
-const ink_source: []const u8 = ...;
-var compiler = try ink.Compiler.init(allocator, ink_source, .{});
-defer compiler.deinit();
-var story = try compiler.compile();
-defer story.deinit();
-std.debug.print("{s}\n", .{try story.cont()});
+var directory = try std.Io.Dir.cwd().openDir(io, "stories", .{});
+defer directory.close(io);
+var program = try inkz.compiler.compile_file(gpa, io, directory, "main.ink");
+defer program.deinit(gpa);
+
+var story: inkz.Story = undefined;
+try story.init(gpa, &program, .{});
+defer story.deinit(gpa);
 ```
 
-Note that if your story is broken up into several ink files using `INCLUDE`, you will need to provide a file handler:
+Precompiled JSON loads faster than source compiles, so ship `.ink.json` and compile source
+during development.
 
-```zig
-var compiler = try ink.Compiler.init(allocator, ink_source, .{
-    .count_all_visits = true,
-    .file_handler = ink.FileHandler.fromDir(ink_dir),
-});
-defer compiler.deinit();
-var story = try compiler.compile();
-defer story.deinit();
-std.debug.print("{s}\n", .{try story.cont()});
-```
+## Migrating from the old API
+
+The runtime was rewritten (plan `docs/DODMigrationPlan.md`). Three decisions change the API:
+
+- **D5:** `cont()` returns a borrowed view, valid until the next mutating call, instead of
+  allocated text. `cont_alloc(gpa)` returns a copy you own.
+- **D8:** every public name is snake_case.
+- **D12:** `cont()` returns one line, with ink's newline lookahead, as ink's `Continue()`
+  does. The old `cont()` returned a whole turn; that is now `continue_maximally`.
+
+| Old API | New API |
+|---|---|
+| `ink.Story.initFromJson(allocator, json)` | `var story: inkz.Story = undefined; try story.init_from_json(gpa, json, .{})` |
+| `compiler.compile()` returning a story | `inkz.compiler.compile_source(gpa, source)` returns a `Program`; then `story.init(gpa, &program, .{})` |
+| `ink.Compiler.init(allocator, source, .{ .file_handler = ... })` | `inkz.compiler.compile_file(gpa, io, directory, path)` |
+| `story.deinit()` | `story.deinit(gpa)` |
+| `story.cont() ![]const u8` (a turn, allocated) | `story.cont()` returns `Borrowed([]const u8)` (one line); `.get()` reads it |
+| `story.continueMaximally()` | `story.continue_maximally(writer)` or `story.continue_maximally_alloc(gpa)` |
+| `story.canContinue()` | `story.can_continue()` |
+| `story.currentChoices()` | `story.current_choices_count()` and `story.current_choice(position).get()` |
+| `choice.tags` | `choice.tags_count` and `story.current_choice_tag(position, tag)` |
+| `story.chooseChoiceIndex(i)` | `story.choose_choice_index(i)` |
+| `story.choosePathString(path)` | `story.choose_path_string(path, .{})` |
+| `story.currentTags()` | `story.current_tags(&sink)` |
+| `story.globalTags()` | `story.global_tags(&sink)` |
+| `story.tagsForContentAtPath(path)` | `story.tags_for_content_at_path(path, &sink)` |
+| `story.variables_state.get(name)` | `story.get_variable(name)` returns `?Borrowed(Value)` |
+| `story.variables_state.set(name, value)` | `story.set_variable(name, value)` |
+| `story.state.visitCountAtPathString(path)` | `story.visit_count_at_path_string(path)` |
+| `story.state.toJson(allocator)` | `story.to_json(writer)` |
+| `story.state.loadJson(json)` | `story.load_json(json)` |
+| `story.observeVariable(name, callback)` | `story.observe_variable(name, context, observer)` |
+| `story.bindExternalFunction(name, fn, options)` | `story.bind_external_function(name, options, context, function)` |
+| `fn([]const ink.Value) ?ink.Value` | `fn(?*anyopaque, *inkz.runtime.story.Story, []const inkz.Value) anyerror!inkz.Value` |
+| `BindOptions.lookahead_safe = false` by default | `BindOptions.lookahead_safe = true` by default, as in ink |
+| `story.evaluateFunction(name, text_out, params)` | `story.evaluate_function(name, arguments, text_writer)` |
+| `story.on_error = fn([]const u8, ink.ErrorType) void` | `Options.on_error = fn(?*anyopaque, []const u8, inkz.Severity) void` |
+| `story.switchFlow(name)`, `switchToDefaultFlow()`, `removeFlow(name)` | `switch_flow(name)`, `switch_to_default_flow()`, `remove_flow(name)` |
+| `story.currentFlowName()`, `aliveFlowNames()` | `current_flow_name()`, `alive_flow_names(&sink)` |
+| `story.currentFlowIsDefaultFlow()` | compare `current_flow_name().get()` with `"DEFAULT_FLOW"` |
+| `ink.Value` with `.int` | `inkz.Value` with `.integer` (`i32`) and `.float` (`f32`) |
+| `ink.InkList` and its methods | none yet; lists are opaque `.list` references (see [Lists](#lists)) |
