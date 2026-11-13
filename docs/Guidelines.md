@@ -11,7 +11,7 @@ The ```zig blocks in this file are compiled, and their tests run, in `zig build 
 
 | Rule | What it means here | Enforced by |
 |---|---|---|
-| No recursion | Parser, sema, lowering, JSON load and write, save and load, path resolution and heap compaction use explicit bounded stacks (`WorkStack`) or post-order layouts. The VM is a flat loop; ink calls push frames onto a bounded stack, never onto the native stack. | Lint: a name-based call-graph cycle check. A false positive needs `// lint: allow recursion: <reason>` above the function. |
+| No recursion | Parser, sema, lowering, JSON load and write, save and load, path resolution and heap compaction use explicit bounded stacks or post-order layouts. The VM is a flat loop; ink calls push frames onto a bounded stack, never onto the native stack. | Lint: a name-based call-graph cycle check. A false positive needs `// lint: allow recursion: <reason>` above the function. |
 | A limit on everything | Every buffer and every loop has a bound. Runtime bounds are in `Limits` (`src/core/limits.zig`), overridable through `Story.Options.limits`; compiler bounds are in `CompilerLimits`. Exceeding one returns a named error (`error.FrameLimit`, `error.HeapLimit`, `error.StepLimit`, ...). | Tests per limit |
 | A total memory budget | `Limits.bytes_total(shape)` is the exact size of the one allocation `Story.init` makes. | A test pins the default budget; the init allocation equals it. |
 | Explicitly sized types | `u32` for indices and counts. `usize` appears only at slice-indexing boundaries, through `@as(usize, index)` or `@intCast`. | Lint: a `usize` struct field is an error. |
@@ -195,9 +195,9 @@ pub fn main(init: std.process.Init) !void {
 ### Labeled switches for scanners and dispatch
 
 Scanners are labeled-switch state machines: each prong does one small thing and continues
-with the next state, so the loop compiles to direct jumps. Plan D10 allows the tokenizer's
-scanner and the VM's dispatch to exceed 70 lines for this, if each prong stays a few lines
-and delegates to a helper; both currently fit in 70 lines without the exception.
+with the next state, so the loop compiles to direct jumps. Plan D10 allows the VM's dispatch
+to exceed 70 lines for this, if each prong stays a few lines and delegates to a helper; it
+currently fits in 70 lines without the exception.
 
 ```zig
 const std = @import("std");

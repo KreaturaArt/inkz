@@ -17,7 +17,7 @@ const Level = grammar.Level;
 /// Parse: the top-level statements make the story.
 pub fn story(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .story);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -38,7 +38,7 @@ pub fn story(machine: *Machine, frame: *Frame) Error!Action {
 /// untilTerminator: StatementsBreakForLevel).
 pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .statements);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const level: Level = @fromBackingInt(@intCast(frame.locals[0]));
     switch (frame.phase) {
         0 => {
@@ -74,7 +74,7 @@ pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn finish_statements(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .statements);
     if (machine.scratch_count == frame.locals[1]) return .fail;
     try machine.wrap(.statements, frame.locals[1]);
@@ -123,7 +123,7 @@ const Alternative = enum(u32) {
 /// StatementAtLevel: OneOf the level's rules.
 pub fn statement(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .statement);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.argument;
         frame.locals[1] = 0;
@@ -172,7 +172,7 @@ fn rule_of(alternative: Alternative) grammar.Rule {
 /// block) a dash that isn't an arrow, or `}`.
 pub fn statements_break(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .statements_break);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.argument;
@@ -195,7 +195,7 @@ pub fn statements_break(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn break_inner(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .statements_break);
     if (frame.locals[0] != @backingInt(Level.inner_block)) return .fail;
     if (weave.dash_not_arrow(machine)) return .succeed;
@@ -206,7 +206,7 @@ fn break_inner(machine: *Machine, frame: *Frame) Error!Action {
 /// KnotDefinition: a declaration, its line end, then the knot's statements.
 pub fn knot_definition(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .knot_definition);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -233,21 +233,21 @@ pub fn knot_definition(machine: *Machine, frame: *Frame) Error!Action {
 /// KnotStitchNoContentRecoveryRule: skip to the next knot declaration; the content is
 /// ink's "<ERROR IN FLOW>" text.
 fn recover_flow_content(machine: *Machine, expectation: grammar.Expectation) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     grammar.report_expected(machine, expectation);
     while (!grammar.at_end(machine)) {
         if (grammar.rest(machine)[0] == '=' and knot_title_equals_ahead(machine)) break;
-        machine.tokenizer.at += 1;
+        machine.at += 1;
     }
     const marker = machine.scratch_count;
-    const token = try machine.add_token(.text, grammar.at(machine), grammar.at(machine));
+    const token = try machine.add_token(grammar.at(machine), grammar.at(machine));
     try machine.push_node(.error_text, token.to_int());
     try machine.wrap(.statements, marker);
 }
 
 fn knot_title_equals_ahead(machine: *const Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const text = grammar.rest(machine);
     assert(text.len > 0);
     return text.len > 1 and text[1] == '=';
@@ -288,14 +288,14 @@ pub fn knot_declaration(machine: *Machine, frame: *Frame) Error!Action {
 
 /// KnotTitleEquals: two or more `=`; their count (0 if fewer).
 fn knot_title_equals(machine: *Machine) u32 {
-    assert(machine.source.len >= machine.tokenizer.at);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.source.len >= machine.at);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
-    while (!grammar.at_end(machine) and grammar.rest(machine)[0] == '=') machine.tokenizer.at += 1;
+    while (!grammar.at_end(machine) and grammar.rest(machine)[0] == '=') machine.at += 1;
     const count = grammar.at(machine) - start;
     if (count <= 1) {
-        machine.tokenizer.at = start;
+        machine.at = start;
         return 0;
     }
     return count;
@@ -304,7 +304,7 @@ fn knot_title_equals(machine: *Machine) u32 {
 /// StitchDefinition: a declaration, its line end, then the stitch's statements.
 pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .stitch_definition);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -348,7 +348,7 @@ pub fn stitch_declaration(machine: *Machine, frame: *Frame) Error!Action {
 
 /// BracketedKnotDeclArguments: `(` parameters `)`; pushes a parameters list.
 fn bracketed_parameters(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     if (!grammar.parse_string(machine, "(")) return false;
     const marker = machine.scratch_count;
@@ -365,7 +365,7 @@ fn bracketed_parameters(machine: *Machine) Error!bool {
 
 /// FlowDeclArgument: `name`, `ref name` or `-> name`.
 fn flow_parameter(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const first = try grammar.identifier(machine);
     _ = grammar.whitespace(machine);
@@ -385,7 +385,7 @@ fn flow_parameter(machine: *Machine) Error!bool {
 }
 
 fn push_parameter(machine: *Machine, tag: ast.Tag, name: ?ast.TokenIndex) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(tag == .parameter or tag == .reference_parameter or tag == .divert_parameter);
     if (name) |token| return machine.push_node(tag, token.to_int());
     try grammar.push_missing(machine);
@@ -395,7 +395,7 @@ fn push_parameter(machine: *Machine, tag: ast.Tag, name: ?ast.TokenIndex) Error!
 /// ConstDeclaration, ExternalDeclaration and IncludeStatement. The argument says which.
 pub fn declaration_line(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .declaration_line);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.argument;
         frame.locals[1] = machine.scratch_count;
@@ -413,7 +413,7 @@ pub fn declaration_line(machine: *Machine, frame: *Frame) Error!Action {
 
 /// AuthorWarning: `TODO:` and the rest of the line.
 fn author_warning(machine: *Machine) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = grammar.whitespace(machine);
     if (!try grammar.keyword(machine, "TODO")) return .fail;
@@ -421,14 +421,14 @@ fn author_warning(machine: *Machine) Error!Action {
     _ = grammar.parse_string(machine, ":");
     _ = grammar.whitespace(machine);
     const line = grammar.until_line_end(machine);
-    const token = try machine.add_token(.text, line.start, line.end);
+    const token = try machine.add_token(line.start, line.end);
     try machine.push_node(.author_warning, token.to_int());
     return .succeed;
 }
 
 /// IncludeStatement: `INCLUDE` and a filename (loaded later, P8.2).
 fn include_statement(machine: *Machine) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = grammar.whitespace(machine);
     if (!grammar.parse_string(machine, "INCLUDE")) return .fail;
@@ -439,14 +439,14 @@ fn include_statement(machine: *Machine) Error!Action {
         end -= 1;
     }
     if (end == line.start) grammar.report_expected(machine, .include_filename);
-    const token = try machine.add_token(.text, line.start, end);
+    const token = try machine.add_token(line.start, end);
     try machine.push_node(.include, token.to_int());
     return .succeed;
 }
 
 /// ExternalDeclaration: `EXTERNAL name(params)`.
 fn external_declaration(machine: *Machine) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = grammar.whitespace(machine);
     if (!try grammar.keyword(machine, "EXTERNAL")) return .fail;
@@ -467,7 +467,7 @@ fn external_declaration(machine: *Machine) Error!Action {
 
 /// ListDeclaration: `LIST name = items`.
 fn list_declaration(machine: *Machine) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = grammar.whitespace(machine);
     if (!try grammar.keyword(machine, "LIST")) return .fail;
@@ -491,7 +491,7 @@ fn list_declaration(machine: *Machine) Error!Action {
 
 /// ListDefinition: items separated by commas (with any whitespace around them).
 fn list_definition(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = grammar.any_whitespace(machine);
     const marker = machine.scratch_count;
@@ -501,12 +501,12 @@ fn list_definition(machine: *Machine) Error!bool {
         const saved_tokens = machine.tokens_count;
         _ = grammar.any_whitespace(machine);
         if (!grammar.parse_string(machine, ",")) {
-            machine.tokenizer.at = saved;
+            machine.at = saved;
             break;
         }
         _ = grammar.any_whitespace(machine);
         if (!try list_item(machine)) {
-            machine.tokenizer.at = saved;
+            machine.at = saved;
             machine.tokens_count = saved_tokens;
             break;
         }
@@ -517,7 +517,7 @@ fn list_definition(machine: *Machine) Error!bool {
 
 /// ListElementDefinition: `name`, `(name)`, with an optional `= value`.
 fn list_item(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     const selected = grammar.parse_string(machine, "(");
@@ -525,7 +525,7 @@ fn list_item(machine: *Machine) Error!bool {
     _ = grammar.whitespace(machine);
     const marker = machine.scratch_count;
     if (!try grammar.push_identifier(machine)) {
-        machine.tokenizer.at = start;
+        machine.at = start;
         return false;
     }
     _ = grammar.whitespace(machine);
@@ -551,7 +551,7 @@ fn list_item(machine: *Machine) Error!bool {
 
 /// VariableDeclaration and ConstDeclaration: `VAR name = expression`, `CONST ...`.
 fn value_declaration(machine: *Machine, frame: *Frame, kind: Alternative) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const is_variable = kind == .variable_declaration;
     switch (frame.phase) {
@@ -588,7 +588,7 @@ fn value_declaration(machine: *Machine, frame: *Frame, kind: Alternative) Error!
 
 /// The initial value checks of VariableDeclaration and ConstDeclaration.
 fn check_initial_value(machine: *Machine, is_variable: bool) void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const value = grammar.top_tag(machine, 0).?;
     const data = machine.workspace.scratch_data[machine.scratch_count - 1];
@@ -613,7 +613,7 @@ fn check_initial_value(machine: *Machine, is_variable: bool) void {
 
 /// Parse(ListElementDefinitionSeparator): a comma with any whitespace around it.
 fn list_separator(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     _ = grammar.any_whitespace(machine);
@@ -621,14 +621,14 @@ fn list_separator(machine: *Machine) bool {
         _ = grammar.any_whitespace(machine);
         return true;
     }
-    machine.tokenizer.at = start;
+    machine.at = start;
     return false;
 }
 
 /// LogicLine: `~` and a return, an assignment or an expression.
 pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .logic_line);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -661,7 +661,7 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn finish_logic_line(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const marker = frame.locals[0];
     const result = grammar.top_tag(machine, marker).?;
@@ -683,7 +683,7 @@ fn finish_logic_line(machine: *Machine, frame: *Frame) Error!Action {
 /// ReturnStatement: `return` and an optional expression.
 pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .return_statement);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -705,7 +705,7 @@ pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
 /// TempDeclarationOrAssignment: `temp name = e`, `name = e`, `name += e`, `name -= e`.
 pub fn temp_declaration_or_assignment(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .temp_declaration_or_assignment);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;

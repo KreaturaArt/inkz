@@ -45,12 +45,12 @@ const operators = [_]Operator{
 
 /// ParseInfixOperator: the index of the operator at the input, consumed.
 fn infix_operator(machine: *Machine) ?u32 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const start = grammar.at(machine);
     for (operators, 0..) |operator, position| {
         if (!grammar.parse_string(machine, operator.text)) continue;
         if (operator.require_whitespace and !grammar.whitespace(machine)) {
-            machine.tokenizer.at = start;
+            machine.at = start;
             continue;
         }
         return @intCast(position);
@@ -63,7 +63,7 @@ fn infix_operator(machine: *Machine) ?u32 {
 /// the marker and the pending operator.
 pub fn expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.argument;
@@ -89,7 +89,7 @@ pub fn expression(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn infix(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .expression);
     const start = grammar.at(machine);
     if (infix_operator(machine)) |position| {
@@ -100,7 +100,7 @@ fn infix(machine: *Machine, frame: *Frame) Error!Action {
             machine.argument = operators[position].precedence;
             return .{ .call = .expression };
         }
-        machine.tokenizer.at = start;
+        machine.at = start;
     }
     _ = grammar.whitespace(machine);
     return .succeed;
@@ -110,7 +110,7 @@ fn infix(machine: *Machine, frame: *Frame) Error!Action {
 /// locals: the marker and 1 + the prefix tag (0 if none).
 pub fn expression_unary(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_unary);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -153,7 +153,7 @@ pub fn expression_unary(machine: *Machine, frame: *Frame) Error!Action {
 /// OneOf(String("-"), String("!")), else ExpressionNot: 1 + the unary tag, or 0.
 fn prefix_operator(machine: *Machine) Error!u32 {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (grammar.parse_string(machine, "-")) return 1 + @as(u32, @backingInt(ast.Tag.negate));
     if (grammar.parse_string(machine, "!")) return 1 + @as(u32, @backingInt(ast.Tag.not));
     if (try grammar.keyword(machine, "not")) return 1 + @as(u32, @backingInt(ast.Tag.not));
@@ -181,7 +181,7 @@ fn postfix(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionDivertTarget: `-> target` as a value (not a thread).
 pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_divert_target);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         _ = grammar.whitespace(machine);
@@ -198,7 +198,7 @@ pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionParen: `(expression)`; the inner expression itself.
 pub fn expression_paren(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_paren);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
         frame.phase = 1;
@@ -214,7 +214,7 @@ pub fn expression_paren(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionFunctionCall: `name(arguments)`.
 pub fn expression_function_call(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_function_call);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         if (!try grammar.push_identifier(machine)) return .fail;
@@ -231,7 +231,7 @@ pub fn expression_function_call(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionFunctionCallArguments: `(` Interleave(Expression, Exclude(String(","))) `)`.
 pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .function_call_arguments);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
         frame.locals[0] = machine.scratch_count;
@@ -254,7 +254,7 @@ pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionString: `"` mixed text and logic `"`.
 pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_string);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "\"")) return .fail;
         machine.flags |= grammar.parsing_string;
@@ -266,7 +266,7 @@ pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
     machine.flags &= ~grammar.parsing_string;
     const marker = frame.locals[0];
     if (machine.outcome == .failed) {
-        const empty = try machine.add_token(.text, grammar.at(machine), grammar.at(machine));
+        const empty = try machine.add_token(grammar.at(machine), grammar.at(machine));
         try machine.push_node(.text, empty.to_int());
     } else {
         for (machine.workspace.scratch_tags[marker..machine.scratch_count]) |tag| {
@@ -282,7 +282,7 @@ pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
 
 /// Whether the string at the top of the scratch stack is one text (isSingleString).
 pub fn top_string_is_single(machine: *const Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const workspace = machine.workspace;
     assert(grammar.top_tag(machine, 0) == .string);
     const counter = workspace.scratch_data[machine.scratch_count - 1];
@@ -291,7 +291,7 @@ pub fn top_string_is_single(machine: *const Machine) bool {
 
 /// Whether a value is a number once ink folds unary operators into it (WithInner).
 pub fn is_number(machine: *const Machine, tag_initial: ast.Tag, data_initial: u32) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const workspace = machine.workspace;
     assert(data_initial <= workspace.node_tags.len);
     var tag = tag_initial;
@@ -307,7 +307,7 @@ pub fn is_number(machine: *const Machine, tag_initial: ast.Tag, data_initial: u3
 
 /// ExpressionList: `(a, b.c)`, a list literal (maybe empty).
 fn expression_list(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
@@ -322,7 +322,7 @@ fn expression_list(machine: *Machine) Error!bool {
                 const comma = grammar.parse_string(machine, ",");
                 _ = grammar.whitespace(machine);
                 if (comma and try list_member(machine)) continue;
-                machine.tokenizer.at = separator;
+                machine.at = separator;
                 break;
             }
         }
@@ -332,7 +332,7 @@ fn expression_list(machine: *Machine) Error!bool {
             return true;
         }
     }
-    machine.tokenizer.at = start;
+    machine.at = start;
     machine.tokens_count = saved_tokens;
     machine.scratch_count = marker;
     return false;
@@ -340,7 +340,7 @@ fn expression_list(machine: *Machine) Error!bool {
 
 /// ListMember: `name` or `list.name`, one identifier token.
 fn list_member(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = grammar.whitespace(machine);
     const first = try grammar.identifier(machine) orelse return false;
@@ -358,7 +358,7 @@ fn list_member(machine: *Machine) Error!bool {
 /// ExpressionVariableName: Interleave(Identifier, Exclude(Spaced(String(".")))), not a
 /// reserved word.
 fn variable_name(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
@@ -367,7 +367,7 @@ fn variable_name(machine: *Machine) Error!bool {
         const separator = grammar.at(machine);
         _ = grammar.whitespace(machine);
         if (!grammar.parse_string(machine, ".")) {
-            machine.tokenizer.at = separator;
+            machine.at = separator;
             break;
         }
         _ = grammar.whitespace(machine);
@@ -378,7 +378,7 @@ fn variable_name(machine: *Machine) Error!bool {
     const first: ast.TokenIndex = .from_int(first_word);
     const reserved = !empty and grammar.is_reserved_keyword(grammar.token_text(machine, first));
     if (empty or reserved) {
-        machine.tokenizer.at = start;
+        machine.at = start;
         machine.tokens_count = saved_tokens;
         machine.scratch_count = marker;
         return false;
@@ -391,19 +391,19 @@ fn variable_name(machine: *Machine) Error!bool {
 /// ExpressionLiteral: OneOf(ExpressionFloat, ExpressionInt, ExpressionBool); the string is
 /// a rule of its own.
 fn literal(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     if (parse_int(machine)) {
         if (grammar.parse_string(machine, ".")) {
             while (!grammar.at_end(machine) and std.ascii.isDigit(grammar.rest(machine)[0])) {
-                machine.tokenizer.at += 1;
+                machine.at += 1;
             }
-            const token = try machine.add_token(.word, start, grammar.at(machine));
+            const token = try machine.add_token(start, grammar.at(machine));
             try machine.push_node(.float, token.to_int());
             return true;
         }
-        machine.tokenizer.at = start;
+        machine.at = start;
     }
     if (try push_integer(machine)) return true;
     const token = try grammar.identifier(machine) orelse return false;
@@ -412,24 +412,24 @@ fn literal(machine: *Machine) Error!bool {
         try machine.push_node(if (text[0] == 't') .true else .false, token.to_int());
         return true;
     }
-    machine.tokenizer.at = start;
+    machine.at = start;
     machine.tokens_count -= 1;
     return false;
 }
 
 /// ParseInt: an optional `-`, optional spaces, digits; a value out of range is an error.
 fn parse_int(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     _ = grammar.parse_string(machine, "-");
     _ = grammar.whitespace(machine);
     const digits = grammar.at(machine);
     while (!grammar.at_end(machine) and std.ascii.isDigit(grammar.rest(machine)[0])) {
-        machine.tokenizer.at += 1;
+        machine.at += 1;
     }
     if (grammar.at(machine) == digits) {
-        machine.tokenizer.at = start;
+        machine.at = start;
         return false;
     }
     const negative = machine.source[start] == '-';
@@ -438,7 +438,7 @@ fn parse_int(machine: *Machine) bool {
     const limit: i64 = if (negative) 1 << 31 else (1 << 31) - 1;
     if (value > limit) {
         grammar.report_message(machine, .integer_out_of_range);
-        machine.tokenizer.at = start;
+        machine.at = start;
         return false;
     }
     return true;
@@ -446,11 +446,11 @@ fn parse_int(machine: *Machine) bool {
 
 /// ExpressionInt: an integer leaf whose token covers the sign, spaces and digits.
 pub fn push_integer(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     if (!parse_int(machine)) return false;
-    const token = try machine.add_token(.word, start, grammar.at(machine));
+    const token = try machine.add_token(start, grammar.at(machine));
     try machine.push_node(.integer, token.to_int());
     return true;
 }

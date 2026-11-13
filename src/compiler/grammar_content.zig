@@ -18,7 +18,7 @@ const Level = grammar.Level;
 /// ContentTextAllowingEcapeChar: text up to logic, a divert, glue or the line end; the token
 /// keeps the `\` escapes.
 pub fn content_text(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     const parsing_string = machine.flags & grammar.parsing_string != 0;
@@ -27,7 +27,7 @@ pub fn content_text(machine: *Machine) Error!bool {
         const text = grammar.rest(machine);
         const character = text[0];
         if (character == '\\') {
-            machine.tokenizer.at += @min(2, text.len);
+            machine.at += @min(2, text.len);
             continue;
         }
         if (is_end_character(character, parsing_string, parsing_choice)) break;
@@ -35,11 +35,11 @@ pub fn content_text(machine: *Machine) Error!bool {
             const arrow = std.mem.startsWith(u8, text, "->") or std.mem.startsWith(u8, text, "<-");
             if (arrow or std.mem.startsWith(u8, text, "<>")) break;
         }
-        machine.tokenizer.at += 1;
+        machine.at += 1;
     }
     assert(grammar.at(machine) >= start);
     if (grammar.at(machine) == start) return false;
-    const token = try machine.add_token(.text, start, grammar.at(machine));
+    const token = try machine.add_token(start, grammar.at(machine));
     try machine.push_node(.text, token.to_int());
     return true;
 }
@@ -61,14 +61,14 @@ fn trim_text_at(machine: *Machine, index: u32, terminate_with_space: bool) Error
     const start = workspace.token_starts[token];
     const end = trimmed_end(machine.source, start, workspace.token_ends[token]);
     if (terminate_with_space) {
-        const trimmed = try machine.add_token(.text, start, end);
+        const trimmed = try machine.add_token(start, end);
         workspace.scratch_tags[index] = .text_space;
         workspace.scratch_data[index] = trimmed.to_int();
         return false;
     }
     if (end == start) return true;
     if (end != workspace.token_ends[token] or workspace.scratch_tags[index] == .text_space) {
-        const trimmed = try machine.add_token(.text, start, end);
+        const trimmed = try machine.add_token(start, end);
         workspace.scratch_data[index] = trimmed.to_int();
     }
     workspace.scratch_tags[index] = .text;
@@ -94,7 +94,7 @@ fn trimmed_end(source: []const u8, start: u32, end_initial: u32) u32 {
 /// TrimEndWhitespace(terminateWithSpace: false) on the values above `marker`.
 fn trim_end_whitespace(machine: *Machine, marker: u32) Error!void {
     assert(marker <= machine.scratch_count);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     while (grammar.top_tag(machine, marker)) |tag| {
         if (tag != .text and tag != .text_space) return;
         if (!try trim_text_at(machine, machine.scratch_count - 1, false)) return;
@@ -116,7 +116,7 @@ fn is_divert(tag: ast.Tag) bool {
 /// tag), spliced flat into the statement list.
 pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .line_of_mixed_text_and_logic);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             _ = grammar.whitespace(machine);
@@ -149,7 +149,7 @@ pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Acti
 /// MixedTextAndLogic: text and inline logic interleaved, then (outside choices) diverts.
 pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .mixed_text_and_logic);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -158,7 +158,7 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
             if (grammar.parse_string(machine, "~")) {
                 _ = grammar.whitespace(machine);
                 grammar.report_message(machine, .tilde_in_content);
-            } else machine.tokenizer.at = start;
+            } else machine.at = start;
             _ = try content_text(machine);
             frame.phase = 1;
             return .{ .call = .inline_logic_or_glue_or_start_tag };
@@ -208,7 +208,7 @@ fn finish_mixed(machine: *Machine, frame: *Frame) Action {
 /// InlineLogicOrGlueOrStartTag: OneOf(InlineLogic, Glue, StartTag).
 pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inline_logic_or_glue_or_start_tag);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.phase = 1;
         return .{ .call = .inline_logic };
@@ -216,7 +216,7 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
     if (machine.outcome == .succeeded) return .succeed;
     const start = grammar.at(machine);
     if (grammar.parse_string(machine, "<>")) {
-        const token = try machine.add_token(.glue, start, start + 2);
+        const token = try machine.add_token(start, start + 2);
         try machine.push_node(.glue, token.to_int());
         return .succeed;
     }
@@ -228,7 +228,7 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
         machine,
         .tag_in_string,
     );
-    const token = try machine.add_token(.hash, hash, hash + 1);
+    const token = try machine.add_token(hash, hash + 1);
     if (machine.flags & grammar.tag_active != 0) {
         const marker = machine.scratch_count;
         try machine.push_node(.tag_end, 0);
@@ -243,7 +243,7 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
 /// InlineLogic: `{` inner logic `}`, as a content list.
 pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inline_logic);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             if (!grammar.parse_string(machine, "{")) return .fail;
@@ -274,7 +274,7 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
 /// conditional, a sequence and an expression that covers everything up to the `}`.
 pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_logic);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -328,7 +328,7 @@ fn inner_logic_alternative(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.phase == 4);
     if (machine.outcome == .succeeded and closing_brace_ahead(machine)) return .succeed;
     machine.restore(frame.checkpoint);
-    machine.tokenizer.at = frame.locals[1];
+    machine.at = frame.locals[1];
     frame.locals[2] += 1;
     if (frame.locals[2] == full_alternatives.len) return .fail;
     machine.argument = 0;
@@ -337,19 +337,19 @@ fn inner_logic_alternative(machine: *Machine, frame: *Frame) Error!Action {
 
 /// Peek(Spaced(String("}"))).
 fn closing_brace_ahead(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     _ = grammar.whitespace(machine);
     const found = grammar.parse_string(machine, "}");
-    machine.tokenizer.at = start;
+    machine.at = start;
     return found;
 }
 
 /// InnerExpression: an expression output when complete.
 pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_expression);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
@@ -364,7 +364,7 @@ pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
 
 /// DisallowIncrement on the value above `marker`.
 pub fn disallow_increment(machine: *Machine, marker: u32) void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const tag = grammar.top_tag(machine, marker) orelse return;
     assert(machine.scratch_count == marker + 1);
     if (tag == .increment or tag == .decrement) grammar.report_message(
@@ -376,7 +376,7 @@ pub fn disallow_increment(machine: *Machine, marker: u32) void {
 /// ConditionExpression: an expression and `:`.
 pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .condition_expression);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
@@ -396,7 +396,7 @@ pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
 /// on the scratch stack. Inline branches split by `|`, or multiline `- condition:` branches.
 pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_conditional_content);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.argument;
@@ -443,7 +443,7 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
 
 /// Starts an inline branch: an empty condition slot, then the branch content.
 fn inline_branch_next(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.phase == 10);
     try grammar.push_none(machine);
     frame.locals[2] = machine.scratch_count;
@@ -452,7 +452,7 @@ fn inline_branch_next(machine: *Machine, frame: *Frame) Error!Action {
 
 /// InlineConditionalBranches: Interleave(MixedTextAndLogic, Exclude(String("|"))).
 fn inline_branch(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const branches = frame.locals[1] + 1;
     if (machine.outcome == .failed) {
@@ -484,7 +484,7 @@ fn to_else_branch(machine: *Machine, index: u32) void {
 
 /// Whether the branch at scratch `index` has its own condition.
 fn has_own_expression(machine: *const Machine, index: u32) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const workspace = machine.workspace;
     assert(index < machine.scratch_count);
     if (workspace.scratch_tags[index] != .conditional_branch) return false;
@@ -493,7 +493,7 @@ fn has_own_expression(machine: *const Machine, index: u32) bool {
 
 /// The checks of multiline InnerConditionalContent, then the conditional.
 fn finish_multiline(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const has_initial = frame.locals[0] == 1;
     const branches = frame.locals[1] + 1;
@@ -535,7 +535,7 @@ fn finish_multiline(machine: *Machine, frame: *Frame) Error!Action {
 /// SingleMultilineCondition: `- condition: content`, `- else: content` or `- content`.
 pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .single_multiline_condition);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -565,7 +565,6 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
                     grammar.report_message(machine, .branch_without_content);
                     const marker = machine.scratch_count;
                     const empty = try machine.add_token(
-                        .text,
                         grammar.at(machine),
                         grammar.at(machine),
                     );
@@ -582,14 +581,14 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
 
 /// ElseExpression: `else` and `:`, restoring the input on failure.
 fn else_expression(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     if (grammar.parse_string(machine, "else")) {
         _ = grammar.whitespace(machine);
         if (grammar.parse_string(machine, ":")) return true;
     }
-    machine.tokenizer.at = start;
+    machine.at = start;
     return false;
 }
 
@@ -603,7 +602,7 @@ const once: u32 = 8;
 
 /// SequenceTypeAnnotation: symbols (`!&~$`) or words (`once cycle:`); null if neither.
 fn sequence_type_annotation(machine: *Machine) Error!?u32 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const kind = symbol_annotation(machine) orelse try word_annotation(machine) orelse return null;
     switch (kind) {
@@ -616,11 +615,11 @@ fn sequence_type_annotation(machine: *Machine) Error!?u32 {
 }
 
 fn symbol_annotation(machine: *Machine) ?u32 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     var kind: u32 = 0;
-    while (!grammar.at_end(machine)) : (machine.tokenizer.at += 1) {
+    while (!grammar.at_end(machine)) : (machine.at += 1) {
         kind |= switch (grammar.rest(machine)[0]) {
             '!' => once,
             '&' => cycle,
@@ -630,12 +629,12 @@ fn symbol_annotation(machine: *Machine) ?u32 {
             else => break,
         };
     }
-    if (kind == 0) machine.tokenizer.at = start;
+    if (kind == 0) machine.at = start;
     return if (kind == 0) null else kind;
 }
 
 fn word_annotation(machine: *Machine) Error!?u32 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
@@ -648,7 +647,7 @@ fn word_annotation(machine: *Machine) Error!?u32 {
             if (std.mem.eql(u8, word, name)) break flag;
         } else 0;
         if (found == 0) {
-            machine.tokenizer.at = machine.workspace.token_starts[token.to_int()];
+            machine.at = machine.workspace.token_starts[token.to_int()];
             machine.tokens_count -= 1;
             break;
         }
@@ -656,7 +655,7 @@ fn word_annotation(machine: *Machine) Error!?u32 {
         if (!grammar.whitespace(machine)) break;
     }
     if (kind != 0 and grammar.parse_string(machine, ":")) return kind;
-    machine.tokenizer.at = start;
+    machine.at = start;
     machine.tokens_count = saved_tokens;
     return null;
 }
@@ -664,7 +663,7 @@ fn word_annotation(machine: *Machine) Error!?u32 {
 /// InnerSequence: an optional annotation and at least two elements.
 pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_sequence);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         _ = grammar.whitespace(machine);
@@ -684,7 +683,7 @@ pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
 /// branches list of content lists.
 pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_sequence_objects);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -724,7 +723,7 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
 /// SingleMultilineSequenceElement: `- content`; the content starts with a "\n".
 pub fn single_multiline_sequence_element(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .single_multiline_sequence_element);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         _ = grammar.whitespace(machine);
         if (grammar.parse_string(machine, "->")) return .fail;

@@ -40,8 +40,6 @@ compare runs of one target, not targets with each other.
 |---|---|---|---|---|
 | Comment removal | `src/fuzz/source.zig` | `comment removal` | bytes weighted toward `/`, `*`, newlines | output no longer than the input and a subsequence of it; every line kept |
 | INCLUDE discovery | `src/fuzz/source.zig` | `INCLUDE discovery` | 4 fuzzer-written files of INCLUDEs (chains, cycles, missing files), with tight bounds | a space or an error; files form a tree within the depth and file bounds, laid end to end |
-| Tokenizer | `src/fuzz/tokenizer.zig` | `contiguous and repeatable` | bytes weighted toward ink punctuation and UTF-8, in fuzzer-chosen modes, with checkpoint rewinds | tokens contiguous and non-empty; eof at the end; a token read again is the same |
-| Tokenizer (raw) | `src/fuzz_targets.zig` | `ends in every mode` | raw bytes | the stream ends |
 | Parser | `src/fuzz/parser.zig` | `well-formed tree` | generated ink with raw bytes spliced in | a tree or an error; every node reached once, with a valid shape and in-range tokens |
 | Sema and resolve | `src/fuzz/sema.zig` | `consistent tree` | generated ink that parses | every object is its parent's child exactly once; the resolution is in range |
 | Lower and emit | `src/fuzz/lower.zig` | `survive their JSON` | generated ink | `Program.check`; compiling twice gives the same image; serialize then load gives the same image |
@@ -70,8 +68,6 @@ All runs used ReleaseSafe unless noted. None crashed once the bugs below were fi
 |---|---:|---:|---:|
 | Comment removal (Debug) | 200,103 | 100 | 72 / 9,127 |
 | INCLUDE discovery (Debug) | 244,495 | 264 | 1,574 / 11,331 |
-| Tokenizer | 200,844 | 773 | 224 / 9,260 |
-| Tokenizer, raw (Debug) | 200,593 | 513 | 201 / 9,232 |
 | Parser (Debug) | 110,665 | 2,778 | 1,986 / 11,065 |
 | Sema and resolve (Debug) | 112,863 | 4,504 | 2,880 / 13,024 |
 | Lower and emit | 125,641 | 2,692 | 5,544 / 17,393 |
@@ -87,7 +83,6 @@ All runs used ReleaseSafe unless noted. None crashed once the bugs below were fi
 
 | Target | Finding | Fix |
 |---|---|---|
-| Tokenizer | `peek` returns 0 past the end, so a 0 byte inside the source ended the text with an empty token. In Debug, a `.ink` file with a NUL byte crashed the compiler. The old targets cut their input at the first 0, which hid this. | A 0 byte is text (`tokenizer.zig`, unit test "a 0 byte inside the source is text, not the end"). |
 | JSON loader | A content object with an empty key (`{"":"$r"}`) reached an assert. | `error.InvalidInkJson`; the cases are in "malformed input returns an error instead of crashing". |
 | Save and load | A limit or host error in the newline lookahead left the snapshot active, and saving then asserted. | The story goes back to its last line (`Story.fail_step`). |
 | Host API | After a limit error in the middle of a step, the next `cont` ran on from the half-done state and asserted in `end_string`. | The story fails closed with `error.StoryFailed` until `reset_state` or `load_json` (see `docs/RunningYourInk.md`). |
