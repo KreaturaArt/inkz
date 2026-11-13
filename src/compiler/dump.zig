@@ -1,4 +1,4 @@
-//! A syntax tree as an S-expression, for snapshot tests (plan P7.9): `(tag child ...)`, a
+//! A syntax tree as an S-expression, for snapshot tests: `(tag child ...)`, a
 //! leaf with a token as `tag"text"`, other leaves as their tag (and their number).
 
 const std = @import("std");
@@ -142,7 +142,7 @@ pub fn dump_alloc(gpa: std.mem.Allocator, source: []const u8, diagnostics: *u32)
 }
 
 test "a line of text" {
-    // Goal: P7.5 content: a line is its text and a newline, flat in the statements.
+    // Content: a line is its text and a newline, flat in the statements.
     const gpa = std.testing.allocator;
     var diagnostics: u32 = 0;
     const text = try dump_alloc(gpa, "Hello, world.\n", &diagnostics);

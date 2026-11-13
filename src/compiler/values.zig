@@ -1,4 +1,4 @@
-//! Literal values (plan P8.3): ink's Number with UnaryExpression.WithInner folding, single-text
+//! Literal values: ink's Number with UnaryExpression.WithInner folding, single-text
 //! strings and divert targets, as constants and global initial values use them; and list
 //! item values, numbered as ink's ListDefinition numbers them (from 1; an explicit value
 //! sets the count, and the next item continues from it).
@@ -148,8 +148,8 @@ pub fn number_list(
 }
 
 test "list items number from 1, and an explicit value sets the count" {
-    // Goal: P8.3, the auto-numbering the old compiler got wrong (test/known_bugs.zon,
-    // audit/list_auto_numbering: ink prints 6 10 11). Method: number two lists.
+    // The auto-numbering the old compiler got wrong (test/known_bugs.zon,
+    // audit/list_auto_numbering: ink prints 6 10 11). Number two lists.
     const gpa = std.testing.allocator;
     var parsed = try grammar.parse(
         gpa,

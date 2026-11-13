@@ -386,7 +386,7 @@ fn author_warning(machine: *Machine) Error!Action {
     return .succeed;
 }
 
-/// IncludeStatement: `INCLUDE` and a filename (loaded later, P8.2).
+/// IncludeStatement: `INCLUDE` and a filename (loaded later).
 fn include_statement(machine: *Machine) Error!Action {
     assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);

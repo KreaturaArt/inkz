@@ -1,4 +1,4 @@
-//! ink's termination and function-flow checks (plan P8.7) against inklecate: each story's
+//! ink's termination and function-flow checks against inklecate: each story's
 //! errors and warnings, as codes on the lines inklecate reports them. The expected messages
 //! are inklecate's (ink v1.2.1, `dotnet reference/ink_harness_build/ink_harness.dll
 //! warnings story.ink`), quoted above each case.

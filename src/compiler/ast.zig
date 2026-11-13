@@ -1,11 +1,11 @@
-//! The compiler's syntax tree (plan §4.11, P7.2, T3, T6). A node is a one-byte tag and one
+//! The compiler's syntax tree. A node is a one-byte tag and one
 //! `u32` word, stored as two arrays: 5 bytes per node. Every tag has a shape:
 //! - `leaf`: the word is a token index (a name, a text run, a number);
 //! - `fixed(n)`: the word is the first of `n` contiguous child nodes;
 //! - `list`: the word is the first of the children, and the first child is a `count` node
 //!   whose word is how many items follow it.
 //! Children are contiguous because the parser builds nodes with zirp's scratch stack and
-//! `wrap` (as in the P7.0 spike, docs/compiler_spike.md). `none` and `missing` fill optional
+//! `wrap` (as in the spike, docs/compiler_spike.md). `none` and `missing` fill optional
 //! and absent required slots, so fixed shapes stay fixed.
 //!
 //! `shape` is one switch with no `else`, so a new tag can't be added without deciding its
@@ -174,7 +174,7 @@ pub const Shape = union(enum) {
     list,
 };
 
-/// Every tag's shape. No `else`: adding a tag forces a decision here (T6).
+/// Every tag's shape. No `else`: adding a tag forces a decision here.
 pub fn shape(tag: Tag) Shape {
     assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     assert(@sizeOf(Shape) <= 2);
@@ -250,7 +250,7 @@ pub const Ast = struct {
 };
 
 comptime {
-    // T14 size guards: 5 bytes per node across the two arrays.
+    // Size guards: 5 bytes per node across the two arrays.
     assert(@sizeOf(Tag) == 1);
     assert(@sizeOf(u32) + @sizeOf(Tag) == 5);
     assert(@typeInfo(Tag).@"enum".field_names.len < 256);

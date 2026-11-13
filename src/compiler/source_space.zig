@@ -1,4 +1,4 @@
-//! The source space (plan §4.11, P8.2): every file of a compilation, comment-free, laid end
+//! The source space: every file of a compilation, comment-free, laid end
 //! to end in one buffer and parsed into one tree, so token and node indices are global; a
 //! file table maps offsets back to `file:line:column`.
 //!

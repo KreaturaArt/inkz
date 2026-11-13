@@ -1,4 +1,4 @@
-//! Lowering (plan §4.12, P8.4): the object tree to ink's runtime container tree (lower_ir.zig),
+//! Lowering: the object tree to ink's runtime container tree (lower_ir.zig),
 //! following each class's GenerateRuntimeObject, then ink's ExportRuntime: the "global decl"
 //! container, `done`, FlattenContainersIn, and the path resolution of ResolveReferences
 //! (lower_layout.zig), which also emits the result through ProgramBuilder.
@@ -110,7 +110,7 @@ pub const Lowering = struct {
         lowering.* = undefined;
     }
 
-    /// The IR on its own, once flattened (plan P8.6): object targets become containers and the
+    /// The IR on its own, once flattened: object targets become containers and the
     /// list definitions are copied out, so the object tree, the resolution and the syntax can
     /// be freed before emission. Everything but the IR is freed; on error nothing is.
     pub fn into_lowered(lowering: *Lowering) !Lowered {

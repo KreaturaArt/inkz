@@ -1,10 +1,10 @@
-//! The parsed-object tree (plan §4.12, P8.1): ink's ParsedHierarchy, built from the syntax
+//! The parsed-object tree: ink's ParsedHierarchy, built from the syntax
 //! tree the way ink's constructors build it. A flow's statements are split into its weave and
 //! its sub-flows (FlowBase.SplitWeaveAndSubFlowContent; the story's weave ends with a gather
 //! and `-> DONE`), a weave nests its choices and gathers by indentation
 //! (Weave.ConstructWeaveHierarchyFromIndentation), and conditional branches and sequence
 //! elements hold their content in weaves. Names are resolved on this tree (resolve.zig), and
-//! the lowering (P8.4) generates from it.
+//! the lowering generates from it.
 //!
 //! An object is a row of parallel arrays: its kind, kind-specific flags, its parent, the syntax
 //! node it came from (or none for the objects ink synthesizes), and its children, a contiguous
@@ -383,7 +383,7 @@ pub fn build_tree(gpa: Allocator, parsed: *const grammar.Parsed) !Tree {
     return builder.finish();
 }
 
-/// Builds the object tree of a compilation with INCLUDEs (plan P8.2).
+/// Builds the object tree of a compilation with INCLUDEs.
 pub fn build_space_tree(gpa: Allocator, space: *const source_space.Space) !Tree {
     assert(space.files.len > 0);
     assert(space.parsed.tree.tag(space.parsed.tree.root) == .story);
@@ -451,7 +451,7 @@ fn expect_tree(source: []const u8, expected: []const u8) !void {
 }
 
 test "walks visit a subtree in pre-order and post-order" {
-    // Goal: the walker's orders. Method: a nested story's walks against the definitions:
+    // The walker's orders: a nested story's walks against the definitions:
     // every object once; pre-order puts each object right before its children's subtrees,
     // post-order is the mirror image of pre-order over reversed children.
     const gpa = std.testing.allocator;

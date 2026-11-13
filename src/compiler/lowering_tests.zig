@@ -1,4 +1,4 @@
-//! The lowering's layout against inklecate (plan P8.4): each `test/lowering/<name>.ink` must
+//! The lowering's layout against inklecate: each `test/lowering/<name>.ink` must
 //! compile to exactly the JSON inklecate wrote for it (`<name>.json`, made with the .NET
 //! harness: `dotnet reference/ink_harness_build/ink_harness.dll compile in.ink out.json`).
 
@@ -69,7 +69,7 @@ fn matches(
 }
 
 test "keyed targets name the containers their JSON paths name" {
-    // The emission gives the builder its targets as keys, not paths. Method: each program's
+    // The emission gives the builder its targets as keys, not paths. Each program's
     // JSON, loaded back (resolving every path with ink's rules), gives the same program, so
     // every divert, choice, read count and divert target points where its path does.
     const gpa = std.testing.allocator;
