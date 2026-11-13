@@ -35,8 +35,8 @@ fn check_nesting() !void {
         outer.end();
     }
     const totals = profile.totals();
-    const outer = @intFromEnum(profile.Zone.compile_parse);
-    const inner = @intFromEnum(profile.Zone.compile_comments);
+    const outer = @backingInt(profile.Zone.compile_parse);
+    const inner = @backingInt(profile.Zone.compile_comments);
     try std.testing.expectEqual(@as(u64, 100), totals.calls[outer]);
     try std.testing.expectEqual(@as(u64, 300), totals.calls[inner]);
     try std.testing.expect(totals.inclusive_ns[inner] == totals.exclusive_ns[inner]);
@@ -57,7 +57,7 @@ fn check_inactive() !void {
     _ = spin(100);
     zone.end();
     const totals = profile.totals();
-    try std.testing.expectEqual(@as(u64, 0), totals.calls[@intFromEnum(profile.Zone.vm_run)]);
+    try std.testing.expectEqual(@as(u64, 0), totals.calls[@backingInt(profile.Zone.vm_run)]);
     assert(!profile.active);
 }
 
@@ -71,7 +71,7 @@ fn check_rate(io: std.Io) !void {
     const start = std.Io.Timestamp.now(io, .awake);
     while (start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds() < 20_000_000) {}
     zone.end();
-    const measured = profile.totals().inclusive_ns[@intFromEnum(profile.Zone.cont)];
+    const measured = profile.totals().inclusive_ns[@backingInt(profile.Zone.cont)];
     try std.testing.expect(measured > 19_000_000 and measured < 22_000_000);
     assert(measured > 0);
 }

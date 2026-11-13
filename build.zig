@@ -203,7 +203,6 @@ pub fn build(b: *std.Build) void {
     run_lint.setCwd(b.path("."));
     run_lint.addArgs(&.{ "src", "tools" });
     b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
-
 }
 
 /// The docs whose ```zig blocks are compiled by `zig build doctest` (tools/doctest.zig).

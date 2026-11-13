@@ -55,12 +55,12 @@ const Mutation = enum { number, string, word, delete, duplicate, bracket, trunca
 
 /// ink's control words and keys, so replaced strings often still mean something.
 const strings = [_][]const u8{
-    "\"^text\"",  "\"\\n\"",   "\"ev\"",  "\"/ev\"",   "\"out\"",   "\"pop\"",  "\"done\"",
-    "\"end\"",    "\"->->\"",  "\"str\"", "\"/str\"",  "\"nop\"",   "\"du\"",   "\"+\"",
-    "\"==\"",     "\"#\"",     "\"/#\"",  "\"<>\"",    "\"visit\"", "\"seq\"",  "\"turn\"",
-    "\"#f\"",     "\"#n\"",    "\"->\"",  "\"^->\"",   "\"VAR=\"",  "\"VAR?\"", "\"temp=\"",
-    "\"f()\"",    "\"x()\"",   "\"*\"",   "\"CNT?\"",  "\"c\"",     "\"var\"",  "\"re\"",
-    "\"root\"",   "\"g-0\"",   "\"c-0\"", "\"knot\"",  "\"\"",      "\"listDefs\"",
+    "\"^text\"", "\"\\n\"",  "\"ev\"",  "\"/ev\"",  "\"out\"",   "\"pop\"",      "\"done\"",
+    "\"end\"",   "\"->->\"", "\"str\"", "\"/str\"", "\"nop\"",   "\"du\"",       "\"+\"",
+    "\"==\"",    "\"#\"",    "\"/#\"",  "\"<>\"",   "\"visit\"", "\"seq\"",      "\"turn\"",
+    "\"#f\"",    "\"#n\"",   "\"->\"",  "\"^->\"",  "\"VAR=\"",  "\"VAR?\"",     "\"temp=\"",
+    "\"f()\"",   "\"x()\"",  "\"*\"",   "\"CNT?\"", "\"c\"",     "\"var\"",      "\"re\"",
+    "\"root\"",  "\"g-0\"",  "\"c-0\"", "\"knot\"", "\"\"",      "\"listDefs\"",
 };
 const words = [_][]const u8{ "null", "true", "false", "0", "-1", "1.5", "4294967295", "21" };
 
