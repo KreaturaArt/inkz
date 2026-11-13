@@ -15,7 +15,7 @@ const load_module = @import("../runtime/load.zig");
 const value_module = @import("../runtime/value.zig");
 const Severity = @import("../runtime/state.zig").Diagnostic.Severity;
 
-pub const NewEngine = struct {
+pub const Harness = struct {
     pub const tags_per_line = true;
 
     gpa: std.mem.Allocator,
@@ -39,7 +39,7 @@ pub const NewEngine = struct {
     messages: *Messages,
     bindings: std.ArrayList(*Bound) = .empty,
 
-    pub fn open(gpa: std.mem.Allocator, json: []const u8) !NewEngine {
+    pub fn open(gpa: std.mem.Allocator, json: []const u8) !Harness {
         assert(json.len > 0);
         const program = try gpa.create(Program);
         errdefer gpa.destroy(program);
@@ -53,7 +53,7 @@ pub const NewEngine = struct {
         messages.* = .{ .gpa = gpa, .story = story };
         story.on_error = Messages.on_error;
         story.on_error_context = messages;
-        const engine: NewEngine = .{
+        const engine: Harness = .{
             .gpa = gpa,
             .program = program,
             .story = story,
@@ -63,7 +63,7 @@ pub const NewEngine = struct {
         return engine;
     }
 
-    pub fn deinit(engine: *NewEngine) void {
+    pub fn deinit(engine: *Harness) void {
         assert(engine.story.state.memory.len > 0);
         assert(engine.story.program == engine.program);
         engine.tags.deinit(engine.gpa);
@@ -85,13 +85,13 @@ pub const NewEngine = struct {
         engine.* = undefined;
     }
 
-    pub fn can_continue(engine: *NewEngine) bool {
+    pub fn can_continue(engine: *Harness) bool {
         assert(engine.story.program == engine.program);
         assert(engine.story.state.memory.len > 0);
         return engine.story.can_continue();
     }
 
-    pub fn continue_line(engine: *NewEngine) !transcript.Line {
+    pub fn continue_line(engine: *Harness) !transcript.Line {
         assert(engine.can_continue());
         const text = engine.story.cont() catch |err| {
             if (err == error.MissingExternalBinding) try engine.missing_binding_exception();
@@ -105,7 +105,7 @@ pub const NewEngine = struct {
     }
 
     /// The tag sink for `current_tags`: collects offsets, turned into slices at the end.
-    pub fn tag(engine: *NewEngine, text: []const u8) !void {
+    pub fn tag(engine: *Harness, text: []const u8) !void {
         assert(engine.tags.items.len < 1 << 16);
         assert(text.len < 1 << 20);
         const start = engine.tag_bytes.items.len;
@@ -115,14 +115,14 @@ pub const NewEngine = struct {
         try engine.tags.append(engine.gpa, range);
     }
 
-    fn clear_tags(engine: *NewEngine) void {
+    fn clear_tags(engine: *Harness) void {
         assert(engine.tag_bytes.items.len < 1 << 31);
         engine.tags.clearRetainingCapacity();
         engine.tag_bytes.clearRetainingCapacity();
         assert(engine.tags.items.len == 0);
     }
 
-    fn finish_tags(engine: *NewEngine) !void {
+    fn finish_tags(engine: *Harness) !void {
         const bytes = engine.tag_bytes.items;
         for (engine.tags.items) |*range| {
             const start = @intFromPtr(range.ptr) - 1;
@@ -132,13 +132,13 @@ pub const NewEngine = struct {
         assert(engine.tags.items.len < 1 << 16);
     }
 
-    pub fn choices_count(engine: *NewEngine) u32 {
+    pub fn choices_count(engine: *Harness) u32 {
         assert(engine.story.program == engine.program);
         assert(engine.story.state.memory.len > 0);
         return engine.story.visible_choices_count();
     }
 
-    pub fn choice(engine: *NewEngine, position: u32) transcript.Choice {
+    pub fn choice(engine: *Harness, position: u32) transcript.Choice {
         assert(position < engine.choices_count());
         const record = engine.story.visible_choice(position);
         engine.clear_tags();
@@ -152,33 +152,33 @@ pub const NewEngine = struct {
         return .{ .text = engine.story.text_of(record.text), .tags = engine.tags.items };
     }
 
-    pub fn choose(engine: *NewEngine, position: u32) !void {
+    pub fn choose(engine: *Harness, position: u32) !void {
         assert(engine.story.program == engine.program);
         assert(position < engine.choices_count());
         try engine.story.choose_choice_index(position);
     }
 
-    pub fn seed(engine: *NewEngine, value: i32) void {
+    pub fn seed(engine: *Harness, value: i32) void {
         assert(engine.story.state.memory.len > 0);
         engine.story.set_random_seed(value);
         assert(engine.story.state.story_seed == value);
     }
 
-    pub fn exception_message(engine: *NewEngine) ?[]const u8 {
+    pub fn exception_message(engine: *Harness) ?[]const u8 {
         assert(engine.story.state.memory.len > 0);
         const message = engine.exception orelse return null;
         assert(message.len > 0);
         return message;
     }
 
-    fn set_exception(engine: *NewEngine, comptime format: []const u8, arguments: anytype) !void {
+    fn set_exception(engine: *Harness, comptime format: []const u8, arguments: anytype) !void {
         assert(format.len > 0);
         if (engine.exception) |old| engine.gpa.free(old);
         engine.exception = try std.fmt.allocPrint(engine.gpa, format, arguments);
         assert(engine.exception.?.len > 0);
     }
 
-    pub fn set(engine: *NewEngine, name: []const u8, value: transcript.Value) !void {
+    pub fn set(engine: *Harness, name: []const u8, value: transcript.Value) !void {
         assert(value != .null);
         assert(name.len > 0);
         const story = engine.story;
@@ -199,7 +199,7 @@ pub const NewEngine = struct {
         };
     }
 
-    pub fn get(engine: *NewEngine, name: []const u8) !transcript.Value {
+    pub fn get(engine: *Harness, name: []const u8) !transcript.Value {
         assert(name.len > 0);
         const value = engine.story.get_variable(name) orelse return .null;
         engine.scratch.clearRetainingCapacity();
@@ -224,7 +224,7 @@ pub const NewEngine = struct {
 
     /// `evaluate`: the function's text and result, owned until the next call.
     pub fn evaluate(
-        engine: *NewEngine,
+        engine: *Harness,
         name: []const u8,
         arguments: []const transcript.Value,
     ) !struct { text: []const u8, result: transcript.Value } {
@@ -257,7 +257,7 @@ pub const NewEngine = struct {
         return .{ .text = engine.evaluated.items, .result = try engine.transcript_value(value) };
     }
 
-    fn transcript_value(engine: *NewEngine, value: story_module.HostValue) !transcript.Value {
+    fn transcript_value(engine: *Harness, value: story_module.HostValue) !transcript.Value {
         assert(engine.evaluated_result.items.len < 1 << 24);
         assert(engine.story.state.memory.len > 0);
         const owned = &engine.evaluated_result;
@@ -282,14 +282,14 @@ pub const NewEngine = struct {
         };
     }
 
-    pub fn current_text(engine: *NewEngine) ![]const u8 {
+    pub fn current_text(engine: *Harness) ![]const u8 {
         assert(engine.story.program == engine.program);
         assert(engine.story.state.memory.len > 0);
         return engine.story.current_text();
     }
 
     /// `save`: the state's JSON, kept for `load` and `load_fresh`.
-    pub fn save(engine: *NewEngine) ![]const u8 {
+    pub fn save(engine: *Harness) ![]const u8 {
         assert(engine.story.program == engine.program);
         assert(engine.story.state.memory.len > 0);
         engine.saved.clearRetainingCapacity();
@@ -300,7 +300,7 @@ pub const NewEngine = struct {
     }
 
     /// `load`: the last save into this story.
-    pub fn load(engine: *NewEngine) !void {
+    pub fn load(engine: *Harness) !void {
         assert(engine.story.program == engine.program);
         assert(engine.saved.items.len > 0);
         try load_module.load_json(engine.story, engine.saved.items);
@@ -308,7 +308,7 @@ pub const NewEngine = struct {
 
     /// `load_fresh`: a new story from the same program, then the last save, as when a game
     /// restarts. Bindings, observers and the error handler start over, as in the harness.
-    pub fn load_fresh(engine: *NewEngine) !void {
+    pub fn load_fresh(engine: *Harness) !void {
         assert(engine.story.program == engine.program);
         assert(engine.saved.items.len > 0);
         const gpa = engine.gpa;
@@ -322,7 +322,7 @@ pub const NewEngine = struct {
     }
 
     /// `events`: records ink's host events.
-    pub fn events(engine: *NewEngine, argument: []const u8) !void {
+    pub fn events(engine: *Harness, argument: []const u8) !void {
         assert(argument.len == 0);
         engine.story.events = .{
             .context = engine.messages,
@@ -335,14 +335,14 @@ pub const NewEngine = struct {
         assert(engine.story.events.on_did_continue != null);
     }
 
-    pub fn observe(engine: *NewEngine, name: []const u8) !void {
+    pub fn observe(engine: *Harness, name: []const u8) !void {
         assert(name.len > 0);
         assert(engine.story.observers_count < engine.story.state.observers.len);
         try engine.story.observe_variable(name, Messages.observed, engine.messages);
     }
 
     fn write_host_value(
-        engine: *NewEngine,
+        engine: *Harness,
         writer: *std.Io.Writer,
         value: story_module.HostValue,
     ) !void {
@@ -351,7 +351,7 @@ pub const NewEngine = struct {
         try write_host_value_of(engine.gpa, engine.story, writer, value);
     }
 
-    fn list_text(engine: *NewEngine, list: value_module.ListReference) ![]const u8 {
+    fn list_text(engine: *Harness, list: value_module.ListReference) ![]const u8 {
         assert(engine.story.state.memory.len > 0);
         assert(engine.scratch.items.len == 0);
         var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.scratch);
@@ -361,7 +361,7 @@ pub const NewEngine = struct {
     }
 
     /// Every global's name, sorted (for the `globals` action).
-    pub fn global_names(engine: *NewEngine) ![]const []const u8 {
+    pub fn global_names(engine: *Harness) ![]const []const u8 {
         assert(engine.names.items.len < 1 << 20);
         assert(engine.story.program.globals.len < 1 << 20);
         engine.names.clearRetainingCapacity();
@@ -378,7 +378,7 @@ pub const NewEngine = struct {
         return std.mem.order(u8, a, b) == .lt;
     }
 
-    pub fn choose_path(engine: *NewEngine, path: []const u8) !void {
+    pub fn choose_path(engine: *Harness, path: []const u8) !void {
         assert(path.len > 0);
         story_paths.choose_path_string(engine.story, path, true, &.{}) catch |err| {
             if (err == error.PathNotFound) try engine.path_exception(path);
@@ -387,20 +387,20 @@ pub const NewEngine = struct {
         assert(engine.story.state.choices.count() == 0);
     }
 
-    fn path_exception(engine: *NewEngine, path: []const u8) !void {
+    fn path_exception(engine: *Harness, path: []const u8) !void {
         assert(engine.story.state.memory.len > 0);
         assert(path.len > 0);
         try engine.set_exception("Failed to find content at path '{s}', and no approximation " ++
             "of it was possible.", .{path});
     }
 
-    pub fn visit_count(engine: *NewEngine, path: []const u8) !u32 {
+    pub fn visit_count(engine: *Harness, path: []const u8) !u32 {
         assert(engine.story.state.memory.len > 0);
         assert(path.len > 0);
         return story_paths.visit_count_at_path_string(engine.story, path);
     }
 
-    pub fn global_tags(engine: *NewEngine) ![]const []const u8 {
+    pub fn global_tags(engine: *Harness) ![]const []const u8 {
         assert(engine.tags.items.len < 1 << 16);
         assert(engine.story.state.memory.len > 0);
         engine.clear_tags();
@@ -409,7 +409,7 @@ pub const NewEngine = struct {
         return engine.tags.items;
     }
 
-    pub fn tags_at(engine: *NewEngine, path: []const u8) ![]const []const u8 {
+    pub fn tags_at(engine: *Harness, path: []const u8) ![]const []const u8 {
         assert(engine.tags.items.len < 1 << 16);
         assert(path.len > 0);
         engine.clear_tags();
@@ -422,7 +422,7 @@ pub const NewEngine = struct {
     }
 
     /// ink's ValidateExternalBindings message.
-    fn missing_binding_exception(engine: *NewEngine) !void {
+    fn missing_binding_exception(engine: *Harness) !void {
         assert(!engine.story.has_validated_externals or engine.story.bindings.len > 0);
         var names: NameList = .{ .engine = engine };
         defer names.list.deinit(engine.gpa);
@@ -437,7 +437,7 @@ pub const NewEngine = struct {
         });
     }
 
-    pub fn write_messages(engine: *NewEngine, writer: *std.Io.Writer) !void {
+    pub fn write_messages(engine: *Harness, writer: *std.Io.Writer) !void {
         assert(engine.story.state.memory.len > 0);
         assert(engine.messages.events.items.len < 1 << 24);
         const messages = engine.messages;
@@ -449,44 +449,44 @@ pub const NewEngine = struct {
         messages.warnings.clearRetainingCapacity();
     }
 
-    pub fn switch_flow(engine: *NewEngine, name: []const u8) !void {
+    pub fn switch_flow(engine: *Harness, name: []const u8) !void {
         assert(name.len > 0);
         try engine.story.switch_flow(name);
         assert(engine.story.state.flows.len > 0);
     }
 
-    pub fn remove_flow(engine: *NewEngine, name: []const u8) !void {
+    pub fn remove_flow(engine: *Harness, name: []const u8) !void {
         assert(name.len > 0);
         try engine.story.remove_flow(name);
         assert(engine.story.state.flows.len > 0);
     }
 
-    pub fn default_flow(engine: *NewEngine, argument: []const u8) !void {
+    pub fn default_flow(engine: *Harness, argument: []const u8) !void {
         assert(argument.len == 0);
         try engine.story.switch_to_default_flow();
         assert(engine.story.state.current_flow == 0);
     }
 
-    pub fn reset(engine: *NewEngine, argument: []const u8) !void {
+    pub fn reset(engine: *Harness, argument: []const u8) !void {
         assert(argument.len == 0);
         try engine.story.reset_state();
         assert(engine.story.state.call_stack.depth() == 1);
     }
 
-    pub fn fallbacks(engine: *NewEngine, argument: []const u8) !void {
+    pub fn fallbacks(engine: *Harness, argument: []const u8) !void {
         assert(engine.story.state.memory.len > 0);
         assert(argument.len > 0);
         engine.story.allow_external_function_fallbacks = std.mem.eql(u8, argument, "on");
     }
 
-    pub fn unbind(engine: *NewEngine, name: []const u8) !void {
+    pub fn unbind(engine: *Harness, name: []const u8) !void {
         assert(engine.story.state.memory.len > 0);
         assert(name.len > 0);
         try engine.story.unbind_external_function(name);
     }
 
     /// `bind <function> <behaviour> [lookahead_unsafe]`, as the harness binds.
-    pub fn bind(engine: *NewEngine, argument: []const u8) !void {
+    pub fn bind(engine: *Harness, argument: []const u8) !void {
         assert(engine.bindings.items.len < 1 << 16);
         assert(argument.len > 0);
         var words = std.mem.tokenizeScalar(u8, argument, ' ');
@@ -518,7 +518,7 @@ const Behaviour = enum { record, @"return", multiply, repeat, increment_and_eval
 
 /// One binding made by `bind`, the callback's context.
 const Bound = struct {
-    engine: *NewEngine,
+    engine: *Harness,
     name: []u8,
     behaviour: Behaviour,
     constant: story_module.HostValue = .null,
@@ -644,7 +644,7 @@ const Bound = struct {
 };
 
 const NameList = struct {
-    engine: *NewEngine,
+    engine: *Harness,
     list: std.ArrayList(u8) = .empty,
     count: u32 = 0,
 
