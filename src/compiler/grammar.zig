@@ -354,6 +354,14 @@ pub fn push_identifier(machine: *Machine) Error!bool {
     return true;
 }
 
+/// Expect(Identifier): pushes an identifier leaf, or reports what was expected and pushes a
+/// missing one.
+pub fn expect_identifier(machine: *Machine, expectation: Expectation) Error!void {
+    if (try push_identifier(machine)) return;
+    report_expected(machine, expectation);
+    try push_missing(machine);
+}
+
 pub fn push_none(machine: *Machine) Error!void {
     assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);

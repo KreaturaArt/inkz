@@ -25,7 +25,6 @@ const choice_conditions_shift = 8;
 /// Choice: bullets, a label, conditions, then start, choice-only and inner content (the
 /// content after `]`, the diverts and a "\n").
 pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .choice);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -180,7 +179,6 @@ fn bracketed_name(machine: *Machine) Error!bool {
 
 /// ChoiceSingleCondition: `{expression}`.
 pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .choice_single_condition);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "{")) return .fail;
@@ -200,7 +198,6 @@ pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
 
 /// Gather: dashes, an optional label, and an optional newline.
 pub fn gather(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .gather);
     assert(frame.phase == 0);
     const depth = gather_dashes(machine);
     if (depth == 0) return .fail;
@@ -242,7 +239,6 @@ pub fn dash_not_arrow(machine: *Machine) bool {
 /// MultiDivert: a thread, or arrows and targets (diverts, tunnels, `->->`, a bare `->`).
 /// locals: the marker, how many arrows and targets, and 1 + the index of the first `->->`.
 pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .multi_divert);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -322,7 +318,6 @@ fn finish_multi_divert(machine: *Machine, frame: *Frame) Error!void {
 
 /// StartThread: `<-` and a target.
 pub fn start_thread(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .start_thread);
     if (frame.phase == 0) {
         _ = grammar.whitespace(machine);
         if (!grammar.parse_string(machine, "<-")) return .fail;
@@ -345,7 +340,6 @@ pub fn start_thread(machine: *Machine, frame: *Frame) Error!Action {
 
 /// DivertIdentifierWithArguments: a dotted path and optional arguments.
 pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .divert_identifier_with_arguments);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         _ = grammar.whitespace(machine);
@@ -382,7 +376,6 @@ fn divert_path(machine: *Machine) Error!bool {
 
 /// SingleDivert: a multi-divert that is one plain divert (or thread, or bare `->`).
 pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .single_divert);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.phase = 1;

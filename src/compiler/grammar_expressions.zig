@@ -62,7 +62,6 @@ fn infix_operator(machine: *Machine) ?u32 {
 /// Expression(minimumPrecedence): the argument is the minimum precedence; locals are it,
 /// the marker and the pending operator.
 pub fn expression(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -109,7 +108,6 @@ fn infix(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionUnary: a divert target, or prefix operators and an operand, then `++`/`--`.
 /// locals: the marker and 1 + the prefix tag (0 if none).
 pub fn expression_unary(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression_unary);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -179,7 +177,6 @@ fn postfix(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ExpressionDivertTarget: `-> target` as a value (not a thread).
 pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression_divert_target);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         _ = grammar.whitespace(machine);
@@ -195,7 +192,6 @@ pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ExpressionParen: `(expression)`; the inner expression itself.
 pub fn expression_paren(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression_paren);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
@@ -211,7 +207,6 @@ pub fn expression_paren(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ExpressionFunctionCall: `name(arguments)`.
 pub fn expression_function_call(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression_function_call);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!try grammar.push_identifier(machine)) return .fail;
@@ -227,7 +222,6 @@ pub fn expression_function_call(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ExpressionFunctionCallArguments: `(` Interleave(Expression, Exclude(String(","))) `)`.
 pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .function_call_arguments);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
@@ -249,7 +243,6 @@ pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ExpressionString: `"` mixed text and logic `"`.
 pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression_string);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "\"")) return .fail;
