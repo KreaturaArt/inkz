@@ -4,7 +4,7 @@
 //! the old compiler's e2e tests (src/test/compiler_helpers.zig) with their expectations; where
 //! the old pipeline differed from ink (the `e2e` corpus of the divergence ledger), the
 //! expectation is what ink prints. The tests that drove the old runtime's API directly live in
-//! e2e_new_vm_api.zig.
+//! e2e_api.zig.
 
 const std = @import("std");
 const assert = std.debug.assert;

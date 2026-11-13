@@ -35,9 +35,9 @@ fn fuzz_input(smith: *std.testing.Smith, buffer: *[input_bytes_max + 1]u8) [:0]c
     return buffer[0..length :0];
 }
 
-/// The new loader (P3.1): any bytes either load into a program that passes its check, or
+/// The JSON loader: any bytes either load into a program that passes its check, or
 /// return an error.
-fn load_json_new(_: void, smith: *std.testing.Smith) anyerror!void {
+fn load_any_json(_: void, smith: *std.testing.Smith) anyerror!void {
     var buffer: [input_bytes_max + 1]u8 = undefined;
     const json = fuzz_input(smith, &buffer);
     assert(json.len <= input_bytes_max);
@@ -47,16 +47,16 @@ fn load_json_new(_: void, smith: *std.testing.Smith) anyerror!void {
 }
 
 test "fuzz: the JSON loader never crashes" {
-    try std.testing.fuzz({}, load_json_new, .{ .corpus = &json_corpus });
+    try std.testing.fuzz({}, load_any_json, .{ .corpus = &json_corpus });
 }
 
 const Story = @import("runtime/story.zig").Story;
-const new_save = @import("runtime/save.zig");
-const new_load = @import("runtime/load.zig");
+const save_module = @import("runtime/save.zig");
+const load_module = @import("runtime/load.zig");
 
-/// The new runtime's load_json (P6.2): any bytes either load into a state that passes its
+/// The save loader: any bytes either load into a state that passes its
 /// check, or fail and leave the state as it was.
-fn load_save_new(_: void, smith: *std.testing.Smith) anyerror!void {
+fn load_any_save(_: void, smith: *std.testing.Smith) anyerror!void {
     assert(json_corpus[0].len > 0);
     var buffer: [input_bytes_max + 1]u8 = undefined;
     const save = fuzz_input(smith, &buffer);
@@ -67,7 +67,7 @@ fn load_save_new(_: void, smith: *std.testing.Smith) anyerror!void {
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
     const before = story.state.hash();
-    new_load.load_json(&story, save) catch {
+    load_module.load_json(&story, save) catch {
         try std.testing.expectEqual(before, story.state.hash());
         return;
     };
@@ -82,13 +82,13 @@ test "fuzz: the save loader never crashes" {
     var story: Story = undefined;
     try story.init(std.testing.allocator, &program, .{});
     defer story.deinit(std.testing.allocator);
-    try new_save.to_json(&story, &writer);
-    try std.testing.fuzz({}, load_save_new, .{ .corpus = &.{ "{}", writer.buffered() } });
+    try save_module.to_json(&story, &writer);
+    try std.testing.fuzz({}, load_any_save, .{ .corpus = &.{ "{}", writer.buffered() } });
 }
 
 const compile = @import("compiler/compile.zig");
 
-/// The new compiler (P7, P8): any source either compiles or returns an error.
+/// The compiler: any source either compiles or returns an error.
 fn compile_all(_: void, smith: *std.testing.Smith) anyerror!void {
     var buffer: [input_bytes_max + 1]u8 = undefined;
     const source = fuzz_input(smith, &buffer);
