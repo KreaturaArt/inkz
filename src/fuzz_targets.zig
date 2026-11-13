@@ -229,4 +229,9 @@ test {
     _ = @import("fuzz/source.zig");
     _ = @import("fuzz/tokenizer.zig");
     _ = @import("fuzz/parser.zig");
+    _ = @import("fuzz/sema.zig");
+    _ = @import("fuzz/lower.zig");
+    _ = @import("fuzz/json.zig");
+    _ = @import("fuzz/vm.zig");
+    _ = @import("fuzz/save.zig");
 }

@@ -23,7 +23,7 @@ pub const Error = error{
 };
 
 /// Whether a parse diagnostic is one of ink's warnings (it doesn't stop compilation).
-fn is_warning(diagnostic: core.Diagnostic) bool {
+pub fn is_warning(diagnostic: core.Diagnostic) bool {
     assert(diagnostic.offset < std.math.maxInt(u32));
     assert(@backingInt(diagnostic.code) < 8);
     if (diagnostic.code != .message) return false;
