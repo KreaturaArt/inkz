@@ -14,6 +14,7 @@ pub const save_load_test = @import("save_load_test.zig");
 pub const text_cache_test = @import("text_cache_test.zig");
 pub const fitted_limits_test = @import("fitted_limits_test.zig");
 pub const program_image_test = @import("program_image_test.zig");
+pub const fuzz_ink = @import("fuzz_ink.zig");
 
 test {
     _ = transcript;
@@ -29,4 +30,5 @@ test {
     _ = text_cache_test;
     _ = fitted_limits_test;
     _ = program_image_test;
+    _ = fuzz_ink;
 }
