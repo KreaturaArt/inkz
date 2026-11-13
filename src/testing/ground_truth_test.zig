@@ -45,8 +45,7 @@ test "oracle: ground truth" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const results = try ground_truth_results(arena, std.testing.io);
-    const scope: oracle.Scope = .{ .engine = "new", .corpus = .ground_truth };
-    try oracle.check(arena, std.testing.io, scope, results);
+    try oracle.check(arena, std.testing.io, .ground_truth, results);
 }
 
 test "oracle: transcripts" {
@@ -55,6 +54,5 @@ test "oracle: transcripts" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const results = try transcript_results(arena, std.testing.io);
-    const scope: oracle.Scope = .{ .engine = "new", .corpus = .transcripts };
-    try oracle.check(arena, std.testing.io, scope, results);
+    try oracle.check(arena, std.testing.io, .transcripts, results);
 }

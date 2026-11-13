@@ -1,11 +1,11 @@
-//! The differential oracle (plan P0.4): compares an engine's transcripts with expected ones
-//! and checks every difference against the divergence ledger, `test/divergence_ledger.zon`.
+//! The differential oracle: compares the runtime's transcripts with expected ones and checks
+//! every difference against the divergence ledger, `test/divergence_ledger.zon`.
 //!
-//! A ledger entry names a case, an engine and a corpus, says what kind of difference it is
+//! A ledger entry names a case and a corpus, says what kind of difference it is
 //! and why, and optionally the evidence for the expected behaviour. A difference that isn't
 //! in the ledger fails, and so does an entry whose case no longer differs, so stale entries
-//! get removed. `zig build test -Dledger-update` rewrites the entries of the engine and corpus
-//! being checked: new differences get an automatic reason, fixed ones are dropped, and
+//! get removed. `zig build test -Dledger-update` rewrites the entries of the corpus being
+//! checked: new differences get an automatic reason, fixed ones are dropped, and
 //! entries that still apply are kept as they are, so reasons edited by hand survive.
 
 const std = @import("std");
@@ -15,7 +15,7 @@ const build_options = @import("build_options");
 pub const ledger_path = "test/divergence_ledger.zon";
 const file_bytes_max = 16 * 1024 * 1024;
 
-/// Why an engine differs from the expected transcript: a known divergence (plan §1.1), or
+/// Why the runtime differs from the expected transcript: a known divergence (plan §1.1), or
 /// what the comparison saw.
 pub const Kind = enum {
     s1,
@@ -29,13 +29,13 @@ pub const Kind = enum {
     s9,
     s10,
     s11,
-    /// The engine lacks a capability the action script uses.
+    /// The runtime lacks a capability the action script uses.
     unsupported,
-    /// The engine returned an error where ink didn't throw, or the other way around.
+    /// The runtime returned an error where ink didn't throw, or the other way around.
     exception,
-    /// The engine crashed (a panic or a signal).
+    /// The runtime crashed (a panic or a signal).
     crash,
-    /// Only tags differ (often S11 on the old engine).
+    /// Only tags differ (often S11).
     tags,
     /// Only whitespace inside lines differs (often S10).
     whitespace,
@@ -54,7 +54,6 @@ pub const Corpus = enum {
 
 pub const Entry = struct {
     case: []const u8,
-    engine: []const u8,
     corpus: Corpus = .ground_truth,
     kind: Kind,
     reason: []const u8,
@@ -85,36 +84,24 @@ pub const Report = struct {
     stale: []const Entry,
 };
 
-pub const Scope = struct {
-    engine: []const u8,
-    corpus: Corpus,
-
-    fn contains(scope: Scope, entry: Entry) bool {
-        assert(scope.engine.len > 0);
-        assert(entry.case.len > 0);
-        return entry.corpus == scope.corpus and std.mem.eql(u8, entry.engine, scope.engine);
-    }
-};
-
 /// Compares every result and sorts the differences into ledgered, new and stale.
 pub fn evaluate(
     arena: std.mem.Allocator,
     ledger: []const Entry,
-    scope: Scope,
+    corpus: Corpus,
     results: []const Result,
 ) !Report {
-    assert(scope.engine.len > 0);
     var mismatches: std.ArrayList(Mismatch) = .empty;
     var new: std.ArrayList(Mismatch) = .empty;
     for (results) |result| {
         var mismatch = try compare(arena, result.expected, result.actual) orelse continue;
         mismatch.case = result.case;
         try mismatches.append(arena, mismatch);
-        if (find_entry(ledger, scope, result.case) == null) try new.append(arena, mismatch);
+        if (find_entry(ledger, corpus, result.case) == null) try new.append(arena, mismatch);
     }
     var stale: std.ArrayList(Entry) = .empty;
     for (ledger) |entry| {
-        if (!scope.contains(entry)) continue;
+        if (entry.corpus != corpus) continue;
         const still_differs = for (mismatches.items) |mismatch| {
             if (std.mem.eql(u8, mismatch.case, entry.case)) break true;
         } else false;
@@ -125,28 +112,25 @@ pub fn evaluate(
 }
 
 /// The gate: fails on new or stale differences, or rewrites the ledger with -Dledger-update.
-pub fn check(arena: std.mem.Allocator, io: std.Io, scope: Scope, results: []const Result) !void {
+pub fn check(arena: std.mem.Allocator, io: std.Io, corpus: Corpus, results: []const Result) !void {
     assert(results.len > 0);
     const ledger = try read_ledger(arena, io);
-    const report = try evaluate(arena, ledger, scope, results);
+    const report = try evaluate(arena, ledger, corpus, results);
     assert(report.mismatches.len <= results.len);
     if (build_options.ledger_update) {
-        try write_ledger(arena, io, ledger, scope, report.mismatches);
+        try write_ledger(arena, io, ledger, corpus, report.mismatches);
         return;
     }
     for (report.new) |mismatch| {
-        std.debug.print("new divergence ({s}, {t}): {s}: {t}: {s}\n", .{
-            scope.engine, scope.corpus, mismatch.case, mismatch.kind, mismatch.reason,
+        std.debug.print("new divergence ({t}): {s}: {t}: {s}\n", .{
+            corpus, mismatch.case, mismatch.kind, mismatch.reason,
         });
     }
     for (report.stale) |entry| {
-        std.debug.print("stale ledger entry ({s}, {t}): {s} now matches\n", .{
-            scope.engine, scope.corpus, entry.case,
-        });
+        std.debug.print("stale ledger entry ({t}): {s} now matches\n", .{ corpus, entry.case });
     }
-    std.debug.print("{t} ({s}): {d} cases, {d} ledgered divergences, {d} problems\n", .{
-        scope.corpus,                      scope.engine, results.len, report.mismatches.len,
-        report.new.len + report.stale.len,
+    std.debug.print("{t}: {d} cases, {d} ledgered divergences, {d} problems\n", .{
+        corpus, results.len, report.mismatches.len, report.new.len + report.stale.len,
     });
     if (report.new.len + report.stale.len > 0) return error.OracleMismatch;
 }
@@ -162,7 +146,7 @@ pub fn compare(arena: std.mem.Allocator, expected: []const u8, actual: []const u
     } else if (std.mem.indexOf(u8, actual, "\nunsupported: ")) |at| {
         const line = first_line(actual[at + 1 ..]);
         mismatch.kind = .unsupported;
-        mismatch.reason = try std.fmt.allocPrint(arena, "engine lacks it: {s}", .{line});
+        mismatch.reason = try std.fmt.allocPrint(arena, "the runtime lacks it: {s}", .{line});
     } else if ((std.mem.indexOf(u8, actual, "exception: ") != null) !=
         (std.mem.indexOf(u8, expected, "exception: ") != null))
     {
@@ -381,30 +365,27 @@ pub fn read_ledger(arena: std.mem.Allocator, io: std.Io) ![]const Entry {
     };
 }
 
-fn find_entry(ledger: []const Entry, scope: Scope, case: []const u8) ?Entry {
-    assert(case.len > 0);
-    assert(scope.engine.len > 0);
+fn find_entry(ledger: []const Entry, corpus: Corpus, case: []const u8) ?Entry {
     for (ledger) |entry| {
-        if (scope.contains(entry) and std.mem.eql(u8, entry.case, case)) return entry;
+        if (entry.corpus == corpus and std.mem.eql(u8, entry.case, case)) return entry;
     }
     return null;
 }
 
-/// Writes the ledger: entries outside `scope` unchanged, then the scope's divergences,
+/// Writes the ledger: entries of other corpora unchanged, then this corpus's divergences,
 /// keeping existing entries for cases that still diverge.
 fn write_ledger(
     arena: std.mem.Allocator,
     io: std.Io,
     ledger: []const Entry,
-    scope: Scope,
+    corpus: Corpus,
     mismatches: []const Mismatch,
 ) !void {
-    assert(scope.engine.len > 0);
     for (mismatches) |mismatch| assert(mismatch.case.len > 0);
     var output: std.Io.Writer.Allocating = .init(arena);
     const writer = &output.writer;
     try writer.writeAll(
-        \\// Known differences (plan P0.4, P0.10), one per case, engine and corpus. Kinds: s1..s11
+        \\// Known differences (plan P0.4, P0.10), one per case and corpus. Kinds: s1..s11
         \\// (plan §1.1), unsupported, exception, crash, tags, whitespace, other.
         \\// `zig build test -Dledger-update` adds new ones and drops fixed ones; reasons and
         \\// sources edited by hand are kept.
@@ -412,13 +393,12 @@ fn write_ledger(
         \\
     );
     for (ledger) |entry| {
-        if (!scope.contains(entry)) try write_entry(writer, entry);
+        if (entry.corpus != corpus) try write_entry(writer, entry);
     }
     for (mismatches) |mismatch| {
-        const entry = find_entry(ledger, scope, mismatch.case) orelse Entry{
+        const entry = find_entry(ledger, corpus, mismatch.case) orelse Entry{
             .case = mismatch.case,
-            .engine = scope.engine,
-            .corpus = scope.corpus,
+            .corpus = corpus,
             .kind = mismatch.kind,
             .reason = mismatch.reason,
         };
@@ -430,14 +410,9 @@ fn write_ledger(
 
 fn write_entry(writer: *std.Io.Writer, entry: Entry) !void {
     assert(entry.case.len > 0);
-    assert(entry.engine.len > 0);
     try writer.writeAll("    .{ .case = ");
     try std.zon.stringify.serialize(entry.case, .{}, writer);
-    try writer.print(", .engine = \"{s}\", .corpus = .{t}, .kind = .{t}, .reason = ", .{
-        entry.engine,
-        entry.corpus,
-        entry.kind,
-    });
+    try writer.print(", .corpus = .{t}, .kind = .{t}, .reason = ", .{ entry.corpus, entry.kind });
     try std.zon.stringify.serialize(entry.reason, .{}, writer);
     if (entry.source.len > 0) {
         try writer.writeAll(", .source = ");
@@ -450,12 +425,8 @@ fn write_entry(writer: *std.Io.Writer, entry: Entry) !void {
     try writer.writeAll(" },\n");
 }
 
-const scope_test: Scope = .{ .engine = "new", .corpus = .transcripts };
-
-fn test_entry(case: []const u8, engine: []const u8, kind: Kind) Entry {
-    assert(case.len > 0);
-    assert(engine.len > 0);
-    return .{ .case = case, .engine = engine, .corpus = .transcripts, .kind = kind, .reason = "r" };
+fn test_entry(case: []const u8, corpus: Corpus, kind: Kind) Entry {
+    return .{ .case = case, .corpus = corpus, .kind = kind, .reason = "r" };
 }
 
 test "a seeded divergence reports the first differing turn" {
@@ -466,14 +437,14 @@ test "a seeded divergence reports the first differing turn" {
     const expected = "> play\ntext: \"a\\n\"\nchoose: 0\ntext: \"b\\n\"\nend\n";
     const actual = "> play\ntext: \"a\\n\"\nchoose: 0\ntext: \"c\\n\"\nend\n";
     const results = [_]Result{.{ .case = "seeded", .expected = expected, .actual = actual }};
-    const report = try evaluate(arena_state.allocator(), &.{}, scope_test, &results);
+    const report = try evaluate(arena_state.allocator(), &.{}, .transcripts, &results);
     try std.testing.expectEqual(@as(usize, 1), report.new.len);
     try std.testing.expect(std.mem.startsWith(u8, report.new[0].reason, "turn 2, line 4:"));
 }
 
 test "a ledgered divergence passes and a stale entry fails" {
     // Goal: P0.4; the two ledger rules. Method: one listed case that still differs, one listed
-    // case that now matches, and an entry for another engine that must be ignored.
+    // case that now matches, and an entry of another corpus that must be ignored.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const same = "> play\nend\n";
@@ -482,11 +453,11 @@ test "a ledgered divergence passes and a stale entry fails" {
         .{ .case = "fixed", .expected = same, .actual = same },
     };
     const ledger = [_]Entry{
-        test_entry("still_differs", "new", .crash),
-        test_entry("fixed", "new", .other),
-        test_entry("fixed", "old", .other),
+        test_entry("still_differs", .transcripts, .crash),
+        test_entry("fixed", .transcripts, .other),
+        test_entry("fixed", .ground_truth, .other),
     };
-    const report = try evaluate(arena_state.allocator(), &ledger, scope_test, &results);
+    const report = try evaluate(arena_state.allocator(), &ledger, .transcripts, &results);
     try std.testing.expectEqual(@as(usize, 0), report.new.len);
     try std.testing.expectEqual(@as(usize, 1), report.stale.len);
     try std.testing.expectEqualStrings("fixed", report.stale[0].case);

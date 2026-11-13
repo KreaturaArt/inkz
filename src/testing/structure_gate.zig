@@ -2,7 +2,7 @@
 //! ink v1.2.1) is compiled from its `.ink` by the new compiler, serialized with
 //! ink_json.serialize, and must equal inklecate's `.ink.json` exactly (which covers container
 //! names, nesting, flags and every instruction), or be in the divergence ledger (corpus
-//! `structure`, engine `new-compiler`). Also the verified pair:
+//! `structure`). Also the verified pair:
 //! load(serialize(compile(source))) is compile(source).
 
 const std = @import("std");
@@ -14,7 +14,6 @@ const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const program_testing = @import("../core/program_testing.zig");
 
-pub const engine = "new-compiler";
 const file_bytes_max = 16 * 1024 * 1024;
 
 /// The case's `.ink` compiled from its directory (so INCLUDEs resolve as in inklecate).
@@ -97,7 +96,7 @@ fn find(ledger: []const oracle.Entry, id: []const u8) ?oracle.Entry {
     assert(ledger.len < std.math.maxInt(u32));
     assert(id.len > 0);
     for (ledger) |entry| {
-        if (entry.corpus != .structure or !std.mem.eql(u8, entry.engine, engine)) continue;
+        if (entry.corpus != .structure) continue;
         if (std.mem.eql(u8, entry.case, id)) return entry;
     }
     return null;
