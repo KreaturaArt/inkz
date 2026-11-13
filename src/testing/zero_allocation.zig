@@ -1,6 +1,6 @@
-//! The zero-allocation gate (plan P5.11): after `Story.init`, the new runtime allocates
-//! nothing. Structurally, no field of the story or its state is an allocator; at run time,
-//! every ground-truth case runs cont, choose_choice_index, set_variable, switch_flow and
+//! The zero-allocation gate: after `Story.init`, the runtime allocates nothing.
+//! Structurally, no field of the story or its state is an allocator; at run time, every
+//! ground-truth case runs cont, choose_choice_index, set_variable, switch_flow and
 //! evaluate_function with a counting allocator behind init, and the count doesn't move.
 
 const std = @import("std");
@@ -57,7 +57,7 @@ fn exercise(story: *Story) !void {
     }
 }
 
-test "the new runtime allocates nothing after init, on every ground-truth case" {
+test "the runtime allocates nothing after init, on every ground-truth case" {
     // Goal: P5.11. Method: init each case's story through a counting allocator, then play
     // it with cont, choices, set_variable and flow switches; growths must not change.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
