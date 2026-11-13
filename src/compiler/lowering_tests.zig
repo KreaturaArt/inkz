@@ -5,6 +5,8 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("compile.zig");
+const ink_json = @import("../core/ink_json.zig");
+const program_testing = @import("../core/program_testing.zig");
 
 const directory_path = "test/lowering";
 const file_bytes_max = 4 * 1024 * 1024;
@@ -64,4 +66,26 @@ fn matches(
         actual[from..@min(actual.len, at + 80)],
     });
     return false;
+}
+
+test "keyed targets name the containers their JSON paths name" {
+    // The emission gives the builder its targets as keys, not paths. Method: each program's
+    // JSON, loaded back (resolving every path with ink's rules), gives the same program, so
+    // every divert, choice, read count and divert target points where its path does.
+    const gpa = std.testing.allocator;
+    const sources = [_][]const u8{
+        "-> k.s\n== k ==\n= s\n{k.s} {-> k} -> t ->\n-> DONE\n== t ==\n->->\n",
+        "* (c) A\n* B -> g\n- (g) {c: x} {!y|z} {TURNS_SINCE(-> g)}\n-> END\n",
+        "{ 1 > 0:\n  - a\n  -> h\n- else: b\n}\n- (h) c\n~ temp d = -> h\n-> d\n",
+    };
+    for (sources) |source| {
+        var compiled = try compile.compile_source(gpa, source);
+        defer compiled.deinit(gpa);
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        try ink_json.serialize(gpa, &compiled, &out.writer);
+        var loaded = try ink_json.load(gpa, out.written());
+        defer loaded.deinit(gpa);
+        try program_testing.expect_same_program(&compiled, &loaded);
+    }
 }

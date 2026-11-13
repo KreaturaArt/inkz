@@ -459,10 +459,10 @@ const Loader = struct {
             value,
         );
         if (std.mem.eql(u8, key, "CNT?")) return builder.add_container_operand(.read_count, value);
-        if (std.mem.eql(u8, key, "VAR?")) return builder.add_variable_get(value);
+        if (std.mem.eql(u8, key, "VAR?")) return builder.add_variable(value, .get);
         if (std.mem.eql(u8, key, "#")) return builder.add(.tag, try builder.intern(value));
         if (std.mem.eql(u8, key, "VAR=")) {
-            if (fields.reassignment) return builder.add_variable_assign(value);
+            if (fields.reassignment) return builder.add_variable(value, .assign);
             return builder.add(.global_declare, try builder.global(value));
         }
         if (std.mem.eql(u8, key, "temp=")) {

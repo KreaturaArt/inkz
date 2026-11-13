@@ -67,16 +67,15 @@ pub const Diagnostic = struct {
 
 const Fixup = struct {
     kind: enum { divert, choice_point, container_operand },
-    /// The target as a path: `path_bytes[path_first..][0..path_length]`, empty for a keyed
-    /// target outside Debug. Kept out of the program's strings: nothing reads it once
-    /// resolved (P12.4).
-    path_first: u32,
-    path_length: u32,
+    /// A path target: `path_bytes[path_first..][0..path_length]`, empty for a keyed target.
+    /// Kept out of the program's strings: nothing reads it once resolved.
+    path_first: u32 = 0,
+    path_length: u32 = 0,
     container: ContainerIndex,
     /// The extra index of the record, or the content position for `container_operand`.
     at: u32,
-    /// A keyed target (P12.4): the container begun with this key, and a content position in
-    /// it (`no_index` for the container itself). `no_key` for a path target.
+    /// A keyed target: the container begun with this key, and a content position in it
+    /// (`no_index` for the container itself). `no_key` for a path target.
     key: u32 = no_key,
     index: u32 = no_index,
 };
@@ -87,8 +86,26 @@ const no_index = std.math.maxInt(u32);
 
 /// A target named by the caller's own key for a container (`ContainerOptions.key`) and,
 /// optionally, a content position in it, resolved in `finish` as a path to it would be. The
-/// compiler knows its targets, so it skips writing paths and parsing them back (P12.4).
+/// compiler knows its targets, so it skips writing paths and parsing them back.
 pub const KeyTarget = struct { key: u32, index: ?u32 = null };
+
+/// What a divert, choice point or container operand points at: a path, resolved in `finish`
+/// with ink's rules (the JSON loader), or a `KeyTarget` (the compiler).
+const Target = union(enum) { path: []const u8, key: KeyTarget };
+
+/// The position of the entry named `name` (a global, external or list origin).
+fn position_of(entries: anytype, name: StringId) ?u32 {
+    assert(!name.is_none());
+    for (entries, 0..) |entry, position| {
+        if (entry.name == name) return @intCast(position);
+    }
+    return null;
+}
+
+/// A target given as a path (`[]const u8`) or a `KeyTarget`.
+fn target_of(target: anytype) Target {
+    return if (@TypeOf(target) == KeyTarget) .{ .key = target } else .{ .path = target };
+}
 
 /// A `VAR?` read, resolved in `finish` as ink resolves it: a global, else a list item (as a
 /// one-item list), else a temp.
@@ -362,43 +379,32 @@ pub const ProgramBuilder = struct {
 
     /// The slot of global `name`, declared once however often it is asked for.
     pub fn global(builder: *ProgramBuilder, name: []const u8) !GlobalSlot {
-        assert(name.len > 0);
         const id = try builder.intern(name);
-        for (builder.globals.items, 0..) |existing, slot| {
-            if (existing.name == id) return .from_int(@intCast(slot));
-        }
+        if (position_of(builder.globals.items, id)) |slot| return .from_int(slot);
         try builder.globals.append(builder.gpa, .{ .name = id });
-        assert(builder.globals.items.len > 0);
         return .from_int(@intCast(builder.globals.items.len - 1));
     }
 
-    /// A `VAR?` read of `name`, resolved in `finish`.
-    pub fn add_variable_get(builder: *ProgramBuilder, name: []const u8) !void {
-        assert(builder.frames.items.len > 0);
+    /// A `VAR?` read of `name` (`.get`), or a re-assignment (`.assign`, ink's `"VAR=": name,
+    /// "re": true`, written for temps and globals alike), resolved in `finish`: a global
+    /// access if `name` is a declared global; a read may also be of a list item.
+    pub fn add_variable(
+        builder: *ProgramBuilder,
+        name: []const u8,
+        kind: @FieldType(VariableFixup, "kind"),
+    ) !void {
         assert(name.len > 0);
         const id = try builder.intern(name);
         try builder.variable_fixups.append(builder.gpa, .{
             .container = builder.current(),
             .position = builder.content_count(),
             .name = id,
+            .kind = kind,
         });
-        try builder.add(.temp_get, id);
-    }
-
-    /// A re-assignment of `name` (ink's `"VAR=": name, "re": true`), which ink writes for
-    /// temps and globals alike: a global assignment if `name` is a declared global, resolved
-    /// in `finish`, else a temp assignment.
-    pub fn add_variable_assign(builder: *ProgramBuilder, name: []const u8) !void {
-        assert(builder.frames.items.len > 0);
-        assert(name.len > 0);
-        const id = try builder.intern(name);
-        try builder.variable_fixups.append(builder.gpa, .{
-            .container = builder.current(),
-            .position = builder.content_count(),
-            .name = id,
-            .kind = .assign,
-        });
-        try builder.add(.temp_assign, id);
+        switch (kind) {
+            .get => try builder.add(.temp_get, id),
+            .assign => try builder.add(.temp_assign, id),
+        }
     }
 
     /// A list literal of items named `origin.item`, with the origins it was declared with.
@@ -462,23 +468,18 @@ pub const ProgramBuilder = struct {
     /// The index of external function `name`, declared once; its fallback is resolved in
     /// `finish`.
     pub fn external(builder: *ProgramBuilder, name: []const u8) !ExternalIndex {
-        assert(name.len > 0);
         const id = try builder.intern(name);
-        for (builder.externals.items, 0..) |existing, position| {
-            if (existing.name == id) return .from_int(@intCast(position));
-        }
+        if (position_of(builder.externals.items, id)) |position| return .from_int(position);
         try builder.externals.append(builder.gpa, .{ .name = id, .fallback = .none });
-        assert(builder.externals.items.len > 0);
         return .from_int(@intCast(builder.externals.items.len - 1));
     }
 
-    /// A divert to `path`, resolved in `finish`.
+    /// A divert to `target`, a path (`[]const u8`) or a `KeyTarget`, resolved in `finish`.
     pub fn add_divert(
         builder: *ProgramBuilder,
-        path: []const u8,
+        target: anytype,
         flags: instruction_module.DivertFlags,
     ) !void {
-        assert(path.len > 0);
         assert(!flags.variable);
         const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
             .target_container = .none,
@@ -486,7 +487,7 @@ pub const ProgramBuilder = struct {
             .name = .none,
             .flags = flags,
         });
-        try builder.add_fixup(.divert, path, at);
+        try builder.add_fixup(.divert, target_of(target), at);
         try builder.add(.divert, @fromBackingInt(@intCast(at)));
     }
 
@@ -504,129 +505,56 @@ pub const ProgramBuilder = struct {
             .flags = flags,
         });
         try builder.add(.divert, @fromBackingInt(@intCast(at)));
-        assert(builder.scratch.len > 0);
     }
 
+    /// A choice point to `target`, a path or a `KeyTarget`.
     pub fn add_choice_point(
         builder: *ProgramBuilder,
-        path: []const u8,
+        target: anytype,
         flags: instruction_module.ChoiceFlags,
     ) !void {
-        assert(builder.frames.items.len > 0);
-        assert(path.len > 0);
         const at = try builder.extra.add(builder.gpa, instruction_module.ChoicePoint{
             .target_container = .none,
             .target_index = 0,
             .flags = flags,
         });
-        try builder.add_fixup(.choice_point, path, at);
+        try builder.add_fixup(.choice_point, target_of(target), at);
         try builder.add(.choice_point, @fromBackingInt(@intCast(at)));
     }
 
-    /// An instruction whose operand is the container at `path`: `divert_target` or `read_count`.
+    /// An instruction whose operand is the container at `target` (a path or a `KeyTarget`):
+    /// `divert_target` or `read_count`.
     pub fn add_container_operand(
         builder: *ProgramBuilder,
         comptime opcode: Opcode,
-        path: []const u8,
+        target: anytype,
     ) !void {
-        assert(path.len > 0);
         comptime assert(instruction_module.operand_kind(opcode) == .container);
-        try builder.add_fixup(.container_operand, path, builder.content_count());
+        try builder.add_fixup(.container_operand, target_of(target), builder.content_count());
         try builder.add(opcode, .none);
-    }
-
-    /// `add_divert` to a keyed target. `check_path`, when given, is resolved too and must
-    /// name the same target (the compiler passes it in Debug).
-    pub fn add_divert_to(
-        builder: *ProgramBuilder,
-        target: KeyTarget,
-        check_path: ?[]const u8,
-        flags: instruction_module.DivertFlags,
-    ) !void {
-        assert(target.key != no_key);
-        assert(!flags.variable);
-        const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
-            .target_container = .none,
-            .target_index = 0,
-            .name = .none,
-            .flags = flags,
-        });
-        try builder.add_keyed_fixup(.divert, target, check_path, at);
-        try builder.add(.divert, @fromBackingInt(@intCast(at)));
-    }
-
-    /// `add_choice_point` to a keyed target.
-    pub fn add_choice_point_to(
-        builder: *ProgramBuilder,
-        target: KeyTarget,
-        check_path: ?[]const u8,
-        flags: instruction_module.ChoiceFlags,
-    ) !void {
-        assert(builder.frames.items.len > 0);
-        assert(target.key != no_key);
-        const at = try builder.extra.add(builder.gpa, instruction_module.ChoicePoint{
-            .target_container = .none,
-            .target_index = 0,
-            .flags = flags,
-        });
-        try builder.add_keyed_fixup(.choice_point, target, check_path, at);
-        try builder.add(.choice_point, @fromBackingInt(@intCast(at)));
-    }
-
-    /// `add_container_operand` to a keyed target.
-    pub fn add_container_operand_to(
-        builder: *ProgramBuilder,
-        comptime opcode: Opcode,
-        target: KeyTarget,
-        check_path: ?[]const u8,
-    ) !void {
-        assert(target.key != no_key);
-        comptime assert(instruction_module.operand_kind(opcode) == .container);
-        const position = builder.content_count();
-        try builder.add_keyed_fixup(.container_operand, target, check_path, position);
-        try builder.add(opcode, .none);
-    }
-
-    fn add_keyed_fixup(
-        builder: *ProgramBuilder,
-        kind: @FieldType(Fixup, "kind"),
-        target: KeyTarget,
-        check_path: ?[]const u8,
-        at: u32,
-    ) !void {
-        assert(builder.frames.items.len > 0);
-        assert(target.index != no_index);
-        const first: u32 = @intCast(builder.path_bytes.items.len);
-        if (check_path) |path| try builder.path_bytes.appendSlice(builder.gpa, path);
-        try builder.fixups.append(builder.gpa, .{
-            .kind = kind,
-            .path_first = first,
-            .path_length = if (check_path) |path| @intCast(path.len) else 0,
-            .container = builder.current(),
-            .at = at,
-            .key = target.key,
-            .index = target.index orelse no_index,
-        });
-        assert(builder.fixups.items.len > 0);
     }
 
     fn add_fixup(
         builder: *ProgramBuilder,
         kind: @FieldType(Fixup, "kind"),
-        path: []const u8,
+        target: Target,
         at: u32,
     ) !void {
-        assert(builder.frames.items.len > 0);
-        const first: u32 = @intCast(builder.path_bytes.items.len);
-        try builder.path_bytes.appendSlice(builder.gpa, path);
-        try builder.fixups.append(builder.gpa, .{
-            .kind = kind,
-            .path_first = first,
-            .path_length = @intCast(path.len),
-            .container = builder.current(),
-            .at = at,
-        });
-        assert(builder.fixups.items.len > 0);
+        var fixup: Fixup = .{ .kind = kind, .container = builder.current(), .at = at };
+        switch (target) {
+            .path => |path| {
+                assert(path.len > 0);
+                fixup.path_first = @intCast(builder.path_bytes.items.len);
+                fixup.path_length = @intCast(path.len);
+                try builder.path_bytes.appendSlice(builder.gpa, path);
+            },
+            .key => |key| {
+                assert(key.key != no_key);
+                fixup.key = key.key;
+                fixup.index = key.index orelse no_index;
+            },
+        }
+        try builder.fixups.append(builder.gpa, fixup);
     }
 
     /// Lays out every container, resolves the fixups and checks the result. On
@@ -740,15 +668,6 @@ pub const ProgramBuilder = struct {
         return builder.diagnostic_bytes.items[diagnostic.path_first..end];
     }
 
-    fn find_global(builder: *const ProgramBuilder, name: StringId) ?GlobalSlot {
-        assert(builder.globals.items.len < std.math.maxInt(u32));
-        assert(!name.is_none());
-        for (builder.globals.items, 0..) |global_info, slot| {
-            if (global_info.name == name) return .from_int(@intCast(slot));
-        }
-        return null;
-    }
-
     /// A list item by its full name (`origin.item`) or bare name.
     fn find_list_item(builder: *const ProgramBuilder, name: StringId) ?index.ListItemIndex {
         assert(builder.list_items.items.len < std.math.maxInt(u32));
@@ -759,34 +678,27 @@ pub const ProgramBuilder = struct {
         return null;
     }
 
-    fn find_list_origin(builder: *const ProgramBuilder, name: StringId) ?ListOriginIndex {
-        assert(builder.list_origins.items.len < std.math.maxInt(u32));
-        assert(!name.is_none());
-        for (builder.list_origins.items, 0..) |origin, position| {
-            if (origin.name == name) return .from_int(@intCast(position));
-        }
-        return null;
-    }
-
-    /// Rewrites each `VAR?` read now that every global and list item is known.
+    /// Rewrites each `VAR?` read and re-assignment now that every global and list item is
+    /// known.
     fn resolve_variables(builder: *ProgramBuilder) !void {
         const opcodes = builder.finished.items(.opcode);
         const operands = builder.finished.items(.operand);
         for (builder.variable_fixups.items) |fixup| {
             const staged = builder.staged.items[fixup.container.to_int()];
             const at = staged.instructions_first + fixup.position;
+            const global_slot = position_of(builder.globals.items, fixup.name);
             if (fixup.kind == .assign) {
                 assert(opcodes[at] == .temp_assign);
-                if (builder.find_global(fixup.name)) |slot| {
+                if (global_slot) |slot| {
                     opcodes[at] = .global_assign;
-                    operands[at] = @backingInt(slot);
+                    operands[at] = slot;
                 }
                 continue;
             }
             assert(opcodes[at] == .temp_get);
-            if (builder.find_global(fixup.name)) |slot| {
+            if (global_slot) |slot| {
                 opcodes[at] = .global_get;
-                operands[at] = @backingInt(slot);
+                operands[at] = slot;
             } else if (builder.find_list_item(fixup.name)) |item| {
                 const origin = builder.list_items.items[item.to_int()].origin;
                 const record = try builder.extra.add(builder.gpa, instruction_module.ListLiteral{
@@ -819,8 +731,9 @@ pub const ProgramBuilder = struct {
             }
             for (0..fixup.origins_count) |offset| {
                 const name = names[fixup.items_count + offset];
-                const origin = builder.find_list_origin(name) orelse return error.UnknownListOrigin;
-                words[fixup.words_at + fixup.items_count + offset] = @backingInt(origin);
+                const origin = position_of(builder.list_origins.items, name) orelse
+                    return error.UnknownListOrigin;
+                words[fixup.words_at + fixup.items_count + offset] = origin;
             }
         }
         var names_count: u64 = 0;
@@ -846,36 +759,29 @@ pub const ProgramBuilder = struct {
         assert(program.containers.len == builder.staged.items.len);
         const extra: []u32 = @constCast(program.extra);
         for (builder.fixups.items) |fixup| {
-            if (fixup.key != no_key) {
-                const target = builder.resolve_key(program, fixup) orelse {
-                    try builder.report(.unresolved_path, fixup, builder.fixup_text(fixup));
-                    continue;
-                };
-                if (fixup.path_length > 0) {
-                    check_keyed(program, fixup, target, builder.path_of(fixup));
-                }
+            const resolved = if (fixup.key != no_key)
+                builder.resolve_key(program, fixup)
+            else
+                builder.resolve_path(program, fixup);
+            if (resolved) |target| {
                 try builder.apply(program, extra, fixup, target);
-                continue;
-            }
-            const text = builder.path_of(fixup);
-            const parsed = path_module.Path.parse(text, path_components_max) catch {
-                try builder.report(.unresolved_path, fixup, text);
-                continue;
-            };
-            const target = path_module.resolve(program, .{
-                .container = fixup.container,
-                .from_content = true,
-            }, parsed) catch {
-                try builder.report(.unresolved_path, fixup, text);
-                continue;
-            };
-            if (target.approximate) {
-                try builder.report(.unresolved_path, fixup, text);
-                continue;
-            }
-            try builder.apply(program, extra, fixup, target);
+            } else try builder.report(.unresolved_path, fixup, builder.fixup_text(fixup));
         }
         assert(builder.diagnostics.items.len <= builder.fixups.items.len);
+    }
+
+    /// A path target, resolved with ink's rules; an approximate target doesn't resolve.
+    fn resolve_path(
+        builder: *const ProgramBuilder,
+        program: *const Program,
+        fixup: Fixup,
+    ) ?path_module.Target {
+        assert(fixup.key == no_key);
+        const text = builder.fixup_text(fixup);
+        const parsed = path_module.Path.parse(text, path_components_max) catch return null;
+        const origin: path_module.Origin = .{ .container = fixup.container, .from_content = true };
+        const target = path_module.resolve(program, origin, parsed) catch return null;
+        return if (target.approximate) null else target;
     }
 
     /// A keyed target, found as `path.resolve` finds the last component of a path to it.
@@ -885,7 +791,6 @@ pub const ProgramBuilder = struct {
         fixup: Fixup,
     ) ?path_module.Target {
         assert(fixup.key != no_key);
-        assert(program.containers.len == builder.staged.items.len);
         if (fixup.key >= builder.keys.items.len) return null;
         const container = builder.keys.items[fixup.key];
         if (container.is_none()) return null;
@@ -902,34 +807,11 @@ pub const ProgramBuilder = struct {
         return target;
     }
 
-    /// The keyed target equals the target of the path written for it (Debug's check).
-    fn check_keyed(
-        program: *const Program,
-        fixup: Fixup,
-        target: path_module.Target,
-        text: []const u8,
-    ) void {
-        assert(text.len > 0);
-        assert(fixup.key != no_key);
-        const parsed = path_module.Path.parse(text, path_components_max) catch unreachable;
-        const origin: path_module.Origin = .{ .container = fixup.container, .from_content = true };
-        const by_path = path_module.resolve(program, origin, parsed) catch unreachable;
-        assert(!by_path.approximate);
-        assert(by_path.container == target.container);
-        assert(std.meta.eql(by_path.content_index, target.content_index));
-    }
-
-    fn path_of(builder: *const ProgramBuilder, fixup: Fixup) []const u8 {
-        assert(fixup.path_first + fixup.path_length <= builder.path_bytes.items.len);
-        assert(builder.fixups.items.len > 0);
-        return builder.path_bytes.items[fixup.path_first..][0..fixup.path_length];
-    }
-
-    /// A fixup's path, or a placeholder for a keyed one without (for diagnostics).
+    /// A fixup's path, or a placeholder for a keyed one (for diagnostics).
     fn fixup_text(builder: *const ProgramBuilder, fixup: Fixup) []const u8 {
-        assert(fixup.key != no_key or fixup.path_length > 0);
-        assert(builder.fixups.items.len > 0);
-        return if (fixup.path_length == 0) "(keyed target)" else builder.path_of(fixup);
+        assert(fixup.path_first + fixup.path_length <= builder.path_bytes.items.len);
+        if (fixup.key != no_key) return "(keyed target)";
+        return builder.path_bytes.items[fixup.path_first..][0..fixup.path_length];
     }
 
     fn apply(
@@ -1162,9 +1044,9 @@ test "VAR? reads resolve to globals, list items or temps" {
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
     _ = try builder.begin_container(.{});
-    try builder.add_variable_get("score");
-    try builder.add_variable_get("blue");
-    try builder.add_variable_get("local");
+    try builder.add_variable("score", .get);
+    try builder.add_variable("blue", .get);
+    try builder.add_variable("local", .get);
     try builder.add_list_literal(&.{ "colours.red", "colours.blue" }, &.{"colours"});
     _ = try builder.global("score");
     _ = try builder.list_origin(
