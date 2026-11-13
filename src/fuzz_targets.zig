@@ -1,6 +1,7 @@
 //! Fuzz targets (plan P0.9), run with `zig build fuzz`: each one runs once on its seed corpus.
 //! `zig build fuzz --fuzz` starts Zig's fuzzer on them: the JSON and save loaders, the
-//! tokenizer, the compiler and the program image loader (P3.1, P6.2, P7.1, P9.2, P10.5, P10.7).
+//! tokenizer, the compiler and the program image loader (P3.1, P6.2, P7.1, P9.2, P10.5, P10.7),
+//! and one target per pipeline stage in src/fuzz/ (Phase 11). docs/fuzzing.md lists them.
 //!
 //! A target fails when the code under test crashes. Returning an error is fine: malformed input
 //! must be rejected, never trusted.
