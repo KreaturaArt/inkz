@@ -1,5 +1,6 @@
-//! Character classes the grammar scans with: ink's comment removal and identifier characters.
-//! The grammar reads characters itself, so there is no token stream.
+//! Character classes the grammar scans with: ink's comment removal and identifier characters,
+//! and line and column numbers. The grammar reads characters itself, so there is no token
+//! stream.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -76,6 +77,24 @@ fn is_excluded(code: u21) bool {
         0x0530, 0x0557...0x0560, 0x0588...0x058E => true,
         else => false,
     };
+}
+
+/// The line and column (from 1) of `offset` in `text`.
+pub fn line_and_column(text: []const u8, offset: u32) struct { line: u32, column: u32 } {
+    assert(offset <= text.len);
+    const before = text[0..offset];
+    const line_start = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |at| at + 1 else 0;
+    return .{
+        .line = @intCast(std.mem.count(u8, before, "\n") + 1),
+        .column = @intCast(offset - line_start + 1),
+    };
+}
+
+test "line_and_column counts from one" {
+    // Goal: diagnostics positions. Method: offsets at the start, mid-line and after a newline.
+    try std.testing.expectEqual(@as(u32, 1), line_and_column("ab\ncd", 0).column);
+    try std.testing.expectEqual(@as(u32, 2), line_and_column("ab\ncd", 4).line);
+    try std.testing.expectEqual(@as(u32, 2), line_and_column("ab\ncd", 4).column);
 }
 
 test "comments are removed as ink's CommentEliminator removes them" {

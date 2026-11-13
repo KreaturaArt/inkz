@@ -12,6 +12,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const grammar = @import("grammar.zig");
+const lexical = @import("lexical.zig");
 const ast_module = @import("ast.zig");
 const limits = @import("../core/limits.zig");
 const NodeIndex = ast_module.NodeIndex;
@@ -80,13 +81,9 @@ pub const Space = struct {
             if (offset >= file.start and offset <= file.end) file_index = position;
         }
         const file = space.files[file_index];
-        const before = space.parsed.source[file.start..offset];
-        const line_start = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |at| at + 1 else 0;
-        return .{
-            .path = file.path,
-            .line = @intCast(std.mem.count(u8, before, "\n") + 1),
-            .column = @intCast(before.len - line_start + 1),
-        };
+        const text = space.parsed.source[file.start..];
+        const position = lexical.line_and_column(text, offset - file.start);
+        return .{ .path = file.path, .line = position.line, .column = position.column };
     }
 };
 

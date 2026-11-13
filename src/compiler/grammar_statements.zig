@@ -19,9 +19,7 @@ pub fn story(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.phase = 1;
-            machine.argument = @backingInt(Level.top);
-            return .{ .call = .statements };
+            return grammar.call(machine, frame, 1, .statements, @backingInt(Level.top));
         },
         else => {
             // An empty story still has a (empty) statement list.
@@ -56,9 +54,7 @@ pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
         },
         2 => {
             if (machine.outcome == .succeeded) return finish_statements(machine, frame);
-            frame.phase = 3;
-            machine.argument = @backingInt(level);
-            return .{ .call = .statement };
+            return grammar.call(machine, frame, 3, .statement, @backingInt(level));
         },
         else => {
             if (machine.outcome == .failed) return finish_statements(machine, frame);
@@ -209,9 +205,7 @@ fn flow_definition(machine: *Machine, frame: *Frame, comptime level: Level) Erro
             if (machine.outcome == .failed) return .fail;
             frame.locals[1] = machine.result;
             grammar.expect_end_of_line(machine);
-            frame.phase = 2;
-            machine.argument = @backingInt(level);
-            return .{ .call = .statements };
+            return grammar.call(machine, frame, 2, .statements, @backingInt(level));
         },
         else => {
             if (machine.outcome == .failed) {
@@ -523,9 +517,7 @@ fn value_declaration(machine: *Machine, frame: *Frame, kind: Alternative) Error!
             _ = grammar.whitespace(machine);
             grammar.expect_string(machine, "=", .equals);
             _ = grammar.whitespace(machine);
-            frame.phase = 1;
-            machine.argument = 0;
-            return .{ .call = .expression };
+            return grammar.call(machine, frame, 1, .expression, 0);
         },
         else => {
             if (machine.outcome == .failed) {
@@ -601,9 +593,7 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
         },
         2 => {
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
-            frame.phase = 3;
-            machine.argument = 0;
-            return .{ .call = .expression };
+            return grammar.call(machine, frame, 3, .expression, 0);
         },
         else => {
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
@@ -643,9 +633,7 @@ pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
             _ = grammar.whitespace(machine);
             if (!try grammar.keyword(machine, "return")) return .fail;
             _ = grammar.whitespace(machine);
-            frame.phase = 1;
-            machine.argument = 0;
-            return .{ .call = .expression };
+            return grammar.call(machine, frame, 1, .expression, 0);
         },
         else => {
             if (machine.outcome == .failed) try grammar.push_none(machine);
@@ -676,9 +664,7 @@ pub fn temp_declaration_or_assignment(machine: *Machine, frame: *Frame) Error!Ac
                 return .fail;
             }
             frame.locals[1] = if (increment) 1 else if (decrement) 2 else if (is_new) 3 else 0;
-            frame.phase = 1;
-            machine.argument = 0;
-            return .{ .call = .expression };
+            return grammar.call(machine, frame, 1, .expression, 0);
         },
         else => {
             if (machine.outcome == .failed) {
