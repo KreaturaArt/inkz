@@ -8,6 +8,7 @@ const compile = @import("../compiler/compile.zig");
 const Program = @import("../core/program.zig").Program;
 const api = @import("../runtime/api.zig");
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
+const support = @import("../testing/support.zig");
 
 pub const Story = api.Story;
 pub const Value = api.Value;
@@ -27,14 +28,6 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
         error.CompileFailed, error.ParseFailed, error.WorkspaceFull => null,
         else => err,
     };
-}
-
-/// Runtime errors are part of play: generated stories divide by zero, mix types, and run
-/// out of content.
-fn ignore_error(context: ?*anyopaque, message: []const u8, severity: api.Severity) void {
-    assert(context == null);
-    assert(message.len > 0);
-    _ = severity;
 }
 
 /// The external `e0(x)`: returns its argument.
@@ -69,7 +62,9 @@ pub fn init_story(story: *Story, gpa: Allocator, program: *const Program, setup:
         .limits = .{ .steps_per_continue_max = steps_per_continue_max },
         .random_seed = setup.random_seed,
         .allow_external_function_fallbacks = setup.fallbacks,
-        .on_error = ignore_error,
+        // Runtime errors are part of play: generated stories divide by zero, mix types,
+        // and run out of content.
+        .on_error = support.ignore_message,
     });
     if (setup.bind_external) try story.bind_external_function("e0", .{}, null, echo);
     assert(story.core.state.check() == .ok);

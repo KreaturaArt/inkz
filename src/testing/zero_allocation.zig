@@ -7,14 +7,14 @@ const std = @import("std");
 const assert = std.debug.assert;
 const ink_json = @import("../core/ink_json.zig");
 const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllocator;
-const story_module = @import("../runtime/story.zig");
+const Story = @import("../runtime/story.zig").Story;
 const state_module = @import("../runtime/state.zig");
 const flows = @import("../runtime/flows.zig");
 const evaluate = @import("../runtime/evaluate.zig");
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
 const cases = @import("cases.zig");
-const Story = story_module.Story;
+const support = @import("support.zig");
 
 /// No field of `T` is an allocator (the types the story keeps after init).
 fn has_no_allocator(comptime T: type) bool {
@@ -31,34 +31,11 @@ comptime {
     assert(has_no_allocator(state_module.State));
 }
 
-fn ignore_error(
-    context: ?*anyopaque,
-    message: []const u8,
-    severity: state_module.Diagnostic.Severity,
-) void {
-    assert(context == null);
-    assert(message.len > 0 or severity == .warning);
-}
-
-fn noop_external(
-    context: ?*anyopaque,
-    story: *Story,
-    arguments: []const story_module.HostValue,
-) anyerror!story_module.HostValue {
-    assert(context == null);
-    assert(arguments.len <= story_module.external_arguments_max and story.callback_depth > 0);
-    return .{ .integer = 0 };
-}
-
 /// Plays `story` for a few turns with every mutating call the gate names.
 fn exercise(story: *Story) !void {
     assert(story.callback_depth == 0);
     assert(story.state.memory.len > 0);
-    for (story.program.externals) |external| {
-        const name = story.program.strings.get(external.name);
-        story.bind_external_function(name, noop_external, null, true) catch {};
-    }
-    story.on_error = ignore_error;
+    support.quiet(story);
     var turn: u32 = 0;
     while (turn < 20) : (turn += 1) {
         var lines: u32 = 0;
