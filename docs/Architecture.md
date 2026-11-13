@@ -12,7 +12,7 @@ it. A `Program` can be written back as inklecate's JSON.
 ```mermaid
 flowchart LR
     ink[".ink files"] --> space["source_space<br/>files end to end,<br/>comments removed"]
-    space --> parse["tokenizer + grammar<br/>(explicit-stack parser)"]
+    space --> parse["grammar<br/>(explicit-stack parser)"]
     parse --> sema["sema<br/>object tree"]
     sema --> resolve["resolve<br/>names, targets"]
     resolve --> lower["lower<br/>runtime IR, flatten, layout"]
@@ -155,34 +155,7 @@ on a scratch stack until `wrap` moves a parent's children into one contiguous ru
 are bounded by `parse_depth_max` and steps by a gas counter proportional to the input; both
 end in a diagnostic, not a crash.
 
-## 5. Tokenizer modes
-
-`compiler/tokenizer.zig`. ink's grammar is context-sensitive, so the parser asks for one
-token at a time in the mode its current rule needs. Comments are removed before tokenizing.
-
-```mermaid
-stateDiagram-v2
-    direction LR
-    state "content<br/>text runs, ended by braces, pipe, hash,<br/>backslash, newline, divert, thread, glue" as content
-    state "content_choice<br/>content + [ ]" as choice
-    state "content_string<br/>content + quote" as string
-    state "expression<br/>words, operators, punctuation" as expression
-    state "rest_of_line<br/>INCLUDE paths, TODO text" as rest
-    [*] --> content
-    content --> expression: rule enters { or ~
-    expression --> content: rule leaves logic
-    content --> choice: choice rule
-    choice --> content
-    expression --> string: string literal
-    string --> expression
-    content --> rest: INCLUDE, author warning
-    rest --> content
-```
-
-Whitespace and newlines are tokens, because ink's rules care where they are. The scanner for
-text runs is a labeled switch (`scan: switch ... continue :scan`).
-
-## 6. One VM step
+## 5. One VM step
 
 `runtime/vm.zig`: ink's `Step`, `NextContent` and `PerformLogicAndFlowControl`. The pointer
 is `{container, index}` in the current frame. `run` repeats `step` until the output changes,
@@ -207,7 +180,7 @@ flowchart TD
     jump --> done
 ```
 
-## 7. The Continue loop and newline lookahead
+## 6. The Continue loop and newline lookahead
 
 `runtime/story.zig` and `runtime/lookahead.zig`: ink's `ContinueInternal`. `cont()` returns
 one line, but runs past its newline to see whether glue or tags extend it.
@@ -242,7 +215,7 @@ the random state) go through the undo log, so a restore needs no copy of them. W
 pointer runs out, an all-invisible default choice is followed automatically; otherwise ink's
 end-of-content errors and warnings are raised.
 
-## 8. Memory
+## 7. Memory
 
 `runtime/state.zig`, `runtime/heap.zig`, `runtime/flows.zig`. `Story.init` makes one
 allocation of exactly `Limits.bytes_total()` bytes and carves every buffer from it; nothing

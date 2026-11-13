@@ -14,7 +14,7 @@ const assert = std.debug.assert;
 const profile = @import("../core/profile.zig");
 const core = @import("core.zig");
 const ast = @import("ast.zig");
-const tokenizer = @import("tokenizer.zig");
+const lexical = @import("lexical.zig");
 const limits = @import("../core/limits.zig");
 const statements = @import("grammar_statements.zig");
 const content = @import("grammar_content.zig");
@@ -65,7 +65,7 @@ pub const Grammar = struct {
 
     pub fn step(machine: *Machine, frame: *Machine.Frame) Action {
         assert(frame.phase < 64);
-        assert(machine.tokenizer.at <= machine.source.len);
+        assert(machine.at <= machine.source.len);
         assert(machine.frames_count > 0);
         const result = switch (frame.rule) {
             .story => statements.story(machine, frame),
@@ -215,13 +215,13 @@ pub const Message = enum(u32) {
 
 pub fn report_expected(machine: *Machine, expectation: Expectation) void {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
-    machine.report(.expected, machine.tokenizer.at, @backingInt(expectation));
+    assert(machine.at <= machine.source.len);
+    machine.report(.expected, machine.at, @backingInt(expectation));
 }
 
 /// Expect(String(literal)): consumes it, or reports what was expected.
 pub fn expect_string(machine: *Machine, literal: []const u8, expectation: Expectation) void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(literal.len > 0);
     if (parse_string(machine, literal)) return;
     report_expected(machine, expectation);
@@ -229,64 +229,64 @@ pub fn expect_string(machine: *Machine, literal: []const u8, expectation: Expect
 
 pub fn report_message(machine: *Machine, message: Message) void {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
-    machine.report(.message, machine.tokenizer.at, @backingInt(message));
+    assert(machine.at <= machine.source.len);
+    machine.report(.message, machine.at, @backingInt(message));
 }
 
 // StringParser's character-level primitives.
 
 pub fn at(machine: *const Machine) u32 {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
-    return machine.tokenizer.at;
+    assert(machine.at <= machine.source.len);
+    return machine.at;
 }
 
 pub fn rest(machine: *const Machine) []const u8 {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
-    return machine.source[machine.tokenizer.at..];
+    assert(machine.at <= machine.source.len);
+    return machine.source[machine.at..];
 }
 
 pub fn at_end(machine: *const Machine) bool {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
-    return machine.tokenizer.at == machine.source.len;
+    assert(machine.at <= machine.source.len);
+    return machine.at == machine.source.len;
 }
 
 /// ParseString: consumes `literal` if the input starts with it.
 pub fn parse_string(machine: *Machine, literal: []const u8) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(literal.len > 0);
     if (!std.mem.startsWith(u8, rest(machine), literal)) return false;
-    machine.tokenizer.at += @intCast(literal.len);
+    machine.at += @intCast(literal.len);
     return true;
 }
 
 /// Whitespace: one or more spaces and tabs.
 pub fn whitespace(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     while (!at_end(machine) and (rest(machine)[0] == ' ' or rest(machine)[0] == '\t')) {
-        machine.tokenizer.at += 1;
+        machine.at += 1;
     }
     return at(machine) > start;
 }
 
 /// ParseNewline: an optional `\r` and a `\n`; nothing is consumed if there is no `\n`.
 pub fn parse_newline(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     _ = parse_string(machine, "\r");
     if (parse_string(machine, "\n")) return true;
-    machine.tokenizer.at = start;
+    machine.at = start;
     return false;
 }
 
 /// Newline called directly: whitespace is consumed even when no newline follows.
 pub fn newline_direct(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = whitespace(machine);
     return parse_newline(machine);
@@ -294,35 +294,35 @@ pub fn newline_direct(machine: *Machine) bool {
 
 /// Newline through Parse or OneOf: on failure, nothing is consumed.
 pub fn newline(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     if (newline_direct(machine)) return true;
-    machine.tokenizer.at = start;
+    machine.at = start;
     return false;
 }
 
 /// EndOfFile through OneOf.
 pub fn end_of_file(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     _ = whitespace(machine);
     if (at_end(machine)) return true;
-    machine.tokenizer.at = start;
+    machine.at = start;
     return false;
 }
 
 /// EndOfLine: OneOf(Newline, EndOfFile).
 pub fn end_of_line(machine: *Machine) bool {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     return newline(machine) or end_of_file(machine);
 }
 
 /// MultilineWhitespace: one or more newlines.
 pub fn multiline_whitespace(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     var count: u32 = 0;
     while (newline(machine)) count += 1;
@@ -331,7 +331,7 @@ pub fn multiline_whitespace(machine: *Machine) bool {
 
 /// AnyWhitespace: any mix of whitespace and newlines.
 pub fn any_whitespace(machine: *Machine) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     var any = false;
     while (whitespace(machine) or multiline_whitespace(machine)) any = true;
@@ -340,10 +340,10 @@ pub fn any_whitespace(machine: *Machine) bool {
 
 /// ParseUntilCharactersFromString("\n\r"): the rest of the line (maybe empty).
 pub fn until_line_end(machine: *Machine) struct { start: u32, end: u32 } {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const start = at(machine);
     const end = std.mem.indexOfAnyPos(u8, machine.source, start, "\n\r") orelse machine.source.len;
-    machine.tokenizer.at = @intCast(end);
+    machine.at = @intCast(end);
     assert(end >= start);
     return .{ .start = start, .end = @intCast(end) };
 }
@@ -353,12 +353,12 @@ pub fn skip_to_next_line(machine: *Machine) void {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = until_line_end(machine);
     _ = parse_newline(machine);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
 }
 
 /// Expect(EndOfLine, ..., recoveryRule: SkipToNextLine).
 pub fn expect_end_of_line(machine: *Machine) void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     if (end_of_line(machine)) return;
     report_expected(machine, .end_of_line);
@@ -367,21 +367,21 @@ pub fn expect_end_of_line(machine: *Machine) void {
 
 /// Identifier: a run of identifier characters that isn't only digits; its token.
 pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
-    const length = tokenizer.identifier_length(rest(machine)) orelse return null;
+    const length = lexical.identifier_length(rest(machine)) orelse return null;
     const text = rest(machine)[0..length];
     for (text) |character| {
         if (!std.ascii.isDigit(character)) break;
     } else return null;
-    machine.tokenizer.at += length;
-    return try machine.add_token(.word, start, start + length);
+    machine.at += length;
+    return try machine.add_token(start, start + length);
 }
 
 /// The text of a word token (or of any token).
 pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     const workspace = machine.workspace;
     assert(token.to_int() < machine.tokens_count);
     const start = workspace.token_starts[token.to_int()];
@@ -390,20 +390,20 @@ pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
 
 /// Parse(Identifier) == word: consumes the identifier only if it is `word`.
 pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
     const token = try identifier(machine) orelse return false;
     if (std.mem.eql(u8, token_text(machine, token), word)) return true;
-    machine.tokenizer.at = start;
+    machine.at = start;
     machine.tokens_count = saved_tokens;
     return false;
 }
 
 /// Pushes an identifier leaf, or returns false if there is no identifier.
 pub fn push_identifier(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const token = try identifier(machine) orelse return false;
     try machine.push_node(.identifier, token.to_int());
@@ -411,20 +411,20 @@ pub fn push_identifier(machine: *Machine) Error!bool {
 }
 
 pub fn push_none(machine: *Machine) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     try machine.push_node(.none, 0);
 }
 
 pub fn push_missing(machine: *Machine) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     try machine.push_node(.missing, at(machine));
 }
 
 /// The tag of the top scratch value, if any above `marker`.
 pub fn top_tag(machine: *const Machine, marker: u32) ?ast.Tag {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(marker <= machine.scratch_count);
     if (machine.scratch_count == marker) return null;
     return machine.workspace.scratch_tags[machine.scratch_count - 1];
@@ -447,7 +447,7 @@ pub fn is_reserved_keyword(name: []const u8) bool {
 
 /// Inserts a value at scratch `position`, moving the values above it up.
 pub fn insert_node(machine: *Machine, position: u32, tag: ast.Tag, data: u32) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(position <= machine.scratch_count);
     try machine.push_node(.none, 0);
     const workspace = machine.workspace;
@@ -462,7 +462,7 @@ pub fn insert_node(machine: *Machine, position: u32, tag: ast.Tag, data: u32) Er
 
 /// Swaps the top two scratch values.
 pub fn swap_top(machine: *Machine) void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count >= 2);
     const workspace = machine.workspace;
     const top = machine.scratch_count - 1;
@@ -473,7 +473,7 @@ pub fn swap_top(machine: *Machine) void {
 /// EndTagIfNecessary: ends an active tag, adding its end marker to the content being built
 /// (if there is a list to add it to).
 pub fn end_tag_if_necessary(machine: *Machine, into_list: bool) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     if (machine.flags & tag_active == 0) return;
     if (into_list) try machine.push_node(.tag_end, 0);
@@ -522,51 +522,19 @@ pub const Parsed = struct {
     }
 };
 
-/// Parses one ink file (ink's InkParser.Parse): comments are removed first, and a full
-/// workspace is retried with twice the room (plan T15).
+/// Parses one ink file (ink's InkParser.Parse): comments are removed first, then the file is
+/// one region of `parse_space`.
 pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.CompilerLimits) !Parsed {
-    assert(bounds.parse_depth_max > 0);
     assert(source.len <= bounds.source_bytes_max);
     const buffer = try gpa.alloc(u8, source.len);
-    errdefer gpa.free(buffer);
     const comments_zone = profile.begin(.compile_comments);
-    const clean = tokenizer.eliminate_comments(source, buffer);
+    const length: u32 = @intCast(lexical.eliminate_comments(source, buffer).len);
     comments_zone.end();
-    const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
-    defer gpa.free(frames);
-    var scale: u32 = 1;
-    for (0..bounds.compile_retries_max + 1, 1..) |_, attempt| {
-        var workspace = try core.Workspace.init(
-            gpa,
-            @intCast(clean.len),
-            bounds.diagnostics_max,
-            scale,
-        );
-        errdefer workspace.deinit(gpa);
-        var machine: Machine = .init(clean, &workspace, frames);
-        const outcome = machine.run(.story) catch |err| switch (err) {
-            error.WorkspaceFull => core.Outcome.failed,
-        };
-        if (!machine.workspace_full and outcome == .succeeded) {
-            var tree = try machine.finish();
-            try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
-            tree.tags = workspace.node_tags;
-            tree.data = workspace.node_data;
-            return .{
-                .source = clean,
-                .tree = tree,
-                .workspace = workspace,
-                .tokens_count = machine.tokens_count,
-                .diagnostics_count = machine.diagnostics_count,
-                .buffer = buffer,
-                .attempts = @intCast(attempt),
-            };
-        }
-        workspace.deinit(gpa);
-        if (!machine.workspace_full) return error.ParseFailed;
-        scale *= 2;
-    }
-    return error.WorkspaceFull;
+    const clean = gpa.realloc(buffer, length) catch |err| {
+        gpa.free(buffer);
+        return err;
+    };
+    return parse_space(gpa, clean, &.{.{ .start = 0, .end = length }}, bounds);
 }
 
 /// A file's range in a shared source space.

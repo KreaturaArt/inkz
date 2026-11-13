@@ -26,7 +26,7 @@ const choice_conditions_shift = 8;
 /// content after `]`, the diverts and a "\n").
 pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .choice);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             var bits: u32 = 0;
@@ -70,7 +70,7 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ChoiceCondition: Interleave(ChoiceSingleCondition, ChoiceConditionsSpace).
 fn choice_conditions(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .choice and frame.phase == 1);
     if (machine.outcome == .succeeded) {
         frame.locals[2] += 1 << choice_conditions_shift;
@@ -90,7 +90,7 @@ fn choice_conditions(machine: *Machine, frame: *Frame) Error!Action {
 
 /// After the start content: weave-style `[...]`, or straight on to the diverts.
 fn choice_after_start(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .choice and frame.phase == 2);
     if (machine.outcome == .succeeded) frame.locals[2] |= choice_start;
     if (grammar.parse_string(machine, "[")) {
@@ -119,7 +119,7 @@ fn finish_section(machine: *Machine, frame: *Frame, bit: u32) Error!void {
 }
 
 fn finish_choice(machine: *Machine, frame: *Frame) Error!Action {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .choice);
     const bits = frame.locals[2];
     const had_diverts = machine.outcome == .succeeded;
@@ -148,7 +148,7 @@ fn finish_choice(machine: *Machine, frame: *Frame) Error!Action {
 
 /// Interleave(OptionalExclude(Whitespace), String(bullet)): how many bullets.
 fn bullets(machine: *Machine, bullet: u8) u32 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     var count: u32 = 0;
@@ -157,20 +157,20 @@ fn bullets(machine: *Machine, bullet: u8) u32 {
         if (!grammar.parse_string(machine, &.{bullet})) break;
         count += 1;
     }
-    if (count == 0) machine.tokenizer.at = start;
+    if (count == 0) machine.at = start;
     return count;
 }
 
 /// BracketedName: `(name)`; pushes the identifier.
 fn bracketed_name(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
     if (!grammar.parse_string(machine, "(")) return false;
     _ = grammar.whitespace(machine);
     if (!try grammar.push_identifier(machine)) {
-        machine.tokenizer.at = start;
+        machine.at = start;
         machine.tokens_count = saved_tokens;
         return false;
     }
@@ -182,7 +182,7 @@ fn bracketed_name(machine: *Machine) Error!bool {
 /// ChoiceSingleCondition: `{expression}`.
 pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .choice_single_condition);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "{")) return .fail;
         frame.locals[0] = machine.scratch_count;
@@ -216,7 +216,7 @@ pub fn gather(machine: *Machine, frame: *Frame) Error!Action {
 
 /// GatherDashes: dashes that aren't arrows, with whitespace; their count (0 restores).
 pub fn gather_dashes(machine: *Machine) u32 {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     _ = grammar.whitespace(machine);
@@ -225,7 +225,7 @@ pub fn gather_dashes(machine: *Machine) u32 {
         count += 1;
         _ = grammar.whitespace(machine);
     }
-    if (count == 0) machine.tokenizer.at = start;
+    if (count == 0) machine.at = start;
     return count;
 }
 
@@ -233,9 +233,9 @@ pub fn gather_dashes(machine: *Machine) u32 {
 pub fn dash_not_arrow(machine: *Machine) bool {
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const text = grammar.rest(machine);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (std.mem.startsWith(u8, text, "->") or text.len == 0 or text[0] != '-') return false;
-    machine.tokenizer.at += 1;
+    machine.at += 1;
     return true;
 }
 
@@ -245,7 +245,7 @@ pub fn dash_not_arrow(machine: *Machine) bool {
 /// locals: the marker, how many arrows and targets, and 1 + the index of the first `->->`.
 pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .multi_divert);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
             frame.locals[0] = machine.scratch_count;
@@ -275,7 +275,7 @@ pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ParseDivertArrowOrTunnelOnwards, counted into the frame.
 fn divert_arrow(machine: *Machine, frame: *Frame) bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(frame.rule == .multi_divert);
     var arrows: u32 = 0;
     while (grammar.parse_string(machine, "->")) arrows += 1;
@@ -288,7 +288,7 @@ fn divert_arrow(machine: *Machine, frame: *Frame) bool {
 
 /// MultiDivert's pass over the arrows and targets: tunnels, `->->` and the bare `->`.
 fn finish_multi_divert(machine: *Machine, frame: *Frame) Error!void {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const marker = frame.locals[0];
     const count = frame.locals[1];
@@ -349,7 +349,7 @@ pub fn start_thread(machine: *Machine, frame: *Frame) Error!Action {
 /// DivertIdentifierWithArguments: a dotted path and optional arguments.
 pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .divert_identifier_with_arguments);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         _ = grammar.whitespace(machine);
@@ -366,14 +366,14 @@ pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!
 
 /// DotSeparatedDivertPathComponents: Interleave(Spaced(Identifier), Exclude(String("."))).
 fn divert_path(machine: *Machine) Error!bool {
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const marker = machine.scratch_count;
     while (true) {
         const start = grammar.at(machine);
         _ = grammar.whitespace(machine);
         if (!try grammar.push_identifier(machine)) {
-            machine.tokenizer.at = start;
+            machine.at = start;
             break;
         }
         _ = grammar.whitespace(machine);
@@ -387,7 +387,7 @@ fn divert_path(machine: *Machine) Error!bool {
 /// SingleDivert: a multi-divert that is one plain divert (or thread, or bare `->`).
 pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .single_divert);
-    assert(machine.tokenizer.at <= machine.source.len);
+    assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.scratch_count;
         frame.phase = 1;

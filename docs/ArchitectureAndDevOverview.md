@@ -12,9 +12,9 @@ code are ```text blocks, because the library doesn't export those modules.
 
 | Directory | What it holds |
 |---|---|
-| `src/core/` | The program image both halves share: `Program`, `ProgramBuilder`, the string pool, index newtypes, limits, `BoundedStack`, `WorkStack`, ink path strings, .NET's seeded random, and ink's JSON (`ink_json.load`, `ink_json.serialize`). |
+| `src/core/` | The program image both halves share: `Program`, `ProgramBuilder`, the string pool, index newtypes, limits, `BoundedStack`, ink path strings, .NET's seeded random, and ink's JSON (`ink_json.load`, `ink_json.serialize`). |
 | `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public API (`api.zig`). |
-| `src/compiler/` | The compiler: tokenizer, parser, object tree, name resolution and lowering to a `Program`. Entry points in `compile.zig`. |
+| `src/compiler/` | The compiler: parser, object tree, name resolution and lowering to a `Program`. Entry points in `compile.zig`. |
 | `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle and divergence ledger, end-to-end tests, the simulator and the zero-allocation gate. |
 | `tools/` | Lint, doctest, snapshot files, ground-truth file checks, the death-test runner, and the C# reference harness (`tools/ink_harness/`). |
 
@@ -79,26 +79,25 @@ they follow.
    (ink's `CommentEliminator`), laid end to end in one buffer. `INCLUDE`d files are appended
    as they are found. Token and node indices are therefore global, and a file table maps
    offsets back to `file:line:column`.
-2. **Tokenizer** (`tokenizer.zig`): ink's grammar depends on context, so the parser asks for
-   one token at a time in a mode: `content`, `content_choice`, `content_string`,
-   `expression` or `rest_of_line`. Tokens store `start` and `end`.
-3. **Parser** (`core.zig`, `grammar*.zig`): ink's backtracking rules, run on an explicit
+2. **Parser** (`core.zig`, `grammar*.zig`): ink's backtracking rules, run on an explicit
    stack instead of the native one. A rule is a step function with numbered phases. Each
    step returns an `Action`: `call` another rule, `peek` at one, `succeed`, `fail`, or run
    `again`. A call pushes a frame that holds a checkpoint (input position, token, node and
    scratch counts); a failed rule restores it. That gives StringParser's
    `BeginRule`/`FailRule`/`SucceedRule`, and so `OneOf`, `Optional` and `Interleave`. The
    frame stack is bounded by `parse_depth_max`, and a gas counter bounds the steps by the
-   input length.
-4. **Syntax tree** (`ast.zig`): a node is a one-byte tag and one `u32` word (5 bytes, two
+   input length. Like ink's StringParser, the rules read characters themselves; a token is
+   the `start` and `end` of a name or a text run they record (`lexical.zig` holds the
+   comment removal and ink's identifier characters).
+3. **Syntax tree** (`ast.zig`): a node is a one-byte tag and one `u32` word (5 bytes, two
    arrays). Children are contiguous; a parent's word is the index of its first child.
-5. **Object tree** (`sema.zig`, `sema_build.zig`, `sema_includes.zig`): ink's parsed
+4. **Object tree** (`sema.zig`, `sema_build.zig`, `sema_includes.zig`): ink's parsed
    hierarchy, built the way ink's constructors build it. A flow's statements are split into
    its weave and its sub-flows; a weave nests its choices and gathers by indentation.
-6. **Resolution** (`resolve*.zig`): ink's two phases. While generating, in tree order,
+5. **Resolution** (`resolve*.zig`): ink's two phases. While generating, in tree order,
    declarations are registered and each divert's target is resolved. Then
    `ResolveReferences` runs children first. Naming collisions are checked here.
-7. **Lowering** (`lower*.zig`): each object's `GenerateRuntimeObject` into an IR of ink's
+6. **Lowering** (`lower*.zig`): each object's `GenerateRuntimeObject` into an IR of ink's
    runtime container tree (`lower_ir.zig`), then ink's `ExportRuntime` steps: the
    `global decl` container, count flags, `FlattenContainersIn`, runtime paths, termination
    checks, and emission through `ProgramBuilder` (`lower_emit.zig`).

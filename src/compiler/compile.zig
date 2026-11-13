@@ -156,6 +156,14 @@ test "hello world compiles to inklecate's JSON" {
     try std.testing.expectEqualStrings(expected, text);
 }
 
+test "a 0 byte inside the source is text, not the end" {
+    // A NUL byte once ended the text early and crashed the compiler (found by fuzzing).
+    const gpa = std.testing.allocator;
+    const text = try compile_to_json(gpa, "a\x00b\n");
+    defer gpa.free(text);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\"^a\\u0000b\"") != null);
+}
+
 /// The old compiler's peak bytes compiling test/fixture/crime_scene.ink to JSON in a Debug
 /// build (the P8.6 baseline; `zig build bench` measures both compilers in release builds).
 const old_compiler_peak_bytes_crime_scene = 535_946;

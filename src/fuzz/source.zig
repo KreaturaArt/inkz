@@ -4,7 +4,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Smith = std.testing.Smith;
-const tokenizer = @import("../compiler/tokenizer.zig");
+const lexical = @import("../compiler/lexical.zig");
 const source_space = @import("../compiler/source_space.zig");
 const limits = @import("../core/limits.zig");
 
@@ -28,7 +28,7 @@ fn eliminate_comments(_: void, smith: *Smith) anyerror!void {
     var out: [input_bytes_max]u8 = undefined;
     const length = smith.sliceWeightedBytes(&source, &comment_weights);
     const input = source[0..length];
-    const clean = tokenizer.eliminate_comments(input, &out);
+    const clean = lexical.eliminate_comments(input, &out);
     assert(clean.len <= input.len);
     assert(std.mem.count(u8, clean, "\n") == std.mem.count(u8, input, "\n"));
     var read: usize = 0;

@@ -18,11 +18,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
-const tokenizer_module = @import("tokenizer.zig");
 const ast = @import("ast.zig");
-const Tokenizer = tokenizer_module.Tokenizer;
-const Token = tokenizer_module.Token;
-const Mode = tokenizer_module.Mode;
 
 pub const Diagnostic = struct {
     code: Code,
@@ -53,7 +49,6 @@ pub const Workspace = struct {
     node_data: []u32,
     scratch_tags: []ast.Tag,
     scratch_data: []u32,
-    token_tags: []tokenizer_module.Tag,
     token_starts: []u32,
     token_ends: []u32,
     diagnostics: []Diagnostic,
@@ -77,8 +72,6 @@ pub const Workspace = struct {
         errdefer gpa.free(workspace.scratch_tags);
         workspace.scratch_data = try gpa.alloc(u32, nodes);
         errdefer gpa.free(workspace.scratch_data);
-        workspace.token_tags = try gpa.alloc(tokenizer_module.Tag, tokens);
-        errdefer gpa.free(workspace.token_tags);
         workspace.token_starts = try gpa.alloc(u32, tokens);
         errdefer gpa.free(workspace.token_starts);
         workspace.token_ends = try gpa.alloc(u32, tokens);
@@ -88,17 +81,15 @@ pub const Workspace = struct {
         return workspace;
     }
 
-    /// After a parse: drops the scratch stack and the token tags (only the parse uses them)
+    /// After a parse: drops the scratch stack (only the parse uses it)
     /// and shrinks the node and token arrays to what was used (plan P8.6).
     pub fn settle(workspace: *Workspace, gpa: Allocator, nodes: u32, tokens: u32) !void {
         assert(nodes <= workspace.node_tags.len);
         assert(tokens <= workspace.token_starts.len);
         gpa.free(workspace.scratch_tags);
         gpa.free(workspace.scratch_data);
-        gpa.free(workspace.token_tags);
         workspace.scratch_tags = &.{};
         workspace.scratch_data = &.{};
-        workspace.token_tags = &.{};
         workspace.node_tags = try gpa.realloc(workspace.node_tags, nodes);
         workspace.node_data = try gpa.realloc(workspace.node_data, nodes);
         workspace.token_starts = try gpa.realloc(workspace.token_starts, tokens);
@@ -126,7 +117,6 @@ pub const Workspace = struct {
         gpa.free(workspace.node_data);
         gpa.free(workspace.scratch_tags);
         gpa.free(workspace.scratch_data);
-        gpa.free(workspace.token_tags);
         gpa.free(workspace.token_starts);
         gpa.free(workspace.token_ends);
         gpa.free(workspace.diagnostics);
@@ -182,7 +172,8 @@ pub fn Machine(comptime Grammar: type) type {
         };
 
         source: []const u8,
-        tokenizer: Tokenizer,
+        /// The input position.
+        at: u32 = 0,
         workspace: *Workspace,
         frames: []Frame,
         frames_count: u32 = 0,
@@ -211,17 +202,16 @@ pub fn Machine(comptime Grammar: type) type {
             assert(source.len < std.math.maxInt(u32));
             return .{
                 .source = source,
-                .tokenizer = .init(source),
                 .workspace = workspace,
                 .frames = frames,
             };
         }
 
         pub fn checkpoint(machine: *const Self) Checkpoint {
-            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.at <= machine.source.len);
             assert(machine.nodes_count <= machine.workspace.node_tags.len);
             return .{
-                .at = machine.tokenizer.at,
+                .at = machine.at,
                 .tokens = machine.tokens_count,
                 .nodes = machine.nodes_count,
                 .scratch = machine.scratch_count,
@@ -231,8 +221,8 @@ pub fn Machine(comptime Grammar: type) type {
 
         pub fn restore(machine: *Self, saved: Checkpoint) void {
             assert(saved.at <= machine.source.len);
-            assert(saved.tokens <= machine.workspace.token_tags.len);
-            machine.tokenizer.at = saved.at;
+            assert(saved.tokens <= machine.workspace.token_starts.len);
+            machine.at = saved.at;
             machine.tokens_count = saved.tokens;
             machine.nodes_count = saved.nodes;
             machine.scratch_count = saved.scratch;
@@ -247,7 +237,7 @@ pub fn Machine(comptime Grammar: type) type {
             try machine.push(start);
             while (machine.frames_count > 0) : (gas += 1) {
                 if (gas == gas_max) {
-                    machine.report(.no_progress, machine.tokenizer.at, 0);
+                    machine.report(.no_progress, machine.at, 0);
                     machine.abandoned = true;
                 }
                 const frame = &machine.frames[machine.frames_count - 1];
@@ -262,7 +252,7 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         fn apply(machine: *Self, action: Action(Rule)) Error!void {
-            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.at <= machine.source.len);
             assert(machine.frames_count > 0);
             switch (action) {
                 .call => |rule| {
@@ -291,11 +281,11 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         fn push(machine: *Self, rule: Rule) Error!void {
-            assert(machine.tokenizer.at <= machine.source.len);
+            assert(machine.at <= machine.source.len);
             assert(machine.frames_count <= machine.frames.len);
             if (machine.frames_count == machine.frames.len) {
                 // Too deep: one diagnostic, then everything unwinds.
-                if (!machine.abandoned) machine.report(.too_deep, machine.tokenizer.at, 0);
+                if (!machine.abandoned) machine.report(.too_deep, machine.at, 0);
                 machine.abandoned = true;
                 machine.outcome = .failed;
                 return;
@@ -316,49 +306,11 @@ pub fn Machine(comptime Grammar: type) type {
 
         // Tokens.
 
-        /// The next token in `mode`, without consuming it.
-        pub fn peek(machine: *const Self, mode: Mode) Token {
-            assert(machine.tokenizer.at <= machine.source.len);
-            var copy = machine.tokenizer;
-            const token = copy.next(mode);
-            assert(token.start == machine.tokenizer.at);
-            return token;
-        }
-
-        /// Consumes the next token in `mode` if it has `tag`; returns its index.
-        pub fn accept(machine: *Self, mode: Mode, tag: tokenizer_module.Tag) Error!?ast.TokenIndex {
-            assert(machine.tokenizer.at <= machine.source.len);
-            assert(@backingInt(tag) < 256);
-            const token = machine.peek(mode);
-            if (token.tag != tag) return null;
-            return try machine.consume(mode);
-        }
-
-        /// Consumes the next token in `mode` and stores it.
-        pub fn consume(machine: *Self, mode: Mode) Error!ast.TokenIndex {
-            assert(machine.tokenizer.at <= machine.source.len);
-            assert(machine.tokens_count <= machine.workspace.token_tags.len);
-            const token = machine.tokenizer.next(mode);
-            const workspace = machine.workspace;
-            if (machine.tokens_count == workspace.token_tags.len) return error.WorkspaceFull;
-            workspace.token_tags[machine.tokens_count] = token.tag;
-            workspace.token_starts[machine.tokens_count] = token.start;
-            workspace.token_ends[machine.tokens_count] = token.end;
-            machine.tokens_count += 1;
-            return .from_int(machine.tokens_count - 1);
-        }
-
         /// Stores a token for a range the grammar scanned itself (character-level rules).
-        pub fn add_token(
-            machine: *Self,
-            tag: tokenizer_module.Tag,
-            start: u32,
-            end: u32,
-        ) Error!ast.TokenIndex {
+        pub fn add_token(machine: *Self, start: u32, end: u32) Error!ast.TokenIndex {
             assert(start <= end and end <= machine.source.len);
             const workspace = machine.workspace;
-            if (machine.tokens_count == workspace.token_tags.len) return error.WorkspaceFull;
-            workspace.token_tags[machine.tokens_count] = tag;
+            if (machine.tokens_count == workspace.token_starts.len) return error.WorkspaceFull;
             workspace.token_starts[machine.tokens_count] = start;
             workspace.token_ends[machine.tokens_count] = end;
             machine.tokens_count += 1;
@@ -414,8 +366,7 @@ pub fn Machine(comptime Grammar: type) type {
             assert(machine.frames_count == 0 and machine.scratch_count == 0);
             assert(start <= source.len);
             machine.source = source;
-            machine.tokenizer = .init(source);
-            machine.tokenizer.at = start;
+            machine.at = start;
             machine.outcome = .none;
             machine.flags = 0;
             machine.plain_flags = 0;
@@ -446,35 +397,17 @@ pub fn Machine(comptime Grammar: type) type {
                 .root = root,
             };
         }
-
-        /// The finished tree: the one value left on the scratch stack becomes the root.
-        pub fn finish(machine: *Self) Error!ast.Ast {
-            assert(machine.frames_count == 0);
-            assert(machine.scratch_count == 1);
-            const workspace = machine.workspace;
-            if (machine.nodes_count == workspace.node_tags.len) return error.WorkspaceFull;
-            const root = machine.nodes_count;
-            workspace.node_tags[root] = workspace.scratch_tags[0];
-            workspace.node_data[root] = workspace.scratch_data[0];
-            machine.nodes_count += 1;
-            return .{
-                .tags = workspace.node_tags[0..machine.nodes_count],
-                .data = workspace.node_data[0..machine.nodes_count],
-                .root = .from_int(root),
-            };
-        }
     };
 }
 
-/// A toy grammar for the core's tests: `expression = term ('+' term)*`,
-/// `term = word | '(' expression ')'`.
+/// A toy grammar for the core's tests: `expression = term (' + ' term)*`,
+/// `term = letter | '(' expression ')'`.
 const Toy = struct {
     pub const Rule = enum { expression, term, stall };
     const M = Machine(Toy);
 
     pub fn step(machine: *M, frame: *M.Frame) Action(Rule) {
         assert(machine.frames_count > 0);
-        assert(frame.phase < 8);
         return switch (frame.rule) {
             .expression => expression(machine, frame),
             .term => term(machine, frame),
@@ -483,9 +416,13 @@ const Toy = struct {
         } catch return .fail;
     }
 
+    fn accept(machine: *M, text: []const u8) bool {
+        if (!std.mem.startsWith(u8, machine.source[machine.at..], text)) return false;
+        machine.at += @intCast(text.len);
+        return true;
+    }
+
     fn expression(machine: *M, frame: *M.Frame) Error!Action(Rule) {
-        assert(frame.rule == .expression);
-        assert(machine.tokenizer.at <= machine.source.len);
         switch (frame.phase) {
             0 => {
                 frame.locals[0] = machine.scratch_count;
@@ -494,13 +431,10 @@ const Toy = struct {
             },
             1 => {
                 if (machine.outcome == .failed) return .fail;
-                frame.locals[1] += 1;
-                _ = try machine.accept(.expression, .whitespace);
-                if (try machine.accept(.expression, .plus) == null) {
+                if (!accept(machine, " + ")) {
                     frame.phase = 2;
                     return .again;
                 }
-                _ = try machine.accept(.expression, .whitespace);
                 return .{ .call = .term };
             },
             else => {
@@ -511,26 +445,23 @@ const Toy = struct {
     }
 
     fn term(machine: *M, frame: *M.Frame) Error!Action(Rule) {
-        assert(frame.rule == .term);
-        assert(machine.tokenizer.at <= machine.source.len);
         switch (frame.phase) {
             0 => {
-                if (try machine.accept(.expression, .word)) |token| {
+                const rest = machine.source[machine.at..];
+                if (rest.len > 0 and std.ascii.isAlphabetic(rest[0])) {
+                    const token = try machine.add_token(machine.at, machine.at + 1);
+                    machine.at += 1;
                     try machine.push_node(.identifier, token.to_int());
                     return .succeed;
                 }
-                if (try machine.accept(.expression, .paren_open) == null) return .fail;
+                if (!accept(machine, "(")) return .fail;
                 frame.phase = 1;
                 return .{ .call = .expression };
             },
             else => {
                 if (machine.outcome == .failed) return .fail;
-                if (try machine.accept(.expression, .paren_close) == null) {
-                    machine.report(
-                        .expected,
-                        machine.tokenizer.at,
-                        @backingInt(tokenizer_module.Tag.paren_close),
-                    );
+                if (!accept(machine, ")")) {
+                    machine.report(.expected, machine.at, ')');
                     return .fail;
                 }
                 return .succeed;

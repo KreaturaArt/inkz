@@ -5,7 +5,7 @@ test {
     _ = @import("testing/e2e_new_vm_api.zig");
     _ = @import("testing/e2e_tests.zig");
     _ = @import("testing/structure_gate.zig");
-    _ = @import("compiler/tokenizer.zig");
+    _ = @import("compiler/lexical.zig");
     _ = @import("compiler/ast.zig");
     _ = @import("compiler/core.zig");
     _ = @import("compiler/grammar.zig");

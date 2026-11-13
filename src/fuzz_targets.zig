@@ -1,7 +1,7 @@
-//! Fuzz targets (plan P0.9), run with `zig build fuzz`: each one runs once on its seed corpus.
-//! `zig build fuzz --fuzz` starts Zig's fuzzer on them: the JSON and save loaders, the
-//! tokenizer, the compiler and the program image loader (P3.1, P6.2, P7.1, P9.2, P10.5, P10.7),
-//! and one target per pipeline stage in src/fuzz/ (Phase 11). docs/fuzzing.md lists them.
+//! Fuzz targets, run with `zig build fuzz`: each one runs once on its seed corpus.
+//! `zig build fuzz --fuzz` starts Zig's fuzzer on them: raw bytes into the JSON and save
+//! loaders, the compiler and the program image loader, and one target per pipeline stage in
+//! src/fuzz/. docs/fuzzing.md lists them.
 //!
 //! A target fails when the code under test crashes. Returning an error is fine: malformed input
 //! must be rejected, never trusted.
@@ -25,12 +25,12 @@ const json_corpus = [_][]const u8{
     "{\"inkVersion\":21,\"root\":[],\"listDefs\":{}}",
 };
 
-/// Copies the fuzzer's bytes into `buffer` with a terminating zero, as the tokenizer expects.
+/// Copies the fuzzer's bytes into `buffer` with a terminating zero.
 fn fuzz_input(smith: *std.testing.Smith, buffer: *[input_bytes_max + 1]u8) [:0]const u8 {
     const length = smith.slice(buffer[0..input_bytes_max]);
     assert(length <= input_bytes_max);
     buffer[length] = 0;
-    // Embedded zeros stay: the tokenizer reads them as text (P11.3).
+    // Embedded zeros stay: the grammar reads them as text.
     assert(buffer[length] == 0);
     return buffer[0..length :0];
 }
@@ -84,31 +84,6 @@ test "fuzz: the save loader never crashes" {
     defer story.deinit(std.testing.allocator);
     try new_save.to_json(&story, &writer);
     try std.testing.fuzz({}, load_save_new, .{ .corpus = &.{ "{}", writer.buffered() } });
-}
-
-const NextTokenizer = @import("compiler/tokenizer.zig");
-
-/// The new tokenizer (P7.1): in any mode sequence, every token but eof consumes input, so it
-/// ends with eof at the input's end.
-fn tokenize_next(_: void, smith: *std.testing.Smith) anyerror!void {
-    var buffer: [input_bytes_max + 1]u8 = undefined;
-    const source = fuzz_input(smith, &buffer);
-    var tokenizer: NextTokenizer.Tokenizer = .init(source);
-    var tokens: u32 = 0;
-    while (tokens <= source.len + 1) : (tokens += 1) {
-        const mode: NextTokenizer.Mode = @fromBackingInt(@intCast(smith.value(u8) % 5));
-        const token = tokenizer.next(mode);
-        assert(token.start <= token.end and token.end <= source.len);
-        if (token.tag == .eof) {
-            assert(token.start == source.len);
-            return;
-        }
-    }
-    return error.TokenizerDidNotTerminate;
-}
-
-test "fuzz: the tokenizer ends in every mode" {
-    try std.testing.fuzz({}, tokenize_next, .{ .corpus = &ink_corpus });
 }
 
 const compile = @import("compiler/compile.zig");
@@ -228,7 +203,6 @@ test "fuzz: a mutated program image loads or is rejected" {
 // One target per pipeline stage (plan P11), each in its own file.
 test {
     _ = @import("fuzz/source.zig");
-    _ = @import("fuzz/tokenizer.zig");
     _ = @import("fuzz/parser.zig");
     _ = @import("fuzz/sema.zig");
     _ = @import("fuzz/lower.zig");
