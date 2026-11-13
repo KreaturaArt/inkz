@@ -44,7 +44,6 @@ const Writer = struct {
     arena: Allocator,
 
     fn string(writer: *const Writer, id: index.StringId) []const u8 {
-        assert(writer.program.containers.len > 0);
         assert(!id.is_none());
         return writer.program.strings.get(id);
     }
@@ -54,9 +53,8 @@ const Writer = struct {
         container: ContainerIndex,
         components: *Components,
     ) !void {
-        assert(writer.program.containers.len > 0);
-        assert(writer.program.instructions.len < std.math.maxInt(u32));
         const program = writer.program;
+        assert(container.to_int() < program.containers.len);
         var chain: [components_max]ContainerIndex = undefined;
         var depth: u32 = 0;
         var current = container;
@@ -84,8 +82,8 @@ const Writer = struct {
         position: u32,
         components: *Components,
     ) !void {
-        assert(writer.program.containers.len > 0);
-        assert(writer.program.instructions.len < std.math.maxInt(u32));
+        // A target is an item of the container or its end (a rejoin point).
+        assert(position <= writer.program.content_count(container));
         try writer.container_components(container, components);
         if (position == 0) return;
         try components.append(try std.fmt.allocPrint(writer.arena, "{d}", .{position}));
@@ -99,8 +97,7 @@ const Writer = struct {
         target: ContainerIndex,
         position: u32,
     ) ![]const u8 {
-        assert(writer.program.containers.len > 0);
-        assert(writer.program.instructions.len < std.math.maxInt(u32));
+        assert(from_position < writer.program.content_count(from));
         var own: Components = .{};
         try writer.container_components(from, &own);
         try own.append(try std.fmt.allocPrint(writer.arena, "{d}", .{from_position}));
@@ -123,21 +120,17 @@ const Writer = struct {
     }
 
     fn absolute(writer: *Writer, target: ContainerIndex, position: u32) ![]const u8 {
-        assert(writer.program.containers.len > 0);
-        assert(writer.program.instructions.len < std.math.maxInt(u32));
+        assert(target.to_int() < writer.program.containers.len);
         var components: Components = .{};
         try writer.target_components(target, position, &components);
         return std.mem.join(writer.arena, ".", components.texts[0..components.count]);
     }
 
     fn json_string(writer: *Writer, text: []const u8) !void {
-        assert(writer.program.containers.len > 0);
-        assert(text.len < std.math.maxInt(u32));
         try std.json.Stringify.encodeJsonString(text, .{}, writer.out);
     }
 
     fn property(writer: *Writer, key: []const u8, value: []const u8) !void {
-        assert(writer.program.containers.len > 0);
         assert(key.len > 0);
         try writer.out.writeByte('{');
         try writer.json_string(key);
@@ -150,8 +143,9 @@ const Writer = struct {
 pub fn serialize(gpa: Allocator, program: *const Program, out: *std.Io.Writer) !void {
     const profile_zone = profile.begin(.json_serialize);
     defer profile_zone.end();
-    assert(program.instructions.len < std.math.maxInt(u32));
+    // The writers start at the root container and index instructions with u32.
     assert(program.containers.len > 0);
+    assert(program.instructions.len < std.math.maxInt(u32));
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
     var writer: Writer = .{ .program = program, .out = out, .arena = arena_state.allocator() };
@@ -170,14 +164,14 @@ const Frame = struct {
 };
 
 fn write_containers(writer: *Writer, gpa: Allocator) !void {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const program = writer.program;
     var frames: std.ArrayList(Frame) = .empty;
     defer frames.deinit(gpa);
     try frames.append(gpa, .{ .container = Program.root, .without_name = false });
     try writer.out.writeByte('[');
     while (frames.items.len > 0) {
+        // Each container is on the stack at most once (the containers form a tree).
+        assert(frames.items.len <= program.containers.len);
         const frame = &frames.items[frames.items.len - 1];
         const count = program.content_count(frame.container);
         if (frame.next_named == null and frame.next < count) {
@@ -186,6 +180,7 @@ fn write_containers(writer: *Writer, gpa: Allocator) !void {
             frame.next += 1;
             const instruction = program.instruction_at(frame.container, position);
             if (instruction.opcode == .enter_container) {
+                assert(program.parent(instruction.get(.enter_container)) == frame.container);
                 try writer.out.writeByte('[');
                 try frames.append(gpa, .{
                     .container = instruction.get(.enter_container),
@@ -206,10 +201,9 @@ fn write_containers(writer: *Writer, gpa: Allocator) !void {
 
 /// The named-only children of a container, in order.
 fn named_only(program: *const Program, container: ContainerIndex, position: u32) ?ContainerIndex {
-    assert(program.containers.len > 0);
-    assert(program.instructions.len < std.math.maxInt(u32));
     const first = program.container_field(container, .named_first);
     const count = program.container_field(container, .named_count);
+    assert(first + count <= program.named.len);
     var seen: u32 = 0;
     for (program.named[first..][0..count]) |entry| {
         const in_parent = program.container_field(entry.child, .index_in_parent);
@@ -230,11 +224,11 @@ fn count_flags(flags: container_module.ContainerFlags) u8 {
 
 /// The final element and the closing bracket; returns a named-only child to write next.
 fn write_terminator(writer: *Writer, frame: *Frame) !?ContainerIndex {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const program = writer.program;
     const out = writer.out;
     const container = frame.container;
+    // The terminator follows the container's content.
+    assert(frame.next == program.content_count(container));
     const flags = count_flags(program.container_field(container, .flags));
     const name = program.container_field(container, .name);
     const has_name = !name.is_none() and !frame.without_name;
@@ -285,9 +279,9 @@ fn write_instruction(
     position: u32,
     instruction: Instruction,
 ) !void {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const out = writer.out;
+    // write_containers opens nested containers itself.
+    assert(instruction.opcode != .enter_container);
     if (opcode_words[@backingInt(instruction.opcode)]) |text| return writer.json_string(text);
     switch (instruction.opcode) {
         .text => {
@@ -312,8 +306,6 @@ fn write_operand_instruction(
     position: u32,
     instruction: Instruction,
 ) !void {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const program = writer.program;
     const out = writer.out;
     switch (instruction.opcode) {
@@ -347,6 +339,7 @@ fn write_operand_instruction(
         .divert => try write_divert(writer, container, position, instruction),
         .call_external => {
             const call = record(instruction_module.ExternalCall, program, instruction);
+            assert(call.external.to_int() < program.externals.len);
             try writer.property(
                 "x()",
                 writer.string(program.externals[call.external.to_int()].name),
@@ -379,13 +372,11 @@ fn record(comptime T: type, program: *const Program, instruction: Instruction) T
 }
 
 fn global_name(writer: *const Writer, slot: index.GlobalSlot) []const u8 {
-    assert(writer.program.containers.len > 0);
     assert(slot.to_int() < writer.program.globals.len);
     return writer.string(writer.program.globals[slot.to_int()].name);
 }
 
 fn write_variable(writer: *Writer, key: []const u8, name: []const u8, reassignment: bool) !void {
-    assert(writer.program.containers.len > 0);
     assert(name.len > 0);
     try writer.property(key, name);
     if (reassignment) try writer.out.writeAll(",\"re\":true");
@@ -398,8 +389,6 @@ fn write_divert(
     position: u32,
     instruction: Instruction,
 ) !void {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const program = writer.program;
     const out = writer.out;
     const divert = record(instruction_module.Divert, program, instruction);
@@ -408,6 +397,7 @@ fn write_divert(
         .function => "f()",
         .tunnel => "->t->",
     };
+    if (!divert.flags.variable) assert(!divert.target_container.is_none());
     const target = if (divert.flags.variable)
         writer.string(divert.name)
     else
@@ -420,14 +410,17 @@ fn write_divert(
 
 /// `{"list": {"origin.item": value, ...}}`, with `origins` for an empty list.
 fn write_list(writer: *Writer, at: u32) !void {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const program = writer.program;
     const out = writer.out;
+    assert(at < program.extra.len);
     const decoded = extra.get(instruction_module.ListLiteral, program.extra, at);
     const literal = decoded.data;
+    // The record is followed by its item indices, its origin indices and (for a list item
+    // read as a variable) the name.
+    assert(decoded.end + literal.items_count + literal.origins_count <= program.extra.len);
     if (literal.items_count == 1 and literal.origins_count == 1) {
         // A list item read as a variable: ink's `VAR?` with the name as written.
+        assert(decoded.end + 2 < program.extra.len);
         const name: index.StringId = @fromBackingInt(@intCast(program.extra[decoded.end + 2]));
         try writer.property("VAR?", writer.string(name));
         return out.writeByte('}');
@@ -464,14 +457,13 @@ fn write_float(out: *std.Io.Writer, float: f32) !void {
 }
 
 fn write_lists(writer: *Writer) !void {
-    assert(writer.program.containers.len > 0);
-    assert(writer.program.instructions.len < std.math.maxInt(u32));
     const program = writer.program;
     for (program.list_origins, 0..) |origin, position| {
         if (position > 0) try writer.out.writeByte(',');
         try writer.json_string(writer.string(origin.name));
         try writer.out.writeAll(":{");
         const first = origin.items_first.to_int();
+        assert(first + origin.items_count <= program.list_items.len);
         for (program.list_items[first..][0..origin.items_count], 0..) |item, at| {
             if (at > 0) try writer.out.writeByte(',');
             try writer.json_string(writer.string(item.name));

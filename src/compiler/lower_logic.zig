@@ -20,8 +20,7 @@ const Item = ir_module.Item;
 
 /// A divert's target path text, if it is END or DONE.
 fn end_or_done(lowering: *const Lowering, divert: ObjectIndex) ?ir_module.Command {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(divert) == .divert);
     const node = lowering.tree.node(divert);
     if (node.is_none()) return if (lowering.tree.has(divert, Flags.done)) .done else null;
     const ast = lowering.ast();
@@ -36,9 +35,8 @@ fn end_or_done(lowering: *const Lowering, divert: ObjectIndex) ?ir_module.Comman
 
 /// The runtime divert of a divert object (its target and kind).
 pub fn divert_item(lowering: *const Lowering, divert: ObjectIndex) ir_module.Divert {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
+    assert(tree.kind(divert) == .divert);
     var result: ir_module.Divert = .{};
     if (tree.has(divert, Flags.function_call)) result.kind = .function;
     if (tree.has(divert, Flags.tunnel)) result.kind = .tunnel;
@@ -58,7 +56,6 @@ pub fn divert_item(lowering: *const Lowering, divert: ObjectIndex) ir_module.Div
 }
 
 fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
-    assert(lowering.results.len == lowering.tree.count());
     const ast = lowering.ast();
     const node = lowering.tree.node(divert);
     assert(!node.is_none());
@@ -70,8 +67,6 @@ fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
 
 /// Divert.GenerateRuntimeObject.
 pub fn generate_divert(lowering: *Lowering, divert: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     if (tree.has(divert, Flags.empty)) return .none;
     if (lowering.resolution_skipped(divert)) return .none;
@@ -99,8 +94,7 @@ pub fn generate_divert(lowering: *Lowering, divert: ObjectIndex) !Result {
 
 /// A divert's arguments: a `ref` parameter gets a variable pointer, the rest their values.
 pub fn add_arguments(lowering: *Lowering, container: ContainerId, divert: ObjectIndex) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(divert) == .divert);
     const target = lowering.resolution.targets[divert.to_int()];
     for (lowering.tree.children_of(divert), 0..) |argument, position| {
         const to_flow = !target.is_none() and lowering.tree.is_flow(target);
@@ -119,8 +113,9 @@ pub fn add_arguments(lowering: *Lowering, container: ContainerId, divert: Object
 }
 
 fn is_reference_parameter(lowering: *const Lowering, flow: ObjectIndex, position: usize) bool {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    // A knot's or stitch's syntax has its parameters at 1; the story has none.
+    assert(lowering.tree.is_flow(flow));
+    assert(lowering.tree.kind(flow) != .story);
     const ast = lowering.ast();
     const parameters = ast.child(lowering.tree.node(flow), 1);
     if (ast.tag(parameters) == .none or position >= ast.list(parameters).count) return false;
@@ -129,12 +124,13 @@ fn is_reference_parameter(lowering: *const Lowering, flow: ObjectIndex, position
 
 /// TunnelOnwards.GenerateRuntimeObject: `->->`, maybe with a divert to take instead.
 pub fn generate_tunnel_onwards(lowering: *Lowering, onwards: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const ir = &lowering.ir;
     const container = try ir.new_container();
     _ = try ir.add_command(container, .eval_start);
+    assert(lowering.tree.kind(onwards) == .tunnel_onwards);
     const children = lowering.tree.children_of(onwards);
+    // At most the divert to take instead of returning.
+    assert(children.len <= 1);
     if (children.len == 0) {
         _ = try ir.add_command(container, .void);
     } else {
@@ -159,7 +155,6 @@ const BranchFlags = struct {
 };
 
 fn own_expression(lowering: *const Lowering, branch: ObjectIndex) ?ObjectIndex {
-    assert(lowering.results.len == lowering.tree.count());
     for (lowering.tree.children_of(branch)) |child| {
         if (lower.is_expression(lowering.tree.kind(child))) return child;
     }
@@ -168,10 +163,9 @@ fn own_expression(lowering: *const Lowering, branch: ObjectIndex) ?ObjectIndex {
 }
 
 fn branch_flags(lowering: *const Lowering, branch: ObjectIndex) BranchFlags {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const conditional = tree.parent(branch);
+    assert(tree.kind(conditional) == .conditional);
     const siblings = tree.children_of(conditional);
     const has_initial = lower.is_expression(tree.kind(siblings[0]));
     const branches = siblings[@intFromBool(has_initial)..];
@@ -207,8 +201,7 @@ fn branch_flags(lowering: *const Lowering, branch: ObjectIndex) BranchFlags {
 
 /// ConditionalSingleBranch.GenerateRuntimeObject: the test and divert, and the content `b`.
 pub fn generate_branch(lowering: *Lowering, branch: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(branch) == .conditional_branch);
     const flags = branch_flags(lowering, branch);
     const ir = &lowering.ir;
     const container = try ir.new_container();
@@ -238,7 +231,6 @@ pub fn generate_branch(lowering: *Lowering, branch: ObjectIndex) !Result {
 }
 
 fn branch_content(lowering: *const Lowering, branch: ObjectIndex) ?ContainerId {
-    assert(lowering.results.len == lowering.tree.count());
     for (lowering.tree.children_of(branch)) |child| {
         if (lowering.tree.kind(child) == .weave) return lowering.result(child).container;
     }
@@ -248,15 +240,15 @@ fn branch_content(lowering: *const Lowering, branch: ObjectIndex) ?ContainerId {
 
 /// Conditional.GenerateRuntimeObject, with ResolveReferences' rejoin targets.
 pub fn generate_conditional(lowering: *Lowering, conditional: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const ir = &lowering.ir;
+    assert(tree.kind(conditional) == .conditional);
     const container = try ir.new_container();
     const children = tree.children_of(conditional);
     const has_initial = lower.is_expression(tree.kind(children[0]));
     if (has_initial) try lowering.add_content(container, children[0]);
     const branches = children[@intFromBool(has_initial)..];
+    assert(branches.len > 0);
     for (branches) |branch| try lowering.add_result(container, branch);
     const last_is_else = branch_flags(lowering, branches[branches.len - 1]).is_else;
     if (has_initial and own_expression(lowering, branches[0]) != null and !last_is_else) {
@@ -264,7 +256,10 @@ pub fn generate_conditional(lowering: *Lowering, conditional: ObjectIndex) !Resu
     }
     const rejoin = try ir.add_command(container, .no_op);
     for (branches) |branch| {
-        const content = ir.container(lowering.result(branch).container).named.items[0];
+        // A branch's one named content is its `b` container (generate_branch).
+        const named = ir.container(lowering.result(branch).container).named.items;
+        assert(named.len == 1);
+        const content = named[0];
         ir.divert_of(ir.container(content).last).target = .{ .item = rejoin };
     }
     return .{ .container = container };
@@ -278,11 +273,14 @@ const once: u32 = 8;
 
 /// Sequence.GenerateRuntimeObject.
 pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const ir = &lowering.ir;
+    assert(lowering.tree.kind(sequence) == .sequence);
     const kind_leaf = lowering.ast().child(lowering.tree.node(sequence), 0);
+    assert(lowering.ast().tag(kind_leaf) == .sequence_kind);
     const kind = lowering.ast().data[kind_leaf.to_int()];
+    // The parser stores one of ink's flag combinations (stopping by default).
+    assert(kind != 0);
+    assert(kind < 16);
     const elements = lowering.tree.children_of(sequence);
     const container = try ir.new_container();
     ir.container(container).flags |= ir_module.count_visits | ir_module.count_start_only;
@@ -308,8 +306,7 @@ pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
 }
 
 fn add_shuffle(lowering: *Lowering, container: ContainerId, kind: u32, count: i32) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(kind & shuffle != 0);
     const ir = &lowering.ir;
     const after_shuffle = try ir.new_item(.{ .command = .no_op });
     const skips = kind & (once | stopping) != 0;
@@ -336,8 +333,8 @@ fn add_sequence_branch(
     position: usize,
     after: ItemId,
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    // One branch per element, plus an empty one after the last for `once`.
+    assert(position <= elements.len);
     const ir = &lowering.ir;
     _ = try ir.add_command(container, .eval_start);
     _ = try ir.add_command(container, .duplicate);
@@ -360,9 +357,8 @@ fn add_sequence_branch(
 
 /// VariableAssignment.GenerateRuntimeObject (a global declaration generates nothing here).
 pub fn generate_assignment(lowering: *Lowering, assignment: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
+    assert(tree.kind(assignment) == .variable_assignment);
     if (tree.has(assignment, Flags.global)) return .none;
     const ir = &lowering.ir;
     const container = try ir.new_container();
@@ -380,11 +376,12 @@ pub fn generate_assignment(lowering: *Lowering, assignment: ObjectIndex) !Result
 
 /// Return.GenerateRuntimeObject.
 pub fn generate_return(lowering: *Lowering, object: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const ir = &lowering.ir;
     const container = try ir.new_container();
+    assert(lowering.tree.kind(object) == .@"return");
     const children = lowering.tree.children_of(object);
+    // At most the returned expression.
+    assert(children.len <= 1);
     if (children.len > 0) {
         try lowering.add_content(container, children[0]);
     } else {

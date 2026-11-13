@@ -20,7 +20,6 @@ const NodeIndex = ast_module.NodeIndex;
 /// FunctionCall.IsBuiltIn: ink's native functions and its other built-ins.
 pub fn is_builtin(name: []const u8) bool {
     assert(name.len == 0 or name[0] != ' ');
-    assert(name.len < std.math.maxInt(u32));
     const names = [_][]const u8{
         "+",           "-",            "/",           "*",        "%",          "_",
         "==",          ">",            "<",           ">=",       "<=",         "!=",
@@ -38,14 +37,12 @@ pub fn is_builtin(name: []const u8) bool {
 
 /// The name a variable assignment or declaration assigns.
 fn assigned_name(context: *const Context, object: ObjectIndex) []const u8 {
-    assert(context.tree.count() > 0);
     assert(context.tree.kind(object) == .variable_assignment);
     return context.child_name(object, 0);
 }
 
 /// A divert's target path: the `path` child, or a call's name.
 fn divert_path(context: *const Context, divert: ObjectIndex) ?Path {
-    assert(context.tree.count() > 0);
     const tree = context.tree;
     assert(tree.kind(divert) == .divert);
     const node = tree.node(divert);
@@ -70,15 +67,14 @@ fn is_end_or_done(path: *const Path) bool {
 // The generation pass.
 
 pub fn generation_pass(context: *Context) !void {
-    assert(context.tree.count() > 0);
+    // Declarations are registered by this pass alone, once.
+    assert(context.declarations.count() == 0);
     var objects = context.tree.walk(context.gpa, Tree.root, .pre);
     defer objects.deinit();
     while (try objects.next()) |object| try generate(context, object);
 }
 
 fn generate(context: *Context, object: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const tree = context.tree;
     switch (tree.kind(object)) {
         .variable_assignment => {
@@ -109,7 +105,9 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             const name = context.child_name(object, 0);
             const is_list = context.lookup(&context.lists, Tree.root, name) != null;
             // A built-in's proxy divert is never generated, so never resolved.
+            assert(tree.children_of(object).len > 0);
             const proxy = tree.children_of(object)[0];
+            assert(tree.kind(proxy) == .divert);
             if (is_builtin(name) or is_list) context.skipped.set(proxy.to_int());
         },
         .divert => try generate_divert(context, object),
@@ -160,8 +158,7 @@ fn declare(
     name: []const u8,
     object: ObjectIndex,
 ) !void {
-    assert(context.tree.count() > 0);
-    assert(name.len < std.math.maxInt(u32));
+    assert(context.tree.is_flow(scope));
     const entry = try table.getOrPut(context.gpa, .{ .scope = scope, .name = name });
     if (entry.found_existing) return context.report(.duplicate_declaration, object);
     entry.value_ptr.* = object;
@@ -169,8 +166,8 @@ fn declare(
 
 /// Divert.ResolveTargetContent: a variable target, or ink's path lookup.
 fn generate_divert(context: *Context, divert: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    // Each divert is generated once.
+    assert(context.targets[divert.to_int()].is_none());
     if (context.skipped.isSet(divert.to_int())) return;
     const path = divert_path(context, divert) orelse return;
     if (is_end_or_done(&path)) return;
@@ -185,14 +182,12 @@ fn generate_divert(context: *Context, divert: ObjectIndex) !void {
 // The references pass.
 
 pub fn references_pass(context: *Context) !void {
-    assert(context.tree.count() > 0);
     var objects = context.tree.walk(context.gpa, Tree.root, .post);
     defer objects.deinit();
     while (try objects.next()) |object| try check(context, object);
 }
 
 fn check(context: *Context, object: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
     switch (context.tree.kind(object)) {
         .divert => try check_divert(context, object),
         .variable_reference => try check_variable_reference(context, object),
@@ -236,14 +231,14 @@ fn check(context: *Context, object: ObjectIndex) !void {
 
 /// Divert.ResolveReferences.
 fn check_divert(context: *Context, divert: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const tree = context.tree;
     if (context.skipped.isSet(divert.to_int())) return;
     const path = divert_path(context, divert) orelse return;
     if (is_end_or_done(&path)) return;
     const is_call = tree.has(divert, Flags.function_call);
     const target = context.targets[divert.to_int()];
+    // The generation pass gave the divert a variable target or a path target, not both.
+    if (!target.is_none()) assert(!context.variable_diverts.isSet(divert.to_int()));
     if (!target.is_none() and tree.is_flow(target)) {
         const is_function = tree.has(target, Flags.function);
         const in_divert_target = tree.kind(tree.parent(divert)) == .divert_target;
@@ -267,7 +262,7 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
 
 /// VariableReference: a constant, a list item, a read count, or a variable.
 fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
+    assert(context.tree.kind(reference) == .variable_reference);
     const node = context.tree.node(reference);
     const path = context.path_of(context.ast().child(node, 0));
     assert(path.count > 0);
@@ -304,7 +299,6 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
 
 /// List.GenerateIntoContainer's lookups: each item of a list literal must exist.
 fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
     const ast = context.ast();
     const node = context.tree.node(literal);
     for (0..ast.list(node).count) |position| {
@@ -321,9 +315,8 @@ fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
 
 /// VariableAssignment.ResolveReferences.
 fn check_assignment(context: *Context, assignment: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const tree = context.tree;
+    assert(tree.kind(assignment) == .variable_assignment);
     const references = context.references;
     const is_global = tree.has(assignment, Flags.global);
     const declares = is_global or tree.has(assignment, Flags.new_temporary);
@@ -359,9 +352,8 @@ fn check_assignment(context: *Context, assignment: ObjectIndex) !void {
 
 /// IncDecExpression.ResolveReferences.
 fn check_increment(context: *Context, increment: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const tree = context.tree;
+    assert(tree.kind(increment) == .increment);
     const ast = context.ast();
     const node = tree.node(increment);
     const name = if (tree.has(increment, Flags.by_expression))
@@ -376,7 +368,6 @@ fn check_increment(context: *Context, increment: ObjectIndex) !void {
 /// A variable reference's name: ink joins the path with dots; only a one-component path
 /// can name a variable.
 fn joined_first(context: *const Context, path_node: NodeIndex) []const u8 {
-    assert(context.tree.count() > 0);
     const path = context.path_of(path_node);
     assert(path.count > 0);
     if (path.count > 1) return "";

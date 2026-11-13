@@ -39,7 +39,6 @@ pub const States = struct {
 
     pub fn deinit(states: *States) void {
         assert(states.passed.capacity >= states.passed.items.len);
-        assert(states.passed.items.len < std.math.maxInt(u32));
         states.passed.deinit(states.gpa);
         states.kept.deinit(states.gpa);
     }
@@ -59,8 +58,7 @@ const Generation = struct {
 
 /// Weave.GenerateRuntimeObject.
 pub fn generate_weave(lowering: *Lowering, weave: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(weave) == .weave);
     const ir = &lowering.ir;
     const root = try ir.new_container();
     var generation: Generation = .{ .root = root, .current = root };
@@ -117,7 +115,6 @@ fn take_passed(
     weave: ObjectIndex,
     item: ObjectIndex,
 ) !void {
-    assert(lowering.results.len == lowering.tree.count());
     const states = &lowering.weaves;
     var position: usize = 0;
     while (position < states.passed.items.len) {
@@ -131,7 +128,6 @@ fn take_passed(
 }
 
 fn is_under(lowering: *const Lowering, object: ObjectIndex, ancestor: ObjectIndex) bool {
-    assert(lowering.results.len == lowering.tree.count());
     var current = object;
     var steps: u32 = 0;
     while (!current.is_none()) : (steps += 1) {
@@ -143,7 +139,6 @@ fn is_under(lowering: *const Lowering, object: ObjectIndex, ancestor: ObjectInde
 }
 
 fn remove(list: *std.ArrayList(ObjectIndex), object: ObjectIndex) void {
-    assert(list.items.len < std.math.maxInt(u32));
     assert(!object.is_none());
     for (list.items, 0..) |entry, position| {
         if (entry != object) continue;
@@ -154,7 +149,6 @@ fn remove(list: *std.ArrayList(ObjectIndex), object: ObjectIndex) void {
 
 /// AddGeneralRuntimeContent.
 fn add_general(lowering: *Lowering, generation: *Generation, content: Result) !void {
-    assert(lowering.results.len == lowering.tree.count());
     const into = if (generation.add_to_previous)
         lowering.runtime_containers[generation.previous.to_int()]
     else
@@ -169,10 +163,9 @@ fn add_general(lowering: *Lowering, generation: *Generation, content: Result) !v
 
 /// AddRuntimeForWeavePoint.
 fn add_weave_point(lowering: *Lowering, generation: *Generation, point: ObjectIndex) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const ir = &lowering.ir;
+    assert(tree.is_weave_point(point));
     if (tree.kind(point) == .gather) {
         try add_gather(lowering, generation, point);
     } else {
@@ -180,7 +173,9 @@ fn add_weave_point(lowering: *Lowering, generation: *Generation, point: ObjectIn
             remove(&generation.loose_ends, generation.previous);
         }
         try lowering.add_result(generation.current, point);
+        // The choice, generated before its weave, set its inner content container.
         const inner = lowering.runtime_containers[point.to_int()];
+        assert(!inner.is_none());
         ir.container(inner).name = try std.fmt.allocPrint(
             ir.arena.allocator(),
             "c-{d}",
@@ -200,12 +195,12 @@ fn add_weave_point(lowering: *Lowering, generation: *Generation, point: ObjectIn
 
 /// AddRuntimeForGather.
 fn add_gather(lowering: *Lowering, generation: *Generation, gather: ObjectIndex) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(gather) == .gather);
     const ir = &lowering.ir;
     const auto_enter = !generation.seen_choice_in_section;
     generation.seen_choice_in_section = false;
     const container = lowering.runtime_containers[gather.to_int()];
+    assert(!container.is_none());
     if (ir.container(container).name == null) {
         ir.container(container).name = try std.fmt.allocPrint(
             ir.arena.allocator(),
@@ -222,6 +217,7 @@ fn add_gather(lowering: *Lowering, generation: *Generation, gather: ObjectIndex)
         const is_gather = lowering.tree.kind(loose_end) == .gather;
         if (is_gather and gather_depth(lowering, loose_end) == depth) continue;
         const holder = lowering.runtime_containers[loose_end.to_int()];
+        assert(!holder.is_none());
         _ = try ir.add(holder, .{ .divert = .{ .target = .{ .container = container } } });
     }
     generation.loose_ends.clearRetainingCapacity();
@@ -230,7 +226,7 @@ fn add_gather(lowering: *Lowering, generation: *Generation, gather: ObjectIndex)
 
 /// A weave point's indentation depth (the story's synthesized gather has depth 1).
 fn gather_depth(lowering: *const Lowering, point: ObjectIndex) u32 {
-    assert(lowering.results.len == lowering.tree.count());
+    assert(lowering.tree.is_weave_point(point));
     const node = lowering.tree.node(point);
     if (node.is_none()) return 1;
     const header = lowering.ast().data[lowering.ast().child(node, 0).to_int()];
@@ -240,8 +236,7 @@ fn gather_depth(lowering: *const Lowering, point: ObjectIndex) u32 {
 
 /// PassLooseEndsToAncestors: queued for the receiving weave (see the file comment).
 fn pass_to_ancestors(lowering: *Lowering, generation: *Generation, weave: ObjectIndex) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(weave) == .weave);
     if (generation.loose_ends.items.len == 0) return;
     const tree = lowering.tree;
     var inner: ObjectIndex = .none;
@@ -275,8 +270,8 @@ fn pass_to_ancestors(lowering: *Lowering, generation: *Generation, weave: Object
 
 /// Gather.GenerateRuntimeObject: named by its label (or later `g-N`), counted from its start.
 pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(gather) == .gather);
+    assert(lowering.runtime_containers[gather.to_int()].is_none());
     const ir = &lowering.ir;
     const container = try ir.new_container();
     const node = lowering.tree.node(gather);
@@ -300,8 +295,7 @@ const once_only: u8 = 16;
 /// Choice.GenerateRuntimeObject: the outer container (with the choice point) is the result;
 /// the inner content container is the weave point's runtime container.
 pub fn generate_choice(lowering: *Lowering, choice: ObjectIndex) !Result {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.runtime_containers[choice.to_int()].is_none());
     const parts = choice_parts(lowering, choice);
     const ir = &lowering.ir;
     const outer = try ir.new_container();
@@ -353,7 +347,8 @@ const Parts = struct {
 /// A choice's children by role (sema adds start, choice-only and inner content as present,
 /// then the condition).
 fn choice_parts(lowering: *const Lowering, choice: ObjectIndex) Parts {
-    assert(lowering.results.len == lowering.tree.count());
+    // The children are read by position, in the order sema created them.
+    assert(lowering.tree.kind(choice) == .choice);
     const ast = lowering.ast();
     const node = lowering.tree.node(choice);
     const children = lowering.tree.children_of(choice);
@@ -377,9 +372,9 @@ fn choice_parts(lowering: *const Lowering, choice: ObjectIndex) Parts {
 /// The start content's round trip: `$r` holds where to come back (`$r1`), the content is
 /// the named container `s`, which diverts back through `$r`.
 fn add_start_content(lowering: *Lowering, outer: ContainerId, start: ContainerId) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const ir = &lowering.ir;
+    // A content list's container, unnamed until it becomes `s` here.
+    assert(ir.container(start).name == null);
     const r1 = try ir.new_container();
     ir.container(r1).name = "$r1";
     _ = try ir.add(outer, .{ .divert_target = .{ .container = r1 } });
@@ -395,9 +390,9 @@ fn add_start_content(lowering: *Lowering, outer: ContainerId, start: ContainerId
 
 /// The inner content's start: `$r` set to `$r2`, then the start content again.
 fn add_return_to_start(lowering: *Lowering, inner: ContainerId, start: ContainerId) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const ir = &lowering.ir;
+    // add_start_content has made it the named container `s` diverted back to.
+    assert(ir.container(start).name != null);
     const r2 = try ir.new_container();
     ir.container(r2).name = "$r2";
     _ = try ir.add_command(inner, .eval_start);

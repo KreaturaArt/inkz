@@ -20,9 +20,11 @@ const values = @import("values.zig");
 // Preparation: ink's ExportRuntime prelude and ResolveWeavePointNaming.
 
 pub fn prepare(context: *Context) !void {
-    assert(context.tree.count() > 0);
     const gpa = context.gpa;
     const count = context.tree.count();
+    // Prepared once: the tables are still empty.
+    assert(context.targets.len == 0);
+    assert(context.list_order.items.len == 0);
     context.targets = try gpa.alloc(ObjectIndex, count);
     @memset(context.targets, .none);
     context.references = try gpa.alloc(Reference, count);
@@ -42,7 +44,6 @@ pub fn prepare(context: *Context) !void {
 }
 
 fn prepare_object(context: *Context, object: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
     const tree = context.tree;
     switch (tree.kind(object)) {
         .story, .knot, .stitch => {
@@ -63,6 +64,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
         .constant_declaration => try prepare_constant(context, object),
         .list_definition => {
             // The name is the LIST declaration's.
+            assert(tree.kind(tree.parent(object)) == .variable_assignment);
             const declaration = tree.node(tree.parent(object));
             const name = context.parsed.child_text(declaration, 0);
             try context.lists.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
@@ -77,8 +79,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
 
 /// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
 fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    assert(context.tree.kind(constant) == .constant_declaration);
     const name = context.child_name(constant, 0);
     const entry = try context.constants.getOrPut(context.gpa, .{
         .scope = Tree.root,
@@ -96,8 +97,7 @@ fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
 }
 
 fn constant_literal(context: *const Context, constant: ObjectIndex) values.Error!?values.Literal {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    assert(context.tree.kind(constant) == .constant_declaration);
     const children = context.tree.children_of(constant);
     if (children.len == 0) return null;
     return values.literal(context.parsed, context.tree, children[0]);
@@ -105,10 +105,10 @@ fn constant_literal(context: *const Context, constant: ObjectIndex) values.Error
 
 /// ListDefinition.runtimeListDefinition: duplicate item names are an error on the list.
 fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    assert(context.tree.kind(definition) == .list_definition);
     const elements = context.tree.children_of(definition);
     for (elements, 0..) |element, position| {
+        assert(context.tree.kind(element) == .list_element);
         const name = context.child_name(element, 0);
         for (elements[position + 1 ..]) |later| {
             const other = context.child_name(later, 0);
@@ -122,7 +122,7 @@ fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
 
 /// Weave.ResolveWeavePointNaming: every labelled choice and gather under a root weave.
 fn name_weave_points(context: *Context, weave: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
+    assert(context.tree.kind(weave) == .weave);
     const gpa = context.gpa;
     var objects = context.tree.walk(gpa, weave, .pre);
     defer objects.deinit();
@@ -149,8 +149,6 @@ pub fn content_with_name_at_level(
     level: ?FlowLevel,
     deep: bool,
 ) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const own = context.level(flow);
     if ((level == null or level.? == own) and own != .story) {
         if (std.mem.eql(u8, name, context.flow_name(flow))) return flow;
@@ -167,7 +165,6 @@ pub fn content_with_name_at_level(
 }
 
 fn weave_point_named(context: *const Context, flow: ObjectIndex, name: []const u8) ?ObjectIndex {
-    assert(context.tree.count() > 0);
     assert(context.tree.is_flow(flow));
     const weave = context.root_weaves[flow.to_int()];
     if (weave.is_none()) return null;
@@ -177,14 +174,15 @@ fn weave_point_named(context: *const Context, flow: ObjectIndex, name: []const u
 /// DeepSearchForAnyLevelContent: the flow's labels, then each sub-flow (its name, labels and
 /// sub-flows, then deeper), depth first.
 fn deep_search(context: *Context, flow: ObjectIndex, name: []const u8) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     if (weave_point_named(context, flow, name)) |point| return point;
+    // A flow is pushed once, by its parent.
+    const flows_max = context.tree.count();
     const gpa = context.gpa;
     var stack: std.ArrayList(ObjectIndex) = .empty;
     defer stack.deinit(gpa);
     try push_sub_flows(context, &stack, flow);
     while (stack.pop()) |sub_flow| {
+        assert(stack.items.len < flows_max);
         if (std.mem.eql(u8, name, context.flow_name(sub_flow))) return sub_flow;
         if (weave_point_named(context, sub_flow, name)) |point| return point;
         if (context.lookup(&context.subflows, sub_flow, name)) |found| return found;
@@ -194,7 +192,6 @@ fn deep_search(context: *Context, flow: ObjectIndex, name: []const u8) !?ObjectI
 }
 
 fn push_sub_flows(context: *Context, stack: *std.ArrayList(ObjectIndex), flow: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
     const children = context.tree.children_of(flow);
     var position = children.len;
     while (position > 0) {
@@ -213,9 +210,8 @@ fn child_from_context(
     minimum: ?FlowLevel,
     force_deep: bool,
 ) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const tree = context.tree;
+    assert(!scope.is_none());
     if (tree.kind(scope) == .weave and (minimum == null or minimum.? == .weave_point)) {
         // Only a flow's root weave has its labels named.
         const owner = tree.parent(scope);
@@ -231,8 +227,8 @@ fn child_from_context(
 
 /// Path.ResolveFromContext.
 pub fn resolve_path(context: *Context, path: *const Path, from: ObjectIndex) !?ObjectIndex {
-    assert(context.tree.count() > 0);
     if (path.count == 0) return null;
+    assert(path.count <= path.components.len);
     var ancestor = from;
     var base: ?ObjectIndex = null;
     var steps: u32 = 0;
@@ -256,9 +252,8 @@ pub fn resolve_path(context: *Context, path: *const Path, from: ObjectIndex) !?O
 
 /// FlowBase.ResolveVariableWithName, with the declarations registered so far.
 pub fn resolve_variable(context: *const Context, name: []const u8, from: ObjectIndex) ?Reference {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const owner = context.tree.closest_flow(from);
+    assert(context.tree.is_flow(owner));
     const parameters = context.parameters(owner);
     for (0..parameters.len) |position| {
         const parameter = context.parameter_name(owner, @intCast(position));
@@ -278,8 +273,6 @@ pub fn resolve_list_item(
     item: []const u8,
     from: ObjectIndex,
 ) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     if (list_name) |name| {
         const definition = context.lookup(&context.lists, Tree.root, name) orelse return null;
         return list_item_named(context, definition, item);
@@ -292,6 +285,7 @@ pub fn resolve_list_item(
             } else found = element;
         }
     }
+    if (found) |element| assert(context.tree.kind(element) == .list_element);
     return found;
 }
 
@@ -300,7 +294,6 @@ fn list_item_named(
     definition: ObjectIndex,
     item: []const u8,
 ) ?ObjectIndex {
-    assert(context.tree.count() > 0);
     assert(context.tree.kind(definition) == .list_definition);
     for (context.tree.children_of(definition)) |element| {
         const name = context.child_name(element, 0);

@@ -49,7 +49,6 @@ pub const Lowered = struct {
 
     pub fn deinit(lowered: *Lowered) void {
         assert(!lowered.root.is_none());
-        assert(lowered.lists.len < std.math.maxInt(u32));
         lowered.ir.deinit();
         lowered.* = undefined;
     }
@@ -100,8 +99,6 @@ pub const Lowering = struct {
     }
 
     pub fn deinit(lowering: *Lowering) void {
-        assert(lowering.runtime_containers.len == lowering.tree.count());
-        assert(lowering.results.len == lowering.tree.count());
         lowering.gpa.free(lowering.results);
         lowering.gpa.free(lowering.runtime_containers);
         lowering.weaves.deinit();
@@ -114,21 +111,25 @@ pub const Lowering = struct {
     /// list definitions are copied out, so the object tree, the resolution and the syntax can
     /// be freed before emission. Everything but the IR is freed; on error nothing is.
     pub fn into_lowered(lowering: *Lowering) !Lowered {
-        assert(lowering.results.len == lowering.tree.count());
         assert(!lowering.root.is_none());
         const arena = lowering.ir.arena.allocator();
         const resolution = lowering.resolution;
         const lists = try arena.alloc(ListDefinition, resolution.lists.len);
         for (resolution.lists, lists) |definition, *list| {
+            // The name is the declaring VAR's; the items are the definition's elements.
+            assert(lowering.tree.kind(definition) == .list_definition);
             const elements = lowering.tree.children_of(definition);
             const items = try arena.alloc(ir_module.ListItem, elements.len);
             const name = lowering.child_name(lowering.tree.parent(definition), 0);
             list.* = .{ .name = name, .items = items };
-            for (elements, items) |element, *entry| entry.* = .{
-                .origin = list.name,
-                .name = lowering.child_name(element, 0),
-                .value = resolution.item_values[element.to_int()],
-            };
+            for (elements, items) |element, *entry| {
+                assert(lowering.tree.kind(element) == .list_element);
+                entry.* = .{
+                    .origin = list.name,
+                    .name = lowering.child_name(element, 0),
+                    .value = resolution.item_values[element.to_int()],
+                };
+            }
         }
         lowering.ir.resolve_objects(lowering.runtime_containers);
         lowering.ir.release_links();
@@ -142,7 +143,6 @@ pub const Lowering = struct {
     /// each.
     pub fn report(lowering: *Lowering, code: resolve.Code, object: ObjectIndex) !void {
         assert(object.to_int() < lowering.tree.count());
-        assert(lowering.diagnostics.items.len < std.math.maxInt(u32));
         for (lowering.diagnostics.items) |diagnostic| {
             if (diagnostic.object != object) continue;
             if (diagnostic.code.is_warning() == code.is_warning()) return;
@@ -152,8 +152,6 @@ pub const Lowering = struct {
 
     /// Whether lowering found an error (warnings don't stop compilation).
     pub fn failed(lowering: *const Lowering) bool {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.diagnostics.items.len < std.math.maxInt(u32));
         for (lowering.diagnostics.items) |diagnostic| {
             if (!diagnostic.code.is_warning()) return true;
         }
@@ -161,25 +159,24 @@ pub const Lowering = struct {
     }
 
     pub fn ast(lowering: *const Lowering) *const ast_module.Ast {
-        assert(lowering.results.len == lowering.tree.count());
         assert(lowering.parsed.tree.tags.len > 0);
         return &lowering.parsed.tree;
     }
 
     /// The name in an object's syntax node child `position` (an identifier leaf).
     pub fn child_name(lowering: *const Lowering, object: ObjectIndex, position: u32) []const u8 {
+        // Objects ink creates without syntax (gathers, the done divert) have no name.
+        assert(!lowering.tree.node(object).is_none());
         return lowering.parsed.child_text(lowering.tree.node(object), position);
     }
 
     /// Whether `name` is an EXTERNAL function (ink's story.externals).
     pub fn is_external(lowering: *const Lowering, name: []const u8) bool {
-        assert(name.len < std.math.maxInt(u32));
         return lowering.resolution.externals.contains(.{ .scope = Tree.root, .name = name });
     }
 
     /// Whether a divert is a built-in call's proxy, which ink never generates.
     pub fn resolution_skipped(lowering: *const Lowering, divert: ObjectIndex) bool {
-        assert(lowering.results.len == lowering.tree.count());
         if (!lowering.tree.has(divert, Flags.function_call)) return false;
         const call = lowering.tree.parent(divert);
         assert(lowering.tree.kind(call) == .function_call);
@@ -189,13 +186,11 @@ pub const Lowering = struct {
 
     pub fn result(lowering: *const Lowering, object: ObjectIndex) Result {
         assert(object.to_int() < lowering.results.len);
-        assert(lowering.results.len == lowering.tree.count());
         return lowering.results[object.to_int()];
     }
 
     /// Adds an object's runtime object to `container` (ink's AddContent(obj.runtimeObject)).
     pub fn add_result(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void {
-        assert(lowering.results.len == lowering.tree.count());
         switch (lowering.result(object)) {
             .none => {},
             .item => |id| try lowering.ir.attach_or_copy(container, id),
@@ -207,9 +202,9 @@ pub const Lowering = struct {
     /// The runtime object of an object used as content: an expression is wrapped in
     /// `ev ... /ev` (Expression.GenerateRuntimeObject).
     pub fn content_result(lowering: *Lowering, object: ObjectIndex) !Result {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.runtime_containers.len == lowering.tree.count());
         if (!is_expression(lowering.tree.kind(object))) return lowering.result(object);
+        // Expressions generate nothing on their own: their users emit them.
+        assert(lowering.result(object) == .none);
         const container = try lowering.ir.new_container();
         _ = try lowering.ir.add_command(container, .eval_start);
         try expressions.emit(lowering, container, object);
@@ -222,7 +217,6 @@ pub const Lowering = struct {
     }
 
     pub fn add_content(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void {
-        assert(lowering.results.len == lowering.tree.count());
         switch (try lowering.content_result(object)) {
             .none => {},
             .item => |id| try lowering.ir.attach_or_copy(container, id),
@@ -233,7 +227,9 @@ pub const Lowering = struct {
 
     /// Generates every object, children first.
     pub fn generate_all(lowering: *Lowering) !void {
+        // Generation indexes both per-object tables by object without checking their length.
         assert(lowering.results.len == lowering.tree.count());
+        assert(lowering.runtime_containers.len == lowering.tree.count());
         var objects = lowering.tree.walk(lowering.gpa, Tree.root, .post);
         defer objects.deinit();
         while (try objects.next()) |object| {
@@ -243,8 +239,8 @@ pub const Lowering = struct {
 
     /// One object's GenerateRuntimeObject.
     fn generate(lowering: *Lowering, object: ObjectIndex) !Result {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.runtime_containers.len == lowering.tree.count());
+        // Each object is generated once, after its children.
+        assert(lowering.result(object) == .none);
         const tree = lowering.tree;
         return switch (tree.kind(object)) {
             .story, .knot, .stitch => lowering.generate_flow(object),
@@ -278,7 +274,6 @@ pub const Lowering = struct {
 
     /// ContentList.GenerateRuntimeObject.
     fn generate_content_list(lowering: *Lowering, list: ObjectIndex) !Result {
-        assert(lowering.results.len == lowering.tree.count());
         const container = try lowering.ir.new_container();
         for (lowering.tree.children_of(list)) |child| try lowering.add_content(container, child);
         assert(lowering.tree.kind(list) == .content_list);
@@ -287,8 +282,8 @@ pub const Lowering = struct {
 
     /// A Text's text: the token without its `\` escapes; ink's "\n"s and its error text.
     fn text_of(lowering: *Lowering, object: ObjectIndex) ![]const u8 {
-        assert(lowering.results.len == lowering.tree.count());
         const tree = lowering.tree;
+        assert(tree.kind(object) == .text);
         if (tree.has(object, Flags.newline) or tree.node(object).is_none()) return "\n";
         const node = tree.node(object);
         const tag = lowering.ast().tag(node);
@@ -315,10 +310,10 @@ pub const Lowering = struct {
 
     /// FlowBase.GenerateRuntimeObject.
     fn generate_flow(lowering: *Lowering, flow: ObjectIndex) !Result {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.runtime_containers.len == lowering.tree.count());
         const tree = lowering.tree;
         const ir = &lowering.ir;
+        assert(tree.is_flow(flow));
+        assert(lowering.runtime_containers[flow.to_int()].is_none());
         const container = try ir.new_container();
         lowering.runtime_containers[flow.to_int()] = container;
         if (tree.kind(flow) != .story) ir.container(container).name =
@@ -332,6 +327,8 @@ pub const Lowering = struct {
                 continue;
             }
             const sub_flow = lowering.runtime_containers[child.to_int()];
+            // Sub-flows are generated before their parent (post-order).
+            assert(!sub_flow.is_none());
             // A knot that starts with a stitch diverts into it.
             if (position == 0 and tree.kind(flow) == .knot and !has_parameters(lowering, child)) {
                 _ = try ir.add(container, .{ .divert = .{ .target = .{ .container = sub_flow } } });
@@ -347,11 +344,11 @@ pub const Lowering = struct {
         container: ContainerId,
         flow: ObjectIndex,
     ) !void {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.runtime_containers.len == lowering.tree.count());
+        assert(lowering.tree.is_flow(flow));
         if (lowering.tree.kind(flow) == .story) return;
         const parameters = lowering.ast().child(lowering.tree.node(flow), 1);
         if (lowering.ast().tag(parameters) == .none) return;
+        assert(lowering.ast().tag(parameters) == .parameters);
         var position = lowering.ast().list(parameters).count;
         while (position > 0) {
             position -= 1;
@@ -366,9 +363,9 @@ pub const Lowering = struct {
 
     /// Story.ExportRuntime after generation: the "global decl" container and `done`.
     pub fn finish_story(lowering: *Lowering) !void {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.runtime_containers.len == lowering.tree.count());
         const ir = &lowering.ir;
+        // Called once, after generate_all.
+        assert(lowering.root.is_none());
         const root = lowering.result(Tree.root).container;
         lowering.root = root;
         const declarations = try ir.new_container();
@@ -391,8 +388,6 @@ pub const Lowering = struct {
     /// One entry of the story's variableDeclarations: true if the object declares one (a
     /// story-level temp counts for the name, but only globals are initialised).
     fn add_declaration(lowering: *Lowering, declarations: ContainerId, object: ObjectIndex) !bool {
-        assert(lowering.results.len == lowering.tree.count());
-        assert(lowering.runtime_containers.len == lowering.tree.count());
         const tree = lowering.tree;
         if (tree.kind(object) != .variable_assignment) return false;
         const is_global = tree.has(object, Flags.global);
@@ -403,6 +398,7 @@ pub const Lowering = struct {
         const name = lowering.child_name(object, 0);
         if (tree.has(object, Flags.list)) {
             const definition = tree.children_of(object)[0];
+            assert(tree.kind(definition) == .list_definition);
             _ = try lowering.ir.add(
                 declarations,
                 try expressions.list_definition_value(lowering, definition, name),
@@ -419,7 +415,6 @@ pub const Lowering = struct {
 };
 
 fn has_parameters(lowering: *const Lowering, flow: ObjectIndex) bool {
-    assert(lowering.results.len == lowering.tree.count());
     assert(lowering.tree.is_flow(flow));
     assert(lowering.tree.kind(flow) != .story);
     const parameters = lowering.ast().child(lowering.tree.node(flow), 1);

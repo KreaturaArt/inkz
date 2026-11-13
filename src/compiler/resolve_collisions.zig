@@ -28,7 +28,6 @@ pub const Symbol = enum(u8) {
 
 /// Story.CheckForNamingCollisions for `name` on `object`.
 pub fn check(context: *Context, object: ObjectIndex, name: []const u8, symbol: Symbol) !void {
-    assert(context.tree.count() > 0);
     assert(object.to_int() < context.tree.count());
     if (name.len == 0) return;
     if (grammar.is_reserved_keyword(name)) return context.report(.reserved_name, object);
@@ -65,11 +64,12 @@ pub fn check(context: *Context, object: ObjectIndex, name: []const u8, symbol: S
 
 /// The list part: a list's name, and (except for list items) the names of every item.
 fn check_lists(context: *Context, object: ObjectIndex, name: []const u8) !void {
-    assert(context.tree.count() > 0);
     const tree = context.tree;
     assert(name.len > 0);
     for (context.list_order.items) |definition| {
         const declaration = tree.parent(definition);
+        // The list's name is in its LIST declaration's syntax, child 0.
+        assert(tree.kind(declaration) == .variable_assignment);
         const list_name = context.child_name(declaration, 0);
         const is_own = object == definition or object == declaration;
         if (std.mem.eql(u8, name, list_name) and !is_own) try context.report(
@@ -86,7 +86,6 @@ fn check_lists(context: *Context, object: ObjectIndex, name: []const u8) !void {
 
 /// A flow's checks: its parameters, duplicate parameters, then its own name.
 pub fn check_flow(context: *Context, flow: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
     assert(context.tree.is_flow(flow));
     const count = context.parameters(flow).len;
     for (0..count) |position| {
@@ -108,8 +107,8 @@ pub fn check_flow(context: *Context, flow: ObjectIndex) !void {
 /// Weave.CheckForWeavePointNamingCollisions: a root weave's labels (in tree order) against
 /// the names its enclosing flows (from the story down) can see.
 pub fn check_weave(context: *Context, weave: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
     const tree = context.tree;
+    assert(tree.kind(weave) == .weave);
     const owner = tree.parent(weave);
     if (!tree.is_flow(owner) or context.root_weaves[owner.to_int()] != weave) return;
     var flows: [3]ObjectIndex = undefined;
@@ -133,8 +132,9 @@ fn check_label(
     weave: ObjectIndex,
     flows: []const ObjectIndex,
 ) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    // The flows from the weave's owner up to the story, which is last.
+    assert(flows.len > 0);
+    assert(context.tree.kind(flows[flows.len - 1]) == .story);
     const kind = context.tree.kind(object);
     if (kind != .choice and kind != .gather) return;
     const name = context.label(object);
