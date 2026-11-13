@@ -61,6 +61,7 @@ pub fn load_json(story: *Story, json: []const u8) Error!void {
     committing.prepare();
     // Validation proved every step of the commit succeeds.
     committing.document() catch unreachable;
+    story.failed = false;
     story.state.verify();
 }
 

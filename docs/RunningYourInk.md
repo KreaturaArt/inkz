@@ -463,7 +463,12 @@ if (story.cont()) |line| {
 
 `has_error()`, `has_warning()`, `warning_count()` and `write_warning()` complete the set.
 Running out of a limit returns its own error, such as `error.FrameLimit`, `error.HeapLimit`
-or `error.StepLimit`; see `inkz.Error`.
+or `error.StepLimit`; see `inkz.Error`. ink throws in these cases. Here, when it happens in
+the lookahead past a line's newline, the story goes back to the end of that line: it saves,
+and the next `cont` tries the same steps again. Anywhere else the step is half done and the
+story fails closed: `can_continue()` is false, there are no choices, and `cont`,
+`choose_choice_index`, `choose_path_string`, `evaluate_function` and `to_json` return
+`error.StoryFailed` until `reset_state()` or a successful `load_json`.
 
 ## Host events
 

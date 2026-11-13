@@ -208,3 +208,106 @@ test "a corrupted save leaves the story unchanged" {
     try load.load_json(&story, good);
     try std.testing.expect(story.state.hash() != before);
 }
+
+test "a cont that fails in the newline lookahead leaves a state that saves" {
+    // Goal: found by the save fuzz target (P11.9): a limit error inside the lookahead after a
+    // newline left the snapshot active, and saving then asserted. Method: a function that
+    // recurses past frames_max right after the first line; cont fails, then the story saves,
+    // and the save loads into a fresh story.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    const source =
+        \\Hello
+        \\{f(1)}
+        \\=== function f(x) ===
+        \\~ return f(x + 1)
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const limits: @import("../core/limits.zig").Limits = .{
+        .frames_max = 16,
+        .threads_max = 4,
+        .evaluate_depth_max = 4,
+    };
+    var story: Story = undefined;
+    try story.init(gpa, &program, limits);
+    defer story.deinit(gpa);
+    story.on_error = ignore_error;
+    try std.testing.expectError(error.FrameLimit, story.cont());
+    try std.testing.expect(story.state.check() == .ok);
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try save.to_json(&story, &writer);
+    var loaded: Story = undefined;
+    try loaded.init(gpa, &program, limits);
+    defer loaded.deinit(gpa);
+    try load.load_json(&loaded, writer.buffered());
+    try std.testing.expect(loaded.state.check() == .ok);
+}
+
+test "a cont that fails in the middle of a step fails closed until reset or load" {
+    // Goal: found by the host API fuzz target (P11.10): after a limit error in the middle of a
+    // step, the next cont ran on from the half-done state and asserted. Method: a function
+    // recursing past frames_max inside a string evaluation, before any newline; then every
+    // continuing call returns StoryFailed until reset_state, and a save made before loads.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    const source =
+        \\Before {"a{f(1)}"}
+        \\=== function f(x) ===
+        \\~ return f(x + 1)
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const limits: @import("../core/limits.zig").Limits = .{
+        .frames_max = 16,
+        .threads_max = 4,
+        .evaluate_depth_max = 4,
+    };
+    var story: Story = undefined;
+    try story.init(gpa, &program, limits);
+    defer story.deinit(gpa);
+    story.on_error = ignore_error;
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try save.to_json(&story, &writer);
+    try std.testing.expectError(error.FrameLimit, story.cont());
+    try std.testing.expect(!story.can_continue());
+    try std.testing.expectError(error.StoryFailed, story.cont());
+    try std.testing.expectEqual(@as(u32, 0), story.visible_choices_count());
+    try std.testing.expectError(error.StoryFailed, story.choose_choice_index(0));
+    try load.load_json(&story, writer.buffered());
+    try std.testing.expect(story.can_continue());
+    try std.testing.expectError(error.FrameLimit, story.cont());
+    try story.reset_state();
+    try std.testing.expect(story.can_continue());
+    try std.testing.expect(story.state.check() == .ok);
+}
+
+test "a step budget that runs out in the newline lookahead leaves a state that saves" {
+    // Goal: StepLimit takes the same way out as the other limit errors (P11.9). Method: a
+    // divert loop right after the first line, with a small steps_per_continue_max.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    const source =
+        \\Hello
+        \\-> loop
+        \\=== loop ===
+        \\-> loop
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{ .steps_per_continue_max = 100 });
+    defer story.deinit(gpa);
+    try std.testing.expectError(error.StepLimit, story.cont());
+    try std.testing.expect(!story.failed);
+    var buffer: [4096]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try save.to_json(&story, &writer);
+    try std.testing.expectError(error.StepLimit, story.cont());
+    try std.testing.expect(story.state.check() == .ok);
+}

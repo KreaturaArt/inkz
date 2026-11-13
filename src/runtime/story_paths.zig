@@ -46,6 +46,7 @@ pub fn choose_path_string(
 ) (PathError || story_module.Error)!void {
     assert(text.len > 0);
     if (story.callback_depth > 0) return error.Reentrant;
+    if (story.failed) return error.StoryFailed;
     if (story.events.on_choose_path_string) |event| {
         story.callback_depth += 1;
         defer story.callback_depth -= 1;
