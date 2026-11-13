@@ -338,10 +338,12 @@ const Loader = struct {
 
     /// Reads the rest of a content object whose first key is `first`, then adds it.
     fn content_object(loader: *Loader, first: []const u8) Error!void {
-        assert(first.len > 0);
+        assert(loader.builder.frames.items.len > 0);
         var fields: Fields = .{};
         var key = first;
         while (true) {
+            // No ink key is empty (found by fuzzing, P11.7).
+            if (key.len == 0) return error.InvalidInkJson;
             try loader.content_field(&fields, key);
             key = switch (try loader.next_token()) {
                 .object_end => break,
@@ -683,7 +685,8 @@ test "every compiled fixture and ground-truth story loads" {
 
 test "malformed input returns an error instead of crashing" {
     // Goal: untrusted JSON can't reach an assertion. Method: inputs the fuzzer and review
-    // found: an empty named-child key, an empty name, out-of-range integer fields.
+    // found: an empty named-child key, an empty name, out-of-range integer fields, empty
+    // content object keys.
     const gpa = std.testing.allocator;
     const cases = [_][]const u8{
         \\{"ion":21,"root":[["^Hello","\n",["done",{"":[["^Hello",":"g-0"}],null],"done",null],
@@ -695,6 +698,11 @@ test "malformed input returns an error instead of crashing" {
         \\{"inkVersion":21,"root":[{"x()":"f","exArgs":-1},"done",null]}
         ,
         \\{"inkVersion":21,"root":["done",null],"listDefs":{"l":{"a":99999999999}}}
+        ,
+        // Found by the structure-aware JSON target (P11.7): empty content object keys.
+        \\{"inkVersion":21,"root":[{"":"$r"},"done",null]}
+        ,
+        \\{"inkVersion":21,"root":[{"->":"0","":true},"done",null]}
         ,
     };
     for (cases) |json| {
