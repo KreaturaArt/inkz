@@ -128,8 +128,6 @@ fn write_divert(program: *const Program, writer: *std.Io.Writer, at: u32) !void 
 }
 
 fn write_tables(program: *const Program, writer: *std.Io.Writer) !void {
-    assert(program.list_items.len < std.math.maxInt(u32));
-    assert(program.externals.len < std.math.maxInt(u32));
     for (program.globals, 0..) |global, slot| {
         try writer.print("global {d} {s}\n", .{ slot, program.strings.get(global.name) });
     }
@@ -146,7 +144,6 @@ fn write_tables(program: *const Program, writer: *std.Io.Writer) !void {
         }
         try writer.writeByte('\n');
     }
-    assert(program.globals.len < std.math.maxInt(u32));
 }
 
 test "dump snapshot of a small program" {

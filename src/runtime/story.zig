@@ -195,7 +195,6 @@ pub const Story = struct {
 
     /// A view of `value`, which points into this story's memory.
     pub fn borrow(story: *const Story, comptime T: type, value: T) Borrowed(T) {
-        assert(story.state.memory.len > 0);
         if (!stamped) return .{ .value = value, .stamp = .{} };
         return .{
             .value = value,
@@ -205,14 +204,11 @@ pub const Story = struct {
 
     /// Makes every view handed out so far stale; called first by every mutating call.
     pub fn invalidate_views(story: *Story) void {
-        assert(story.state.memory.len > 0);
         story.generation +%= 1;
     }
 
     /// What this story has needed since init, for `Limits.fitted`.
     pub fn usage(story: *const Story) limits_module.Usage {
-        assert(story.state.memory.len > 0);
-        assert(story.observers_count <= story.state.observers.len);
         var result = story.state.usage();
         result.observers = story.observers_count;
         return result;
@@ -238,7 +234,6 @@ pub const Story = struct {
     /// Seeds RANDOM and shuffles (`Options.random_seed`): ink's storySeed, with
     /// previousRandom reset. ink seeds from the clock; this runtime starts at 0.
     pub fn set_random_seed(story: *Story, seed: i32) void {
-        assert(story.state.memory.len > 0);
         story.state.story_seed = seed;
         story.state.previous_random = 0;
         assert(story.state.story_seed == seed);
@@ -319,7 +314,6 @@ pub const Story = struct {
         gpa.free(story.bindings);
         const shape = State.shape_of(story.program);
         assert(story.state.memory.len == story.state.limits.bytes_total(shape));
-        assert(story.state.memory.len > 0);
         story.state.deinit(gpa);
         story.* = undefined;
     }
@@ -349,7 +343,6 @@ pub const Story = struct {
     /// ink's canContinue.
     pub fn can_continue(story: *Story) bool {
         assert(story.state.call_stack.depth() > 0);
-        assert(story.state.memory.len > 0);
         if (story.failed) return false;
         return !vm.current_pointer(story).is_null() and !story.state.has_error();
     }
@@ -359,7 +352,6 @@ pub const Story = struct {
         const profile_zone = profile.begin(.cont);
         defer profile_zone.end();
         assert(story.state.call_stack.depth() > 0);
-        assert(story.state.line_bytes.len > 0);
         story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         if (story.failed) return error.StoryFailed;
@@ -368,7 +360,6 @@ pub const Story = struct {
 
     /// `cont` without the reentrancy check, for evaluate_function's loop.
     pub fn next_line(story: *Story) Error![]const u8 {
-        assert(story.state.line_bytes.len > 0);
         assert(story.can_continue());
         if (!story.has_validated_externals) try story.validate_external_bindings();
         story.state.did_safe_exit = false;
@@ -381,10 +372,8 @@ pub const Story = struct {
     /// ink's ContinueMaximally: every line until the story can't continue, written to
     /// `writer`.
     pub fn continue_maximally(story: *Story, writer: *std.Io.Writer) !void {
-        assert(story.state.line_bytes.len > 0);
         var lines: u32 = 0;
         while (story.can_continue()) : (lines += 1) {
-            assert(lines < std.math.maxInt(u32));
             try writer.writeAll(try story.cont());
         }
         assert(!story.can_continue());
@@ -395,7 +384,6 @@ pub const Story = struct {
     fn report_diagnostics(story: *Story) Error!void {
         const profile_zone = profile.begin(.report_diagnostics);
         defer profile_zone.end();
-        assert(story.state.memory.len > 0);
         const state = &story.state;
         if (!state.has_error() and !state.has_warning()) return;
         const handler = story.on_error orelse return error.StoryError;
@@ -507,7 +495,6 @@ pub const Story = struct {
             .slot = slot,
         };
         story.observers_count += 1;
-        assert(story.observers_count <= story.state.observers.len);
     }
 
     /// ink's NotifyObservers for the queued globals, with their current values.
@@ -526,7 +513,6 @@ pub const Story = struct {
 
     /// Whether any observer watches global `slot` (only those are queued).
     pub fn is_observed(story: *const Story, slot: index.GlobalSlot) bool {
-        assert(story.observers_count <= story.state.observers.len);
         for (story.state.observers[0..story.observers_count]) |record| {
             if (record.slot == slot) return true;
         }
@@ -535,7 +521,6 @@ pub const Story = struct {
 
     /// Calls the observers of global `slot` with its value now.
     pub fn notify_global(story: *Story, slot: index.GlobalSlot) void {
-        assert(story.observers_count <= story.state.observers.len);
         assert(slot.to_int() < story.state.globals.len);
         const name = story.program.strings.get(story.program.globals[slot.to_int()].name);
         for (story.state.observers[0..story.observers_count]) |record| {
@@ -553,7 +538,6 @@ pub const Story = struct {
     fn after_steps(story: *Story) Error!bool {
         const profile_zone = profile.begin(.after_steps);
         defer profile_zone.end();
-        assert(story.state.memory.len > 0);
         assert(story.state.call_stack.depth() > 0);
         const state = &story.state;
         const from_game = state.call_stack.current_frame().kind == .function_evaluation_from_game;
@@ -614,7 +598,6 @@ pub const Story = struct {
     /// call.
     pub fn current_text(story: *Story) Error![]const u8 {
         assert(story.state.output.items.count <= story.state.output.items.capacity());
-        assert(story.state.line_bytes.len > 0);
         const length = try story.write_current_text();
         return story.line_text(length);
     }
@@ -651,7 +634,6 @@ pub const Story = struct {
     }
 
     fn current_tags_count(story: *Story) Error!u32 {
-        assert(story.state.memory.len > 0);
         assert(story.state.output.items.count <= story.state.output.items.buffer.len);
         var counter: TagCounter = .{};
         story.state.output.collect_tags(ops.strings_of(story), &counter) catch
@@ -662,7 +644,6 @@ pub const Story = struct {
     /// Calls `sink.tag(text)` for each tag of the current line.
     pub fn current_tags(story: *Story, sink: anytype) !void {
         assert(@typeInfo(@TypeOf(sink)) == .pointer);
-        assert(story.state.memory.len > 0);
         try story.state.output.collect_tags(ops.strings_of(story), sink);
     }
 
@@ -826,7 +807,6 @@ pub const Story = struct {
     /// ink's RuntimeObjectsEqual (for saving only non-default globals): same type, then the
     /// same value; strings by text, lists by their items.
     pub fn values_equal(story: *Story, a: value_module.Value, b: value_module.Value) bool {
-        assert(story.state.memory.len > 0);
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
             .string => |text| std.mem.eql(u8, story.text_of(text), story.text_of(b.string)),
@@ -859,7 +839,6 @@ pub const Story = struct {
     }
 
     pub fn text_of(story: *const Story, reference: StringReference) []const u8 {
-        assert(story.state.memory.len > 0);
         assert(reference != StringReference.none);
         return ops.strings_of(story).get(reference);
     }
@@ -879,7 +858,6 @@ const TagCounter = struct {
     count: u32 = 0,
 
     pub fn tag(counter: *TagCounter, text: []const u8) !void {
-        assert(counter.count < std.math.maxInt(u32));
         assert(text.len < 1 << 20);
         counter.count += 1;
     }

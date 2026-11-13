@@ -52,7 +52,6 @@ const BytesAdapter = struct {
     pub fn hash(adapter: BytesAdapter, bytes: []const u8) u64 {
         assert(adapter.strings.ends.len > 0);
         const result = std.hash.Wyhash.hash(0, bytes);
-        assert(bytes.len < std.math.maxInt(u32));
         return result;
     }
 

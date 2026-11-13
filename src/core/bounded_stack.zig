@@ -22,7 +22,6 @@ pub fn BoundedStack(comptime T: type) type {
 
         /// Uses `buffer` as storage; the stack doesn't own it.
         pub fn init(buffer: []T) Self {
-            assert(buffer.len <= std.math.maxInt(u32));
             const stack: Self = .{ .buffer = buffer, .count = 0 };
             assert(stack.capacity() == buffer.len);
             return stack;
@@ -52,14 +51,12 @@ pub fn BoundedStack(comptime T: type) type {
         }
 
         pub fn is_empty(stack: *const Self) bool {
-            assert(stack.count <= stack.buffer.len);
             const result = stack.count == 0;
             assert(result == (stack.slice().len == 0));
             return result;
         }
 
         pub fn is_full(stack: *const Self) bool {
-            assert(stack.count <= stack.buffer.len);
             const result = stack.count == stack.buffer.len;
             if (result) assert(stack.count == stack.capacity());
             return result;
@@ -72,12 +69,10 @@ pub fn BoundedStack(comptime T: type) type {
             stack.count += 1;
             stack.peak = @max(stack.peak, stack.count);
             assert(stack.count == count_before + 1);
-            assert(stack.count <= stack.buffer.len);
         }
 
         /// Pushes all of `values`, or none of them if they don't fit.
         pub fn push_slice(stack: *Self, values: []const T) error{Overflow}!void {
-            assert(stack.count <= stack.buffer.len);
             if (values.len > stack.buffer.len - stack.count) return error.Overflow;
             const count_before = stack.count;
             @memcpy(stack.buffer[stack.count..][0..values.len], values);
@@ -87,7 +82,6 @@ pub fn BoundedStack(comptime T: type) type {
         }
 
         pub fn pop(stack: *Self) ?T {
-            assert(stack.count <= stack.buffer.len);
             if (stack.count == 0) return null;
             stack.count -= 1;
             const value = stack.buffer[stack.count];
@@ -96,7 +90,6 @@ pub fn BoundedStack(comptime T: type) type {
         }
 
         pub fn peek(stack: *const Self) ?T {
-            assert(stack.count <= stack.buffer.len);
             if (stack.count == 0) return null;
             const value = stack.buffer[stack.count - 1];
             assert(stack.count > 0);
@@ -105,7 +98,6 @@ pub fn BoundedStack(comptime T: type) type {
 
         /// A pointer to the top element; valid until the next push, pop or truncate.
         pub fn peek_pointer(stack: *Self) ?*T {
-            assert(stack.count <= stack.buffer.len);
             if (stack.count == 0) return null;
             const pointer = &stack.buffer[stack.count - 1];
             assert(stack.count > 0);
@@ -113,7 +105,6 @@ pub fn BoundedStack(comptime T: type) type {
         }
 
         pub fn slice(stack: *const Self) []T {
-            assert(stack.count <= stack.buffer.len);
             const items = stack.buffer[0..stack.count];
             assert(items.len == stack.count);
             return items;
@@ -122,12 +113,10 @@ pub fn BoundedStack(comptime T: type) type {
         /// Drops everything above `mark`, a count taken earlier. Used to undo work.
         pub fn truncate(stack: *Self, mark: u32) void {
             assert(mark <= stack.count);
-            assert(stack.count <= stack.buffer.len);
             stack.count = mark;
         }
 
         pub fn clear(stack: *Self) void {
-            assert(stack.count <= stack.buffer.len);
             stack.truncate(0);
             assert(stack.is_empty());
         }
@@ -135,8 +124,6 @@ pub fn BoundedStack(comptime T: type) type {
         pub fn check(stack: *const Self) Fault {
             if (stack.buffer.len > std.math.maxInt(u32)) return .capacity_too_large;
             if (stack.count > stack.buffer.len) return .count_exceeds_capacity;
-            assert(stack.count <= stack.buffer.len);
-            assert(stack.buffer.len <= std.math.maxInt(u32));
             return .ok;
         }
 

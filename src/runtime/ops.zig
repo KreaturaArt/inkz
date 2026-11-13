@@ -62,7 +62,6 @@ pub fn strings_of(story: *const Story) Strings {
 
 fn lists_of(story: *Story) lists_module.Lists {
     assert(story.program.list_items.len < 1 << 20);
-    assert(story.state.lists.used <= story.state.lists.words.len);
     return .{ .program = story.program, .slab = &story.state.lists };
 }
 
@@ -162,7 +161,6 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
 
 /// `out`: the top value as text, if the expression left one.
 pub fn eval_output(story: *Story) Error!vm.Signal {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const state = &story.state;
     const value = state.evaluation.pop() orelse return .none;
     switch (value) {
@@ -407,7 +405,6 @@ const NativeContext = struct {
 // Variables (ink's VariablesState).
 
 pub fn global_slot(story: *const Story, name: StringId) ?GlobalSlot {
-    assert(story.program.globals.len < std.math.maxInt(u32));
     assert(!name.is_none());
     for (story.program.globals, 0..) |global, slot| {
         if (global.name == name) return .from_int(@intCast(slot));
@@ -431,7 +428,6 @@ fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
 /// A list item named `name` as a one-item list (ink's FindSingleItemListWithName).
 fn single_item_list(story: *Story, name: StringId) Error!?Value {
     assert(!name.is_none());
-    assert(story.state.lists.used <= story.state.lists.words.len);
     const text = story.program.strings.get(name);
     const item = story.program.list_item_by_name(text) orelse return null;
     const origin = story.program.list_items[item.to_int()].origin;
@@ -610,7 +606,6 @@ fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!Value {
 
 pub fn list_literal(story: *Story, instruction: Instruction) Error!ListReference {
     assert(instruction.opcode == .list);
-    assert(story.state.lists.used <= story.state.lists.words.len);
     const at = @backingInt(instruction.get(.list));
     const decoded = extra.get(instruction_module.ListLiteral, story.program.extra, at);
     const record = decoded.data;
@@ -744,7 +739,6 @@ pub fn turns_since(story: *Story, container: ContainerIndex) i32 {
 }
 
 pub fn random(story: *Story) Error!void {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const maximum = try vm.pop_evaluation(story);
     const minimum = try vm.pop_evaluation(story);
     if (minimum != .integer) return fail(story, .random_invalid_minimum, .{});
@@ -768,7 +762,6 @@ pub fn random(story: *Story) Error!void {
 }
 
 pub fn seed_random(story: *Story) Error!void {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const seed = try vm.pop_evaluation(story);
     if (seed != .integer) return fail(story, .seed_invalid, .{});
     story.state.story_seed = seed.integer;
@@ -837,7 +830,6 @@ pub fn force_end(story: *Story) void {
 
 pub fn list_command(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .list_from_int or opcode == .list_range or opcode == .list_random);
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const value = switch (opcode) {
         .list_from_int => try list_from_int(story),
         .list_range => try list_range(story),
@@ -859,7 +851,6 @@ fn list_error(err: lists_module.Error) Error {
 
 /// `"listInt"`: the list item named by a list name and a value.
 fn list_from_int(story: *Story) Error!Value {
-    assert(story.state.lists.used <= story.state.lists.words.len);
     const number = try vm.pop_evaluation(story);
     var keep = [_]Value{try vm.pop_evaluation(story)};
     if (number != .integer) return fail(story, .list_from_int_not_int, .{});
@@ -874,7 +865,6 @@ fn list_from_int(story: *Story) Error!Value {
 
 /// LIST_RANGE(list, min, max).
 fn list_range(story: *Story) Error!Value {
-    assert(story.state.lists.used <= story.state.lists.words.len);
     var keep: [3]Value = undefined;
     keep[2] = try vm.pop_evaluation(story);
     keep[1] = try vm.pop_evaluation(story);
@@ -891,7 +881,6 @@ fn list_range(story: *Story) Error!Value {
 
 /// LIST_RANDOM(list): one item, drawn like RANDOM.
 fn list_random(story: *Story) Error!Value {
-    assert(story.state.lists.used <= story.state.lists.words.len);
     var keep = [_]Value{try vm.pop_evaluation(story)};
     if (keep[0] != .list) return fail(story, .list_random_not_list, .{});
     try reserve_list(story, &keep);
@@ -979,7 +968,6 @@ fn call_bound(
     context: ?*anyopaque,
     count: u32,
 ) Error!void {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const state = &story.state;
     if (count > story_module.external_arguments_max) return fail(story, .too_many_arguments, .{});
     if (state.evaluation.count < count) return fail(story, .evaluation_stack_empty, .{});

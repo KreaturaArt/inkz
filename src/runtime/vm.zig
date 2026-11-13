@@ -307,7 +307,6 @@ pub fn push_evaluation(story: *Story, value: Value) Error!void {
 }
 
 pub fn pop_evaluation(story: *Story) Error!Value {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const value = story.state.evaluation.pop() orelse return ops.fail(
         story,
         .evaluation_stack_empty,
@@ -449,7 +448,6 @@ fn choice_point(story: *Story, instruction: Instruction, pointer: Pointer) Error
 }
 
 fn variable_get(story: *Story, instruction: Instruction) Error!Signal {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const value: Value = switch (instruction.opcode) {
         .read_count => .{ .integer = @bitCast(visit_count(story, instruction.get(.read_count))) },
         .global_get => try ops.global_value(story, instruction.get(.global_get)),
@@ -461,7 +459,6 @@ fn variable_get(story: *Story, instruction: Instruction) Error!Signal {
 }
 
 fn assign(story: *Story, instruction: Instruction) Error!Signal {
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const value = try pop_evaluation(story);
     switch (instruction.opcode) {
         .global_declare => try ops.declare_global(story, instruction.get(.global_declare), value),
@@ -527,7 +524,6 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
 
 fn count_of_target(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .turns_since or opcode == .read_count_of_target);
-    assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const target = try pop_evaluation(story);
     if (target != .divert_target) return ops.fail(story, .turns_since_expected_target, .{});
     const container = target.divert_target;
