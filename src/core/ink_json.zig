@@ -32,7 +32,8 @@ pub const Error = error{
 } || program_builder.Error || Scanner.NextError || Scanner.AllocError;
 
 /// Control commands and native functions, by their JSON spelling.
-const words = std.StaticStringMap(Opcode).initComptime(.{
+/// The content words of ink's JSON that are instructions without an operand.
+pub const words = std.StaticStringMap(Opcode).initComptime(.{
     .{ "ev", .eval_start },           .{ "out", .eval_output },
     .{ "/ev", .eval_end },            .{ "du", .duplicate },
     .{ "pop", .pop },                 .{ "~ret", .function_return },

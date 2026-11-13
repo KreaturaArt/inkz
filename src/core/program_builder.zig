@@ -263,6 +263,13 @@ pub const ProgramBuilder = struct {
         builder.keys.items[key] = container;
     }
 
+    /// An instruction without an operand, given at run time (`add` takes it at comptime).
+    pub fn add_bare(builder: *ProgramBuilder, opcode: Opcode) !void {
+        assert(builder.frames.items.len > 0);
+        assert(instruction_module.operand_kind(opcode) == .none);
+        try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
+    }
+
     /// Names the current container. ink's JSON gives a container's name (`#n`) at its end.
     pub fn set_name(builder: *ProgramBuilder, name: []const u8) !void {
         assert(name.len > 0);
