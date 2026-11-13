@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("profile.zig");
 const Allocator = std.mem.Allocator;
 const Scanner = std.json.Scanner;
 const program_builder = @import("program_builder.zig");
@@ -82,7 +83,9 @@ pub fn load(gpa: Allocator, json: []const u8) !Program {
     };
     defer loader.builder.deinit();
     defer loader.scanner.deinit();
+    const document_zone = profile.begin(.json_read_document);
     try loader.load_document();
+    document_zone.end();
     var program = try loader.builder.finish();
     errdefer program.deinit(gpa);
     assert(program.containers.len > 0);

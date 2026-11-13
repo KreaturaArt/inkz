@@ -15,6 +15,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("profile.zig");
 const Allocator = std.mem.Allocator;
 const program_module = @import("program.zig");
 const string_pool = @import("string_pool.zig");
@@ -155,6 +156,8 @@ fn padding_of(length: usize) usize {
 
 /// Writes `program` as an image. The same program always gives the same bytes.
 pub fn write(program: *const Program, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+    const profile_zone = profile.begin(.image_write);
+    defer profile_zone.end();
     comptime assert(@import("builtin").cpu.arch.endian() == .little);
     assert(program.containers.len > 0);
     const header: Header = .{
@@ -287,15 +290,23 @@ fn check_string_ends(ends: []const u32, bytes_count: usize) Error!void {
 pub fn load(gpa: Allocator, bytes: []const u8) Error!Program {
     assert(bytes.len < std.math.maxInt(u32));
     assert(sections_count > 0);
+    const shape_zone = profile.begin(.image_shape);
     const layout = try Layout.of(bytes);
     try check_shape(&layout);
+    shape_zone.end();
+    const strings_zone = profile.begin(.image_strings);
     var strings = try load_strings(gpa, &layout);
+    strings_zone.end();
+    const arrays_zone = profile.begin(.image_arrays);
     var program = load_arrays(gpa, &layout, strings) catch |err| {
         strings.deinit(gpa);
         return err;
     };
+    arrays_zone.end();
     errdefer program.deinit(gpa);
+    const references_zone = profile.begin(.image_references);
     try check_references(&program);
+    references_zone.end();
     if (program.check() != .ok) return error.InvalidImage;
     return program;
 }

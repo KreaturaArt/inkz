@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("profile.zig");
 const Allocator = std.mem.Allocator;
 const Program = @import("program.zig").Program;
 const index = @import("index.zig");
@@ -146,6 +147,8 @@ const Writer = struct {
 
 /// Writes `program` as ink's JSON.
 pub fn serialize(gpa: Allocator, program: *const Program, out: *std.Io.Writer) !void {
+    const profile_zone = profile.begin(.json_serialize);
+    defer profile_zone.end();
     assert(program.instructions.len < std.math.maxInt(u32));
     assert(program.containers.len > 0);
     var arena_state: std.heap.ArenaAllocator = .init(gpa);

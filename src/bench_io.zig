@@ -252,7 +252,7 @@ fn git(arena: Allocator, io: std.Io, argv: []const []const u8) ?[]const u8 {
     return std.mem.trim(u8, result.stdout, " \n");
 }
 
-fn run_info(arena: Allocator, io: std.Io) !Run {
+pub fn run_info(arena: Allocator, io: std.Io) !Run {
     assert(builtin.mode != .debug);
     const now = std.Io.Timestamp.now(io, .real).toSeconds();
     const epoch: std.time.epoch.EpochSeconds = .{ .secs = @intCast(now) };
@@ -311,7 +311,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
-    try append_results(arena, io, lines.written());
+    try append_results(arena, io, results_path, lines.written());
 }
 
 fn print_record(record: *const Record) void {
@@ -328,19 +328,19 @@ fn print_record(record: *const Record) void {
     });
 }
 
-/// Appends `lines` to the results file, creating it (and `bench/`) if needed.
-fn append_results(arena: Allocator, io: std.Io, lines: []const u8) !void {
+/// Appends `lines` to the results file at `path`, creating it (and its directory) if needed.
+pub fn append_results(arena: Allocator, io: std.Io, path: []const u8, lines: []const u8) !void {
     assert(lines.len > 0);
     assert(lines[lines.len - 1] == '\n');
     const cwd = std.Io.Dir.cwd();
-    try cwd.createDirPath(io, std.fs.path.dirname(results_path).?);
+    try cwd.createDirPath(io, std.fs.path.dirname(path).?);
     const limit: std.Io.Limit = .limited(1 << 26);
-    const existing = cwd.readFileAlloc(io, results_path, arena, limit) catch |err| switch (err) {
+    const existing = cwd.readFileAlloc(io, path, arena, limit) catch |err| switch (err) {
         error.FileNotFound => "",
         else => return err,
     };
     const text = try std.mem.concat(arena, u8, &.{ existing, lines });
-    try cwd.writeFile(io, .{ .sub_path = results_path, .data = text });
+    try cwd.writeFile(io, .{ .sub_path = path, .data = text });
     const count = std.mem.count(u8, lines, "\n");
-    std.debug.print("appended {d} records to {s}\n", .{ count, results_path });
+    std.debug.print("appended {d} records to {s}\n", .{ count, path });
 }

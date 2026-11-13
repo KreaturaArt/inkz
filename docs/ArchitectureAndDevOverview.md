@@ -191,6 +191,7 @@ Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 | `zig build replay` | Installs `replay_case`, which replays one case and prints its transcript. |
 | `zig build bench` | Benchmarks in ReleaseSafe and ReleaseFast; writes `docs/benchmarks.md`. |
 | `zig build bench-io` | Program load and store, ink's JSON against the binary image, in ReleaseSafe and ReleaseFast; appends to `bench/load_store.jsonl` (see `docs/benchmarks.md`). |
+| `zig build bench-profile` | Time per pipeline stage (profile zones, ReleaseFast): prints each workload's zones and the worst zones of one pass; appends to `bench/profile.jsonl`. `zig build test-profile` checks the zones. |
 
 ### Ground truth
 

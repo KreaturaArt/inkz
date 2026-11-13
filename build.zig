@@ -80,6 +80,20 @@ pub fn build(b: *std.Build) void {
     }
 
     test_all.dependOn(add_death_tests(b, target));
+
+    // The profile zones with profiling compiled in (a test's root can't enable them).
+    const profile_check = b.addExecutable(.{
+        .name = "profile_check",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/profile_check.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    const run_profile_check = b.addRunArtifact(profile_check);
+    const test_profile = b.step("test-profile", "Check the profile zones with profiling on");
+    test_profile.dependOn(&run_profile_check.step);
+    test_all.dependOn(test_profile);
     test_all.dependOn(add_doctests(b, inkz_module, test_options));
 
     // Fuzz targets (P0.9): each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
@@ -146,6 +160,22 @@ pub fn build(b: *std.Build) void {
         previous_bench_io = &run_bench_io.step;
         bench_io_step.dependOn(&run_bench_io.step);
     }
+
+    // Profile zones per pipeline stage (src/core/profile.zig), in ReleaseFast; results are
+    // appended to bench/profile.jsonl.
+    const bench_profile = b.addExecutable(.{
+        .name = "bench_profile",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/bench_profile.zig"),
+            .target = target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    const run_bench_profile = b.addRunArtifact(bench_profile);
+    run_bench_profile.setCwd(b.path("."));
+    run_bench_profile.has_side_effects = true;
+    const bench_profile_step = b.step("bench-profile", "Profile each pipeline stage");
+    bench_profile_step.dependOn(&run_bench_profile.step);
 
     const simulate = b.addExecutable(.{
         .name = "simulate",

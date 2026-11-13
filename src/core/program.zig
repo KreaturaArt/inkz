@@ -3,6 +3,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("profile.zig");
 const index = @import("index.zig");
 const fault = @import("fault.zig");
 const string_pool = @import("string_pool.zig");
@@ -194,6 +195,8 @@ pub const Program = struct {
 
     /// The pair assertion after building and after loading (plan §3.1).
     pub fn check(program: *const Program) Fault {
+        const profile_zone = profile.begin(.program_check);
+        defer profile_zone.end();
         assert(program.containers.len > 0);
         const instructions_total = program.instructions_count();
         if (program.table().check(instructions_total) != .ok) return .containers;
