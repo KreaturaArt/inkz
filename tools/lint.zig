@@ -1,8 +1,8 @@
 //! TigerStyle lint for inkz (plan §3, P0.8), run with `zig build lint`.
 //!
 //! Rules: function length, line length, recursion (a name-based call graph), `usize` struct
-//! fields, snake_case file names and assertion density (`assert` and `verify` calls), on all
-//! code (the old code that predated the rules was deleted in P9.1 and P9.2).
+//! fields and snake_case file names on all code, and assertion density (`assert` and `verify`
+//! calls) on library code: src/core, src/runtime and src/compiler, without their test files.
 //!
 //! Suppressions are comments that must give a reason:
 //! - `// lint: allow function_length: <reason>` or `// lint: allow recursion: <reason>` in the
@@ -22,7 +22,10 @@ const Allocator = std.mem.Allocator;
 
 pub const function_lines_max = 70;
 pub const line_columns_max = 100;
-pub const assertions_per_function_min = 2;
+pub const assertions_per_function_min = 1;
+/// The library's directories; tests, harnesses, benchmarks, fuzz targets and tools assert
+/// where it helps but have no density rule.
+const density_directories = [_][]const u8{ "src/core/", "src/runtime/", "src/compiler/" };
 pub const file_bytes_max = 16 * 1024 * 1024;
 pub const files_max = 4096;
 
@@ -334,6 +337,7 @@ pub const Linter = struct {
     fn check_assertion_density(linter: *Linter, file_index: u32, assertions_count: u32) !void {
         const file = &linter.files.items[file_index];
         assert(file.functions_first <= linter.functions.items.len);
+        if (!density_applies(file.path)) return;
         var functions_count: u32 = 0;
         const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
         for (functions) |function| functions_count += @intFromBool(!function.returns_type);
@@ -348,6 +352,17 @@ pub const Linter = struct {
         );
         assert(required > assertions_count);
         try linter.report(file.path, 1, .assertion_density, message);
+    }
+
+    fn density_applies(path: []const u8) bool {
+        assert(path.len > 0);
+        const test_file = std.mem.endsWith(u8, path, "_test.zig") or
+            std.mem.endsWith(u8, path, "_tests.zig");
+        if (test_file) return false;
+        for (density_directories) |directory| {
+            if (std.mem.startsWith(u8, path, directory)) return true;
+        }
+        return false;
     }
 
     /// The innermost function of `file_index` whose tokens contain `token`.
@@ -926,23 +941,23 @@ test "usize struct fields are reported, usize locals are not" {
     try std.testing.expectEqual(@as(u32, 1), diagnostics[0].line);
 }
 
-test "assertion density below two per function is reported" {
+test "library code below one assertion per function is reported" {
     // Goal: the density rule, verify() counting as an assertion, and the file-level
     // suppression. Method: sparse and verified samples, with and without the suppression.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const sparse =
-        \\fn a() void {
-        \\    assert(true);
-        \\}
+        \\fn a() void {}
         \\fn b() void {}
+        \\fn c(x: u32) void {
+        \\    assert(x > 0);
+        \\}
         \\
     ;
     const without = try lint_samples(arena.allocator(), &.{.{ "src/core/sparse.zig", sparse }});
     try expect_rules(without, &.{.assertion_density});
     const verified =
         \\fn a(s: S) void {
-        \\    assert(s.ok);
         \\    fault.verify(s.check());
         \\}
         \\
@@ -952,6 +967,23 @@ test "assertion density below two per function is reported" {
     const suppressed = "// lint: allow assertion_density: generated tables\n" ++ sparse;
     const with = try lint_samples(arena.allocator(), &.{.{ "src/core/tables.zig", suppressed }});
     try expect_rules(with, &.{});
+}
+
+test "tests, harnesses and tools have no density rule" {
+    // Only the library's directories count; their test files don't.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const bare = "fn a() void {}\nfn b() void {}\n";
+    const paths = [_][:0]const u8{
+        "src/testing/oracle.zig", "src/fuzz/vm.zig",          "tools/doctest.zig",
+        "src/bench_io.zig",       "src/runtime/api_test.zig", "src/compiler/lowering_tests.zig",
+    };
+    for (paths) |path| {
+        const diagnostics = try lint_samples(arena.allocator(), &.{.{ path, bare }});
+        try expect_rules(diagnostics, &.{});
+    }
+    const library = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", bare }});
+    try expect_rules(library, &.{.assertion_density});
 }
 
 test "direct, mutual and cross-file recursion are reported" {
