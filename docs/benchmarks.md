@@ -10,19 +10,23 @@ runtime's `step()` calls, so steps/s is not comparable with the new VM's instruc
 and lines/s are. "Runtime objects" are the old `RuntimeObject`s in all containers, the closest
 thing to instructions.
 
-The new runtime's sections (`bench-new`) play ink's JSON of the same two stories with the same
+The runtime sections (`bench-runtime`) play ink's JSON of the same two stories with the same
 seeded choices, so turns/s and lines/s compare with the old runtime's; its memory is the
 program plus the state's fixed budget at the default limits, so bytes per instruction is high
 for a small story and falls as stories grow.
 
-The compiler sections (`bench-compile`, P8.6) compile both stories from source to JSON with
-the old compiler and with the new one (`src/compiler`, a faithful port of ink's
-compiler): mean time and peak allocated bytes. The new compiler peaks at less than half the
-old one's memory: its parse workspace is sized from the source length (doubled on at most
-`compile_retries_max` retries) and settled to what the parse used, and the object tree, the
-resolution and the syntax are freed once the IR is lowered, before layout and emission. It is
-slower than the old compiler, which skips most of ink's semantics (weave, resolution and
-validation passes); compile speed is not a P8.6 target.
+The compiler sections (`bench-compile`) compile both stories from source to JSON
+(`src/compiler`, a faithful port of ink's compiler): mean time and peak allocated bytes. Its
+parse workspace is sized from the source length (doubled on at most `compile_retries_max`
+retries) and settled to what the parse used, and the object tree, the resolution and the
+syntax are freed once the IR is lowered, before layout and emission. Compile speed is not a
+P8.6 target. The old compiler, which skipped most of ink's semantics, was faster and peaked
+higher; its last measurement, before P9.2 deleted it:
+
+| Old compiler | ReleaseSafe (ms · peak bytes) | ReleaseFast (ms · peak bytes) |
+|---|---|---|
+| crime_scene | 0.27 · 535,918 | 0.17 · 513,047 |
+| generated (1000 knots) | 4.53 · 13,067,678 | 3.15 · 12,680,076 |
 
 ## Memory budget sizing (P4.12)
 
@@ -144,8 +148,8 @@ Peak RSS of the whole run: 17024 KiB. Plays use seeded random choices (.NET Rand
 Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Random, seeds 1..200), at most 200 turns each.
 <!-- bench:ReleaseFast:end -->
 
-<!-- bench-new:ReleaseSafe:start -->
-### New runtime, ReleaseSafe
+<!-- bench-runtime:safe:start -->
+### Runtime, safe
 
 | Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|---|---|
@@ -155,10 +159,10 @@ Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Rand
 | generated, fitted limits | 5605.3 | 764.3 | 470560 | 470560 | 12714540 | 738199 | 505080 | 32010 | 23.1 |
 
 The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
-<!-- bench-new:ReleaseSafe:end -->
+<!-- bench-runtime:safe:end -->
 
-<!-- bench-new:ReleaseFast:start -->
-### New runtime, ReleaseFast
+<!-- bench-runtime:fast:start -->
+### Runtime, fast
 
 | Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|---|---|
@@ -168,29 +172,29 @@ The state is the limits' fixed budget, allocated once: the defaults, or limits f
 | generated, fitted limits | 4272.9 | 648.1 | 1103084 | 1103084 | 29805340 | 738199 | 505080 | 32010 | 23.1 |
 
 The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
-<!-- bench-new:ReleaseFast:end -->
+<!-- bench-runtime:fast:end -->
 
-<!-- bench-compile:ReleaseSafe:start -->
-### Compilers, ReleaseSafe
+<!-- bench-compile:safe:start -->
+### Compiler, safe
 
-| Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
-|---|---|---|---|---|---|
-| crime_scene | 0.27 | 1.56 | 535918 | 246873 | 2.17 |
-| generated (1000 knots) | 4.53 | 26.38 | 13067678 | 4753137 | 2.75 |
+| Story | Compile (ms) | Peak bytes |
+|---|---|---|
+| crime_scene | 1.56 | 246873 |
+| generated (1000 knots) | 26.38 | 4753137 |
 
-Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
-<!-- bench-compile:ReleaseSafe:end -->
+Source to JSON; the time is the mean of 20 compiles.
+<!-- bench-compile:safe:end -->
 
-<!-- bench-compile:ReleaseFast:start -->
-### Compilers, ReleaseFast
+<!-- bench-compile:fast:start -->
+### Compiler, fast
 
-| Story | Old compile (ms) | New compile (ms) | Old peak bytes | New peak bytes | Old/new peak |
-|---|---|---|---|---|---|
-| crime_scene | 0.17 | 0.87 | 513047 | 223231 | 2.30 |
-| generated (1000 knots) | 3.15 | 14.78 | 12680076 | 4292970 | 2.95 |
+| Story | Compile (ms) | Peak bytes |
+|---|---|---|
+| crime_scene | 0.87 | 223231 |
+| generated (1000 knots) | 14.78 | 4292970 |
 
-Source to JSON, both; the time is the mean of 20 compiles. The old compiler's numbers are its last measurement, before P9.2 deleted it.
-<!-- bench-compile:ReleaseFast:end -->
+Source to JSON; the time is the mean of 20 compiles.
+<!-- bench-compile:fast:end -->
 
 ## Final report (P9.4)
 
