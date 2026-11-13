@@ -24,14 +24,7 @@ pub fn build(b: *std.Build) void {
     build_options.addOption(bool, "ledger_update", ledger_update);
     build_options.addOption(bool, "snap_update", snap_update);
     // The ground-truth gate replays each case in its own process (src/replay_case.zig).
-    const replay_case = b.addExecutable(.{
-        .name = "replay_case",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/replay_case.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+    const replay_case = add_executable(b, "replay_case", "src/replay_case.zig", target, optimize);
     build_options.addOptionPath("replay_case_path", replay_case.getEmittedBin());
     // `zig build replay` installs it, for replaying one case by hand.
     const replay_step = b.step("replay", "Install replay_case (replay one case on an engine)");
@@ -82,15 +75,10 @@ pub fn build(b: *std.Build) void {
     test_all.dependOn(add_death_tests(b, target));
 
     // The profile zones with profiling compiled in (a test's root can't enable them).
-    const profile_check = b.addExecutable(.{
-        .name = "profile_check",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/profile_check.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
-    const run_profile_check = b.addRunArtifact(profile_check);
+    const profile_check = "src/profile_check.zig";
+    const run_profile_check = b.addRunArtifact(
+        add_executable(b, "profile_check", profile_check, target, optimize),
+    );
     const test_profile = b.step("test-profile", "Check the profile zones with profiling on");
     test_profile.dependOn(&run_profile_check.step);
     test_all.dependOn(test_profile);
@@ -106,99 +94,35 @@ pub fn build(b: *std.Build) void {
         .own_filters = &.{"fuzz: "},
     }, test_options);
 
-    const write_transcripts = b.addExecutable(.{
-        .name = "write_transcripts",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/write_transcripts.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+    const write_transcripts =
+        add_executable(b, "write_transcripts", "src/write_transcripts.zig", target, optimize);
     write_transcripts.root_module.addOptions("build_options", build_options);
     const run_transcripts = b.addRunArtifact(write_transcripts);
     run_transcripts.setCwd(b.path("."));
     const transcripts_step = b.step("transcripts", "Regenerate test/transcripts");
     transcripts_step.dependOn(&run_transcripts.step);
 
-    // Benchmarks in both release modes, one after the other (they write the same report).
+    // Benchmarks. Each run is a new measurement, so they always run.
     const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast (P0.6)");
-    var previous_bench: ?*std.Build.Step = null;
-    for ([_]std.builtin.OptimizeMode{ .ReleaseSafe, .ReleaseFast }) |mode| {
-        const bench = b.addExecutable(.{
-            .name = b.fmt("bench_{t}", .{mode}),
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/bench.zig"),
-                .target = target,
-                .optimize = mode,
-            }),
-        });
-        const run_bench = b.addRunArtifact(bench);
-        run_bench.setCwd(b.path("."));
-        if (previous_bench) |previous| run_bench.step.dependOn(previous);
-        previous_bench = &run_bench.step;
-        bench_step.dependOn(&run_bench.step);
-    }
-
-    // Program load and store, as ink's JSON and as the binary image, in both release modes;
-    // results are appended to bench/load_store.jsonl.
+    add_release_benches(b, bench_step, "bench", "src/bench.zig", target);
+    // Program load and store, as ink's JSON and as the binary image; results are appended to
+    // bench/load_store.jsonl.
     const bench_io_step = b.step("bench-io", "Benchmark JSON and binary image load/store");
-    var previous_bench_io: ?*std.Build.Step = null;
-    for ([_]std.builtin.OptimizeMode{ .ReleaseSafe, .ReleaseFast }) |mode| {
-        const bench_io = b.addExecutable(.{
-            .name = b.fmt("bench_io_{t}", .{mode}),
-            .root_module = b.createModule(.{
-                .root_source_file = b.path("src/bench_io.zig"),
-                .target = target,
-                .optimize = mode,
-            }),
-        });
-        const run_bench_io = b.addRunArtifact(bench_io);
-        run_bench_io.setCwd(b.path("."));
-        // Always run: each run is a new measurement.
-        run_bench_io.has_side_effects = true;
-        if (previous_bench_io) |previous| run_bench_io.step.dependOn(previous);
-        previous_bench_io = &run_bench_io.step;
-        bench_io_step.dependOn(&run_bench_io.step);
-    }
-
+    add_release_benches(b, bench_io_step, "bench_io", "src/bench_io.zig", target);
     // Profile zones per pipeline stage (src/core/profile.zig), in ReleaseFast; results are
     // appended to bench/profile.jsonl.
-    const bench_profile = b.addExecutable(.{
-        .name = "bench_profile",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/bench_profile.zig"),
-            .target = target,
-            .optimize = .ReleaseFast,
-        }),
-    });
-    const run_bench_profile = b.addRunArtifact(bench_profile);
-    run_bench_profile.setCwd(b.path("."));
-    run_bench_profile.has_side_effects = true;
     const bench_profile_step = b.step("bench-profile", "Profile each pipeline stage");
-    bench_profile_step.dependOn(&run_bench_profile.step);
+    const bench_profile = add_bench(b, "bench_profile", "src/bench_profile.zig", target, .fast);
+    bench_profile_step.dependOn(&bench_profile.step);
 
-    const simulate = b.addExecutable(.{
-        .name = "simulate",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/simulate.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+    const simulate = add_executable(b, "simulate", "src/simulate.zig", target, optimize);
     simulate.root_module.addOptions("build_options", build_options);
     const run_simulate = b.addRunArtifact(simulate);
     run_simulate.setCwd(b.path("."));
     run_simulate.addPassthruArgs();
     b.step("simulate", "Play every case with seeded random choices (P0.9)").dependOn(&run_simulate.step);
 
-    const lint = b.addExecutable(.{
-        .name = "lint",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/lint.zig"),
-            .target = target,
-            .optimize = optimize,
-        }),
-    });
+    const lint = add_executable(b, "lint", "tools/lint.zig", target, optimize);
     const run_lint = b.addRunArtifact(lint);
     run_lint.setCwd(b.path("."));
     run_lint.addArgs(&.{ "src", "tools" });
@@ -217,6 +141,55 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(&run_lint.step);
     ci_step.dependOn(test_all);
     ci_step.dependOn(fuzz_corpus);
+}
+
+fn add_executable(
+    b: *std.Build,
+    name: []const u8,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = name,
+        .root_module = b.createModule(.{
+            .root_source_file = b.path(root),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+}
+
+/// A benchmark's run, in the project directory and every time.
+fn add_bench(
+    b: *std.Build,
+    name: []const u8,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Step.Run {
+    const run = b.addRunArtifact(add_executable(b, name, root, target, optimize));
+    run.setCwd(b.path("."));
+    run.has_side_effects = true;
+    return run;
+}
+
+/// Runs the benchmark in ReleaseSafe, then in ReleaseFast (never both at once: they would
+/// measure each other, and they write the same files).
+fn add_release_benches(
+    b: *std.Build,
+    step: *std.Build.Step,
+    name: []const u8,
+    root: []const u8,
+    target: std.Build.ResolvedTarget,
+) void {
+    var previous: ?*std.Build.Step = null;
+    for ([_]std.builtin.OptimizeMode{ .safe, .fast }) |mode| {
+        const run = add_bench(b, b.fmt("{s}_{t}", .{ name, mode }), root, target, mode);
+        if (previous) |before| run.step.dependOn(before);
+        previous = &run.step;
+        step.dependOn(&run.step);
+    }
 }
 
 /// The docs whose ```zig blocks are compiled by `zig build doctest` (tools/doctest.zig).
@@ -264,14 +237,7 @@ const death_cases = @import("src/death_cases.zig");
 /// `zig build test-death` (plan D20): runs each case in `src/death_cases.zig` as its own
 /// child process and checks how it ends. Always built in Debug, so assertions are on.
 fn add_death_tests(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
-    const runner = b.addExecutable(.{
-        .name = "death",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("tools/death.zig"),
-            .target = target,
-            .optimize = .Debug,
-        }),
-    });
+    const runner = add_executable(b, "death", "tools/death.zig", target, .debug);
     runner.root_module.addAnonymousImport("death_cases", .{
         .root_source_file = b.path("src/death_cases.zig"),
     });
