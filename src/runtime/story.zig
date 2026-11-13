@@ -122,6 +122,24 @@ pub const external_arguments_max = 32;
 
 pub const SetError = Error || error{VariableNotDeclared};
 
+const stamped = std.debug.runtime_safety;
+
+/// A view into the story's memory, valid until the next mutating call on the story. With
+/// runtime safety on, it remembers the story's generation and `get` asserts it is unchanged.
+pub fn Borrowed(comptime T: type) type {
+    return struct {
+        value: T,
+        stamp: Stamp,
+
+        pub fn get(view: @This()) T {
+            if (stamped) assert(view.stamp.owner.* == view.stamp.generation);
+            return view.value;
+        }
+    };
+}
+
+const Stamp = if (stamped) struct { generation: u32, owner: *const u32 } else struct {};
+
 pub const Story = struct {
     program: *const Program,
     state: State,
@@ -160,6 +178,8 @@ pub const Story = struct {
     /// `reset_state` or `load_json` (P11.10).
     failed: bool = false,
     events: Events = .{},
+    /// Bumped by every call that may change what a `Borrowed` view points at.
+    generation: u32 = 0,
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
@@ -173,6 +193,22 @@ pub const Story = struct {
         assert(story.state.call_stack.depth() == 1);
     }
 
+    /// A view of `value`, which points into this story's memory.
+    pub fn borrow(story: *const Story, comptime T: type, value: T) Borrowed(T) {
+        assert(story.state.memory.len > 0);
+        if (!stamped) return .{ .value = value, .stamp = .{} };
+        return .{
+            .value = value,
+            .stamp = .{ .generation = story.generation, .owner = &story.generation },
+        };
+    }
+
+    /// Makes every view handed out so far stale; called first by every mutating call.
+    pub fn invalidate_views(story: *Story) void {
+        assert(story.state.memory.len > 0);
+        story.generation +%= 1;
+    }
+
     /// What this story has needed since init (P10.2), for `Limits.fitted`.
     pub fn usage(story: *const Story) limits_module.Usage {
         assert(story.state.memory.len > 0);
@@ -184,13 +220,19 @@ pub const Story = struct {
 
     /// ink's ResetState: a fresh state, with the global declaration run again.
     pub fn reset_state(story: *Story) Error!void {
-        assert(story.state.memory.len > 0);
+        story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         story.state.reset();
         story.diverted_pointer = .null;
         story.failed = false;
         try story.reset_globals();
         assert(story.state.call_stack.depth() == 1);
+    }
+
+    /// ink's ResetErrors: drops the kept errors and warnings, so the story can continue.
+    pub fn reset_errors(story: *Story) void {
+        story.invalidate_views();
+        story.state.reset_errors();
     }
 
     /// Seeds RANDOM and shuffles (`Options.random_seed`): ink's storySeed, with
@@ -205,6 +247,7 @@ pub const Story = struct {
     /// ink's SwitchFlow: makes flow `name` current, creating it at the root if it's new.
     pub fn switch_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
         assert(name.len > 0);
+        story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         try flows.switch_flow(&story.state, name);
         assert(std.mem.eql(u8, flows.current_name(&story.state), name));
@@ -219,8 +262,8 @@ pub const Story = struct {
 
     /// ink's RemoveFlow.
     pub fn remove_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
-        assert(story.state.flows[0].in_use);
         assert(name.len > 0);
+        story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         try flows.remove_flow(&story.state, name);
     }
@@ -317,6 +360,7 @@ pub const Story = struct {
         defer profile_zone.end();
         assert(story.state.call_stack.depth() > 0);
         assert(story.state.line_bytes.len > 0);
+        story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         if (story.failed) return error.StoryFailed;
         return story.next_line();
@@ -709,6 +753,7 @@ pub const Story = struct {
     pub fn choose_choice_index(story: *Story, position: u32) Error!void {
         const profile_zone = profile.begin(.choose_choice);
         defer profile_zone.end();
+        story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         if (story.failed) return error.StoryFailed;
         if (story.events.on_make_choice) |event| {
@@ -739,6 +784,7 @@ pub const Story = struct {
     pub fn set_variable(story: *Story, name: []const u8, value: value_module.Value) SetError!void {
         assert(name.len > 0);
         assert(value != .tag and value != .variable_pointer);
+        story.invalidate_views();
         const slot = story.program.global_by_name(name) orelse return error.VariableNotDeclared;
         if (story.callback_depth > 0) return error.Reentrant;
         try ops.set_global(story, slot, value);
@@ -748,6 +794,7 @@ pub const Story = struct {
     /// `set_variable` with a string value, copied into the heap.
     pub fn set_variable_text(story: *Story, name: []const u8, text: []const u8) SetError!void {
         assert(name.len > 0);
+        story.invalidate_views();
         if (story.program.global_by_name(name) == null) return error.VariableNotDeclared;
         const reference = story.state.allocate_string(@intCast(text.len), &.{}) catch
             return error.HeapLimit;

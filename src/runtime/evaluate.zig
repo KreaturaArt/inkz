@@ -36,6 +36,7 @@ pub fn evaluate_function(
     text_writer: *std.Io.Writer,
 ) Error!HostValue {
     assert(name.len > 0);
+    story.invalidate_views();
     if (story.failed) return error.StoryFailed;
     if (story.events.on_evaluate_function) |event| {
         story.callback_depth += 1;
