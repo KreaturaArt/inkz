@@ -1,62 +1,35 @@
-//! The deterministic story simulator (plan P0.9), run with `zig build simulate`. For each seed
-//! it plays every ground-truth case with seeded random choices (`play_seeded <seed>`), each
-//! run in its own process, and reports runs that crash. A run depends only on its engine,
-//! case and seed, so every report carries the command that reproduces it.
-//!
-//! P5.12 added the full action mix (save/load points, flow switches, `evaluate_function`,
-//! `set_variable`, compact-always) and `State.verify()` after every `cont()`.
+//! The deterministic story simulator, run with `zig build simulate`: each ground-truth case
+//! played with seeded random choices and the full action mix (save and load points, flow
+//! switches, `evaluate_function`, `set_variable`, compact-always), with `State.check()` after
+//! every `cont()`. A run depends only on its case and seed, so every report carries the
+//! command that reproduces it.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const build_options = @import("build_options");
+const isolated = @import("isolated.zig");
+const cases = @import("cases.zig");
 
-pub const Outcome = enum { ok, crash };
-
-pub const Run = struct {
-    outcome: Outcome,
-    transcript: []const u8,
-};
-
-/// Plays case `id` on `engine` with choices from `new Random(seed)`, in a child process.
-pub fn run_seed(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    engine: []const u8,
-    id: []const u8,
-    seed: i32,
-) !Run {
-    assert(id.len > 0);
-    assert(engine.len > 0);
+/// Plays case `id` with choices from `new Random(seed)` (`play_seeded`), in a child process.
+pub fn run_seed(arena: std.mem.Allocator, io: std.Io, id: []const u8, seed: i32) !isolated.Run {
     const actions = try std.fmt.allocPrint(arena, "play_seeded {d}", .{seed});
-    const result = try std.process.run(arena, io, .{
-        .argv = &.{ build_options.replay_case_path, engine, id, "--actions", actions },
-        .stdout_limit = .limited(16 * 1024 * 1024),
-        .stderr_limit = .limited(16 * 1024 * 1024),
-    });
-    const crashed = switch (result.term) {
-        .exited => |code| code != 0,
-        else => true,
-    };
-    const run: Run = .{ .outcome = if (crashed) .crash else .ok, .transcript = result.stdout };
-    assert(run.outcome == .crash or run.transcript.len > 0);
-    return run;
+    return isolated.replay(arena, io, &.{ id, "--actions", actions });
 }
 
 test "a simulation run is reproducible by seed" {
-    // Goal: P0.9; the same engine, case and seed give the same run, and other seeds explore
-    // other paths. Method: run a branching weave twice with one seed, then with others.
+    // Goal: the same case and seed give the same run, and other seeds explore other paths.
+    // Method: run a branching weave twice with one seed, then with others.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
     const id = "runtime/weaves/weave_gathers";
-    const first = try run_seed(arena, io, "new", id, 7);
-    const again = try run_seed(arena, io, "new", id, 7);
-    try std.testing.expectEqual(Outcome.ok, first.outcome);
+    const first = try run_seed(arena, io, id, 7);
+    const again = try run_seed(arena, io, id, 7);
+    try std.testing.expect(!first.crashed);
     try std.testing.expectEqualStrings(first.transcript, again.transcript);
     var differs = false;
     for ([_]i32{ 1, 2, 3, 4, 5, 6 }) |seed| {
-        const other = try run_seed(arena, io, "new", id, seed);
+        const other = try run_seed(arena, io, id, seed);
         differs = differs or !std.mem.eql(u8, other.transcript, first.transcript);
     }
     try std.testing.expect(differs);
@@ -73,7 +46,7 @@ const load_module = @import("../runtime/load.zig");
 const evaluate_module = @import("../runtime/evaluate.zig");
 const Story = story_module.Story;
 
-/// What the new engine's simulation found in one run.
+/// What a simulated run found.
 pub const Finding = enum { ok, check_failed, round_trip_differs };
 
 fn ignore_message(
@@ -95,10 +68,10 @@ fn noop_external(
     return .{ .integer = 1 };
 }
 
-/// Plays `story` with the full action mix (P5.12) driven by `new Random(seed)`: seeded
+/// Plays `story` with the full action mix driven by `new Random(seed)`: seeded
 /// choices, save and load points, flow switches, evaluate_function on the story's knots,
 /// set_variable, and State.check after every cont. `save_buffer` holds the saves.
-pub fn simulate_new(story: *Story, seed: i32, save_buffer: []u8) !Finding {
+pub fn simulate(story: *Story, seed: i32, save_buffer: []u8) !Finding {
     assert(story.state.memory.len > 0);
     assert(save_buffer.len > 0);
     var random = DotnetRandom.init(seed);
@@ -194,7 +167,7 @@ fn evaluate_some_knot(story: *Story, random: *DotnetRandom) void {
 }
 
 /// Prepares a story for simulation: bindings, a quiet error handler, the compaction mode.
-pub fn prepare_new(story: *Story, compact_always: bool) void {
+pub fn prepare(story: *Story, compact_always: bool) void {
     assert(story.bindings.len == story.program.externals.len);
     assert(story.state.memory.len > 0);
     for (story.program.externals) |external| {
@@ -205,16 +178,15 @@ pub fn prepare_new(story: *Story, compact_always: bool) void {
     story.state.compact_always = compact_always;
 }
 
-test "the new engine's simulation keeps the state sound" {
-    // Goal: P5.12; a few seeds of the full action mix on every ground-truth case, with and
-    // without compact-always. `zig build simulate -- --engine new` runs many more.
+test "the simulation keeps the state sound" {
+    // Goal: a few seeds of the full action mix on every ground-truth case, with and without
+    // compact-always. `zig build simulate` runs many more.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
     const save_buffer = try arena.alloc(u8, 2 << 20);
-    const ground_truth = @import("ground_truth_test.zig");
-    for (try ground_truth.collect_cases(arena, io)) |id| {
+    for (try cases.ids(arena, io)) |id| {
         const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
         const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
         var program = ink_json.load(arena, json) catch continue;
@@ -222,9 +194,9 @@ test "the new engine's simulation keeps the state sound" {
         try story.init(std.testing.allocator, &program, .{});
         defer story.deinit(std.testing.allocator);
         for ([_]bool{ false, true }) |compact_always| {
-            prepare_new(&story, compact_always);
+            prepare(&story, compact_always);
             for ([_]i32{ 1, 2, 3 }) |seed| {
-                const finding = simulate_new(&story, seed, save_buffer) catch |err| switch (err) {
+                const finding = simulate(&story, seed, save_buffer) catch |err| switch (err) {
                     error.StepLimit => Finding.ok,
                     else => return err,
                 };

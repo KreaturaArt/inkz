@@ -1,13 +1,19 @@
-//! The new runtime (`src/runtime/`) behind the engine-neutral layer (plan P0.11, P5.1). It is
-//! line-based like ink, so `continue_line` is one `cont()` and tags are per line.
+//! Replays transcript actions (`transcript.zig`) on the runtime and writes what the C#
+//! reference harness writes: lines, choices and values, ink's exception messages, host
+//! events, observed variables and the story's errors and warnings. The runtime is
+//! line-based like ink, so `continue` is one `cont()` and tags are per line.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
+const write_json_string = transcript.write_json_string;
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
+const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
 const story_module = @import("../runtime/story.zig");
 const Story = story_module.Story;
+const HostValue = story_module.HostValue;
+const ops = @import("../runtime/ops.zig");
 const story_paths = @import("../runtime/story_paths.zig");
 const evaluate_module = @import("../runtime/evaluate.zig");
 const save_module = @import("../runtime/save.zig");
@@ -15,502 +21,420 @@ const load_module = @import("../runtime/load.zig");
 const value_module = @import("../runtime/value.zig");
 const Severity = @import("../runtime/state.zig").Diagnostic.Severity;
 
+/// A story and what the harness records about it. It must not move after `init`: the story
+/// borrows `program`, and the story's callbacks get the harness as their context.
 pub const Harness = struct {
-    pub const tags_per_line = true;
-
     gpa: std.mem.Allocator,
-    /// Heap-allocated so the story's borrowed pointer stays valid when the engine moves.
-    program: *Program,
-    story: *Story,
-    /// The tags of the last line or choice, owned until the next call that returns tags.
-    tags: std.ArrayList([]const u8) = .empty,
+    program: Program,
+    story: Story,
+    /// The tags of the last line or choice: their bytes, and where each one ends.
     tag_bytes: std.ArrayList(u8) = .empty,
-    /// ink's message for the last exception, owned.
-    exception: ?[]u8 = null,
-    /// Text for the last `get` and the global names, owned until the next call.
-    scratch: std.ArrayList(u8) = .empty,
-    names: std.ArrayList([]const u8) = .empty,
-    /// The text of the last `evaluate`, and its result's text.
-    evaluated: std.ArrayList(u8) = .empty,
-    evaluated_result: std.ArrayList(u8) = .empty,
+    tag_ends: std.ArrayList(u32) = .empty,
+    /// ink's message for the exception that stopped the replay; empty when the error's name
+    /// says it.
+    exception: []u8 = &.{},
     /// The last save, for `load` and `load_fresh`.
     saved: std.ArrayList(u8) = .empty,
-    /// What `write_messages` writes; heap-allocated as the story's error handler context.
-    messages: *Messages,
+    /// Since the last action: host events (`external:`, `observed:`, `event:` lines), then
+    /// the story's errors and warnings, written in that order as the harness flushes them.
+    events: std.ArrayList(u8) = .empty,
+    errors: std.ArrayList(u8) = .empty,
+    warnings: std.ArrayList(u8) = .empty,
     bindings: std.ArrayList(*Bound) = .empty,
 
-    pub fn open(gpa: std.mem.Allocator, json: []const u8) !Harness {
-        assert(json.len > 0);
-        const program = try gpa.create(Program);
-        errdefer gpa.destroy(program);
-        program.* = try ink_json.load(gpa, json);
-        errdefer program.deinit(gpa);
-        const story = try gpa.create(Story);
-        errdefer gpa.destroy(story);
-        try story.init(gpa, program, .{});
-        errdefer story.deinit(gpa);
-        const messages = try gpa.create(Messages);
-        messages.* = .{ .gpa = gpa, .story = story };
-        story.on_error = Messages.on_error;
-        story.on_error_context = messages;
-        const engine: Harness = .{
-            .gpa = gpa,
-            .program = program,
-            .story = story,
-            .messages = messages,
-        };
-        assert(engine.story.program == program);
-        return engine;
+    pub fn init(harness: *Harness, gpa: std.mem.Allocator, json: []const u8) !void {
+        harness.* = .{ .gpa = gpa, .program = try ink_json.load(gpa, json), .story = undefined };
+        errdefer harness.program.deinit(gpa);
+        try harness.start_story();
     }
 
-    pub fn deinit(engine: *Harness) void {
-        assert(engine.story.state.memory.len > 0);
-        assert(engine.story.program == engine.program);
-        engine.tags.deinit(engine.gpa);
-        engine.tag_bytes.deinit(engine.gpa);
-        if (engine.exception) |text| engine.gpa.free(text);
-        engine.scratch.deinit(engine.gpa);
-        engine.names.deinit(engine.gpa);
-        engine.evaluated.deinit(engine.gpa);
-        engine.evaluated_result.deinit(engine.gpa);
-        engine.saved.deinit(engine.gpa);
-        engine.messages.deinit(engine.gpa);
-        engine.gpa.destroy(engine.messages);
-        for (engine.bindings.items) |bound| bound.release(engine.gpa);
-        engine.bindings.deinit(engine.gpa);
-        engine.story.deinit(engine.gpa);
-        engine.gpa.destroy(engine.story);
-        engine.program.deinit(engine.gpa);
-        engine.gpa.destroy(engine.program);
-        engine.* = undefined;
+    fn start_story(harness: *Harness) !void {
+        try harness.story.init(harness.gpa, &harness.program, .{});
+        harness.story.on_error = on_error;
+        harness.story.on_error_context = harness;
     }
 
-    pub fn can_continue(engine: *Harness) bool {
-        assert(engine.story.program == engine.program);
-        assert(engine.story.state.memory.len > 0);
-        return engine.story.can_continue();
+    pub fn deinit(harness: *Harness) void {
+        const gpa = harness.gpa;
+        harness.tag_bytes.deinit(gpa);
+        harness.tag_ends.deinit(gpa);
+        gpa.free(harness.exception);
+        harness.saved.deinit(gpa);
+        harness.events.deinit(gpa);
+        harness.errors.deinit(gpa);
+        harness.warnings.deinit(gpa);
+        for (harness.bindings.items) |bound| bound.release(gpa);
+        harness.bindings.deinit(gpa);
+        harness.story.deinit(gpa);
+        harness.program.deinit(gpa);
+        harness.* = undefined;
     }
 
-    pub fn continue_line(engine: *Harness) !transcript.Line {
-        assert(engine.can_continue());
-        const text = engine.story.cont() catch |err| {
-            if (err == error.MissingExternalBinding) try engine.missing_binding_exception();
+    /// Replays every action in `actions`, writing the transcript (without the harness's
+    /// provenance header). An error stops it with `exception: "<message>"`, like an ink
+    /// exception in the harness.
+    pub fn replay(harness: *Harness, actions: []const u8, writer: *std.Io.Writer) !void {
+        var lines = std.mem.splitScalar(u8, actions, '\n');
+        while (lines.next()) |line| {
+            const action = try transcript.parse_action(line) orelse continue;
+            try writer.print("> {s}\n", .{std.mem.trim(u8, line, " \t\r")});
+            harness.apply(action, writer) catch |err| switch (err) {
+                error.WriteFailed, error.OutOfMemory => |fatal| return fatal,
+                else => {
+                    try harness.write_messages(writer);
+                    try writer.writeAll("exception: ");
+                    const message = if (harness.exception.len > 0)
+                        harness.exception
+                    else
+                        @errorName(err);
+                    try write_json_string(writer, message);
+                    try writer.writeByte('\n');
+                    return;
+                },
+            };
+            try harness.write_messages(writer);
+        }
+    }
+
+    fn apply(harness: *Harness, action: transcript.Action, writer: *std.Io.Writer) anyerror!void {
+        const story = &harness.story;
+        const argument = action.argument;
+        switch (action.kind) {
+            .seed => story.set_random_seed(try std.fmt.parseInt(i32, argument, 10)),
+            .@"continue" => try harness.continue_once(writer),
+            .continue_maximally => try harness.continue_maximally(writer),
+            .choices => try harness.write_choices(writer),
+            .choose => try story.choose_choice_index(try std.fmt.parseInt(u32, argument, 10)),
+            .play => try harness.play(writer, null),
+            .play_seeded => {
+                var random = DotnetRandom.init(try std.fmt.parseInt(i32, argument, 10));
+                try harness.play(writer, &random);
+            },
+            .globals => try harness.write_globals(writer),
+            .choose_path => try harness.choose_path(argument),
+            .evaluate => try harness.evaluate(argument, writer),
+            .get => {
+                try writer.writeAll("value: ");
+                try harness.write_variable(writer, argument);
+                try writer.writeByte('\n');
+            },
+            .set => try harness.set(argument),
+            .observe => try story.observe_variable(argument, observed, harness),
+            .bind => try harness.bind(argument),
+            .unbind => try story.unbind_external_function(argument),
+            .fallbacks => story.allow_external_function_fallbacks = std.mem.eql(u8, argument, "on"),
+            .save => try harness.save(writer),
+            .load => try load_module.load_json(story, harness.saved.items),
+            .load_fresh => try harness.load_fresh(),
+            .current_text => {
+                try writer.writeAll("current_text: ");
+                try write_json_string(writer, try story.current_text());
+                try writer.writeByte('\n');
+            },
+            .reset => try story.reset_state(),
+            .switch_flow => try story.switch_flow(argument),
+            .remove_flow => try story.remove_flow(argument),
+            .default_flow => try story.switch_to_default_flow(),
+            .visit_count => try writer.print("visit_count: {d}\n", .{
+                story_paths.visit_count_at_path_string(story, argument),
+            }),
+            .tags_at => try harness.write_path_tags(argument, writer),
+            .global_tags => try harness.write_path_tags(null, writer),
+            .events => story.events = .{
+                .context = harness,
+                .on_did_continue = did_continue,
+                .on_make_choice = make_choice,
+                .on_evaluate_function = evaluate_function,
+                .on_complete_evaluate_function = complete_evaluate_function,
+                .on_choose_path_string = choose_path_string,
+            },
+        }
+    }
+
+    fn continue_once(harness: *Harness, writer: *std.Io.Writer) !void {
+        const story = &harness.story;
+        if (!story.can_continue()) return writer.writeAll("can_continue: false\n");
+        const text = story.cont() catch |err| {
+            if (err == error.MissingExternalBinding) try harness.missing_binding_exception();
             return err;
         };
-        engine.clear_tags();
-        try engine.story.current_tags(engine);
-        try engine.finish_tags();
-        assert(engine.tags.items.len < 1 << 16);
-        return .{ .text = text, .tags = engine.tags.items };
-    }
-
-    /// The tag sink for `current_tags`: collects offsets, turned into slices at the end.
-    pub fn tag(engine: *Harness, text: []const u8) !void {
-        assert(engine.tags.items.len < 1 << 16);
-        assert(text.len < 1 << 20);
-        const start = engine.tag_bytes.items.len;
-        try engine.tag_bytes.appendSlice(engine.gpa, text);
-        // Stash the range; `finish_tags` turns it into a slice once the bytes stop moving.
-        const range: []const u8 = @as([*]const u8, @ptrFromInt(start + 1))[0..text.len];
-        try engine.tags.append(engine.gpa, range);
-    }
-
-    fn clear_tags(engine: *Harness) void {
-        assert(engine.tag_bytes.items.len < 1 << 31);
-        engine.tags.clearRetainingCapacity();
-        engine.tag_bytes.clearRetainingCapacity();
-        assert(engine.tags.items.len == 0);
-    }
-
-    fn finish_tags(engine: *Harness) !void {
-        const bytes = engine.tag_bytes.items;
-        for (engine.tags.items) |*range| {
-            const start = @intFromPtr(range.ptr) - 1;
-            assert(start + range.len <= bytes.len);
-            range.* = bytes[start..][0..range.len];
+        try writer.writeAll("text: ");
+        try write_json_string(writer, text);
+        try writer.writeByte('\n');
+        harness.clear_tags();
+        try story.current_tags(harness);
+        if (harness.tag_ends.items.len > 0) {
+            try writer.writeAll("tags: ");
+            try harness.write_tags(writer);
+            try writer.writeByte('\n');
         }
-        assert(engine.tags.items.len < 1 << 16);
+        // The harness flushes host events and messages after each line.
+        try harness.write_messages(writer);
     }
 
-    pub fn choices_count(engine: *Harness) u32 {
-        assert(engine.story.program == engine.program);
-        assert(engine.story.state.memory.len > 0);
-        return engine.story.visible_choices_count();
-    }
-
-    pub fn choice(engine: *Harness, position: u32) transcript.Choice {
-        assert(position < engine.choices_count());
-        const record = engine.story.visible_choice(position);
-        engine.clear_tags();
-        const all = engine.story.state.choices.tags.slice();
-        const references = all[record.tags_first..][0..record.tags_count];
-        for (references) |reference| {
-            engine.tag(engine.story.text_of(reference)) catch @panic("out of memory");
+    fn continue_maximally(harness: *Harness, writer: *std.Io.Writer) !void {
+        const lines_max = 100_000;
+        for (0..lines_max) |_| {
+            if (!harness.story.can_continue()) return;
+            try harness.continue_once(writer);
         }
-        engine.finish_tags() catch unreachable;
-        assert(engine.tags.items.len == record.tags_count);
-        return .{ .text = engine.story.text_of(record.text), .tags = engine.tags.items };
+        return error.ContinueLimit;
     }
 
-    pub fn choose(engine: *Harness, position: u32) !void {
-        assert(engine.story.program == engine.program);
-        assert(position < engine.choices_count());
-        try engine.story.choose_choice_index(position);
+    fn write_choices(harness: *Harness, writer: *std.Io.Writer) !void {
+        const story = &harness.story;
+        const count = story.visible_choices_count();
+        try writer.print("choices: {d}\n", .{count});
+        for (0..count) |position| {
+            const choice = story.visible_choice(@intCast(position));
+            try writer.print("  {d}: ", .{position});
+            try write_json_string(writer, story.text_of(choice.text));
+            const all = story.state.choices.tags.slice();
+            harness.clear_tags();
+            for (all[choice.tags_first..][0..choice.tags_count]) |reference| {
+                try harness.tag(story.text_of(reference));
+            }
+            if (choice.tags_count > 0) {
+                try writer.writeAll(" tags ");
+                try harness.write_tags(writer);
+            }
+            try writer.writeByte('\n');
+        }
     }
 
-    pub fn seed(engine: *Harness, value: i32) void {
-        assert(engine.story.state.memory.len > 0);
-        engine.story.set_random_seed(value);
-        assert(engine.story.state.story_seed == value);
+    /// Continues maximally and makes a choice until the story ends or `turns_max`: the first
+    /// choice, or one picked by `random` (`Next() % count`) when it is given.
+    fn play(harness: *Harness, writer: *std.Io.Writer, random: ?*DotnetRandom) !void {
+        for (0..transcript.turns_max) |_| {
+            try harness.continue_maximally(writer);
+            try harness.write_choices(writer);
+            const count = harness.story.visible_choices_count();
+            if (count == 0) return writer.writeAll("end\n");
+            const index = if (random) |generator| pick(generator, count) else 0;
+            try writer.print("choose: {d}\n", .{index});
+            try harness.story.choose_choice_index(index);
+        }
+        try writer.writeAll("turns_max reached\n");
     }
 
-    pub fn exception_message(engine: *Harness) ?[]const u8 {
-        assert(engine.story.state.memory.len > 0);
-        const message = engine.exception orelse return null;
-        assert(message.len > 0);
-        return message;
+    /// The tag sink for the story's tag queries.
+    pub fn tag(harness: *Harness, text: []const u8) !void {
+        try harness.tag_bytes.appendSlice(harness.gpa, text);
+        try harness.tag_ends.append(harness.gpa, @intCast(harness.tag_bytes.items.len));
     }
 
-    fn set_exception(engine: *Harness, comptime format: []const u8, arguments: anytype) !void {
-        assert(format.len > 0);
-        if (engine.exception) |old| engine.gpa.free(old);
-        engine.exception = try std.fmt.allocPrint(engine.gpa, format, arguments);
-        assert(engine.exception.?.len > 0);
+    fn clear_tags(harness: *Harness) void {
+        harness.tag_bytes.clearRetainingCapacity();
+        harness.tag_ends.clearRetainingCapacity();
     }
 
-    pub fn set(engine: *Harness, name: []const u8, value: transcript.Value) !void {
-        assert(value != .null);
-        assert(name.len > 0);
-        const story = engine.story;
-        const result = switch (value) {
-            .int => |number| story.set_variable(name, .{ .integer = @intCast(number) }),
-            .float => |number| story.set_variable(name, .{ .float = @floatCast(number) }),
-            .bool => |flag| story.set_variable(name, .{ .bool = flag }),
-            .string => |text| story.set_variable_text(name, text),
-            else => unreachable,
-        };
-        result catch |err| switch (err) {
-            error.VariableNotDeclared => {
-                try engine.set_exception("Cannot assign to a variable ({s}) that hasn't been " ++
-                    "declared in the story", .{name});
+    fn write_tags(harness: *const Harness, writer: *std.Io.Writer) !void {
+        try writer.writeByte('[');
+        var start: u32 = 0;
+        for (harness.tag_ends.items, 0..) |end, position| {
+            if (position > 0) try writer.writeAll(", ");
+            try write_json_string(writer, harness.tag_bytes.items[start..end]);
+            start = end;
+        }
+        try writer.writeByte(']');
+    }
+
+    /// `tags_at <path>`, or the global tags when `path` is null.
+    fn write_path_tags(harness: *Harness, path: ?[]const u8, writer: *std.Io.Writer) !void {
+        harness.clear_tags();
+        if (path) |text| {
+            story_paths.tags_at_path(&harness.story, text, harness) catch |err| {
+                if (err == error.PathNotFound) try harness.path_exception(text);
                 return err;
-            },
-            else => return err,
-        };
-    }
-
-    pub fn get(engine: *Harness, name: []const u8) !transcript.Value {
-        assert(name.len > 0);
-        const value = engine.story.get_variable(name) orelse return .null;
-        engine.scratch.clearRetainingCapacity();
-        const result: transcript.Value = switch (value) {
-            .null => .null,
-            .integer => |number| .{ .int = number },
-            .float => |number| float: {
-                var buffer: [value_module.float_text_bytes_max]u8 = undefined;
-                const text = value_module.format_float(number, &buffer);
-                try engine.scratch.appendSlice(engine.gpa, text);
-                break :float .{ .float_text = engine.scratch.items };
-            },
-            .bool => |flag| .{ .bool = flag },
-            .string => |reference| .{ .string = engine.story.text_of(reference) },
-            .list => |list| .{ .list = try engine.list_text(list) },
-            .divert_target => |target| .{ .other = engine.story.path_of(target) },
-            .variable_pointer, .tag => .{ .other = @tagName(value) },
-        };
-        assert(result != .string or result.string.len < 1 << 20);
-        return result;
-    }
-
-    /// `evaluate`: the function's text and result, owned until the next call.
-    pub fn evaluate(
-        engine: *Harness,
-        name: []const u8,
-        arguments: []const transcript.Value,
-    ) !struct { text: []const u8, result: transcript.Value } {
-        assert(arguments.len <= 16);
-        assert(name.len > 0);
-        var hosts: [16]story_module.HostValue = undefined;
-        for (arguments, 0..) |argument, position| hosts[position] = switch (argument) {
-            .int => |number| .{ .integer = @intCast(number) },
-            .float => |number| .{ .float = @floatCast(number) },
-            .bool => |flag| .{ .bool = flag },
-            .string => |text| .{ .string = text },
-            else => .null,
-        };
-        engine.evaluated.clearRetainingCapacity();
-        var text: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.evaluated);
-        const result = evaluate_module.evaluate_function(
-            engine.story,
-            name,
-            hosts[0..arguments.len],
-            &text.writer,
-        );
-        engine.evaluated = text.toArrayList();
-        const value = result catch |err| {
-            if (err == error.FunctionNotFound) try engine.set_exception(
-                "Function doesn't exist: '{s}'",
-                .{name},
-            );
-            return err;
-        };
-        return .{ .text = engine.evaluated.items, .result = try engine.transcript_value(value) };
-    }
-
-    fn transcript_value(engine: *Harness, value: story_module.HostValue) !transcript.Value {
-        assert(engine.evaluated_result.items.len < 1 << 24);
-        assert(engine.story.state.memory.len > 0);
-        const owned = &engine.evaluated_result;
-        owned.clearRetainingCapacity();
-        return switch (value) {
-            .null => .null,
-            .integer => |number| .{ .int = number },
-            .float => |number| float: {
-                var buffer: [value_module.float_text_bytes_max]u8 = undefined;
-                try owned.appendSlice(engine.gpa, value_module.format_float(number, &buffer));
-                break :float .{ .float_text = owned.items };
-            },
-            .bool => |flag| .{ .bool = flag },
-            .string => |text| .{ .string = text },
-            .list => |list| list: {
-                var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, owned);
-                try engine.story.write_list(list, &writer.writer);
-                owned.* = writer.toArrayList();
-                break :list .{ .list = owned.items };
-            },
-            .divert_target => |target| .{ .other = engine.story.path_of(target) },
-        };
-    }
-
-    pub fn current_text(engine: *Harness) ![]const u8 {
-        assert(engine.story.program == engine.program);
-        assert(engine.story.state.memory.len > 0);
-        return engine.story.current_text();
-    }
-
-    /// `save`: the state's JSON, kept for `load` and `load_fresh`.
-    pub fn save(engine: *Harness) ![]const u8 {
-        assert(engine.story.program == engine.program);
-        assert(engine.story.state.memory.len > 0);
-        engine.saved.clearRetainingCapacity();
-        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.saved);
-        try save_module.to_json(engine.story, &writer.writer);
-        engine.saved = writer.toArrayList();
-        return engine.saved.items;
-    }
-
-    /// `load`: the last save into this story.
-    pub fn load(engine: *Harness) !void {
-        assert(engine.story.program == engine.program);
-        assert(engine.saved.items.len > 0);
-        try load_module.load_json(engine.story, engine.saved.items);
-    }
-
-    /// `load_fresh`: a new story from the same program, then the last save, as when a game
-    /// restarts. Bindings, observers and the error handler start over, as in the harness.
-    pub fn load_fresh(engine: *Harness) !void {
-        assert(engine.story.program == engine.program);
-        assert(engine.saved.items.len > 0);
-        const gpa = engine.gpa;
-        engine.story.deinit(gpa);
-        for (engine.bindings.items) |bound| bound.release(gpa);
-        engine.bindings.clearRetainingCapacity();
-        try engine.story.init(gpa, engine.program, .{});
-        engine.story.on_error = Messages.on_error;
-        engine.story.on_error_context = engine.messages;
-        try load_module.load_json(engine.story, engine.saved.items);
-    }
-
-    /// `events`: records ink's host events.
-    pub fn events(engine: *Harness, argument: []const u8) !void {
-        assert(argument.len == 0);
-        engine.story.events = .{
-            .context = engine.messages,
-            .on_did_continue = Messages.did_continue,
-            .on_make_choice = Messages.make_choice,
-            .on_evaluate_function = Messages.evaluate_function,
-            .on_complete_evaluate_function = Messages.complete_evaluate_function,
-            .on_choose_path_string = Messages.choose_path_string,
-        };
-        assert(engine.story.events.on_did_continue != null);
-    }
-
-    pub fn observe(engine: *Harness, name: []const u8) !void {
-        assert(name.len > 0);
-        assert(engine.story.observers_count < engine.story.state.observers.len);
-        try engine.story.observe_variable(name, Messages.observed, engine.messages);
-    }
-
-    fn write_host_value(
-        engine: *Harness,
-        writer: *std.Io.Writer,
-        value: story_module.HostValue,
-    ) !void {
-        assert(@sizeOf(story_module.HostValue) > 0);
-        assert(engine.story.state.memory.len > 0);
-        try write_host_value_of(engine.gpa, engine.story, writer, value);
-    }
-
-    fn list_text(engine: *Harness, list: value_module.ListReference) ![]const u8 {
-        assert(engine.story.state.memory.len > 0);
-        assert(engine.scratch.items.len == 0);
-        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, &engine.scratch);
-        try engine.story.write_list(list, &writer.writer);
-        engine.scratch = writer.toArrayList();
-        return engine.scratch.items;
-    }
-
-    /// Every global's name, sorted (for the `globals` action).
-    pub fn global_names(engine: *Harness) ![]const []const u8 {
-        assert(engine.names.items.len < 1 << 20);
-        assert(engine.story.program.globals.len < 1 << 20);
-        engine.names.clearRetainingCapacity();
-        for (engine.story.program.globals) |global| {
-            try engine.names.append(engine.gpa, engine.story.program.strings.get(global.name));
+            };
+        } else {
+            try story_paths.global_tags(&harness.story, harness);
         }
-        std.mem.sort([]const u8, engine.names.items, {}, less_than);
-        return engine.names.items;
+        try writer.writeAll("tags: ");
+        try harness.write_tags(writer);
+        try writer.writeByte('\n');
     }
 
-    fn less_than(_: void, a: []const u8, b: []const u8) bool {
-        assert(a.ptr != b.ptr or a.len == b.len);
-        assert(a.len > 0 and b.len > 0);
-        return std.mem.order(u8, a, b) == .lt;
+    fn set_exception(harness: *Harness, comptime format: []const u8, arguments: anytype) !void {
+        harness.gpa.free(harness.exception);
+        harness.exception = &.{};
+        harness.exception = try std.fmt.allocPrint(harness.gpa, format, arguments);
     }
 
-    pub fn choose_path(engine: *Harness, path: []const u8) !void {
-        assert(path.len > 0);
-        story_paths.choose_path_string(engine.story, path, true, &.{}) catch |err| {
-            if (err == error.PathNotFound) try engine.path_exception(path);
-            return err;
-        };
-        assert(engine.story.state.choices.count() == 0);
-    }
-
-    fn path_exception(engine: *Harness, path: []const u8) !void {
-        assert(engine.story.state.memory.len > 0);
-        assert(path.len > 0);
-        try engine.set_exception("Failed to find content at path '{s}', and no approximation " ++
+    fn path_exception(harness: *Harness, path: []const u8) !void {
+        try harness.set_exception("Failed to find content at path '{s}', and no approximation " ++
             "of it was possible.", .{path});
     }
 
-    pub fn visit_count(engine: *Harness, path: []const u8) !u32 {
-        assert(engine.story.state.memory.len > 0);
-        assert(path.len > 0);
-        return story_paths.visit_count_at_path_string(engine.story, path);
-    }
-
-    pub fn global_tags(engine: *Harness) ![]const []const u8 {
-        assert(engine.tags.items.len < 1 << 16);
-        assert(engine.story.state.memory.len > 0);
-        engine.clear_tags();
-        try story_paths.global_tags(engine.story, engine);
-        try engine.finish_tags();
-        return engine.tags.items;
-    }
-
-    pub fn tags_at(engine: *Harness, path: []const u8) ![]const []const u8 {
-        assert(engine.tags.items.len < 1 << 16);
-        assert(path.len > 0);
-        engine.clear_tags();
-        story_paths.tags_at_path(engine.story, path, engine) catch |err| {
-            if (err == error.PathNotFound) try engine.path_exception(path);
-            return err;
-        };
-        try engine.finish_tags();
-        return engine.tags.items;
-    }
-
     /// ink's ValidateExternalBindings message.
-    fn missing_binding_exception(engine: *Harness) !void {
-        assert(!engine.story.has_validated_externals or engine.story.bindings.len > 0);
-        var names: NameList = .{ .engine = engine };
-        defer names.list.deinit(engine.gpa);
-        try engine.story.missing_externals(&names);
+    fn missing_binding_exception(harness: *Harness) !void {
+        var names: NameList = .{ .gpa = harness.gpa };
+        defer names.list.deinit(harness.gpa);
+        try harness.story.missing_externals(&names);
         assert(names.count > 0);
-        const suffix = if (engine.story.allow_external_function_fallbacks)
+        const suffix = if (harness.story.allow_external_function_fallbacks)
             ", and no fallback ink function found."
         else
             " (ink fallbacks disabled)";
-        try engine.set_exception("ERROR: Missing function binding for external{s}: '{s}' {s}", .{
+        try harness.set_exception("ERROR: Missing function binding for external{s}: '{s}' {s}", .{
             if (names.count > 1) "s" else "", names.list.items, suffix,
         });
     }
 
-    pub fn write_messages(engine: *Harness, writer: *std.Io.Writer) !void {
-        assert(engine.story.state.memory.len > 0);
-        assert(engine.messages.events.items.len < 1 << 24);
-        const messages = engine.messages;
-        try writer.writeAll(messages.events.items);
-        try writer.writeAll(messages.errors.items);
-        try writer.writeAll(messages.warnings.items);
-        messages.events.clearRetainingCapacity();
-        messages.errors.clearRetainingCapacity();
-        messages.warnings.clearRetainingCapacity();
+    /// `set <variable> <typed value>`.
+    fn set(harness: *Harness, argument: []const u8) !void {
+        const space = std.mem.indexOfScalar(u8, argument, ' ') orelse
+            return error.BadActionArgument;
+        const name = argument[0..space];
+        var buffer: [4096]u8 = undefined;
+        const story = &harness.story;
+        const result = switch (try transcript.parse_typed(argument[space + 1 ..], &buffer)) {
+            .integer => |number| story.set_variable(name, .{ .integer = number }),
+            .float => |number| story.set_variable(name, .{ .float = number }),
+            .bool => |flag| story.set_variable(name, .{ .bool = flag }),
+            .string => |text| story.set_variable_text(name, text),
+            else => unreachable,
+        };
+        result catch |err| {
+            if (err == error.VariableNotDeclared) try harness.set_exception(
+                "Cannot assign to a variable ({s}) that hasn't been declared in the story",
+                .{name},
+            );
+            return err;
+        };
     }
 
-    pub fn switch_flow(engine: *Harness, name: []const u8) !void {
-        assert(name.len > 0);
-        try engine.story.switch_flow(name);
-        assert(engine.story.state.flows.len > 0);
+    /// A global's value, or `null` when there is no such global.
+    fn write_variable(harness: *Harness, writer: *std.Io.Writer, name: []const u8) !void {
+        const story = &harness.story;
+        const value = story.get_variable(name) orelse return writer.writeAll("null");
+        try write_host_value(harness.gpa, story, writer, ops.host_value(story, value));
     }
 
-    pub fn remove_flow(engine: *Harness, name: []const u8) !void {
-        assert(name.len > 0);
-        try engine.story.remove_flow(name);
-        assert(engine.story.state.flows.len > 0);
+    /// Every global, sorted by name.
+    fn write_globals(harness: *Harness, writer: *std.Io.Writer) !void {
+        const program = &harness.program;
+        const names = try harness.gpa.alloc([]const u8, program.globals.len);
+        defer harness.gpa.free(names);
+        for (names, program.globals) |*name, global| name.* = program.strings.get(global.name);
+        std.mem.sort([]const u8, names, {}, less_than);
+        for (names) |name| {
+            try writer.print("global: {s} = ", .{name});
+            try harness.write_variable(writer, name);
+            try writer.writeByte('\n');
+        }
     }
 
-    pub fn default_flow(engine: *Harness, argument: []const u8) !void {
-        assert(argument.len == 0);
-        try engine.story.switch_to_default_flow();
-        assert(engine.story.state.current_flow == 0);
+    fn less_than(_: void, a: []const u8, b: []const u8) bool {
+        return std.mem.order(u8, a, b) == .lt;
     }
 
-    pub fn reset(engine: *Harness, argument: []const u8) !void {
-        assert(argument.len == 0);
-        try engine.story.reset_state();
-        assert(engine.story.state.call_stack.depth() == 1);
+    /// `evaluate <function> [<typed value>...]`: the function's text and result.
+    fn evaluate(harness: *Harness, argument: []const u8, writer: *std.Io.Writer) !void {
+        const space = std.mem.indexOfScalar(u8, argument, ' ');
+        const name = if (space) |at| argument[0..at] else argument;
+        var arguments: transcript.Arguments = .{};
+        var buffer: [4096]u8 = undefined;
+        if (space) |at| try transcript.parse_typed_list(argument[at + 1 ..], &buffer, &arguments);
+        var text: std.Io.Writer.Allocating = .init(harness.gpa);
+        defer text.deinit();
+        const story = &harness.story;
+        const result = evaluate_module.evaluate_function(
+            story,
+            name,
+            arguments.slice(),
+            &text.writer,
+        ) catch |err| {
+            if (err == error.FunctionNotFound) {
+                try harness.set_exception("Function doesn't exist: '{s}'", .{name});
+            }
+            return err;
+        };
+        try writer.writeAll("text: ");
+        try write_json_string(writer, text.written());
+        try writer.writeAll("\nresult: ");
+        try write_host_value(harness.gpa, story, writer, result);
+        try writer.writeByte('\n');
     }
 
-    pub fn fallbacks(engine: *Harness, argument: []const u8) !void {
-        assert(engine.story.state.memory.len > 0);
-        assert(argument.len > 0);
-        engine.story.allow_external_function_fallbacks = std.mem.eql(u8, argument, "on");
+    fn choose_path(harness: *Harness, path: []const u8) !void {
+        story_paths.choose_path_string(&harness.story, path, true, &.{}) catch |err| {
+            if (err == error.PathNotFound) try harness.path_exception(path);
+            return err;
+        };
     }
 
-    pub fn unbind(engine: *Harness, name: []const u8) !void {
-        assert(engine.story.state.memory.len > 0);
-        assert(name.len > 0);
-        try engine.story.unbind_external_function(name);
+    /// `save`: the state's JSON, kept for `load` and `load_fresh`.
+    fn save(harness: *Harness, writer: *std.Io.Writer) !void {
+        harness.saved.clearRetainingCapacity();
+        var saving: std.Io.Writer.Allocating = .fromArrayList(harness.gpa, &harness.saved);
+        defer harness.saved = saving.toArrayList();
+        try save_module.to_json(&harness.story, &saving.writer);
+        try writer.print("save: {s}\n", .{saving.written()});
+    }
+
+    /// `load_fresh`: a new story from the same program, then the last save, as when a game
+    /// restarts. Bindings, observers and the error handler start over, as in the harness.
+    fn load_fresh(harness: *Harness) !void {
+        harness.story.deinit(harness.gpa);
+        for (harness.bindings.items) |bound| bound.release(harness.gpa);
+        harness.bindings.clearRetainingCapacity();
+        try harness.start_story();
+        try load_module.load_json(&harness.story, harness.saved.items);
     }
 
     /// `bind <function> <behaviour> [lookahead_unsafe]`, as the harness binds.
-    pub fn bind(engine: *Harness, argument: []const u8) !void {
-        assert(engine.bindings.items.len < 1 << 16);
-        assert(argument.len > 0);
+    fn bind(harness: *Harness, argument: []const u8) !void {
         var words = std.mem.tokenizeScalar(u8, argument, ' ');
         const name = words.next() orelse return error.BadActionArgument;
         const behaviour_text = words.next() orelse return error.BadActionArgument;
         const behaviour = std.meta.stringToEnum(Behaviour, behaviour_text) orelse
             return error.BadActionArgument;
-        const bound = try engine.gpa.create(Bound);
-        errdefer engine.gpa.destroy(bound);
-        const owned_name = try engine.gpa.dupe(u8, name);
-        bound.* = .{ .engine = engine, .name = owned_name, .behaviour = behaviour };
-        try engine.bindings.append(engine.gpa, bound);
+        const bound = try harness.gpa.create(Bound);
+        errdefer harness.gpa.destroy(bound);
+        const owned_name = try harness.gpa.dupe(u8, name);
+        bound.* = .{ .harness = harness, .name = owned_name, .behaviour = behaviour };
+        try harness.bindings.append(harness.gpa, bound);
         var rest = words.rest();
-        if (behaviour == .@"return") rest = try bound.take_constant(engine.gpa, rest);
+        if (behaviour == .@"return") rest = try bound.take_constant(harness.gpa, rest);
         if (behaviour == .increment_and_evaluate) {
             var function_words = std.mem.tokenizeScalar(u8, rest, ' ');
-            bound.function = try engine.gpa.dupe(
+            bound.function = try harness.gpa.dupe(
                 u8,
                 function_words.next() orelse return error.BadActionArgument,
             );
             rest = function_words.rest();
         }
         const lookahead_safe = !std.mem.eql(u8, std.mem.trim(u8, rest, " "), "lookahead_unsafe");
-        try engine.story.bind_external_function(name, Bound.call, bound, lookahead_safe);
+        try harness.story.bind_external_function(name, Bound.call, bound, lookahead_safe);
+    }
+
+    fn write_messages(harness: *Harness, writer: *std.Io.Writer) !void {
+        try writer.writeAll(harness.events.items);
+        try writer.writeAll(harness.errors.items);
+        try writer.writeAll(harness.warnings.items);
+        harness.events.clearRetainingCapacity();
+        harness.errors.clearRetainingCapacity();
+        harness.warnings.clearRetainingCapacity();
+    }
+};
+
+/// `Next() % count`, as a host would pick a choice with .NET's Random.
+fn pick(random: *DotnetRandom, count: u32) u32 {
+    assert(count > 0);
+    return @intCast(@mod(random.next(), @as(i32, @intCast(count))));
+}
+
+/// The sink for `missing_externals`: the names joined with `', '`.
+const NameList = struct {
+    gpa: std.mem.Allocator,
+    list: std.ArrayList(u8) = .empty,
+    count: u32 = 0,
+
+    pub fn name(names: *NameList, text: []const u8) !void {
+        if (names.count > 0) try names.list.appendSlice(names.gpa, "', '");
+        try names.list.appendSlice(names.gpa, text);
+        names.count += 1;
     }
 };
 
@@ -518,17 +442,15 @@ const Behaviour = enum { record, @"return", multiply, repeat, increment_and_eval
 
 /// One binding made by `bind`, the callback's context.
 const Bound = struct {
-    engine: *Harness,
+    harness: *Harness,
     name: []u8,
     behaviour: Behaviour,
-    constant: story_module.HostValue = .null,
+    constant: HostValue = .null,
     constant_text: []u8 = &.{},
     function: []u8 = &.{},
     result: std.ArrayList(u8) = .empty,
 
     fn release(bound: *Bound, gpa: std.mem.Allocator) void {
-        assert(bound.result.items.len < 1 << 31);
-        assert(bound.name.len > 0);
         gpa.free(bound.name);
         gpa.free(bound.constant_text);
         gpa.free(bound.function);
@@ -538,36 +460,23 @@ const Bound = struct {
 
     /// Parses `return`'s typed value; returns the rest of the argument.
     fn take_constant(bound: *Bound, gpa: std.mem.Allocator, rest: []const u8) ![]const u8 {
-        assert(rest.len > 0);
-        assert(bound.behaviour == .@"return");
         var buffer: [4096]u8 = undefined;
-        const value = try transcript.parse_typed(rest, &buffer);
-        bound.constant = switch (value) {
-            .int => |number| .{ .integer = @intCast(number) },
-            .float => |number| .{ .float = @floatCast(number) },
-            .bool => |flag| .{ .bool = flag },
-            .string => |text| string: {
-                bound.constant_text = try gpa.dupe(u8, text);
-                break :string .{ .string = bound.constant_text };
-            },
-            else => unreachable,
-        };
+        bound.constant = try transcript.parse_typed(rest, &buffer);
         // A string constant is the last word; others are one word.
-        if (value == .string) return "";
+        if (bound.constant == .string) {
+            bound.constant_text = try gpa.dupe(u8, bound.constant.string);
+            bound.constant = .{ .string = bound.constant_text };
+            return "";
+        }
         var words = std.mem.tokenizeScalar(u8, rest, ' ');
         _ = words.next();
         _ = words.next();
         return words.rest();
     }
 
-    fn call(
-        context: ?*anyopaque,
-        story: *Story,
-        arguments: []const story_module.HostValue,
-    ) anyerror!story_module.HostValue {
-        assert(arguments.len <= story_module.external_arguments_max);
+    fn call(context: ?*anyopaque, story: *Story, arguments: []const HostValue) anyerror!HostValue {
         const bound: *Bound = @ptrCast(@alignCast(context.?));
-        assert(bound.engine.story == story);
+        assert(&bound.harness.story == story);
         try bound.record(arguments);
         return switch (bound.behaviour) {
             .record => .null,
@@ -579,19 +488,13 @@ const Bound = struct {
     }
 
     /// `external: name(args)`, rendered like the harness renders values.
-    fn record(bound: *Bound, arguments: []const story_module.HostValue) !void {
-        assert(bound.name.len > 0);
-        const engine = bound.engine;
-        const events = &engine.messages.events;
-        var writer: std.Io.Writer.Allocating = .fromArrayList(engine.gpa, events);
-        defer events.* = writer.toArrayList();
-        try writer.writer.print("external: {s}(", .{bound.name});
-        for (arguments, 0..) |argument, position| {
-            if (position > 0) try writer.writer.writeAll(", ");
-            try engine.write_host_value(&writer.writer, argument);
-        }
-        try writer.writer.writeAll(")\n");
-        assert(arguments.len <= story_module.external_arguments_max);
+    fn record(bound: *Bound, arguments: []const HostValue) !void {
+        const harness = bound.harness;
+        var writer: std.Io.Writer.Allocating = .fromArrayList(harness.gpa, &harness.events);
+        defer harness.events = writer.toArrayList();
+        try writer.writer.print("external: {s}", .{bound.name});
+        try write_arguments(harness, &writer.writer, arguments);
+        try writer.writer.writeByte('\n');
     }
 
     /// `EvaluateFunction(<ink function>, x + 1)` from inside the external, discarding the
@@ -599,12 +502,11 @@ const Bound = struct {
     fn increment_and_evaluate(
         bound: *Bound,
         story: *Story,
-        arguments: []const story_module.HostValue,
-    ) !story_module.HostValue {
-        assert(bound.function.len > 0);
+        arguments: []const HostValue,
+    ) !HostValue {
         assert(arguments.len == 1 and arguments[0] == .integer);
         var discarding: std.Io.Writer.Discarding = .init(&.{});
-        const argument: story_module.HostValue = .{ .integer = arguments[0].integer +% 1 };
+        const argument: HostValue = .{ .integer = arguments[0].integer +% 1 };
         return evaluate_module.evaluate_function(
             story,
             bound.function,
@@ -613,9 +515,7 @@ const Bound = struct {
         );
     }
 
-    fn multiply(arguments: []const story_module.HostValue) story_module.HostValue {
-        assert(arguments.len <= story_module.external_arguments_max);
-        assert(arguments.len > 0);
+    fn multiply(arguments: []const HostValue) HostValue {
         var any_float = false;
         for (arguments) |argument| any_float = any_float or argument == .float;
         if (any_float) {
@@ -632,10 +532,10 @@ const Bound = struct {
         return .{ .integer = whole };
     }
 
-    fn repeat(bound: *Bound, arguments: []const story_module.HostValue) !story_module.HostValue {
-        assert(arguments[0] == .integer and arguments[1] == .string);
+    fn repeat(bound: *Bound, arguments: []const HostValue) !HostValue {
         assert(arguments.len == 2);
-        const gpa = bound.engine.gpa;
+        assert(arguments[0] == .integer and arguments[1] == .string);
+        const gpa = bound.harness.gpa;
         bound.result.clearRetainingCapacity();
         const times: usize = @intCast(@max(arguments[0].integer, 0));
         for (0..times) |_| try bound.result.appendSlice(gpa, arguments[1].string);
@@ -643,159 +543,100 @@ const Bound = struct {
     }
 };
 
-const NameList = struct {
-    engine: *Harness,
-    list: std.ArrayList(u8) = .empty,
-    count: u32 = 0,
+// The story's callbacks; each gets the harness as its context and appends a line to
+// `events`, `errors` or `warnings`. A failed write drops the line, as callbacks can't fail.
 
-    pub fn name(names: *NameList, text: []const u8) !void {
-        assert(names.count < 1 << 16);
-        assert(text.len > 0);
-        if (names.count > 0) try names.list.appendSlice(names.engine.gpa, "', '");
-        try names.list.appendSlice(names.engine.gpa, text);
-        names.count += 1;
+fn harness_of(context: ?*anyopaque) *Harness {
+    return @ptrCast(@alignCast(context.?));
+}
+
+fn append_line(harness: *Harness, list: *std.ArrayList(u8), parts: anytype) void {
+    var writer: std.Io.Writer.Allocating = .fromArrayList(harness.gpa, list);
+    defer list.* = writer.toArrayList();
+    write_parts(harness, &writer.writer, parts) catch return;
+    writer.writer.writeByte('\n') catch return;
+}
+
+/// Writes each part: `[]const u8` as is, `Json` escaped, a `HostValue` or `[]const HostValue`
+/// as the harness renders values.
+fn write_parts(harness: *Harness, writer: *std.Io.Writer, parts: anytype) !void {
+    inline for (parts) |part| switch (@TypeOf(part)) {
+        Json => try write_json_string(writer, part.text),
+        HostValue => try write_host_value(harness.gpa, &harness.story, writer, part),
+        []const HostValue => try write_arguments(harness, writer, part),
+        else => try writer.writeAll(part),
+    };
+}
+
+const Json = struct { text: []const u8 };
+
+fn did_continue(context: ?*anyopaque) void {
+    const harness = harness_of(context);
+    append_line(harness, &harness.events, .{"event: did_continue"});
+}
+
+fn make_choice(context: ?*anyopaque, text: []const u8, _: u32) void {
+    const harness = harness_of(context);
+    append_line(harness, &harness.events, .{ "event: make_choice ", Json{ .text = text } });
+}
+
+fn evaluate_function(context: ?*anyopaque, name: []const u8, arguments: []const HostValue) void {
+    const harness = harness_of(context);
+    append_line(harness, &harness.events, .{ "event: evaluate_function ", name, arguments });
+}
+
+fn complete_evaluate_function(
+    context: ?*anyopaque,
+    name: []const u8,
+    arguments: []const HostValue,
+    text: []const u8,
+    result: HostValue,
+) void {
+    const harness = harness_of(context);
+    append_line(harness, &harness.events, .{
+        "event: complete_evaluate_function ", name, arguments, " ", Json{ .text = text }, " ",
+        result,
+    });
+}
+
+fn choose_path_string(context: ?*anyopaque, path: []const u8, arguments: []const HostValue) void {
+    const harness = harness_of(context);
+    append_line(harness, &harness.events, .{ "event: choose_path_string ", path, arguments });
+}
+
+/// `observed: name = value`, as the harness's observer records it.
+fn observed(context: ?*anyopaque, name: []const u8, value: HostValue) void {
+    const harness = harness_of(context);
+    append_line(harness, &harness.events, .{ "observed: ", name, " = ", value });
+}
+
+fn on_error(context: ?*anyopaque, message: []const u8, severity: Severity) void {
+    const harness = harness_of(context);
+    if (severity == .@"error") {
+        append_line(harness, &harness.errors, .{ "error: ", Json{ .text = message } });
+    } else {
+        append_line(harness, &harness.warnings, .{ "warning: ", Json{ .text = message } });
     }
-};
+}
 
-/// Host events since the last action (`external: ...` lines) and the story's error and
-/// warning messages, as the harness collects them.
-const Messages = struct {
-    gpa: std.mem.Allocator,
-    story: *Story,
-    events: std.ArrayList(u8) = .empty,
-    errors: std.ArrayList(u8) = .empty,
-    warnings: std.ArrayList(u8) = .empty,
-
-    fn deinit(messages: *Messages, gpa: std.mem.Allocator) void {
-        assert(messages.events.items.len < 1 << 31);
-        assert(messages.errors.items.len < 1 << 31);
-        messages.events.deinit(gpa);
-        messages.errors.deinit(gpa);
-        messages.warnings.deinit(gpa);
+/// `(a, b)`, each argument rendered like the harness renders values.
+fn write_arguments(harness: *Harness, writer: *std.Io.Writer, arguments: []const HostValue) !void {
+    try writer.writeByte('(');
+    for (arguments, 0..) |argument, position| {
+        if (position > 0) try writer.writeAll(", ");
+        try write_host_value(harness.gpa, &harness.story, writer, argument);
     }
+    try writer.writeByte(')');
+}
 
-    fn event_writer(context: ?*anyopaque) struct { *Messages, std.Io.Writer.Allocating } {
-        assert(context != null);
-        const messages: *Messages = @ptrCast(@alignCast(context.?));
-        assert(messages.events.items.len < 1 << 24);
-        return .{ messages, .fromArrayList(messages.gpa, &messages.events) };
-    }
-
-    fn did_continue(context: ?*anyopaque) void {
-        assert(context != null);
-        assert(@sizeOf(Messages) > 0);
-        const messages, var writer = event_writer(context);
-        defer messages.events = writer.toArrayList();
-        writer.writer.writeAll("event: did_continue\n") catch return;
-    }
-
-    fn make_choice(context: ?*anyopaque, text: []const u8, position: u32) void {
-        assert(context != null);
-        const messages, var writer = event_writer(context);
-        defer messages.events = writer.toArrayList();
-        assert(position < 1 << 16);
-        writer.writer.writeAll("event: make_choice ") catch return;
-        transcript.write_json_string(&writer.writer, text) catch return;
-        writer.writer.writeByte('\n') catch return;
-    }
-
-    fn write_arguments(
-        messages: *Messages,
-        writer: *std.Io.Writer,
-        arguments: []const story_module.HostValue,
-    ) !void {
-        assert(messages.events.items.len < 1 << 31);
-        assert(arguments.len <= story_module.external_arguments_max);
-        try writer.writeByte('(');
-        for (arguments, 0..) |argument, position| {
-            if (position > 0) try writer.writeAll(", ");
-            try write_host_value_of(messages.gpa, messages.story, writer, argument);
-        }
-        try writer.writeByte(')');
-    }
-
-    fn evaluate_function(
-        context: ?*anyopaque,
-        name: []const u8,
-        arguments: []const story_module.HostValue,
-    ) void {
-        assert(context != null);
-        assert(@sizeOf(Messages) > 0);
-        const messages, var writer = event_writer(context);
-        defer messages.events = writer.toArrayList();
-        writer.writer.print("event: evaluate_function {s}", .{name}) catch return;
-        write_arguments(messages, &writer.writer, arguments) catch return;
-        writer.writer.writeByte('\n') catch return;
-    }
-
-    fn complete_evaluate_function(
-        context: ?*anyopaque,
-        name: []const u8,
-        arguments: []const story_module.HostValue,
-        text: []const u8,
-        result: story_module.HostValue,
-    ) void {
-        assert(context != null);
-        assert(@sizeOf(Messages) > 0);
-        const messages, var writer = event_writer(context);
-        defer messages.events = writer.toArrayList();
-        writer.writer.print("event: complete_evaluate_function {s}", .{name}) catch return;
-        write_arguments(messages, &writer.writer, arguments) catch return;
-        writer.writer.writeByte(' ') catch return;
-        transcript.write_json_string(&writer.writer, text) catch return;
-        writer.writer.writeByte(' ') catch return;
-        write_host_value_of(messages.gpa, messages.story, &writer.writer, result) catch return;
-        writer.writer.writeByte('\n') catch return;
-    }
-
-    fn choose_path_string(
-        context: ?*anyopaque,
-        path: []const u8,
-        arguments: []const story_module.HostValue,
-    ) void {
-        assert(context != null);
-        assert(@sizeOf(Messages) > 0);
-        const messages, var writer = event_writer(context);
-        defer messages.events = writer.toArrayList();
-        writer.writer.print("event: choose_path_string {s}", .{path}) catch return;
-        write_arguments(messages, &writer.writer, arguments) catch return;
-        writer.writer.writeByte('\n') catch return;
-    }
-
-    /// `observed: name = value`, as the harness's observer records it.
-    fn observed(context: ?*anyopaque, name: []const u8, value: story_module.HostValue) void {
-        const messages: *Messages = @ptrCast(@alignCast(context.?));
-        assert(messages.events.items.len < 1 << 24);
-        assert(name.len > 0);
-        var writer: std.Io.Writer.Allocating = .fromArrayList(messages.gpa, &messages.events);
-        defer messages.events = writer.toArrayList();
-        writer.writer.print("observed: {s} = ", .{name}) catch return;
-        write_host_value_of(messages.gpa, messages.story, &writer.writer, value) catch return;
-        writer.writer.writeByte('\n') catch return;
-    }
-
-    fn on_error(context: ?*anyopaque, message: []const u8, severity: Severity) void {
-        assert(message.len < 1 << 20);
-        const messages: *Messages = @ptrCast(@alignCast(context.?));
-        assert(message.len > 0);
-        const list = if (severity == .@"error") &messages.errors else &messages.warnings;
-        var writer: std.Io.Writer.Allocating = .fromArrayList(messages.gpa, list);
-        defer list.* = writer.toArrayList();
-        writer.writer.writeAll(if (severity == .@"error") "error: " else "warning: ") catch return;
-        transcript.write_json_string(&writer.writer, message) catch return;
-        writer.writer.writeByte('\n') catch return;
-    }
-};
-
-/// A host value as the harness renders one.
-fn write_host_value_of(
+/// A host value as the harness renders one: `int 5`, `float 2.5`, `bool true`,
+/// `string "a"`, `list "A.x, B.y"`, `other "<divert target's path>"` or `null`.
+fn write_host_value(
     gpa: std.mem.Allocator,
     story: *Story,
     writer: *std.Io.Writer,
-    value: story_module.HostValue,
+    value: HostValue,
 ) !void {
-    assert(story.state.memory.len > 0);
-    assert(@sizeOf(story_module.HostValue) > 0);
     switch (value) {
         .null => try writer.writeAll("null"),
         .integer => |number| try writer.print("int {d}", .{number}),
@@ -806,18 +647,18 @@ fn write_host_value_of(
         .bool => |flag| try writer.writeAll(if (flag) "bool true" else "bool false"),
         .string => |text| {
             try writer.writeAll("string ");
-            try transcript.write_json_string(writer, text);
+            try write_json_string(writer, text);
         },
         .list => |list| {
             var text: std.Io.Writer.Allocating = .init(gpa);
             defer text.deinit();
             try story.write_list(list, &text.writer);
             try writer.writeAll("list ");
-            try transcript.write_json_string(writer, text.written());
+            try write_json_string(writer, text.written());
         },
         .divert_target => |target| {
             try writer.writeAll("other ");
-            try transcript.write_json_string(writer, story.path_of(target));
+            try write_json_string(writer, story.path_of(target));
         },
     }
 }

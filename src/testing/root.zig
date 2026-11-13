@@ -1,7 +1,9 @@
-//! The engine-neutral test layer (plan P0.11): `zig build test-runtime` includes it.
+//! The test harnesses and gates over the runtime: `zig build test-runtime` includes them.
 
 pub const transcript = @import("transcript.zig");
 pub const ground_truth = @import("ground_truth_test.zig");
+pub const harness = @import("harness.zig");
+pub const isolated = @import("isolated.zig");
 pub const cases = @import("cases.zig");
 pub const oracle = @import("oracle.zig");
 pub const known_bugs = @import("known_bugs.zig");
@@ -20,6 +22,7 @@ pub const bench_profile_test = @import("bench_profile_test.zig");
 
 test {
     _ = transcript;
+    _ = harness;
     _ = ground_truth;
     _ = transcripts;
     _ = oracle;

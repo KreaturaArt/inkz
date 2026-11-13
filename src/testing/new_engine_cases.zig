@@ -24,7 +24,7 @@ pub fn expect_cases_match(case_list: []const Case) !void {
         assert(case.id.len > 0);
         const actions = if (case.override) |o| o.actions else null;
         const io = std.testing.io;
-        const actual = try cases.replay_with(arena, io, "new", case.id, actions);
+        const actual = try cases.replay_case(arena, io, case.id, actions);
         const expected = if (case.override) |o| o.expected else try expected_of(arena, case.id);
         std.testing.expectEqualStrings(expected, actual) catch |err| {
             std.debug.print("case {s}\n", .{case.id});

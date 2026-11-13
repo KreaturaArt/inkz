@@ -8,7 +8,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const oracle = @import("oracle.zig");
-const ground_truth_test = @import("ground_truth_test.zig");
 const cases = @import("cases.zig");
 const compile = @import("../compiler/compile.zig");
 const ink_json = @import("../core/ink_json.zig");
@@ -73,7 +72,7 @@ test "every ground-truth case compiles to inklecate's JSON, or is ledgered" {
     const ledger = try oracle.read_ledger(arena, io);
     var problems: u32 = 0;
     var compared: u32 = 0;
-    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+    for (try cases.ids(arena, io)) |id| {
         const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
             cases.cases_directory,
             id,

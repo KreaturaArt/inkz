@@ -1,16 +1,15 @@
-//! The transcript corpus (plan P0.3): every compiled fixture played on the runtime with a
-//! seeded choice policy, stored in `test/transcripts/`. They were the old runtime's until
-//! P9.1, which regenerated them on the new one; every place where the two differed had been
-//! checked against ink (the divergence ledger until then). The oracle (P0.4) compares the
-//! engine against these files. `zig build transcripts` regenerates them; a test checks that
-//! the checked-in files are up to date.
+//! The transcript corpus: every compiled fixture played on the runtime with a seeded choice
+//! policy, stored in `test/transcripts/`. The old runtime wrote them first; where the two
+//! runtimes differed, the new one was checked against ink before they were regenerated on
+//! it. The oracle compares the runtime against these files. `zig build transcripts`
+//! regenerates them; a test checks that the checked-in files are up to date.
 //!
 //! Each story runs in its own process (`src/replay_case.zig`) with `turns_max` turns, so a
 //! looping story ends with `turns_max reached` and a crashing one with `crash: <how>`.
 
 const std = @import("std");
-const assert = std.debug.assert;
-const build_options = @import("build_options");
+const cases = @import("cases.zig");
+const isolated = @import("isolated.zig");
 
 pub const fixtures_directory = "test/fixture/compiled";
 pub const transcripts_directory = "test/transcripts";
@@ -22,81 +21,34 @@ const file_bytes_max = 16 * 1024 * 1024;
 
 /// Fixture paths below `fixtures_directory` without `.ink.json`, sorted.
 pub fn collect_fixtures(arena: std.mem.Allocator, io: std.Io) ![]const []const u8 {
-    assert(fixtures_directory.len > 0);
-    var directory = try std.Io.Dir.cwd().openDir(io, fixtures_directory, .{ .iterate = true });
-    defer directory.close(io);
-    var walker = try directory.walk(arena);
-    defer walker.deinit();
-    var fixtures: std.ArrayList([]const u8) = .empty;
-    while (try walker.next(io)) |entry| {
-        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, ".ink.json")) continue;
-        const id = entry.path[0 .. entry.path.len - ".ink.json".len];
-        try fixtures.append(arena, try arena.dupe(u8, id));
-    }
-    std.mem.sort([]const u8, fixtures.items, {}, string_less_than);
-    assert(fixtures.items.len > 0);
-    return fixtures.items;
+    return cases.list_sorted(arena, io, fixtures_directory, ".ink.json");
 }
 
-fn string_less_than(_: void, a: []const u8, b: []const u8) bool {
-    assert(a.len > 0);
-    assert(b.len > 0);
-    return std.mem.order(u8, a, b) == .lt;
-}
-
-/// The transcript file contents for fixture `id`, played on `engine` in a child process.
-pub fn render(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    engine: []const u8,
-    id: []const u8,
-) ![]const u8 {
-    assert(id.len > 0);
-    assert(engine.len > 0);
+/// The transcript file contents for fixture `id`, played in a child process.
+pub fn render(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
     const json = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{ fixtures_directory, id });
-    const replay_case = build_options.replay_case_path;
-    const result = try std.process.run(arena, io, .{
-        .argv = &.{ replay_case, engine, "--json", json, "--actions", actions },
-        .stdout_limit = .limited(file_bytes_max),
-        .stderr_limit = .limited(file_bytes_max),
-    });
-    const crashed = switch (result.term) {
-        .exited => |code| code != 0,
-        else => true,
-    };
-    const crash = if (crashed)
-        try std.fmt.allocPrint(arena, "crash: {any}\n", .{result.term})
-    else
-        "";
-    const text = try std.mem.concat(arena, u8, &.{ header, result.stdout, crash });
-    assert(std.mem.startsWith(u8, text, header));
-    return text;
+    const run = try isolated.replay(arena, io, &.{ "--json", json, "--actions", actions });
+    return std.mem.concat(arena, u8, &.{ header, run.transcript });
 }
 
 pub fn transcript_path(arena: std.mem.Allocator, id: []const u8) ![]const u8 {
-    assert(id.len > 0);
-    const directory = transcripts_directory;
-    const path = try std.fmt.allocPrint(arena, "{s}/{s}.transcript", .{ directory, id });
-    assert(std.mem.endsWith(u8, path, ".transcript"));
-    return path;
+    return std.fmt.allocPrint(arena, "{s}/{s}.transcript", .{ transcripts_directory, id });
 }
 
 /// Regenerates every transcript file.
 pub fn write_all(arena: std.mem.Allocator, io: std.Io) !u32 {
     const fixtures = try collect_fixtures(arena, io);
-    assert(fixtures.len < 1 << 20);
     const cwd = std.Io.Dir.cwd();
     for (fixtures) |id| {
         const path = try transcript_path(arena, id);
         if (std.fs.path.dirname(path)) |directory| try cwd.createDirPath(io, directory);
-        try cwd.writeFile(io, .{ .sub_path = path, .data = try render(arena, io, "new", id) });
+        try cwd.writeFile(io, .{ .sub_path = path, .data = try render(arena, io, id) });
     }
-    assert(fixtures.len > 0);
     return @intCast(fixtures.len);
 }
 
 test "transcripts are up to date" {
-    // Goal: P0.3; regenerating the transcripts gives an empty diff. Method: render every
+    // Goal: regenerating the transcripts gives an empty diff. Method: render every
     // fixture again and compare with the checked-in file.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -108,7 +60,7 @@ test "transcripts are up to date" {
         const path = try transcript_path(arena, id);
         const cwd = std.Io.Dir.cwd();
         const stored = cwd.readFileAlloc(io, path, arena, .limited(file_bytes_max)) catch "";
-        const fresh = try render(arena, io, "new", id);
+        const fresh = try render(arena, io, id);
         if (std.mem.eql(u8, stored, fresh)) continue;
         std.debug.print("stale transcript: {s} (run zig build transcripts)\n", .{path});
         stale += 1;
@@ -121,6 +73,6 @@ test "a looping story stops at the turn cap with a marker" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const text = try render(arena, std.testing.io, "new", "runtime/diverts/path_to_self");
+    const text = try render(arena, std.testing.io, "runtime/diverts/path_to_self");
     try std.testing.expect(std.mem.indexOf(u8, text, "turns_max reached\n") != null);
 }
