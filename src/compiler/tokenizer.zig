@@ -204,7 +204,8 @@ pub const Tokenizer = struct {
         assert(tokenizer.source.len < std.math.maxInt(u32));
         const character = tokenizer.peek(0);
         const crlf = character == '\r' and tokenizer.peek(1) == '\n';
-        return character == '\n' or character == 0 or crlf;
+        // `peek` gives 0 at the end; a 0 byte inside the source is text.
+        return character == '\n' or tokenizer.at == tokenizer.source.len or crlf;
     }
 
     fn arrow(tokenizer: *Tokenizer) ?Tag {
@@ -234,7 +235,11 @@ pub const Tokenizer = struct {
             else => unreachable,
         };
         scan: switch (tokenizer.peek(0)) {
-            0 => {},
+            0 => if (tokenizer.at < tokenizer.source.len) {
+                // A 0 byte inside the source is text; only the end stops here.
+                tokenizer.at += 1;
+                continue :scan tokenizer.peek(0);
+            },
             '-', '<' => {
                 const pair = [2]u8{ tokenizer.peek(0), tokenizer.peek(1) };
                 const stops = std.mem.eql(u8, &pair, "->") or std.mem.eql(u8, &pair, "<-") or
@@ -473,6 +478,15 @@ test "expressions lex identifiers, operators and whitespace" {
     });
     try expect_tokens("café", .expression, &.{.word});
     try expect_tokens("@", .expression, &.{.invalid});
+}
+
+test "a 0 byte inside the source is text, not the end" {
+    // Found by the tokenizer's fuzz target (P11.3): `peek` gives 0 at the end, and an
+    // embedded 0 made an empty text token.
+    try expect_tokens("a\x00b\n", .content, &.{ .text, .newline });
+    try expect_tokens("\x00", .content_string, &.{.text});
+    try expect_tokens("x \x00\n", .rest_of_line, &.{ .text, .newline });
+    try expect_tokens("\x00", .expression, &.{.invalid});
 }
 
 test "comments are removed as ink's CommentEliminator removes them" {
