@@ -1,10 +1,9 @@
 //! What the benchmarks (`bench`, `bench-io`, `bench-profile`) share: a timer, a sampling
-//! loop with its statistics, the seeded play and an error handler that ignores errors.
+//! loop with its statistics and the seeded play.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const Story = @import("runtime/story.zig").Story;
-const Severity = @import("runtime/state.zig").Diagnostic.Severity;
 const DotnetRandom = @import("core/dotnet_random.zig").DotnetRandom;
 
 /// The awake clock since `begin`.
@@ -95,11 +94,4 @@ pub fn play(story: *Story, seed: u32) !Played {
         try story.choose_choice_index(@intCast(@mod(random.next(), @as(i32, @intCast(count)))));
     }
     return played;
-}
-
-/// An `on_error` handler for plays whose errors don't matter to the measurement.
-pub fn ignore_errors(context: ?*anyopaque, message: []const u8, severity: Severity) void {
-    _ = context;
-    _ = message;
-    _ = severity;
 }
