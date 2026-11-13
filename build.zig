@@ -128,6 +128,13 @@ pub fn build(b: *std.Build) void {
     run_lint.addArgs(&.{ "src", "tools" });
     b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
 
+    const code_size = add_executable(b, "code_size", "tools/code_size.zig", target, optimize);
+    const run_code_size = b.addRunArtifact(code_size);
+    run_code_size.setCwd(b.path("."));
+    run_code_size.addArgs(&.{ "src", "tools", "build.zig" });
+    run_code_size.has_side_effects = true;
+    b.step("code-size", "Count lines of Zig per module").dependOn(&run_code_size.step);
+
     const fmt = b.addFmt(.{
         .paths = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("tools") },
         .check = true,
