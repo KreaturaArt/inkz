@@ -106,7 +106,7 @@ pub fn add_arguments(lowering: *Lowering, container: ContainerId, divert: Object
         const to_flow = !target.is_none() and lowering.tree.is_flow(target);
         if (to_flow and is_reference_parameter(lowering, target, position)) {
             if (lowering.tree.kind(argument) == .variable_reference) {
-                const name = try lowering.ir.text(expressions.reference_name(lowering, argument));
+                const name = expressions.reference_name(lowering, argument);
                 _ = try lowering.ir.add(
                     container,
                     .{ .variable_pointer = .{ .name = name, .context = -1 } },
@@ -227,8 +227,8 @@ pub fn generate_branch(lowering: *Lowering, branch: ObjectIndex) !Result {
         .{ .divert = .{ .target = .{ .container = content }, .conditional = !flags.is_else } },
     );
     ir.container(content).name = "b";
-    if (!flags.is_inline) _ = try ir.insert(content, 0, .{ .text = "\n" });
-    if (duplicates or (flags.is_else and flags.matching)) _ = try ir.insert(content, 0, .{
+    if (!flags.is_inline) _ = try ir.prepend(content, .{ .text = "\n" });
+    if (duplicates or (flags.is_else and flags.matching)) _ = try ir.prepend(content, .{
         .command = .pop,
     });
     try ir.add_named(container, content);
@@ -353,7 +353,7 @@ fn add_sequence_branch(
         .{ .divert = .{ .target = .{ .container = branch }, .conditional = true } },
     );
     ir.container(branch).name = try std.fmt.allocPrint(ir.arena.allocator(), "s{d}", .{position});
-    _ = try ir.insert(branch, 0, .{ .command = .pop });
+    _ = try ir.prepend(branch, .{ .command = .pop });
     _ = try ir.add(branch, .{ .divert = .{ .target = .{ .item = after } } });
     try ir.add_named(container, branch);
 }
@@ -370,7 +370,7 @@ pub fn generate_assignment(lowering: *Lowering, assignment: ObjectIndex) !Result
     if (children.len > 0) try lowering.add_content(container, children[0]);
     const is_new = tree.has(assignment, Flags.new_temporary);
     const global = !is_new and lowering.resolution.references[assignment.to_int()] == .global;
-    const name = try ir.text(lowering.child_name(assignment, 0));
+    const name = lowering.child_name(assignment, 0);
     _ = try ir.add(
         container,
         .{ .assignment = .{ .name = name, .global = global, .new = is_new } },

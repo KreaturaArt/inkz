@@ -125,7 +125,7 @@ fn check_flow(context: *Context, flow: ObjectIndex) !void {
     assert(context.tree.kind(flow) != .story);
     const tree = context.tree;
     if (!tree.has(flow, Flags.function)) {
-        const found = try tree.find(context.gpa, flow, is_return) orelse return;
+        const found = try tree.find(context.gpa, flow, Tree.is_return) orelse return;
         return context.report(.return_outside_function, found);
     }
     if (tree.kind(flow) == .stitch) try context.report(.function_is_stitch, flow);
@@ -140,20 +140,8 @@ fn check_flow(context: *Context, flow: ObjectIndex) !void {
     try tree.find_all(context.gpa, children[0], is_disallowed_divert, &found);
     for (found.items) |divert| try context.report(.function_has_divert, divert);
     found.clearRetainingCapacity();
-    try tree.find_all(context.gpa, children[0], is_choice, &found);
+    try tree.find_all(context.gpa, children[0], Tree.is_choice, &found);
     for (found.items) |choice| try context.report(.function_has_choice, choice);
-}
-
-fn is_return(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
-    return tree.kind(object) == .@"return";
-}
-
-fn is_choice(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
-    return tree.kind(object) == .choice;
 }
 
 /// A divert a function may not contain: not a function call's, not a divert target's.

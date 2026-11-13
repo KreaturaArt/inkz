@@ -158,6 +158,20 @@ pub const Tree = struct {
         return object_kind == .story or object_kind == .knot or object_kind == .stitch;
     }
 
+    pub fn is_return(tree: *const Tree, object: ObjectIndex) bool {
+        return tree.kind(object) == .@"return";
+    }
+
+    pub fn is_choice(tree: *const Tree, object: ObjectIndex) bool {
+        return tree.kind(object) == .choice;
+    }
+
+    /// ink's IWeavePoint: a choice or a gather.
+    pub fn is_weave_point(tree: *const Tree, object: ObjectIndex) bool {
+        const object_kind = tree.kind(object);
+        return object_kind == .choice or object_kind == .gather;
+    }
+
     /// ink's ClosestFlowBase: the object itself if it is a flow, else its nearest flow.
     pub fn closest_flow(tree: *const Tree, object: ObjectIndex) ObjectIndex {
         var current = object;

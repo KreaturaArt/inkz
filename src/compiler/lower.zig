@@ -321,9 +321,8 @@ pub const Lowering = struct {
         const ir = &lowering.ir;
         const container = try ir.new_container();
         lowering.runtime_containers[flow.to_int()] = container;
-        if (tree.kind(flow) != .story) ir.container(container).name = try ir.text(
-            lowering.child_name(flow, 0),
-        );
+        if (tree.kind(flow) != .story) ir.container(container).name =
+            lowering.child_name(flow, 0);
         if (lowering.count_all_visits) ir.container(container).flags |= ir_module.count_visits;
         try lowering.add_parameter_assignments(container, flow);
         const children = tree.children_of(flow);
@@ -357,7 +356,7 @@ pub const Lowering = struct {
         while (position > 0) {
             position -= 1;
             const parameter = lowering.ast().item(parameters, position);
-            const name = try lowering.ir.text(lowering.parsed.leaf_text(parameter));
+            const name = lowering.parsed.leaf_text(parameter);
             _ = try lowering.ir.add(
                 container,
                 .{ .assignment = .{ .name = name, .global = false, .new = true } },
@@ -401,7 +400,7 @@ pub const Lowering = struct {
             const at_story = tree.closest_flow(object) == Tree.root;
             return tree.has(object, Flags.new_temporary) and at_story;
         }
-        const name = try lowering.ir.text(lowering.child_name(object, 0));
+        const name = lowering.child_name(object, 0);
         if (tree.has(object, Flags.list)) {
             const definition = tree.children_of(object)[0];
             _ = try lowering.ir.add(
