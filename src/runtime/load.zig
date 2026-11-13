@@ -263,19 +263,12 @@ const Loader = struct {
         assert(tally.frames >= tally.threads or tally.threads == 0);
         assert(loader.state().parking.len > 0 or is_current);
         if (loader.commit) return;
-        const s = loader.state();
-        const fits = tally.frames <= s.call_stack.frames.capacity() and
-            tally.threads <= s.call_stack.threads.capacity() and
-            tally.temps <= s.call_stack.temps.capacity() and
-            tally.items <= s.output.items.capacity() and
-            tally.marks <= s.output.string_marks.capacity() and
-            tally.choices <= s.choices.records.capacity() and
-            tally.tags <= s.choices.tags.capacity() and
-            tally.snapshot_frames <= s.choices.frames.capacity() and
-            tally.snapshot_temps <= s.choices.temps.capacity();
         if (tally.threads == 0) return error.InvalidSave;
-        if (!fits) return error.SaveTooLarge;
-        if (!is_current) loader.parking_words += tally.parked_words();
+        const flow_counts = tally.counts();
+        inline for (state_module.parked_buffers, flow_counts) |buffer, count| {
+            if (count > loader.state().flow_stack(buffer).capacity()) return error.SaveTooLarge;
+        }
+        if (!is_current) loader.parking_words += flows.parked_size(flow_counts);
     }
 
     fn call_stack(loader: *Loader, node: u32, tally: *Tally) Error!void {
@@ -810,7 +803,7 @@ fn live_thread(s: *state_module.State, counter: u32) ?call_stack_module.Thread {
     return null;
 }
 
-/// What one flow holds, counted while loading it.
+/// What one flow holds, counted while loading it: a field per parked flow buffer.
 const Tally = struct {
     frames: u32 = 0,
     threads: u32 = 0,
@@ -868,19 +861,14 @@ const Tally = struct {
         unreachable;
     }
 
-    /// The parked size of the flow, as flows.zig packs it.
-    fn parked_words(tally: Tally) u64 {
-        assert(tally.threads > 0);
+    /// The counts in `parked_buffers` order.
+    fn counts(tally: *const Tally) [state_module.parked_buffers.len]u32 {
         assert(tally.snapshots <= tally.choices);
-        const words = 11 + @as(u64, tally.frames) * (@sizeOf(Frame) / 4) +
-            @as(u64, tally.threads) * (@sizeOf(call_stack_module.Thread) / 4) +
-            @as(u64, tally.temps) * (@sizeOf(Temp) / 4) +
-            @as(u64, tally.items) * (@sizeOf(Item) / 4) + tally.marks +
-            @as(u64, tally.choices) * (@sizeOf(choices_module.Choice) / 4) + tally.tags +
-            @as(u64, tally.snapshots) * (@sizeOf(choices_module.Snapshot) / 4) +
-            @as(u64, tally.snapshot_frames) * (@sizeOf(Frame) / 4) +
-            @as(u64, tally.snapshot_temps) * (@sizeOf(Temp) / 4);
-        return words;
+        var result: [state_module.parked_buffers.len]u32 = undefined;
+        inline for (state_module.parked_buffers, &result) |buffer, *count| {
+            count.* = @field(tally, @tagName(buffer));
+        }
+        return result;
     }
 };
 

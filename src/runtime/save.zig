@@ -19,7 +19,6 @@ const Story = story_module.Story;
 const Value = value_module.Value;
 const Pointer = call_stack_module.Pointer;
 const Frame = call_stack_module.Frame;
-const Thread = call_stack_module.Thread;
 const Temp = call_stack_module.Temp;
 const Item = output_module.Item;
 const Choice = choices_module.Choice;
@@ -28,35 +27,17 @@ const Writer = std.Io.Writer;
 pub const save_version = 10;
 pub const format_version = 21;
 
-/// One flow's arrays, live or parked.
+/// One flow's buffers, live or parked.
 const FlowView = struct {
-    frames: []const Frame,
-    threads: []const Thread,
-    temps: []const Temp,
-    items: []const Item,
-    choices: []const Choice,
-    tags: []const value_module.StringReference,
-    snapshots: []const choices_module.Snapshot,
-    snapshot_frames: []const Frame,
-    snapshot_temps: []const Temp,
+    buffers: state_module.FlowBuffers,
     thread_counter: u32,
     indexed_count: u32,
 };
 
 fn live_view(story: *Story) FlowView {
-    assert(story.state.memory.len > 0);
     const state = &story.state;
-    assert(state.call_stack.threads.count > 0);
     return .{
-        .frames = state.call_stack.frames.slice(),
-        .threads = state.call_stack.threads.slice(),
-        .temps = state.call_stack.temps.slice(),
-        .items = state.output.items.slice(),
-        .choices = state.choices.records.slice(),
-        .tags = state.choices.tags.slice(),
-        .snapshots = state.choices.snapshots.slice(),
-        .snapshot_frames = state.choices.frames.slice(),
-        .snapshot_temps = state.choices.temps.slice(),
+        .buffers = state.live_flow(),
         .thread_counter = state.call_stack.thread_counter,
         .indexed_count = state.choices.indexed_count,
     };
@@ -65,19 +46,10 @@ fn live_view(story: *Story) FlowView {
 fn parked_view(story: *Story, record: *const state_module.FlowRecord) FlowView {
     assert(record.in_use and record.parked_words > 0);
     const parked = flows.Parked.of(flows.parked_words(&story.state, record));
-    assert(parked.threads.len > 0);
     return .{
-        .frames = parked.frames,
-        .threads = parked.threads,
-        .temps = parked.temps,
-        .items = parked.items,
-        .choices = parked.choices,
-        .tags = parked.tags,
-        .snapshots = parked.snapshots,
-        .snapshot_frames = parked.snapshot_frames,
-        .snapshot_temps = parked.snapshot_temps,
-        .thread_counter = parked.header.thread_counter,
-        .indexed_count = @intCast(parked.choices.len),
+        .buffers = parked.buffers,
+        .thread_counter = parked.thread_counter,
+        .indexed_count = @intCast(parked.buffers.choices.len),
     };
 }
 
@@ -123,23 +95,23 @@ pub fn to_json(story: *Story, writer: *Writer) Writer.Error!void {
 
 /// The flows' first record is the default flow, written first as ink's dictionary does.
 fn write_flow(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void {
-    assert(view.choices.len <= story.state.choices.records.capacity());
-    assert(view.threads.len > 0);
+    assert(view.buffers.choices.len <= story.state.choices.records.capacity());
+    assert(view.buffers.threads.len > 0);
     try writer.writeAll("{\"callstack\":{\"threads\":[");
-    for (view.threads, 0..) |thread, position| {
+    for (view.buffers.threads, 0..) |thread, position| {
         if (position > 0) try writer.writeByte(',');
-        const frames = view.frames[thread.frame_first..][0..thread.frame_count];
+        const frames = view.buffers.frames[thread.frame_first..][0..thread.frame_count];
         try write_thread(
             story,
             writer,
             frames,
-            view.temps,
+            view.buffers.temps,
             thread.counter,
             thread.previous_pointer,
         );
     }
     try writer.print("],\"threadCounter\":{d}}},\"outputStream\":[", .{view.thread_counter});
-    for (view.items, 0..) |item, position| {
+    for (view.buffers.items, 0..) |item, position| {
         if (position > 0) try writer.writeByte(',');
         try write_item(story, writer, item);
     }
@@ -147,7 +119,7 @@ fn write_flow(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void 
     try write_choice_threads(story, writer, view);
     try writer.writeAll(",\"currentChoices\":[");
     var visible: u32 = 0;
-    for (view.choices, 0..) |choice, position| {
+    for (view.buffers.choices, 0..) |choice, position| {
         if (position > 0) try writer.writeByte(',');
         const choice_index: u32 = if (position < view.indexed_count) visible else 0;
         if (!choice.invisible_default) visible += 1;
@@ -158,21 +130,22 @@ fn write_flow(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void 
 
 /// ink's choiceThreads: the stored thread of each choice whose thread isn't live.
 fn write_choice_threads(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void {
-    assert(view.threads.len > 0);
-    assert(view.snapshots.len <= story.state.choices.snapshots.capacity());
+    assert(view.buffers.threads.len > 0);
+    assert(view.buffers.snapshots.len <= story.state.choices.snapshots.capacity());
     var written = false;
-    for (view.choices) |choice| {
+    for (view.buffers.choices) |choice| {
         if (thread_is_live(view, choice.thread_counter)) continue;
         try writer.writeAll(if (written) "," else ",\"choiceThreads\":{");
         written = true;
-        const snapshot = view.snapshots[choice.snapshot];
-        const frames = view.snapshot_frames[snapshot.frames_first..][0..snapshot.frames_count];
+        const snapshot = view.buffers.snapshots[choice.snapshot];
+        const frames =
+            view.buffers.snapshot_frames[snapshot.frames_first..][0..snapshot.frames_count];
         try writer.print("\"{d}\":", .{choice.thread_counter});
         try write_thread(
             story,
             writer,
             frames,
-            view.snapshot_temps,
+            view.buffers.snapshot_temps,
             choice.thread_counter,
             snapshot.previous_pointer,
         );
@@ -182,8 +155,8 @@ fn write_choice_threads(story: *Story, writer: *Writer, view: FlowView) Writer.E
 
 fn thread_is_live(view: FlowView, counter: u32) bool {
     assert(counter < std.math.maxInt(u32));
-    assert(view.threads.len > 0);
-    for (view.threads) |thread| {
+    assert(view.buffers.threads.len > 0);
+    for (view.buffers.threads) |thread| {
         if (thread.counter == counter) return true;
     }
     return false;
@@ -286,7 +259,7 @@ fn write_choice(
     choice_index: u32,
 ) Writer.Error!void {
     assert(story.state.memory.len > 0);
-    assert(choice.tags_first + choice.tags_count <= view.tags.len);
+    assert(choice.tags_first + choice.tags_count <= view.buffers.tags.len);
     try writer.writeAll("{\"text\":");
     try write_json_string(writer, story.text_of(choice.text));
     try writer.print(",\"index\":{d},\"originalChoicePath\":", .{choice_index});
@@ -295,7 +268,7 @@ fn write_choice(
     try write_target_path(story, writer, choice.target);
     if (choice.tags_count > 0) {
         try writer.writeAll(",\"tags\":[");
-        for (view.tags[choice.tags_first..][0..choice.tags_count], 0..) |tag, position| {
+        for (view.buffers.tags[choice.tags_first..][0..choice.tags_count], 0..) |tag, position| {
             if (position > 0) try writer.writeByte(',');
             try write_json_string(writer, story.text_of(tag));
         }

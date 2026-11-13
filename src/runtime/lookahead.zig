@@ -20,23 +20,15 @@ const index = @import("../core/index.zig");
 const State = state_module.State;
 const PatchEntry = state_module.PatchEntry;
 const Value = value_module.Value;
+const flow_buffers = state_module.flow_buffers;
 
 pub const Error = error{LookaheadLogLimit};
 
 /// What a snapshot remembers besides the buffer copies.
 pub const Snapshot = struct {
     active: bool = false,
-    evaluation: u32 = 0,
-    frames: u32 = 0,
-    threads: u32 = 0,
-    temps: u32 = 0,
-    items: u32 = 0,
-    marks: u32 = 0,
-    choices: u32 = 0,
-    tags: u32 = 0,
-    snapshots: u32 = 0,
-    snapshot_frames: u32 = 0,
-    snapshot_temps: u32 = 0,
+    /// The copied length of each flow buffer, in `flow_buffers` order.
+    counts: [flow_buffers.len]u32 = @splat(0),
     thread_counter: u32 = 0,
     strings_top: u32 = 0,
     lists_top: u32 = 0,
@@ -84,20 +76,17 @@ pub fn take(state: *State) void {
     const profile_zone = profile.begin(.lookahead_take);
     defer profile_zone.end();
     assert(!state.snapshot.active);
-    const into = &state.lookahead;
+    var counts: [flow_buffers.len]u32 = undefined;
+    inline for (flow_buffers, &counts) |buffer, *count| {
+        const into = @field(state.lookahead, @tagName(buffer));
+        const stack = state.flow_stack(buffer);
+        assert(into.len == stack.buffer.len);
+        @memcpy(into[0..stack.count], stack.slice());
+        count.* = stack.count;
+    }
     state.snapshot = .{
         .active = true,
-        .evaluation = save(into.evaluation, state.evaluation),
-        .frames = save(into.frames, state.call_stack.frames),
-        .threads = save(into.threads, state.call_stack.threads),
-        .temps = save(into.temps, state.call_stack.temps),
-        .items = save(into.items, state.output.items),
-        .marks = save(into.marks, state.output.string_marks),
-        .choices = save(into.choices, state.choices.records),
-        .tags = save(into.tags, state.choices.tags),
-        .snapshots = save(into.snapshots, state.choices.snapshots),
-        .snapshot_frames = save(into.snapshot_frames, state.choices.frames),
-        .snapshot_temps = save(into.snapshot_temps, state.choices.temps),
+        .counts = counts,
         .thread_counter = state.call_stack.thread_counter,
         .strings_top = state.strings.used,
         .lists_top = state.lists.used,
@@ -113,22 +102,6 @@ pub fn take(state: *State) void {
     assert(active(state));
 }
 
-fn save(into: anytype, stack: anytype) u32 {
-    assert(stack.count <= into.len);
-    assert(into.len == stack.buffer.len);
-    @memcpy(into[0..stack.count], stack.slice());
-    return stack.count;
-}
-
-fn load(stack: anytype, from: anytype, count: u32) void {
-    assert(count <= from.len);
-    assert(from.len == stack.buffer.len);
-    stack.clear();
-    // The copy came from a stack of the same capacity.
-    stack.push_slice(from[0..count]) catch unreachable;
-    assert(stack.count == count);
-}
-
 /// ink's RestoreStateSnapshot: the state as it was at `take`, except that heap objects made
 /// since then are gone.
 pub fn restore(state: *State) void {
@@ -136,18 +109,13 @@ pub fn restore(state: *State) void {
     defer profile_zone.end();
     assert(active(state));
     const snapshot = state.snapshot;
-    const from = &state.lookahead;
-    load(&state.evaluation, from.evaluation, snapshot.evaluation);
-    load(&state.call_stack.frames, from.frames, snapshot.frames);
-    load(&state.call_stack.threads, from.threads, snapshot.threads);
-    load(&state.call_stack.temps, from.temps, snapshot.temps);
-    load(&state.output.items, from.items, snapshot.items);
-    load(&state.output.string_marks, from.marks, snapshot.marks);
-    load(&state.choices.records, from.choices, snapshot.choices);
-    load(&state.choices.tags, from.tags, snapshot.tags);
-    load(&state.choices.snapshots, from.snapshots, snapshot.snapshots);
-    load(&state.choices.frames, from.snapshot_frames, snapshot.snapshot_frames);
-    load(&state.choices.temps, from.snapshot_temps, snapshot.snapshot_temps);
+    const copy = state.lookahead.prefix(&snapshot.counts);
+    inline for (flow_buffers) |buffer| {
+        const stack = state.flow_stack(buffer);
+        stack.clear();
+        // The copy came from this stack, so it fits.
+        stack.push_slice(@field(copy, @tagName(buffer))) catch unreachable;
+    }
     state.call_stack.thread_counter = snapshot.thread_counter;
     undo(state);
     state.strings.truncate(snapshot.strings_top);
@@ -232,25 +200,15 @@ pub fn check(state: *const State) Fault {
     if (!snapshot.active) {
         return if (snapshot.patch_count == 0) .ok else .inactive_with_log;
     }
-    const copy = &state.lookahead;
-    const pairs = [_][2]usize{
-        .{ snapshot.evaluation, copy.evaluation.len },
-        .{ snapshot.frames, copy.frames.len },
-        .{ snapshot.threads, copy.threads.len },
-        .{ snapshot.temps, copy.temps.len },
-        .{ snapshot.items, copy.items.len },
-        .{ snapshot.marks, copy.marks.len },
-        .{ snapshot.choices, copy.choices.len },
-        .{ snapshot.tags, copy.tags.len },
-        .{ snapshot.snapshots, copy.snapshots.len },
-        .{ snapshot.patch_count, state.patch.len },
-        .{ snapshot.snapshot_frames, copy.snapshot_frames.len },
-        .{ snapshot.snapshot_temps, copy.snapshot_temps.len },
-        .{ snapshot.errors, state.errors.buffer.len },
-        .{ snapshot.warnings, state.warnings.buffer.len },
-        .{ snapshot.observer_events, state.observer_events.buffer.len },
+    inline for (flow_buffers, snapshot.counts) |buffer, count| {
+        if (count > @field(state.lookahead, @tagName(buffer)).len) return .count_exceeds_buffer;
+    }
+    const pairs = [_][2]u32{
+        .{ snapshot.patch_count, @intCast(state.patch.len) },
+        .{ snapshot.errors, state.errors.capacity() },
+        .{ snapshot.warnings, state.warnings.capacity() },
+        .{ snapshot.observer_events, state.observer_events.capacity() },
     };
-    assert(pairs.len == 15);
     for (pairs) |pair| if (pair[0] > pair[1]) return .count_exceeds_buffer;
     if (snapshot.strings_top > state.strings.used) return .heap_top_past_used;
     if (snapshot.lists_top > state.lists.used) return .heap_top_past_used;
@@ -262,16 +220,7 @@ pub fn visit(state: *State, visitor: anytype) void {
     assert(@typeInfo(@TypeOf(visitor)) == .pointer);
     if (!active(state)) return;
     const snapshot = &state.snapshot;
-    const copy = &state.lookahead;
-    assert(snapshot.evaluation <= copy.evaluation.len and snapshot.temps <= copy.temps.len);
-    state_module.visit_values(copy.evaluation[0..snapshot.evaluation], visitor);
-    state_module.visit_temps(copy.temps[0..snapshot.temps], visitor);
-    for (copy.items[0..snapshot.items]) |*item| {
-        if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
-    }
-    for (copy.choices[0..snapshot.choices]) |*choice| visitor.string(&choice.text);
-    for (copy.tags[0..snapshot.tags]) |*tag| visitor.string(tag);
-    state_module.visit_temps(copy.snapshot_temps[0..snapshot.snapshot_temps], visitor);
+    state_module.visit_flow(state.lookahead.prefix(&snapshot.counts), visitor);
     for (state.patch[0..snapshot.patch_count]) |*entry| {
         if (kind_of(entry.target) != .global) continue;
         state_module.visit_values((&entry.old)[0..1], visitor);

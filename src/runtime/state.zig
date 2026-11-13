@@ -155,7 +155,47 @@ pub const FlowBuffers = struct {
     snapshots: []choices_module.Snapshot,
     snapshot_frames: []Frame,
     snapshot_temps: []Temp,
+
+    /// The first `counts[i]` elements of each buffer, in `flow_buffers` order.
+    pub fn prefix(buffers: FlowBuffers, counts: *const [flow_buffers.len]u32) FlowBuffers {
+        var result = buffers;
+        inline for (flow_buffers, counts) |buffer, count| {
+            const name = @tagName(buffer);
+            assert(count <= @field(buffers, name).len);
+            @field(result, name) = @field(buffers, name)[0..count];
+        }
+        return result;
+    }
 };
+
+pub const FlowBuffer = limits_module.FlowBuffer;
+/// Every per-flow buffer, in the order of `FlowBuffers`' fields.
+pub const flow_buffers = std.enums.values(FlowBuffer);
+/// The buffers a parked flow keeps: all but the evaluation stack, which flows share.
+pub const parked_buffers = flow_buffers[1..];
+
+pub fn FlowElement(comptime buffer: FlowBuffer) type {
+    return @typeInfo(@FieldType(FlowBuffers, @tagName(buffer))).pointer.child;
+}
+
+/// `*BoundedStack` of a flow buffer's elements, const when the state is.
+fn FlowStack(comptime StatePointer: type, comptime buffer: FlowBuffer) type {
+    const Stack = BoundedStack(FlowElement(buffer));
+    return if (StatePointer == *const State) *const Stack else *Stack;
+}
+
+comptime {
+    const names = @typeInfo(FlowBuffers).@"struct".field_names;
+    assert(names.len == flow_buffers.len);
+    assert(parked_buffers[0] != .evaluation);
+    for (names, flow_buffers) |name, buffer| {
+        assert(std.mem.eql(u8, name, @tagName(buffer)));
+        assert(@sizeOf(FlowElement(buffer)) == buffer.bytes_per_element());
+        // Parking packs the buffers as words.
+        assert(@sizeOf(FlowElement(buffer)) % 4 == 0);
+        assert(@alignOf(FlowElement(buffer)) <= 4);
+    }
+}
 
 pub const State = struct {
     program: *const Program,
@@ -334,33 +374,54 @@ pub const State = struct {
         state.verify();
     }
 
+    /// The live stack behind flow buffer `buffer`.
+    pub fn flow_stack(
+        state: anytype,
+        comptime buffer: FlowBuffer,
+    ) FlowStack(@TypeOf(state), buffer) {
+        comptime assert(@typeInfo(@TypeOf(state)).pointer.child == State);
+        return switch (buffer) {
+            .evaluation => &state.evaluation,
+            .frames => &state.call_stack.frames,
+            .threads => &state.call_stack.threads,
+            .temps => &state.call_stack.temps,
+            .items => &state.output.items,
+            .marks => &state.output.string_marks,
+            .choices => &state.choices.records,
+            .tags => &state.choices.tags,
+            .snapshots => &state.choices.snapshots,
+            .snapshot_frames => &state.choices.frames,
+            .snapshot_temps => &state.choices.temps,
+        };
+    }
+
+    /// The used part of every live-flow buffer.
+    pub fn live_flow(state: *State) FlowBuffers {
+        assert(state.call_stack.threads.count > 0);
+        var buffers: FlowBuffers = undefined;
+        inline for (flow_buffers) |buffer| {
+            @field(buffers, @tagName(buffer)) = state.flow_stack(buffer).slice();
+        }
+        return buffers;
+    }
+
     /// Calls `visitor.string` and `visitor.list` for every heap reference the state holds:
     /// the root set of heap compaction (plan §4.5).
     pub fn visit(state: *State, visitor: anytype) void {
         assert(@TypeOf(visitor) != void);
         assert(state.memory.len > 0);
-        visit_values(state.evaluation.slice(), visitor);
+        visit_flow(state.live_flow(), visitor);
         visit_values(state.globals, visitor);
         visit_values(state.global_defaults, visitor);
-        visit_temps(state.call_stack.temps.slice(), visitor);
-        for (state.output.items.slice()) |*item| {
-            if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
-        }
-        for (state.choices.records.slice()) |*choice| visitor.string(&choice.text);
-        for (state.choices.tags.slice()) |*tag| visitor.string(tag);
-        visit_temps(state.choices.temps.slice(), visitor);
         for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
         flows.visit_parked(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
             const words = state.parking[stash.first..][0 .. stash.items * 3];
-            const items: []output_module.Item = @alignCast(std.mem.bytesAsSlice(
+            visit_items(@alignCast(std.mem.bytesAsSlice(
                 output_module.Item,
                 std.mem.sliceAsBytes(words),
-            ));
-            for (items) |*item| {
-                if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
-            }
+            )), visitor);
         }
         lookahead_module.visit(state, visitor);
     }
@@ -463,18 +524,15 @@ pub const State = struct {
     pub fn hash(state: *const State) u64 {
         assert(state.memory.len > 0);
         var hasher: std.hash.Wyhash = .init(0);
-        hash_values(&hasher, state.evaluation.slice());
+        inline for (flow_buffers) |buffer| {
+            const elements = state.flow_stack(buffer).slice();
+            switch (FlowElement(buffer)) {
+                Value => hash_values(&hasher, elements),
+                Temp => hash_temps(&hasher, elements),
+                else => hash_records(&hasher, elements),
+            }
+        }
         hash_values(&hasher, state.globals);
-        hash_records(&hasher, state.call_stack.frames.slice());
-        hash_records(&hasher, state.call_stack.threads.slice());
-        hash_temps(&hasher, state.call_stack.temps.slice());
-        hash_records(&hasher, state.output.items.slice());
-        hash_records(&hasher, state.output.string_marks.slice());
-        hash_records(&hasher, state.choices.records.slice());
-        hash_records(&hasher, state.choices.tags.slice());
-        hash_records(&hasher, state.choices.snapshots.slice());
-        hash_records(&hasher, state.choices.frames.slice());
-        hash_temps(&hasher, state.choices.temps.slice());
         hash_records(&hasher, state.visit_counts);
         hash_records(&hasher, state.turn_indices);
         hash_records(&hasher, state.observer_events.slice());
@@ -515,6 +573,24 @@ pub const State = struct {
         fault.verify(state.check());
     }
 };
+
+/// Visits the heap references in one flow's buffers, live, copied or parked.
+pub fn visit_flow(buffers: FlowBuffers, visitor: anytype) void {
+    assert(buffers.snapshots.len <= buffers.choices.len);
+    visit_values(buffers.evaluation, visitor);
+    visit_temps(buffers.temps, visitor);
+    visit_items(buffers.items, visitor);
+    for (buffers.choices) |*choice| visitor.string(&choice.text);
+    for (buffers.tags) |*tag| visitor.string(tag);
+    visit_temps(buffers.snapshot_temps, visitor);
+}
+
+fn visit_items(items: []output_module.Item, visitor: anytype) void {
+    assert(items.len < std.math.maxInt(u32));
+    for (items) |*item| {
+        if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
+    }
+}
 
 pub fn visit_values(values: []Value, visitor: anytype) void {
     assert(@TypeOf(visitor) != void);
@@ -693,19 +769,11 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
 
 fn carve_flow(carver: *Carver, limits: Limits) FlowBuffers {
     assert(carver.used % 4 == 0);
-    const buffers: FlowBuffers = .{
-        .evaluation = carver.take(Value, limits.evaluation_values_max),
-        .frames = carver.take(Frame, limits.frames_max),
-        .threads = carver.take(Thread, limits.threads_max),
-        .temps = carver.take(Temp, limits.temps_max),
-        .items = carver.take(output_module.Item, limits.output_items_max),
-        .marks = carver.take(u32, limits.string_marks_max),
-        .choices = carver.take(choices_module.Choice, limits.choices_max),
-        .tags = carver.take(StringReference, limits.tags_max),
-        .snapshots = carver.take(choices_module.Snapshot, limits.choices_max),
-        .snapshot_frames = carver.take(Frame, limits.choice_snapshot_frames_max),
-        .snapshot_temps = carver.take(Temp, limits.choice_snapshot_temps_max),
-    };
+    var buffers: FlowBuffers = undefined;
+    inline for (flow_buffers) |buffer| {
+        const count = buffer.capacity(&limits);
+        @field(buffers, @tagName(buffer)) = carver.take(FlowElement(buffer), count);
+    }
     assert(buffers.frames.len == limits.frames_max);
     return buffers;
 }
@@ -740,6 +808,31 @@ test "init allocates exactly the byte budget, once" {
     try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
     try std.testing.expectEqual(limits.bytes_total(State.shape_of(&program)), counting.bytes_live);
     try std.testing.expectEqual(State.Fault.ok, state.check());
+}
+
+test "the flow buffer table covers every FlowBuffers field, each with its own live stack" {
+    // Goal: lookahead, parking, save and load iterate `flow_buffers`, so a buffer missing
+    // from it would silently not be copied. Method: every FlowBuffers field has a tag whose
+    // live stack and lookahead copy are sized from its limit, and no two tags share a stack.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    const limits: Limits = limits_module.small_story_limits;
+    try state.init(gpa, &program, limits);
+    defer state.deinit(gpa);
+    var starts: [flow_buffers.len]usize = undefined;
+    inline for (@typeInfo(FlowBuffers).@"struct".field_names, 0..) |name, position| {
+        const buffer = @field(FlowBuffer, name);
+        const stack = state.flow_stack(buffer);
+        try std.testing.expectEqual(buffer.capacity(&limits), stack.capacity());
+        try std.testing.expectEqual(stack.buffer.len, @field(state.lookahead, name).len);
+        starts[position] = @intFromPtr(stack.buffer.ptr);
+        for (starts[0..position]) |other| try std.testing.expect(other != starts[position]);
+    }
+    const live = state.live_flow();
+    try std.testing.expectEqual(state.call_stack.frames.buffer.ptr, live.frames.ptr);
+    try std.testing.expectEqual(@as(usize, 1), live.threads.len);
 }
 
 test "a fresh state starts at the root with nothing pending" {
