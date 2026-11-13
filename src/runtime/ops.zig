@@ -66,42 +66,25 @@ fn lists_of(story: *Story) lists_module.Lists {
     return .{ .program = story.program, .slab = &story.state.lists };
 }
 
-/// Records a story error and returns `error.StoryError` (ink's Error, which throws).
-pub fn fail(story: *Story, code: Code) Error {
-    assert(story.state.memory.len > 0);
-    assert(story.state.memory.len > 0);
+/// What an error message prints besides its code: a name, or two numbers.
+pub const Arguments = struct {
+    name: StringId = .none,
+    numbers: [2]i32 = .{ 0, 0 },
+};
+
+/// ink's AddError for an error, which throws: records it where the story is, ends the flow
+/// (ink's ForceEnd: "in a broken state don't need to know about any other errors") and
+/// returns `error.StoryError`.
+pub fn fail(story: *Story, code: Code, arguments: Arguments) Error {
     assert(@backingInt(code) > 0 or code == .story_error);
-    return report_error(story, .{ .argument = .none, .code = code, .severity = .@"error" });
-}
-
-pub fn fail_name(story: *Story, code: Code, name: StringId) Error {
-    assert(story.state.memory.len > 0);
-    assert(story.state.memory.len > 0);
-    assert(!name.is_none());
-    const argument: StringReference = .program(name);
-    return report_error(story, .{ .argument = argument, .code = code, .severity = .@"error" });
-}
-
-pub fn fail_numbers(story: *Story, code: Code, number: i32, other_number: i32) Error {
-    assert(story.state.memory.len > 0);
-    assert(story.state.memory.len > 0);
-    assert(@backingInt(code) > 0);
-    return report_error(story, .{
-        .argument = .none,
-        .number = number,
-        .other_number = other_number,
+    story.state.add_diagnostic(.{
+        .argument = if (arguments.name.is_none()) .none else .program(arguments.name),
+        .number = arguments.numbers[0],
+        .other_number = arguments.numbers[1],
+        .pointer = vm.current_pointer(story),
         .code = code,
         .severity = .@"error",
     });
-}
-
-/// ink's AddError for an error: records it where the story is, then ends the flow (ink's
-/// ForceEnd: "in a broken state don't need to know about any other errors").
-fn report_error(story: *Story, diagnostic: state_module.Diagnostic) Error {
-    assert(diagnostic.severity == .@"error");
-    var placed = diagnostic;
-    placed.pointer = vm.current_pointer(story);
-    story.state.add_diagnostic(placed);
     force_end(story);
     assert(story.state.has_error());
     return error.StoryError;
@@ -121,27 +104,9 @@ pub fn warn_name(story: *Story, code: Code, name: StringId) void {
 
 /// ink's isTruthy; a divert target or other value without a truth value is a story error.
 pub fn truth_of(story: *Story, value: Value) Error!bool {
-    assert(story.state.memory.len > 0);
-    var context: TruthContext = .{ .story = story };
-    assert(@sizeOf(Value) == 12);
-    return value.is_truthy(&context) catch fail(story, .no_truth_value);
+    var context: NativeContext = .{ .story = story };
+    return value.is_truthy(&context) catch fail(story, .no_truth_value, .{});
 }
-
-const TruthContext = struct {
-    story: *Story,
-
-    pub fn count(context: *TruthContext, list: ListReference) u32 {
-        assert(context.story.state.memory.len > 0);
-        assert(context.story.state.lists.check_reference(list));
-        return lists_of(context.story).count(list);
-    }
-
-    pub fn string_length(context: *TruthContext, text: StringReference) usize {
-        assert(context.story.state.memory.len > 0);
-        assert(text != StringReference.none);
-        return strings_of(context.story).get(text).len;
-    }
-};
 
 // Output.
 
@@ -159,7 +124,7 @@ pub fn pop_call_stack(story: *Story, kind: ?call_stack_module.FrameKind) Error!v
     const state = &story.state;
     const frame = state.call_stack.current_frame();
     if (frame.kind == .function) state.output.trim_function_end(frame.function_start_in_output);
-    state.call_stack.pop(kind) catch return fail(story, .pop_mismatch);
+    state.call_stack.pop(kind) catch return fail(story, .pop_mismatch, .{});
     assert(state.call_stack.depth() > 0);
 }
 
@@ -182,13 +147,13 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
         switch (popped) {
             .divert_target => |target| override = target,
             .null => {},
-            else => return fail(story, .tunnel_return_not_target),
+            else => return fail(story, .tunnel_return_not_target, .{}),
         }
     }
     if (try_exit_function_evaluation_from_game(story)) return;
     const stack = &story.state.call_stack;
     if (stack.current_frame().kind != kind or !stack.can_pop(null)) {
-        return fail(story, .pop_mismatch);
+        return fail(story, .pop_mismatch, .{});
     }
     try pop_call_stack(story, null);
     if (override) |target| story.diverted_pointer = .start_of(target);
@@ -282,7 +247,7 @@ pub fn end_string(story: *Story) Error!vm.Signal {
     const state = &story.state;
     var writer: std.Io.Writer = .fixed(state.line_bytes);
     _ = state.output.end_string(strings_of(story), &writer) catch |err| switch (err) {
-        error.UnmatchedEndString => return fail(story, .unmatched_end_string),
+        error.UnmatchedEndString => return fail(story, .unmatched_end_string, .{}),
         else => return error.OutputLimit,
     };
     note_line_bytes(state, writer.end);
@@ -307,8 +272,8 @@ pub fn end_tag(story: *Story) Error!vm.Signal {
     while (start > 0) {
         start -= 1;
         if (items[start].kind == .begin_tag) break;
-        if (items[start].kind != .text) return fail(story, .unexpected_command_in_tag);
-    } else return fail(story, .unexpected_command_in_tag);
+        if (items[start].kind != .text) return fail(story, .unexpected_command_in_tag, .{});
+    } else return fail(story, .unexpected_command_in_tag, .{});
     var writer: std.Io.Writer = .fixed(state.line_bytes);
     var cleaner: output_module.Cleaner = .{ .writer = &writer };
     for (items[start + 1 ..]) |item| {
@@ -356,16 +321,17 @@ pub fn call_native(story: *Story, opcode: Opcode) Error!void {
 }
 
 fn native_failure(story: *Story, err: native.Error) Error {
-    assert(story.state.memory.len > 0);
-    assert(err != error.OutOfMemory or story.program.list_items.len > 0);
+    assert(err != error.ListLimit or story.program.list_items.len > 0);
     return switch (err) {
         error.HeapLimit => error.HeapLimit,
-        error.OutOfMemory => error.ListLimit,
-        error.DivisionByZero => fail(story, .division_by_zero),
-        error.IntegerOverflow => fail(story, .integer_overflow),
-        error.FloatToIntegerOutOfRange => fail(story, .float_to_integer_out_of_range),
-        error.VoidOperand => fail(story, .void_operand),
-        error.UnsupportedOperation, error.IncompatibleTypes => fail(story, .unsupported_operation),
+        error.ListLimit => error.ListLimit,
+        error.DivisionByZero => fail(story, .division_by_zero, .{}),
+        error.IntegerOverflow => fail(story, .integer_overflow, .{}),
+        error.FloatToIntegerOutOfRange => fail(story, .float_to_integer_out_of_range, .{}),
+        error.VoidOperand => fail(story, .void_operand, .{}),
+        error.UnsupportedOperation,
+        error.IncompatibleTypes,
+        => fail(story, .unsupported_operation, .{}),
     };
 }
 
@@ -394,7 +360,6 @@ const NativeContext = struct {
     story: *Story,
 
     pub fn string_bytes(context: *NativeContext, reference: StringReference) []const u8 {
-        assert(context.story.state.memory.len > 0);
         assert(reference != StringReference.none);
         return strings_of(context.story).get(reference);
     }
@@ -417,7 +382,6 @@ const NativeContext = struct {
     }
 
     pub fn list_count(context: *NativeContext, list: ListReference) u32 {
-        assert(context.story.state.memory.len > 0);
         assert(context.story.state.lists.check_reference(list));
         return lists_of(context.story).count(list);
     }
@@ -430,19 +394,13 @@ const NativeContext = struct {
     ) native.Error!Value {
         assert(@backingInt(opcode) >= @backingInt(Opcode.add));
         assert(a == .list or b == .list);
-        return lists_of(context.story).binary(opcode, a, b) catch |err| switch (err) {
-            error.ListLimit => error.OutOfMemory,
-            else => |other| other,
-        };
+        return lists_of(context.story).binary(opcode, a, b);
     }
 
     pub fn list_unary(context: *NativeContext, opcode: Opcode, a: Value) native.Error!Value {
         assert(@backingInt(opcode) >= @backingInt(Opcode.add));
         assert(a == .list);
-        return lists_of(context.story).unary(opcode, a) catch |err| switch (err) {
-            error.ListLimit => error.OutOfMemory,
-            else => |other| other,
-        };
+        return lists_of(context.story).unary(opcode, a);
     }
 };
 
@@ -488,7 +446,7 @@ pub fn variable_value(story: *Story, name: StringId, context: i32) Error!?Value 
     var value = try raw_variable(story, name, context) orelse return null;
     var hops: u32 = 0;
     while (value == .variable_pointer) : (hops += 1) {
-        if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle);
+        if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle, .{});
         const pointer = value.variable_pointer;
         value = try raw_variable(story, pointer.name, pointer.context) orelse return null;
     }
@@ -584,28 +542,29 @@ fn assign_existing(
     var hops: u32 = 0;
     while (try raw_variable(story, name, context)) |existing| : (hops += 1) {
         if (existing != .variable_pointer) break;
-        if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle);
+        if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle, .{});
         name = existing.variable_pointer.name;
         context = existing.variable_pointer.context;
         is_global = context == 0;
     }
     if (is_global) {
-        const slot = global_slot(story, name) orelse return fail_name(
+        const slot = global_slot(story, name) orelse return fail(
             story,
             .variable_not_found,
-            name,
+            .{ .name = name },
         );
         return set_global(story, slot, value);
     }
     const old = try raw_variable(story, name, context);
     const stored = try retain_list_origins(story, old, value);
     story.state.call_stack.temp_set(name, stored, false, context) catch |err| switch (err) {
-        error.TempNotFound => return fail_name(story, .temp_not_found, name),
+        error.TempNotFound => return fail(story, .temp_not_found, .{ .name = name }),
         else => return error.TempLimit,
     };
 }
 
-/// ink's SetGlobal. Observers are queued in P5.7.
+/// ink's SetGlobal. A changed observed global notifies its observers at once, or at the end
+/// of `cont()` while it batches them.
 pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.state.globals.len);
     const old = story.state.globals[slot.to_int()];
@@ -622,8 +581,6 @@ pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
 /// ink compares the old and new value objects by reference; by value is the closest a
 /// value representation gets (a reassigned literal is the same object in ink too).
 fn same_value(a: Value, b: Value) bool {
-    assert(@sizeOf(Value) == 12);
-    assert(@typeInfo(Value).@"union".field_names.len == 9);
     if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
     return switch (a) {
         .null => true,
@@ -643,7 +600,6 @@ fn same_value(a: Value, b: Value) bool {
 /// list's origins.
 fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!Value {
     assert(value != .tag);
-    assert(@sizeOf(Value) == 12);
     const previous = old orelse return value;
     if (previous != .list or value != .list) return value;
     if (lists_of(story).count(value.list) != 0) return value;
@@ -715,7 +671,7 @@ const ChoicePops = struct {
     fn take(pops: *ChoicePops, story: *Story, slot: u32) Error!void {
         assert(slot < 2);
         const popped = try vm.pop_evaluation(story);
-        if (popped != .string) return fail(story, .choice_text_not_string);
+        if (popped != .string) return fail(story, .choice_text_not_string, .{});
         pops.values[slot] = popped;
         var popped_tags: u32 = 0;
         while (story.state.evaluation.peek()) |top| : (popped_tags += 1) {
@@ -789,15 +745,18 @@ pub fn turns_since(story: *Story, container: ContainerIndex) i32 {
 
 pub fn random(story: *Story) Error!void {
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
-    assert(@sizeOf(DotnetRandom) > 0);
     const maximum = try vm.pop_evaluation(story);
     const minimum = try vm.pop_evaluation(story);
-    if (minimum != .integer) return fail(story, .random_invalid_minimum);
-    if (maximum != .integer) return fail(story, .random_invalid_maximum);
+    if (minimum != .integer) return fail(story, .random_invalid_minimum, .{});
+    if (maximum != .integer) return fail(story, .random_invalid_maximum, .{});
     const range_wide = @as(i64, maximum.integer) - minimum.integer + 1;
-    if (range_wide > std.math.maxInt(i32)) return fail(story, .random_range_too_large);
+    if (range_wide > std.math.maxInt(i32)) return fail(story, .random_range_too_large, .{});
     if (range_wide <= 0) {
-        return fail_numbers(story, .random_range_empty, minimum.integer, maximum.integer);
+        return fail(
+            story,
+            .random_range_empty,
+            .{ .numbers = .{ minimum.integer, maximum.integer } },
+        );
     }
     const range: i32 = @intCast(range_wide);
     const state = &story.state;
@@ -810,9 +769,8 @@ pub fn random(story: *Story) Error!void {
 
 pub fn seed_random(story: *Story) Error!void {
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
-    assert(story.state.memory.len > 0);
     const seed = try vm.pop_evaluation(story);
-    if (seed != .integer) return fail(story, .seed_invalid);
+    if (seed != .integer) return fail(story, .seed_invalid, .{});
     story.state.story_seed = seed.integer;
     story.state.previous_random = 0;
     try vm.push_evaluation(story, .null);
@@ -825,11 +783,11 @@ pub fn sequence_shuffle_index(story: *Story) Error!void {
     assert(shuffle_elements_max > 0);
     assert(!vm.current_pointer(story).is_null());
     const elements_value = try vm.pop_evaluation(story);
-    if (elements_value != .integer) return fail(story, .shuffle_invalid);
+    if (elements_value != .integer) return fail(story, .shuffle_invalid, .{});
     const sequence_count_value = try vm.pop_evaluation(story);
-    if (sequence_count_value != .integer) return fail(story, .shuffle_invalid);
+    if (sequence_count_value != .integer) return fail(story, .shuffle_invalid, .{});
     const elements = elements_value.integer;
-    if (elements <= 0 or elements > shuffle_elements_max) return fail(story, .shuffle_invalid);
+    if (elements <= 0 or elements > shuffle_elements_max) return fail(story, .shuffle_invalid, .{});
     const count = sequence_count_value.integer;
     const loop_index = @divTrunc(count, elements);
     const iteration_index = @rem(count, elements);
@@ -868,7 +826,6 @@ pub fn done(story: *Story) Error!void {
 
 /// ink's ForceEnd (`END`): the call stack and the choices go.
 pub fn force_end(story: *Story) void {
-    assert(story.state.memory.len > 0);
     const state = &story.state;
     state.call_stack.reset(.start_of(story.program.root_container()));
     state.choices.clear();
@@ -894,7 +851,7 @@ fn list_error(err: lists_module.Error) Error {
     assert(err != error.DivisionByZero);
     assert(@errorName(err).len > 0);
     return switch (err) {
-        error.ListLimit, error.OutOfMemory => error.ListLimit,
+        error.ListLimit => error.ListLimit,
         error.HeapLimit => error.HeapLimit,
         else => unreachable,
     };
@@ -905,14 +862,14 @@ fn list_from_int(story: *Story) Error!Value {
     assert(story.state.lists.used <= story.state.lists.words.len);
     const number = try vm.pop_evaluation(story);
     var keep = [_]Value{try vm.pop_evaluation(story)};
-    if (number != .integer) return fail(story, .list_from_int_not_int);
-    if (keep[0] != .string) return fail(story, .list_not_found);
+    if (number != .integer) return fail(story, .list_from_int_not_int, .{});
+    if (keep[0] != .string) return fail(story, .list_not_found, .{});
     try reserve_list(story, &keep);
     const name = strings_of(story).get(keep[0].string);
     const lists = lists_of(story);
     const result = lists.from_int(name, number.integer) catch |err| return list_error(err);
     assert(result == null or result.? == .list);
-    return result orelse fail(story, .list_not_found);
+    return result orelse fail(story, .list_not_found, .{});
 }
 
 /// LIST_RANGE(list, min, max).
@@ -923,7 +880,7 @@ fn list_range(story: *Story) Error!Value {
     keep[1] = try vm.pop_evaluation(story);
     keep[0] = try vm.pop_evaluation(story);
     if (keep[0] != .list or keep[1] == .null or keep[2] == .null) {
-        return fail(story, .list_range_arguments);
+        return fail(story, .list_range_arguments, .{});
     }
     try reserve_list(story, &keep);
     const result = lists_of(story).sub_range(keep[0].list, keep[1], keep[2]) catch |err|
@@ -936,7 +893,7 @@ fn list_range(story: *Story) Error!Value {
 fn list_random(story: *Story) Error!Value {
     assert(story.state.lists.used <= story.state.lists.words.len);
     var keep = [_]Value{try vm.pop_evaluation(story)};
-    if (keep[0] != .list) return fail(story, .list_random_not_list);
+    if (keep[0] != .list) return fail(story, .list_random_not_list, .{});
     try reserve_list(story, &keep);
     const lists = lists_of(story);
     const count = lists.count(keep[0].list);
@@ -978,10 +935,10 @@ pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {
     const binding = story.bindings[external];
     if (binding.function != null and !binding.lookahead_safe) {
         if (story.state.output.in_string_evaluation()) {
-            return fail_name(
+            return fail(
                 story,
                 .external_unsafe_in_string,
-                story.program.externals[external].name,
+                .{ .name = story.program.externals[external].name },
             );
         }
         if (lookahead.active(&story.state)) {
@@ -1000,9 +957,13 @@ fn call_fallback(story: *Story, external: u32) Error!vm.Signal {
     assert(external < story.program.externals.len);
     const info = story.program.externals[external];
     if (!story.allow_external_function_fallbacks) {
-        return fail_name(story, .external_not_bound, info.name);
+        return fail(story, .external_not_bound, .{ .name = info.name });
     }
-    if (info.fallback.is_none()) return fail_name(story, .external_fallback_missing, info.name);
+    if (info.fallback.is_none()) return fail(
+        story,
+        .external_fallback_missing,
+        .{ .name = info.name },
+    );
     const state = &story.state;
     state.call_stack.push(.function, state.evaluation.count, state.output.items.count) catch
         return error.FrameLimit;
@@ -1020,8 +981,8 @@ fn call_bound(
 ) Error!void {
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const state = &story.state;
-    if (count > story_module.external_arguments_max) return fail(story, .too_many_arguments);
-    if (state.evaluation.count < count) return fail(story, .evaluation_stack_empty);
+    if (count > story_module.external_arguments_max) return fail(story, .too_many_arguments, .{});
+    if (state.evaluation.count < count) return fail(story, .evaluation_stack_empty, .{});
     var arguments: [story_module.external_arguments_max]story_module.HostValue = undefined;
     const first = state.evaluation.count - count;
     for (state.evaluation.slice()[first..], 0..) |value, position| {
@@ -1038,8 +999,6 @@ fn call_bound(
 
 /// A value as the host sees it (ink's valueObject).
 pub fn host_value(story: *Story, value: Value) story_module.HostValue {
-    assert(story.state.memory.len > 0);
-    assert(@sizeOf(Value) == 12);
     return switch (value) {
         .null, .variable_pointer, .tag => .null,
         .integer => |number| .{ .integer = number },
@@ -1053,8 +1012,6 @@ pub fn host_value(story: *Story, value: Value) story_module.HostValue {
 
 /// A host value as an ink value; strings are copied into the heap.
 pub fn value_of_host(story: *Story, host: story_module.HostValue) Error!Value {
-    assert(@sizeOf(story_module.HostValue) > 0);
-    assert(story.state.memory.len > 0);
     return switch (host) {
         .null => .null,
         .integer => |number| .{ .integer = number },

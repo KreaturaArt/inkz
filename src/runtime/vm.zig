@@ -313,6 +313,7 @@ pub fn pop_evaluation(story: *Story) Error!Value {
     const value = story.state.evaluation.pop() orelse return ops.fail(
         story,
         .evaluation_stack_empty,
+        .{},
     );
     return value;
 }
@@ -371,7 +372,7 @@ fn content_text(story: *Story, instruction: Instruction) Error!Signal {
             .text => push_content(story, .{ .string = .program(instruction.get(.text)) }),
             .tag => push_content(story, .{ .tag = .program(instruction.get(.tag)) }),
             .newline => push_content(story, .{ .string = story.program_newline() }),
-            else => ops.fail(story, .glue_in_expression),
+            else => ops.fail(story, .glue_in_expression, .{}),
         };
     }
     switch (opcode) {
@@ -415,9 +416,9 @@ fn divert(story: *Story, instruction: Instruction) Error!Signal {
     }
     if (record.flags.variable) {
         const target = try ops.variable_value(story, record.name, -1) orelse
-            return ops.fail_name(story, .divert_variable_not_found, record.name);
+            return ops.fail(story, .divert_variable_not_found, .{ .name = record.name });
         if (target != .divert_target) {
-            return ops.fail_name(story, .divert_variable_not_target, record.name);
+            return ops.fail(story, .divert_variable_not_target, .{ .name = record.name });
         }
         story.diverted_pointer = .start_of(target.divert_target);
     } else {
@@ -491,6 +492,7 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
             const top = state.evaluation.peek() orelse return ops.fail(
                 story,
                 .evaluation_stack_empty,
+                .{},
             );
             try push_evaluation(story, top);
         },
@@ -532,7 +534,7 @@ fn count_of_target(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .turns_since or opcode == .read_count_of_target);
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const target = try pop_evaluation(story);
-    if (target != .divert_target) return ops.fail(story, .turns_since_expected_target);
+    if (target != .divert_target) return ops.fail(story, .turns_since_expected_target, .{});
     const container = target.divert_target;
     const count: i32 = if (opcode == .turns_since)
         ops.turns_since(story, container)

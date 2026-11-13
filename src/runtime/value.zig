@@ -34,7 +34,6 @@ pub const StringReference = enum(u32) {
     }
 
     pub fn is_heap(reference: StringReference) bool {
-        assert(@sizeOf(StringReference) == 4);
         const raw = @backingInt(reference);
         const result = raw & heap_bit != 0;
         assert(result or raw < heap_bit);
@@ -82,7 +81,6 @@ pub const Value = union(enum(u8)) {
     /// ink's coercion order (Value.cs `ValueType`): a binary operation converts both operands
     /// to the higher of their two types. Null and tags don't take part in arithmetic.
     pub fn rank(value: Value) ?i8 {
-        assert(@sizeOf(Value) == 12);
         const result: ?i8 = switch (value) {
             .bool => -1,
             .integer => 0,
@@ -98,18 +96,18 @@ pub const Value = union(enum(u8)) {
     }
 
     /// ink's `isTruthy`. Divert targets, variable pointers and tags have no truth value.
-    pub fn is_truthy(value: Value, list_count: anytype) error{NoTruthValue}!bool {
-        assert(@sizeOf(Value) == 12);
-        const result = switch (value) {
+    /// `context` provides `list_count(ListReference) u32` and `string_bytes(StringReference)
+    /// []const u8`.
+    pub fn is_truthy(value: Value, context: anytype) error{NoTruthValue}!bool {
+        assert(@typeInfo(@TypeOf(context)) == .pointer);
+        return switch (value) {
             .bool => |flag| flag,
             .integer => |number| number != 0,
             .float => |number| number != 0,
-            .list => |list| list_count.count(list) > 0,
-            .string => |text| list_count.string_length(text) > 0,
-            .null, .divert_target, .variable_pointer, .tag => return error.NoTruthValue,
+            .list => |list| context.list_count(list) > 0,
+            .string => |text| context.string_bytes(text).len > 0,
+            .null, .divert_target, .variable_pointer, .tag => error.NoTruthValue,
         };
-        assert(value != .null);
-        return result;
     }
 };
 

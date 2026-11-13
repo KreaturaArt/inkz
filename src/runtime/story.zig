@@ -628,7 +628,7 @@ pub const Story = struct {
         assert(story.state.call_stack.depth() > 0);
         const state = &story.state;
         if (state.call_stack.can_pop_thread()) {
-            ops.fail(story, .thread_left_to_pop) catch {};
+            ops.fail(story, .thread_left_to_pop, .{}) catch {};
         }
         if (state.choices.count() != 0 or state.did_safe_exit) return;
         const code: state_module.Diagnostic.Code = if (state.call_stack.can_pop(.tunnel))
@@ -639,7 +639,7 @@ pub const Story = struct {
             .ran_out_of_content
         else
             .unexpected_end_unknown;
-        ops.fail(story, code) catch {};
+        ops.fail(story, code, .{}) catch {};
     }
 
     /// ink's TryFollowDefaultInvisibleChoice.
