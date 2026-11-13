@@ -11,6 +11,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const common = @import("bench_common.zig");
+const support = @import("testing/support.zig");
 const compiler = @import("compiler/compile.zig");
 const CountingAllocator = @import("core/counting_allocator.zig").CountingAllocator;
 const ink_json = @import("core/ink_json.zig");
@@ -114,7 +115,7 @@ fn measure_play(gpa: Allocator, io: std.Io, program: *const Program, limits: Lim
     var story: Story = undefined;
     try story.init(gpa, program, limits);
     defer story.deinit(gpa);
-    story.on_error = common.ignore_errors;
+    story.on_error = support.ignore_message;
     var turns: u64 = 0;
     var lines: u64 = 0;
     const steps_before = story.steps_total;

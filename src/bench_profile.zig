@@ -18,6 +18,7 @@ const save = @import("runtime/save.zig");
 const load = @import("runtime/load.zig");
 const bench_io = @import("bench_io.zig");
 const common = @import("bench_common.zig");
+const support = @import("testing/support.zig");
 
 /// Compiles the profile zones in (src/core/profile.zig).
 pub const inkz_profile = true;
@@ -123,13 +124,13 @@ const Inputs = struct {
         try program_image.write(&inputs.program, &inputs.out.writer);
         inputs.image = try gpa.dupe(u8, inputs.out.written());
         try inputs.played.init(gpa, &inputs.program, .{});
-        inputs.played.on_error = common.ignore_errors;
+        inputs.played.on_error = support.ignore_message;
         _ = try common.play(&inputs.played, 1);
         inputs.out.clearRetainingCapacity();
         try save.to_json(&inputs.played, &inputs.out.writer);
         inputs.save_json = try gpa.dupe(u8, inputs.out.written());
         try inputs.loader.init(gpa, &inputs.program, .{});
-        inputs.loader.on_error = common.ignore_errors;
+        inputs.loader.on_error = support.ignore_message;
     }
 
     fn deinit(inputs: *Inputs) void {
