@@ -37,7 +37,6 @@ pub fn eliminate_comments(source: []const u8, out: []u8) []const u8 {
 /// The length of the identifier at the start of `text`: ink's identifier characters (ASCII
 /// letters, digits, `_`, and its Unicode ranges), or null.
 pub fn identifier_length(text: []const u8) ?u32 {
-    assert(text.len < std.math.maxInt(u32));
     assert(@sizeOf(u21) <= 4);
     var at: u32 = 0;
     while (at < text.len) {

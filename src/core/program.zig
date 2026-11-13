@@ -87,8 +87,6 @@ pub const Program = struct {
     };
 
     pub fn deinit(program: *Program, gpa: std.mem.Allocator) void {
-        assert(program.instructions.len < std.math.maxInt(u32));
-        assert(program.containers.len > 0);
         program.strings.deinit(gpa);
         program.instructions.deinit(gpa);
         gpa.free(program.extra);
@@ -102,7 +100,6 @@ pub const Program = struct {
     }
 
     pub fn table(program: *const Program) ContainerTable {
-        assert(program.containers.len > 0);
         const result: ContainerTable = .{
             .containers = program.containers,
             .named = program.named,
@@ -114,7 +111,6 @@ pub const Program = struct {
     pub fn instructions_count(program: *const Program) u32 {
         const count: u32 = @intCast(program.instructions.len);
         assert(count == program.instructions.len);
-        assert(count < std.math.maxInt(u32));
         return count;
     }
 
@@ -138,7 +134,6 @@ pub const Program = struct {
     // The container-table interface of `path.zig`.
 
     pub fn root_container(program: *const Program) ContainerIndex {
-        assert(program.containers.len > 0);
         assert(program.table().parent(root).is_none());
         return root;
     }
@@ -176,7 +171,6 @@ pub const Program = struct {
         comptime field: std.meta.FieldEnum(ContainerInfo),
     ) @FieldType(ContainerInfo, @tagName(field)) {
         assert(container.to_int() < program.containers.len);
-        assert(program.containers.len > 0);
         return program.containers.items(field)[container.to_int()];
     }
 
@@ -197,7 +191,6 @@ pub const Program = struct {
     pub fn check(program: *const Program) Fault {
         const profile_zone = profile.begin(.program_check);
         defer profile_zone.end();
-        assert(program.containers.len > 0);
         const instructions_total = program.instructions_count();
         if (program.table().check(instructions_total) != .ok) return .containers;
         const partition = program.check_partition();
@@ -212,14 +205,12 @@ pub const Program = struct {
     }
 
     pub fn verify(program: *const Program) void {
-        assert(program.containers.len > 0);
         fault.verify(program.check());
     }
 
     /// Containers' instructions are laid out back to back in container order, so every
     /// instruction belongs to exactly one container.
     fn check_partition(program: *const Program) Fault {
-        assert(program.containers.len > 0);
         const firsts = program.containers.items(.instruction_first);
         const counts = program.containers.items(.instruction_count);
         var next: u64 = 0;
@@ -296,7 +287,6 @@ pub const Program = struct {
     }
 
     fn check_external_call(program: *const Program, at: u32) Fault {
-        assert(program.externals.len < std.math.maxInt(u32));
         const words = @typeInfo(instruction_module.ExternalCall).@"struct".field_names.len;
         if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.ExternalCall;
@@ -312,7 +302,6 @@ pub const Program = struct {
     /// Lists: each origin's items are one range, in origin order, and point back at it.
     /// Externals: fallbacks exist.
     fn check_tables(program: *const Program) Fault {
-        assert(program.list_items.len < std.math.maxInt(u32));
         var next: u32 = 0;
         for (program.list_origins, 0..) |origin, origin_index| {
             if (origin.items_first.to_int() != next) return .list_items_not_partitioned;
@@ -338,7 +327,6 @@ pub const Program = struct {
         for (program.globals, 0..) |global, slot| {
             if (global.name == id) return .from_int(@intCast(slot));
         }
-        assert(program.globals.len < std.math.maxInt(u32));
         return null;
     }
 
@@ -349,7 +337,6 @@ pub const Program = struct {
         for (program.list_items, 0..) |item, position| {
             if (item.full_name == id or item.name == id) return .from_int(@intCast(position));
         }
-        assert(program.list_items.len < std.math.maxInt(u32));
         return null;
     }
 
@@ -359,7 +346,6 @@ pub const Program = struct {
         for (program.externals, 0..) |external, position| {
             if (external.name == id) return .from_int(@intCast(position));
         }
-        assert(program.externals.len < std.math.maxInt(u32));
         return null;
     }
 
@@ -371,7 +357,6 @@ pub const Program = struct {
     }
 
     fn check_target(program: *const Program, container: ContainerIndex, position: u32) Fault {
-        assert(program.containers.len > 0);
         if (container.is_none() or container.to_int() >= program.containers.len) {
             return .target_out_of_range;
         }
@@ -383,7 +368,6 @@ pub const Program = struct {
     }
 
     fn check_divert(program: *const Program, at: u32) Fault {
-        assert(at < std.math.maxInt(u32));
         const words = @typeInfo(instruction_module.Divert).@"struct".field_names.len;
         if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.Divert;
@@ -400,7 +384,6 @@ pub const Program = struct {
     }
 
     fn check_choice_point(program: *const Program, at: u32) Fault {
-        assert(at < std.math.maxInt(u32));
         const words = @typeInfo(instruction_module.ChoicePoint).@"struct".field_names.len;
         if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.ChoicePoint;

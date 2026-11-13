@@ -178,9 +178,7 @@ pub const Ir = struct {
     }
 
     pub fn deinit(ir: *Ir) void {
-        assert(ir.items.items.len < std.math.maxInt(u32));
         const gpa = ir.gpa;
-        assert(ir.containers.items.len < std.math.maxInt(u32));
         for (ir.containers.items) |*entry| entry.named.deinit(gpa);
         ir.next.deinit(gpa);
         ir.placed.deinit(gpa);
@@ -223,8 +221,6 @@ pub const Ir = struct {
 
     fn store(ir: *Ir, value: Item) !Stored {
         const gpa = ir.gpa;
-        assert(ir.diverts.items.len < std.math.maxInt(u32));
-        assert(ir.lists.items.len < std.math.maxInt(u32));
         switch (value) {
             .divert => |divert| {
                 try ir.diverts.append(gpa, divert);
@@ -247,7 +243,6 @@ pub const Ir = struct {
     }
 
     pub fn new_container(ir: *Ir) !ContainerId {
-        assert(ir.items.items.len < std.math.maxInt(u32));
         const id: ContainerId = .from_int(@intCast(ir.containers.items.len));
         try ir.containers.append(ir.gpa, .{});
         assert(ir.containers.items.len == id.to_int() + 1);
@@ -255,7 +250,6 @@ pub const Ir = struct {
     }
 
     pub fn new_item(ir: *Ir, value: Item) !ItemId {
-        assert(ir.items.items.len < std.math.maxInt(u32));
         const id: ItemId = .from_int(@intCast(ir.items.items.len));
         try ir.items.append(ir.gpa, try ir.store(value));
         try ir.next.append(ir.gpa, .none);
@@ -266,7 +260,6 @@ pub const Ir = struct {
 
     /// Container.AddContent.
     pub fn add(ir: *Ir, to: ContainerId, value: Item) !ItemId {
-        assert(ir.items.items.len < std.math.maxInt(u32));
         assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
         try ir.attach(to, id);
@@ -353,7 +346,6 @@ pub const Ir = struct {
     /// Each target that is a parsed object becomes that object's runtime container (from
     /// `containers`, by object), so emission needs nothing from the object tree.
     pub fn resolve_objects(ir: *Ir, containers: []const ContainerId) void {
-        assert(ir.items.items.len < std.math.maxInt(u32));
         assert(ir.diverts.items.len <= ir.items.items.len);
         for (ir.diverts.items) |*divert| divert.target = resolved(divert.target, containers);
         for (ir.items.items) |*stored| switch (stored.*) {
@@ -383,7 +375,6 @@ pub const Ir = struct {
 };
 
 fn resolved(target: Target, containers: []const ContainerId) Target {
-    assert(containers.len < std.math.maxInt(u32));
     if (target != .object) return target;
     assert(target.object.to_int() < containers.len);
     const container = containers[target.object.to_int()];

@@ -71,7 +71,6 @@ pub const serialize = @import("ink_json_write.zig").serialize;
 
 /// Loads `json`. The returned program is owned by the caller (`Program.deinit(gpa)`).
 pub fn load(gpa: Allocator, json: []const u8) !Program {
-    assert(json.len < std.math.maxInt(u32));
     const text = strip_byte_order_mark(json);
     // The scanner's nesting stack and unescaped strings come from one bounded region.
     const scratch = try gpa.alloc(u8, text.len + 64 * 1024);
@@ -89,12 +88,10 @@ pub fn load(gpa: Allocator, json: []const u8) !Program {
     document_zone.end();
     var program = try loader.builder.finish();
     errdefer program.deinit(gpa);
-    assert(program.containers.len > 0);
     return program;
 }
 
 fn strip_byte_order_mark(json: []const u8) []const u8 {
-    assert(json.len < std.math.maxInt(u32));
     const mark = "\xEF\xBB\xBF";
     const result = if (std.mem.startsWith(u8, json, mark)) json[mark.len..] else json;
     assert(result.len <= json.len);
@@ -172,7 +169,6 @@ const Loader = struct {
             .string, .allocated_string => |value| value,
             else => return error.InvalidInkJson,
         };
-        assert(text.len < std.math.maxInt(u32));
         return text;
     }
 
@@ -520,7 +516,6 @@ const Loader = struct {
             }
             _ = try loader.builder.list_origin(origin, items.items);
         }
-        assert(items.items.len < std.math.maxInt(u32));
     }
 };
 
@@ -772,7 +767,6 @@ test "every path is resolved at load time" {
 /// Checks a loaded program against ink's `.paths` listing: every container, in any order,
 /// with the same path, shuffle hash, counting flags and content count.
 fn expect_paths_match(gpa: Allocator, program: *const Program, listing: []const u8) !void {
-    assert(program.containers.len > 0);
     assert(listing.len > 0);
     var lines = std.mem.splitScalar(u8, listing, '\n');
     var listed: u32 = 0;

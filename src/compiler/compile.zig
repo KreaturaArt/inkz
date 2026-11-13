@@ -25,7 +25,6 @@ pub const Error = error{
 
 /// Whether a parse diagnostic is one of ink's warnings (it doesn't stop compilation).
 pub fn is_warning(diagnostic: core.Diagnostic) bool {
-    assert(diagnostic.offset < std.math.maxInt(u32));
     assert(@backingInt(diagnostic.code) < 8);
     if (diagnostic.code != .message) return false;
     const message: grammar.Message = @fromBackingInt(@intCast(diagnostic.extra));
@@ -103,7 +102,6 @@ fn lower_parsed(
 /// Compiles one ink file's text (INCLUDE needs `compile_file`).
 pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
     assert(@TypeOf(gpa) == Allocator);
-    assert(source.len < std.math.maxInt(u32));
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
         defer profile_zone.end();
@@ -137,7 +135,6 @@ pub fn compile_file_with(
 
 /// A story compiled and serialized as ink's JSON (for comparing with inklecate's).
 pub fn compile_to_json(gpa: Allocator, source: []const u8) ![]u8 {
-    assert(source.len < std.math.maxInt(u32));
     assert(@TypeOf(gpa) == Allocator);
     var program = try compile_source(gpa, source);
     defer program.deinit(gpa);

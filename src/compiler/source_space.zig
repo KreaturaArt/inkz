@@ -137,7 +137,6 @@ const Discovery = struct {
     problems: std.ArrayList(struct { file: u32, problem: Problem }) = .empty,
 
     fn run(discovery: *Discovery, root_path: []const u8) !void {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         const text = try discovery.read(root_path) orelse return error.FileNotFound;
         try discovery.add(root_path, text, no_file, 0);
         const Frame = struct { file: u32, next: u32 };
@@ -172,7 +171,6 @@ const Discovery = struct {
         root_directory: []const u8,
         chain: anytype,
     ) !u32 {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         assert(discovery.bounds.include_files_max > 0);
         const path = if (root_directory.len == 0)
             include_found.name
@@ -201,7 +199,6 @@ const Discovery = struct {
     }
 
     fn record(discovery: *Discovery, file: u32, code: Problem.Code, offset: u32) !u32 {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         assert(file < discovery.files.items.len);
         try discovery.problems.append(
             discovery.arena,
@@ -212,7 +209,6 @@ const Discovery = struct {
 
     /// The file's text, or null if it can't be read.
     fn read(discovery: *Discovery, path: []const u8) !?[]const u8 {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         assert(path.len > 0);
         const limit: std.Io.Limit = .limited(file_bytes_max);
         const directory = discovery.directory;
@@ -231,7 +227,6 @@ const Discovery = struct {
         parent: u32,
         depth: u32,
     ) !void {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         assert(discovery.bounds.include_files_max > 0);
         var parsed = try grammar.parse(discovery.gpa, text, discovery.bounds);
         defer parsed.deinit(discovery.gpa);
@@ -263,7 +258,6 @@ const Discovery = struct {
 
     /// Lays the files end to end, parses the space, and maps each INCLUDE to its file.
     fn lay_out(discovery: *Discovery) !Space {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         assert(discovery.bounds.include_files_max > 0);
         const gpa = discovery.gpa;
         var total: usize = 0;
@@ -303,7 +297,6 @@ const Discovery = struct {
         parsed: *const grammar.Parsed,
         included: *std.AutoHashMapUnmanaged(u32, u32),
     ) !void {
-        assert(discovery.files.items.len <= discovery.bounds.include_files_max);
         const gpa = discovery.gpa;
         var nodes: std.ArrayList(NodeIndex) = .empty;
         defer nodes.deinit(gpa);

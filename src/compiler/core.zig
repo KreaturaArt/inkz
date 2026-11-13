@@ -199,6 +199,7 @@ pub fn Machine(comptime Grammar: type) type {
 
         pub fn init(source: []const u8, workspace: *Workspace, frames: []Frame) Self {
             assert(frames.len > 0);
+            // Positions, checkpoints and token ranges are u32.
             assert(source.len < std.math.maxInt(u32));
             return .{
                 .source = source,
@@ -208,7 +209,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         pub fn checkpoint(machine: *const Self) Checkpoint {
-            assert(machine.at <= machine.source.len);
             assert(machine.nodes_count <= machine.workspace.node_tags.len);
             return .{
                 .at = machine.at,
@@ -241,6 +241,11 @@ pub fn Machine(comptime Grammar: type) type {
                     machine.abandoned = true;
                 }
                 const frame = &machine.frames[machine.frames_count - 1];
+                // What every rule relies on, checked once per step instead of in each rule:
+                // the input position is within the source and the stacks within their buffers.
+                assert(machine.at <= machine.source.len);
+                assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
+                assert(machine.nodes_count <= machine.workspace.node_tags.len);
                 const action = if (machine.abandoned) Action(Rule).fail else Grammar.step(
                     machine,
                     frame,
@@ -252,7 +257,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         fn apply(machine: *Self, action: Action(Rule)) Error!void {
-            assert(machine.at <= machine.source.len);
             assert(machine.frames_count > 0);
             switch (action) {
                 .call => |rule| {
@@ -281,7 +285,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         fn push(machine: *Self, rule: Rule) Error!void {
-            assert(machine.at <= machine.source.len);
             assert(machine.frames_count <= machine.frames.len);
             if (machine.frames_count == machine.frames.len) {
                 // Too deep: one diagnostic, then everything unwinds.
@@ -321,7 +324,6 @@ pub fn Machine(comptime Grammar: type) type {
 
         /// Pushes a finished node value on the scratch stack.
         pub fn push_node(machine: *Self, tag: ast.Tag, data: u32) Error!void {
-            assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
             assert(@backingInt(tag) < 256);
             const workspace = machine.workspace;
             if (machine.scratch_count == workspace.scratch_tags.len) return error.WorkspaceFull;

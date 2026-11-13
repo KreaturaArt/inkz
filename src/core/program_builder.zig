@@ -371,7 +371,6 @@ pub const ProgramBuilder = struct {
     }
 
     pub fn intern(builder: *ProgramBuilder, text: []const u8) !StringId {
-        assert(text.len < std.math.maxInt(u32));
         const id = try builder.strings.intern(builder.gpa, text);
         assert(std.mem.eql(u8, builder.strings.get(id), text));
         return id;
@@ -670,7 +669,6 @@ pub const ProgramBuilder = struct {
 
     /// A list item by its full name (`origin.item`) or bare name.
     fn find_list_item(builder: *const ProgramBuilder, name: StringId) ?index.ListItemIndex {
-        assert(builder.list_items.items.len < std.math.maxInt(u32));
         assert(!name.is_none());
         for (builder.list_items.items, 0..) |item, position| {
             if (item.full_name == name or item.name == name) return .from_int(@intCast(position));
@@ -745,7 +743,6 @@ pub const ProgramBuilder = struct {
 
     /// ink finds the global declaration and external fallbacks by name at the root.
     fn resolve_root_names(program: *Program) void {
-        assert(program.containers.len > 0);
         program.global_declaration = program.named_child(Program.root, "global decl") orelse .none;
         const externals: []program_module.ExternalInfo = @constCast(program.externals);
         for (externals) |*info| {
