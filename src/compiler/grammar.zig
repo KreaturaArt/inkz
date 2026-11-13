@@ -492,6 +492,8 @@ pub const Parsed = struct {
     buffer: []u8,
     /// With parse_space: each region's story root (the first is `tree.root`).
     roots: []const ast.NodeIndex = &.{},
+    /// How many times the source was parsed: more than 1 when the workspace was too small.
+    attempts: u32 = 1,
 
     pub fn diagnostics(parsed: *const Parsed) []const core.Diagnostic {
         assert(parsed.buffer.len >= parsed.source.len);
@@ -533,7 +535,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
     const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
     defer gpa.free(frames);
     var scale: u32 = 1;
-    for (0..bounds.compile_retries_max + 1) |_| {
+    for (0..bounds.compile_retries_max + 1, 1..) |_, attempt| {
         var workspace = try core.Workspace.init(
             gpa,
             @intCast(clean.len),
@@ -557,6 +559,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
                 .tokens_count = machine.tokens_count,
                 .diagnostics_count = machine.diagnostics_count,
                 .buffer = buffer,
+                .attempts = @intCast(attempt),
             };
         }
         workspace.deinit(gpa);
@@ -584,7 +587,7 @@ pub fn parse_space(
     const roots = try gpa.alloc(ast.NodeIndex, regions.len);
     errdefer gpa.free(roots);
     var scale: u32 = 1;
-    for (0..bounds.compile_retries_max + 1) |_| {
+    for (0..bounds.compile_retries_max + 1, 1..) |_, attempt| {
         const length: u32 = @intCast(buffer.len);
         var workspace = try core.Workspace.init(gpa, length, bounds.diagnostics_max, scale);
         errdefer workspace.deinit(gpa);
@@ -602,6 +605,7 @@ pub fn parse_space(
                 .diagnostics_count = machine.diagnostics_count,
                 .buffer = buffer,
                 .roots = roots,
+                .attempts = @intCast(attempt),
             };
         }
         workspace.deinit(gpa);
@@ -632,4 +636,26 @@ fn parse_regions(
         };
     }
     return true;
+}
+
+test "a dense story of short knots parses in one attempt" {
+    // Goal: P12.2. The bench's generated story (0.43 nodes per byte) overflowed the workspace
+    // and was parsed twice. Method: 300 of its knots, parsed; one attempt, and denser than
+    // the old estimate of a node per 4 bytes.
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    try source.writer.writeAll("VAR score = 0\n-> knot_0\n");
+    for (0..300) |index| {
+        try source.writer.print(
+            "=== knot_{d} ===\nYou are in room {d}. Score {{score}}.\n~ score = score + {d}\n" ++
+                "* [Onwards] -> knot_{d}\n* [Skip ahead] Skipping. -> knot_{d}\n",
+            .{ index, index, index % 5, (index + 1) % 300, (index + 7) % 300 },
+        );
+    }
+    var parsed = try parse(gpa, source.written(), .{});
+    defer parsed.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 1), parsed.attempts);
+    try std.testing.expectEqual(@as(u32, 0), parsed.diagnostics_count);
+    try std.testing.expect(parsed.tree.tags.len > source.written().len / 4 + 256);
 }
