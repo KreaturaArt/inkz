@@ -1,4 +1,4 @@
-//! A story on the new runtime: a borrowed program, one state, and ink's
+//! A story: a borrowed program, one state, and ink's
 //! Continue loop around the VM. The public API wraps this.
 
 const std = @import("std");

@@ -48,7 +48,7 @@ pub const Corpus = enum {
     ground_truth,
     /// `test/transcripts`: compared with what the old runtime produced.
     transcripts,
-    /// The new compiler's JSON for each ground-truth case, compared with inklecate's.
+    /// The compiler's JSON for each ground-truth case, compared with inklecate's.
     structure,
 };
 

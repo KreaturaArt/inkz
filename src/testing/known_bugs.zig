@@ -10,7 +10,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const oracle = @import("oracle.zig");
-const new_grammar = @import("../compiler/grammar.zig");
+const grammar = @import("../compiler/grammar.zig");
 
 pub const Status = enum {
     /// The case's divergence is in the ledger.
@@ -102,13 +102,13 @@ test "every audit bug and audit divergence names its fixing issue" {
     assert(audit_entries <= ledger.len);
 }
 
-test "the new front end reports an unclosed brace (TASK-147.8)" {
-    // Fixes "compile() ignores errors" in the new front end: parse the
-    // same source; it gets ink's diagnostics (the inner logic, then the line end).
+test "the parser reports an unclosed brace" {
+    // compile() once ignored this error. The parse gets ink's diagnostics: the inner logic,
+    // then the line end.
     const gpa = std.testing.allocator;
-    var parsed = try new_grammar.parse(gpa, "Hello {unclosed\n", .{});
+    var parsed = try grammar.parse(gpa, "Hello {unclosed\n", .{});
     defer parsed.deinit(gpa);
     try std.testing.expect(parsed.diagnostics_count > 0);
-    const expected: u32 = @backingInt(new_grammar.Expectation.inner_logic);
+    const expected: u32 = @backingInt(grammar.Expectation.inner_logic);
     try std.testing.expectEqual(expected, parsed.diagnostics()[0].extra);
 }

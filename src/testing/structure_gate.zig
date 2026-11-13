@@ -1,5 +1,5 @@
 //! The structural gate: every ground-truth case (test/ground_truth, compiled by
-//! ink v1.2.1) is compiled from its `.ink` by the new compiler, serialized with
+//! ink v1.2.1) is compiled from its `.ink` by the compiler, serialized with
 //! ink_json.serialize, and must equal inklecate's `.ink.json` exactly (which covers container
 //! names, nesting, flags and every instruction), or be in the divergence ledger (corpus
 //! `structure`). Also the verified pair:
