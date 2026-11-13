@@ -134,7 +134,6 @@ pub const Linter = struct {
 
     /// Resolves the call graph, reports cycles and returns all diagnostics sorted by place.
     pub fn finish(linter: *Linter) ![]const Diagnostic {
-        assert(linter.functions.items.len <= std.math.maxInt(u32));
         try linter.check_recursion();
         const items = linter.diagnostics.items;
         std.mem.sort(Diagnostic, items, {}, diagnostic_less_than);

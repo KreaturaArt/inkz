@@ -40,7 +40,6 @@ pub fn BoundedStack(comptime T: type) type {
             stack.verify();
             gpa.free(stack.buffer);
             stack.* = undefined;
-            assert(@sizeOf(Self) > 0);
         }
 
         pub fn capacity(stack: *const Self) u32 {

@@ -113,7 +113,6 @@ pub fn evaluate(
 
 /// The gate: fails on new or stale differences, or rewrites the ledger with -Dledger-update.
 pub fn check(arena: std.mem.Allocator, io: std.Io, corpus: Corpus, results: []const Result) !void {
-    assert(results.len > 0);
     const ledger = try read_ledger(arena, io);
     const report = try evaluate(arena, ledger, corpus, results);
     assert(report.mismatches.len <= results.len);
@@ -161,7 +160,6 @@ pub fn compare(arena: std.mem.Allocator, expected: []const u8, actual: []const u
     } else {
         mismatch.reason = try first_difference(arena, expected, actual);
     }
-    assert(mismatch.reason.len > 0);
     return mismatch;
 }
 
@@ -221,7 +219,6 @@ fn significant_lines(text: []const u8, equivalence: Equivalence) LineIterator {
 
 /// `  0: "text" tags ["a"]` without its ` tags [...]` suffix.
 fn strip_choice_tags(line: []const u8) []const u8 {
-    assert(line.len > 0);
     if (!std.mem.startsWith(u8, line, "  ")) return line;
     const at = std.mem.lastIndexOf(u8, line, "\" tags [") orelse return line;
     assert(at + 1 <= line.len);
@@ -234,8 +231,6 @@ fn line_equivalent(
     b: []const u8,
     equivalence: Equivalence,
 ) !bool {
-    assert(a.len > 0);
-    assert(b.len > 0);
     if (std.mem.eql(u8, a, b)) return true;
     if (std.mem.startsWith(u8, a, "save: ") and std.mem.startsWith(u8, b, "save: ")) {
         return json_equivalent(arena, a["save: ".len..], b["save: ".len..]);
@@ -319,7 +314,6 @@ fn first_difference(
     var number: u32 = 1;
     var turn: u32 = 1;
     while (true) : (number += 1) {
-        assert(number < std.math.maxInt(u32));
         const a = expected_lines.next() orelse "<end>";
         const b = actual_lines.next() orelse "<end>";
         if (std.mem.eql(u8, a, b)) {
@@ -344,7 +338,6 @@ fn truncate(text: []const u8, length: usize) []const u8 {
 
 pub fn read_ledger(arena: std.mem.Allocator, io: std.Io) ![]const Entry {
     assert(file_bytes_max > 0);
-    assert(ledger_path.len > 0);
     const source = try std.Io.Dir.cwd().readFileAllocOptions(
         io,
         ledger_path,
@@ -409,7 +402,6 @@ fn write_ledger(
 }
 
 fn write_entry(writer: *std.Io.Writer, entry: Entry) !void {
-    assert(entry.case.len > 0);
     try writer.writeAll("    .{ .case = ");
     try std.zon.stringify.serialize(entry.case, .{}, writer);
     try writer.print(", .corpus = .{t}, .kind = .{t}, .reason = ", .{ entry.corpus, entry.kind });

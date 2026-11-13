@@ -103,7 +103,6 @@ fn discover(context: Context, smith: *Smith) anyerror!void {
 }
 
 fn check_space(space: *const source_space.Space, bounds: limits.CompilerLimits) void {
-    assert(space.files.len > 0);
     assert(space.files.len <= bounds.include_files_max);
     assert(space.files[0].parent == source_space.no_file);
     var end: u32 = 0;

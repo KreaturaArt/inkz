@@ -77,7 +77,6 @@ pub const Subject = struct {
     json_written: []u8,
 
     pub fn init(gpa: Allocator, json: []const u8) !Subject {
-        assert(json.len > 0);
         var program = try ink_json.load(gpa, json);
         errdefer program.deinit(gpa);
         var image: std.Io.Writer.Allocating = .init(gpa);

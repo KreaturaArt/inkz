@@ -289,8 +289,6 @@ test "a mutating call from a callback is reentrant, and evaluate may nest" {
 
 /// A limits story positioned at `knot`.
 fn limited(gpa: std.mem.Allocator, json: []const u8, limits: api.Limits, knot: []const u8) !*Story {
-    assert(@sizeOf(std.mem.Allocator) > 0);
-    assert(@sizeOf(Story) > 0);
     const story = try gpa.create(Story);
     errdefer gpa.destroy(story);
     try story.init_from_json(gpa, json, .{ .limits = limits });
@@ -299,8 +297,6 @@ fn limited(gpa: std.mem.Allocator, json: []const u8, limits: api.Limits, knot: [
 }
 
 fn drop(gpa: std.mem.Allocator, story: *Story) void {
-    assert(@sizeOf(std.mem.Allocator) > 0);
-    assert(@sizeOf(Story) > 0);
     story.deinit(gpa);
     gpa.destroy(story);
 }

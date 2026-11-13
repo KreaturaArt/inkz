@@ -18,8 +18,6 @@ const file_bytes_max = 16 * 1024 * 1024;
 
 /// The case's `.ink` compiled from its directory (so INCLUDEs resolve as in inklecate).
 fn compile_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !Program {
-    assert(id.len > 0);
-    assert(id.len > 0);
     const path = try cases.source_path(arena, io, id);
     const directory_path = std.fs.path.dirname(path) orelse ".";
     var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{});
@@ -37,7 +35,6 @@ fn compile_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !Program {
 /// Null when the case's serialized program equals inklecate's JSON; otherwise why not.
 fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const u8 {
     assert(std.mem.indexOf(u8, id, "..") == null);
-    assert(id.len > 0);
     const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
         cases.cases_directory,
         id,
@@ -93,8 +90,6 @@ test "every ground-truth case compiles to inklecate's JSON, or is ledgered" {
 }
 
 fn find(ledger: []const oracle.Entry, id: []const u8) ?oracle.Entry {
-    assert(ledger.len < std.math.maxInt(u32));
-    assert(id.len > 0);
     for (ledger) |entry| {
         if (entry.corpus != .structure) continue;
         if (std.mem.eql(u8, entry.case, id)) return entry;

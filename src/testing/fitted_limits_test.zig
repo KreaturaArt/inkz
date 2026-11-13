@@ -29,7 +29,6 @@ fn play(gpa: std.mem.Allocator, story: *Story, seeds: u32) ![]u8 {
             try story.choose_choice_index(@intCast(index));
         }
     }
-    assert(text.items.len > 0);
     return text.toOwnedSlice(gpa);
 }
 

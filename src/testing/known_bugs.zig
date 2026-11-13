@@ -34,7 +34,6 @@ pub const Bug = struct {
 pub const registry_path = "test/known_bugs.zon";
 
 pub fn read_bugs(arena: std.mem.Allocator, io: std.Io) ![]const Bug {
-    assert(registry_path.len > 0);
     const source = try std.Io.Dir.cwd().readFileAllocOptions(
         io,
         registry_path,
@@ -53,7 +52,6 @@ pub fn read_bugs(arena: std.mem.Allocator, io: std.Io) ![]const Bug {
         diagnostics.log(registry_path);
         return err;
     };
-    assert(bugs.len > 0);
     return bugs;
 }
 

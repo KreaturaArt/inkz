@@ -31,9 +31,8 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
 }
 
 /// The external `e0(x)`: returns its argument.
-fn echo(context: ?*anyopaque, story: *CoreStory, arguments: []const Value) anyerror!Value {
+fn echo(context: ?*anyopaque, _: *CoreStory, arguments: []const Value) anyerror!Value {
     assert(context == null);
-    assert(story.state.memory.len > 0);
     return if (arguments.len > 0) arguments[0] else .null;
 }
 

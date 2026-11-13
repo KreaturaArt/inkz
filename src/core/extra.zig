@@ -15,7 +15,6 @@ pub const ExtraBuilder = struct {
     pub fn deinit(builder: *ExtraBuilder, gpa: Allocator) void {
         builder.words.deinit(gpa);
         builder.* = undefined;
-        assert(@sizeOf(ExtraBuilder) > 0);
     }
 
     pub fn count(builder: *const ExtraBuilder) u32 {

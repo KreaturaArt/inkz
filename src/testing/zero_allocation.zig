@@ -19,7 +19,6 @@ const support = @import("support.zig");
 /// No field of `T` is an allocator (the types the story keeps after init).
 fn has_no_allocator(comptime T: type) bool {
     assert(@typeInfo(T) == .@"struct");
-    assert(@sizeOf(std.mem.Allocator) > 0);
     for (@typeInfo(T).@"struct".field_types) |Field| {
         if (Field == std.mem.Allocator) return false;
     }
@@ -34,7 +33,6 @@ comptime {
 /// Plays `story` for a few turns with every mutating call the gate names.
 fn exercise(story: *Story) !void {
     assert(story.callback_depth == 0);
-    assert(story.state.memory.len > 0);
     support.quiet(story);
     var turn: u32 = 0;
     while (turn < 20) : (turn += 1) {
@@ -131,7 +129,6 @@ test "load_json allocates nothing" {
     var writer: std.Io.Writer = .fixed(buffer);
     try save.to_json(&story, &writer);
     const saved = writer.buffered();
-    assert(saved.len > 0);
     const before = counting.growths();
     try load.load_json(&story, saved);
     try load.load_json(&story, saved);

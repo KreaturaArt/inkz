@@ -18,7 +18,6 @@ pub const Span = struct { start: u32, end: u32 };
 
 /// The JSON's tokens: strings, numbers and words, and single punctuation bytes.
 pub fn token_spans(gpa: Allocator, json: []const u8, spans: *std.ArrayList(Span)) !void {
-    assert(json.len < std.math.maxInt(u32));
     spans.clearRetainingCapacity();
     var at: u32 = 0;
     while (at < json.len) {
@@ -65,7 +64,6 @@ const strings = [_][]const u8{
 const words = [_][]const u8{ "null", "true", "false", "0", "-1", "1.5", "4294967295", "21" };
 
 pub fn mutate(smith: *Smith, gpa: Allocator, json: *std.ArrayList(u8), spans: []const Span) !void {
-    assert(spans.len > 0);
     const span = spans[smith.index(spans.len)];
     assert(span.end <= json.items.len);
     const range = .{ span.start, span.end - span.start };
@@ -96,7 +94,6 @@ pub fn mutate(smith: *Smith, gpa: Allocator, json: *std.ArrayList(u8), spans: []
 }
 
 fn load_mutated_json(base: []const u8, smith: *Smith) anyerror!void {
-    assert(base.len > 0);
     const gpa = std.testing.allocator;
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);

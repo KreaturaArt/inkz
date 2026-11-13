@@ -238,7 +238,6 @@ const Layout = struct {
     }
 
     fn count(layout: *const Layout, comptime section: Section) u32 {
-        assert(@sizeOf(section.Element()) > 0);
         const length = layout.get(section).len / @sizeOf(section.Element());
         return @intCast(length);
     }
