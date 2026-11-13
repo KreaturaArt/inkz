@@ -228,4 +228,5 @@ test "fuzz: a mutated program image loads or is rejected" {
 test {
     _ = @import("fuzz/source.zig");
     _ = @import("fuzz/tokenizer.zig");
+    _ = @import("fuzz/parser.zig");
 }
