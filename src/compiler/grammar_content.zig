@@ -103,8 +103,7 @@ fn trim_end_whitespace(machine: *Machine, marker: u32) Error!void {
     assert(machine.scratch_count >= marker);
 }
 
-fn is_divert(tag: ast.Tag) bool {
-    assert(ast.shape(.divert) == .fixed);
+pub fn is_divert(tag: ast.Tag) bool {
     assert(@backingInt(tag) < @typeInfo(ast.Tag).@"enum".field_names.len);
     return switch (tag) {
         .divert, .tunnel, .thread, .empty_divert => true,
@@ -289,9 +288,7 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
         },
         2 => {
             if (machine.outcome == .succeeded) {
-                frame.phase = 3;
-                machine.argument = 1;
-                return .{ .call = .inner_conditional_content };
+                return grammar.call(machine, frame, 3, .inner_conditional_content, 1);
             }
             frame.phase = 4;
             frame.locals[2] = 0;
@@ -341,9 +338,7 @@ fn closing_brace_ahead(machine: *Machine) bool {
 pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.phase = 1;
-        machine.argument = 0;
-        return .{ .call = .expression };
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .failed) return .fail;
     disallow_increment(machine, frame.checkpoint.scratch);
@@ -366,9 +361,7 @@ pub fn disallow_increment(machine: *Machine, marker: u32) void {
 pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.phase = 1;
-        machine.argument = 0;
-        return .{ .call = .expression };
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .failed) return .fail;
     disallow_increment(machine, frame.checkpoint.scratch);
@@ -407,9 +400,7 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
             if (frame.locals[0] == 0) return .fail;
             // A sole branch without a dash.
             try grammar.push_none(machine);
-            frame.phase = 21;
-            machine.argument = @backingInt(Level.inner_block);
-            return .{ .call = .statements };
+            return grammar.call(machine, frame, 21, .statements, @backingInt(Level.inner_block));
         },
         21 => {
             if (machine.outcome == .failed) return .fail;
@@ -537,9 +528,7 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
         },
         1 => {
             if (machine.outcome == .failed) try grammar.push_none(machine);
-            frame.phase = 2;
-            machine.argument = @backingInt(Level.inner_block);
-            return .{ .call = .statements };
+            return grammar.call(machine, frame, 2, .statements, @backingInt(Level.inner_block));
         },
         else => {
             const is_else = frame.locals[1] == 1;
@@ -710,9 +699,7 @@ pub fn single_multiline_sequence_element(machine: *Machine, frame: *Frame) Error
         if (!grammar.parse_string(machine, "-")) return .fail;
         _ = grammar.whitespace(machine);
         try machine.push_node(.newline, 0);
-        frame.phase = 1;
-        machine.argument = @backingInt(Level.inner_block);
-        return .{ .call = .statements };
+        return grammar.call(machine, frame, 1, .statements, @backingInt(Level.inner_block));
     }
     if (machine.outcome == .failed) {
         machine.scratch_count = frame.checkpoint.scratch;

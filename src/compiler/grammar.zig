@@ -175,6 +175,13 @@ pub const Message = enum(u32) {
     integer_out_of_range,
 };
 
+/// Calls `rule` with `argument` (ink's rule parameter); the frame goes on with `phase`.
+pub fn call(machine: *Machine, frame: *Frame, phase: u8, rule: Rule, argument: u32) Action {
+    frame.phase = phase;
+    machine.argument = argument;
+    return .{ .call = rule };
+}
+
 pub fn report_expected(machine: *Machine, expectation: Expectation) void {
     assert(machine.at <= machine.source.len);
     machine.report(.expected, machine.at, @backingInt(expectation));

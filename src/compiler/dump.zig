@@ -5,6 +5,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const ast = @import("ast.zig");
 const grammar = @import("grammar.zig");
+const lexical = @import("lexical.zig");
 
 const stack_max = 4096;
 
@@ -53,7 +54,7 @@ pub fn write_diagnostics(parsed: *const grammar.Parsed, out: *std.Io.Writer) !vo
     assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
     assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
     for (parsed.diagnostics()) |diagnostic| {
-        const position = line_and_column(parsed.source, diagnostic.offset);
+        const position = lexical.line_and_column(parsed.source, diagnostic.offset);
         try out.print("! {d}:{d} {t}", .{ position.line, position.column, diagnostic.code });
         switch (diagnostic.code) {
             .expected => {
@@ -69,15 +70,6 @@ pub fn write_diagnostics(parsed: *const grammar.Parsed, out: *std.Io.Writer) !vo
         }
         try out.writeByte('\n');
     }
-}
-
-pub fn line_and_column(source: []const u8, offset: u32) struct { line: u32, column: u32 } {
-    assert(offset <= source.len);
-    const before = source[0..offset];
-    const line: u32 = @intCast(std.mem.count(u8, before, "\n") + 1);
-    const line_start = if (std.mem.lastIndexOfScalar(u8, before, '\n')) |at| at + 1 else 0;
-    assert(line >= 1);
-    return .{ .line = line, .column = @intCast(offset - line_start + 1) };
 }
 
 /// Lists of statements and content get a line per item; short lists (paths, arguments,
@@ -158,11 +150,4 @@ test "a line of text" {
     const expected = "(story\n  (statements\n    text\"Hello, world.\"\n    newline))\n";
     try std.testing.expectEqualStrings(expected, text);
     try std.testing.expectEqual(@as(u32, 0), diagnostics);
-}
-
-test "line_and_column counts from one" {
-    // Goal: diagnostics positions. Method: offsets at the start, mid-line and after a newline.
-    try std.testing.expectEqual(@as(u32, 1), line_and_column("ab\ncd", 0).column);
-    try std.testing.expectEqual(@as(u32, 2), line_and_column("ab\ncd", 4).line);
-    try std.testing.expectEqual(@as(u32, 2), line_and_column("ab\ncd", 4).column);
 }

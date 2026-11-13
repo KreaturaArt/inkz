@@ -182,9 +182,7 @@ pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "{")) return .fail;
-        frame.phase = 1;
-        machine.argument = 0;
-        return .{ .call = .expression };
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .failed) {
         grammar.report_expected(machine, .choice_condition);

@@ -6,6 +6,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const grammar = @import("grammar.zig");
 const ast = @import("ast.zig");
+const content = @import("grammar_content.zig");
 const Machine = grammar.Machine;
 const Frame = grammar.Frame;
 const Action = grammar.Action;
@@ -195,9 +196,7 @@ pub fn expression_paren(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
-        frame.phase = 1;
-        machine.argument = 0;
-        return .{ .call = .expression };
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .failed) return .fail;
     _ = grammar.whitespace(machine);
@@ -225,9 +224,7 @@ pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
-        frame.phase = 1;
-        machine.argument = 0;
-        return .{ .call = .expression };
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .succeeded and grammar.parse_string(machine, ",")) {
         if (!grammar.at_end(machine)) {
@@ -258,7 +255,7 @@ pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
         try machine.push_node(.text, empty.to_int());
     } else {
         for (machine.workspace.scratch_tags[marker..machine.scratch_count]) |tag| {
-            if (tag == .divert or tag == .tunnel or tag == .thread or tag == .empty_divert) {
+            if (content.is_divert(tag)) {
                 grammar.report_message(machine, .string_with_divert);
                 break;
             }

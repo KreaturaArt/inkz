@@ -10,6 +10,7 @@ const build_options = @import("build_options");
 const snapshot = @import("snapshot");
 const grammar = @import("grammar.zig");
 const dump = @import("dump.zig");
+const lexical = @import("lexical.zig");
 
 const directory_path = "test/snapshots/parser";
 const source_bytes_max = 1024 * 1024;
@@ -70,7 +71,7 @@ fn markers_match(parsed: *const grammar.Parsed, source: []const u8, name: []cons
     assert(std.mem.count(u8, parsed.source, "\n") == std.mem.count(u8, source, "\n"));
     var diagnosed: [lines_max]bool = @splat(false);
     for (parsed.diagnostics()) |diagnostic| {
-        const line = dump.line_and_column(parsed.source, diagnostic.offset).line;
+        const line = lexical.line_and_column(parsed.source, diagnostic.offset).line;
         assert(line <= lines_max);
         diagnosed[line - 1] = true;
     }
