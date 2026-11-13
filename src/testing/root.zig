@@ -16,6 +16,7 @@ pub const fitted_limits_test = @import("fitted_limits_test.zig");
 pub const program_image_test = @import("program_image_test.zig");
 pub const fuzz_ink = @import("fuzz_ink.zig");
 pub const bench_io_test = @import("bench_io_test.zig");
+pub const bench_profile_test = @import("bench_profile_test.zig");
 
 test {
     _ = transcript;
@@ -33,4 +34,5 @@ test {
     _ = program_image_test;
     _ = fuzz_ink;
     _ = bench_io_test;
+    _ = bench_profile_test;
 }

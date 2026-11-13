@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const Allocator = std.mem.Allocator;
 const grammar = @import("grammar.zig");
 const core = @import("core.zig");
@@ -52,8 +53,14 @@ fn compile_parsed(
     var lowered = try lower_parsed(gpa, parsed, space, options);
     defer lowered.deinit();
     parsed.release_syntax(gpa);
-    var layout = try layout_module.lay_out(&lowered);
+    var layout = layout: {
+        const profile_zone = profile.begin(.compile_layout);
+        defer profile_zone.end();
+        break :layout try layout_module.lay_out(&lowered);
+    };
     defer layout.deinit();
+    const profile_zone = profile.begin(.compile_emit);
+    defer profile_zone.end();
     return emit.emit_program(&lowered, &layout);
 }
 
@@ -66,20 +73,28 @@ fn lower_parsed(
 ) !lower.Lowered {
     assert(parsed.tree.tags.len > 0);
     assert(space == null or space.?.files.len > 0);
+    const sema_zone = profile.begin(.compile_sema);
     var tree = if (space) |files| try sema.build_space_tree(gpa, files) else try sema.build_tree(
         gpa,
         parsed,
     );
+    sema_zone.end();
     defer tree.deinit(gpa);
+    const resolve_zone = profile.begin(.compile_resolve);
     var resolution = try resolve.resolve(gpa, parsed, &tree);
+    resolve_zone.end();
     defer resolution.deinit(gpa);
     if (resolution.diagnostics.len > 0) return error.CompileFailed;
+    const lower_zone = profile.begin(.compile_lower);
     var lowering = try lower.Lowering.init(gpa, parsed, &tree, &resolution);
     errdefer lowering.deinit();
     lowering.count_all_visits = options.count_all_visits;
     try lowering.generate_all();
     try lowering.finish_story();
+    lower_zone.end();
     if (lowering.failed()) return error.CompileFailed;
+    const flatten_zone = profile.begin(.compile_flatten);
+    defer flatten_zone.end();
     layout_module.set_count_flags(&lowering);
     try layout_module.flatten(&lowering);
     return lowering.into_lowered();
@@ -89,7 +104,11 @@ fn lower_parsed(
 pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
     assert(@TypeOf(gpa) == Allocator);
     assert(source.len < std.math.maxInt(u32));
-    var parsed = try grammar.parse(gpa, source, .{});
+    var parsed = parsed: {
+        const profile_zone = profile.begin(.compile_parse);
+        defer profile_zone.end();
+        break :parsed try grammar.parse(gpa, source, .{});
+    };
     defer parsed.deinit(gpa);
     return compile_parsed(gpa, &parsed, null, .{});
 }

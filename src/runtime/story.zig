@@ -4,6 +4,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const Allocator = std.mem.Allocator;
 const Program = @import("../core/program.zig").Program;
 const limits_module = @import("../core/limits.zig");
@@ -289,6 +290,8 @@ pub const Story = struct {
 
     /// ink's ResetGlobals: runs `global decl` from its start, then keeps the defaults.
     fn reset_globals(story: *Story) Error!void {
+        const profile_zone = profile.begin(.reset_globals);
+        defer profile_zone.end();
         assert(story.state.call_stack.depth() == 1);
         const declaration = story.program.global_declaration;
         if (!declaration.is_none()) {
@@ -311,6 +314,8 @@ pub const Story = struct {
 
     /// ink's Continue: the next line. Story errors stay in `state.errors`.
     pub fn cont(story: *Story) Error![]const u8 {
+        const profile_zone = profile.begin(.cont);
+        defer profile_zone.end();
         assert(story.state.call_stack.depth() > 0);
         assert(story.state.line_bytes.len > 0);
         if (story.callback_depth > 0) return error.Reentrant;
@@ -345,6 +350,8 @@ pub const Story = struct {
     /// The end of ink's ContinueInternal: each error, then each warning, to the handler,
     /// then ResetErrors.
     fn report_diagnostics(story: *Story) Error!void {
+        const profile_zone = profile.begin(.report_diagnostics);
+        defer profile_zone.end();
         assert(story.state.memory.len > 0);
         const state = &story.state;
         if (!state.has_error() and !state.has_warning()) return;
@@ -390,7 +397,10 @@ pub const Story = struct {
         const steps_max = story.state.limits.steps_per_continue_max;
         while (true) {
             if (steps == steps_max) return story.fail_step(error.StepLimit);
-            const result = vm.run(story, steps_max - steps, &steps) catch |err| switch (err) {
+            const run_zone = profile.begin(.vm_run);
+            const run = vm.run(story, steps_max - steps, &steps);
+            run_zone.end();
+            const result = run catch |err| switch (err) {
                 error.StoryError => break,
                 else => |other| return story.fail_step(other),
             };
@@ -459,6 +469,8 @@ pub const Story = struct {
 
     /// ink's NotifyObservers for the queued globals, with their current values.
     fn notify_observers(story: *Story) void {
+        const profile_zone = profile.begin(.notify_observers);
+        defer profile_zone.end();
         assert(story.continue_depth == 1);
         assert(!story.batching_observers);
         const queued = story.state.observer_events.count;
@@ -496,6 +508,8 @@ pub const Story = struct {
     /// The checks of ink's ContinueSingleStep after `vm.run` returns; returns whether the
     /// line is known to have ended.
     fn after_steps(story: *Story) Error!bool {
+        const profile_zone = profile.begin(.after_steps);
+        defer profile_zone.end();
         assert(story.state.memory.len > 0);
         assert(story.state.call_stack.depth() > 0);
         const state = &story.state;
@@ -564,6 +578,8 @@ pub const Story = struct {
 
     /// The current text, cleaned, in the text cache (P10.1); returns its length.
     fn write_current_text(story: *Story) Error!u32 {
+        const profile_zone = profile.begin(.clean_text);
+        defer profile_zone.end();
         const state = &story.state;
         assert(state.line_bytes.len > 0);
         const strings = ops.strings_of(story);
@@ -692,6 +708,8 @@ pub const Story = struct {
 
     /// ink's ChooseChoiceIndex.
     pub fn choose_choice_index(story: *Story, position: u32) Error!void {
+        const profile_zone = profile.begin(.choose_choice);
+        defer profile_zone.end();
         if (story.callback_depth > 0) return error.Reentrant;
         if (story.failed) return error.StoryFailed;
         if (story.events.on_make_choice) |event| {

@@ -18,9 +18,11 @@ pub const program_builder = @import("program_builder.zig");
 pub const program_dump = @import("program_dump.zig");
 pub const ink_json = @import("ink_json.zig");
 pub const program_image = @import("program_image.zig");
+pub const profile = @import("profile.zig");
 
 test {
     _ = fault;
+    _ = profile;
     _ = index;
     _ = limits;
     _ = string_pool;

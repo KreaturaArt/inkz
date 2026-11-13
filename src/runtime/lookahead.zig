@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const state_module = @import("state.zig");
 const value_module = @import("value.zig");
 const index = @import("../core/index.zig");
@@ -80,6 +81,8 @@ pub fn active(state: *const State) bool {
 
 /// ink's StateSnapshot.
 pub fn take(state: *State) void {
+    const profile_zone = profile.begin(.lookahead_take);
+    defer profile_zone.end();
     assert(!state.snapshot.active);
     const into = &state.lookahead;
     state.snapshot = .{
@@ -129,6 +132,8 @@ fn load(stack: anytype, from: anytype, count: u32) void {
 /// ink's RestoreStateSnapshot: the state as it was at `take`, except that heap objects made
 /// since then are gone.
 pub fn restore(state: *State) void {
+    const profile_zone = profile.begin(.lookahead_restore);
+    defer profile_zone.end();
     assert(active(state));
     const snapshot = state.snapshot;
     const from = &state.lookahead;

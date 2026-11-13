@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const Allocator = std.mem.Allocator;
 const index = @import("../core/index.zig");
 const limits_module = @import("../core/limits.zig");
@@ -250,6 +251,8 @@ pub const State = struct {
 
     /// Allocates every buffer in one block of `limits.bytes_total()` bytes.
     pub fn init(state: *State, gpa: Allocator, program: *const Program, limits: Limits) !void {
+        const profile_zone = profile.begin(.state_init);
+        defer profile_zone.end();
         limits.verify();
         if (limits.heap_bytes_max % 4 != 0 or limits.flow_parking_bytes_max % 4 != 0) {
             return error.InvalidLimits;

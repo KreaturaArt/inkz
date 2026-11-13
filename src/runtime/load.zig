@@ -7,6 +7,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const index = @import("../core/index.zig");
 const path_module = @import("../core/path.zig");
 const container_module = @import("../core/container.zig");
@@ -47,16 +48,27 @@ pub const save_version_min = 8;
 pub fn load_json(story: *Story, json: []const u8) Error!void {
     if (story.callback_depth > 0) return error.Reentrant;
     assert(!lookahead.active(&story.state));
-    const tree = Tree.parse(json, story.state.load_nodes) catch |err| return switch (err) {
-        error.JsonTooLarge, error.JsonTooDeep => error.SaveTooLarge,
-        error.InvalidJson => error.InvalidSave,
+    const parse_zone = profile.begin(.load_parse);
+    const tree = Tree.parse(json, story.state.load_nodes) catch |err| {
+        parse_zone.end();
+        return switch (err) {
+            error.JsonTooLarge, error.JsonTooDeep => error.SaveTooLarge,
+            error.InvalidJson => error.InvalidSave,
+        };
     };
+    parse_zone.end();
     const nodes: u32 = @intCast(tree.nodes.len);
     story.state.peaks.load_nodes = @max(story.state.peaks.load_nodes, nodes);
     if (tree.nodes[0].kind != .object) return error.InvalidSave;
     var checking: Loader = .{ .story = story, .tree = tree, .commit = false };
-    try checking.document();
-    try checking.check_heap();
+    {
+        const validate_zone = profile.begin(.load_validate);
+        defer validate_zone.end();
+        try checking.document();
+        try checking.check_heap();
+    }
+    const commit_zone = profile.begin(.load_commit);
+    defer commit_zone.end();
     var committing: Loader = .{ .story = story, .tree = tree, .commit = true };
     committing.prepare();
     // Validation proved every step of the commit succeeds.

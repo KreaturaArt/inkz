@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const container_module = @import("../core/container.zig");
 const index = @import("../core/index.zig");
 const value_module = @import("value.zig");
@@ -84,6 +85,8 @@ fn parked_view(story: *Story, record: *const state_module.FlowRecord) FlowView {
 /// ink's StoryState.ToJson. The state must not be inside a lookahead (call it between
 /// `cont` calls).
 pub fn to_json(story: *Story, writer: *Writer) Writer.Error!void {
+    const profile_zone = profile.begin(.save_write);
+    defer profile_zone.end();
     assert(!lookahead.active(&story.state));
     story.state.verify();
     try writer.writeAll("{\"flows\":{");

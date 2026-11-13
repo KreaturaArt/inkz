@@ -11,6 +11,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("../core/profile.zig");
 const core = @import("core.zig");
 const ast = @import("ast.zig");
 const tokenizer = @import("tokenizer.zig");
@@ -526,7 +527,9 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
     assert(source.len <= bounds.source_bytes_max);
     const buffer = try gpa.alloc(u8, source.len);
     errdefer gpa.free(buffer);
+    const comments_zone = profile.begin(.compile_comments);
     const clean = tokenizer.eliminate_comments(source, buffer);
+    comments_zone.end();
     const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
     defer gpa.free(frames);
     var scale: u32 = 1;

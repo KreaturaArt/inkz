@@ -338,3 +338,86 @@ For example, to show the median load times of the latest ReleaseFast run:
 tail -n 8 bench/load_store.jsonl | jq -r 'select(.operation == "load") | [.story, .format, .median_ns] | @tsv'
 ```
 
+## Profile per pipeline stage (TASK-153)
+
+`zig build bench-profile` shows where the pipeline spends its time. Profile zones
+(`src/core/profile.zig`) mark each stage in the code:
+
+```zig
+const zone = profile.begin(.compile_sema);
+defer zone.end();
+```
+
+They are compiled in only when the root file declares `pub const inkz_profile = true`, as
+`src/bench_profile.zig` does. In the library, the tests and every other binary they are
+empty. The clock is the CPU counter (`cntvct_el0`, `rdtsc`), which costs a few nanoseconds
+per read. On Apple silicon it ticks at 24 MHz, so a single zone is resolved to about 42 ns;
+totals over many calls average this out.
+
+Each workload runs once with the zones off and once with them on, for 1 s each (ReleaseFast).
+The workloads, on crime_scene and on the generated 1000-knot story, are:
+
+- compile;
+- JSON load and store;
+- image load and store;
+- story init;
+- one seeded play;
+- save, and load of that save.
+
+Both wall times are printed, so the profiler's cost shows: 0–5% per workload. For each zone
+the bench prints and records:
+
+- exclusive time per iteration (without the zones inside it);
+- inclusive time;
+- calls;
+- share of the wall time;
+- the time no zone covers, as `(outside zones)`.
+
+It ends with the worst zones of one pass through the pipeline: compile, JSON load, init,
+play, save and load the save. Records go to `bench/profile.jsonl`, one per story, workload
+and zone. They carry the fields of `bench/load_store.jsonl` plus `workload`, `zone`,
+`wall_ns_per_iteration`, `plain_wall_ns_per_iteration`, `calls_per_iteration`,
+`exclusive_ns_per_iteration`, `inclusive_ns_per_iteration` and `share`.
+
+### Findings and optimization leads (2026-11-13, Apple M3, ReleaseFast)
+
+One pass through the pipeline takes 0.73 ms on crime_scene and 12.7 ms on the generated
+story. The compiler is 70–80% of it, and the JSON load most of the rest.
+
+1. **The parser parses big stories twice.** `grammar.parse` sizes its workspace at
+   `source/4 + 256` nodes. The generated story needs 57,012 nodes against 33,677, so the
+   first attempt fills up and the whole parse runs again at twice the size. That is 4.1 ms,
+   32% of the pass. Lead: size from a better estimate (about 0.45 nodes per byte), or grow
+   the workspace in place instead of starting over. Expected gain: about 35% of
+   `compile_parse` on large stories.
+2. **Checking the image's opcodes is two thirds of an image load.** `image_shape` takes
+   18.7 µs of 27.5 µs on crime_scene, and 275 µs of 433 µs on the generated story. The cause
+   is `check_opcodes`, which runs `std.enums.fromInt` (a scan over the enum's values) on
+   every opcode byte. Lead: a comptime table of valid bytes, or a range compare. Expected:
+   image load about 2.5× faster.
+3. **Reading the JSON document is 72–75% of a JSON load** (`json_read_document`: 134 µs on
+   crime_scene, 2.2 ms on the generated story). This is `std.json.Scanner` token by token,
+   plus one `ProgramBuilder` call per item. Lead: a scanner for ink's JSON with a fast path
+   for strings that need no unescaping. Hosts that control their build can load the image,
+   which is already 6–7× faster.
+4. **Path fixups and builder layout are about 20% of a JSON load and 8% of a compile**
+   (`builder_fixups` and `builder_layout`: 0.27–0.44 ms each on the generated story).
+   Divert targets travel as path strings and are resolved by hashing them after layout.
+   Lead: the compiler knows the target containers, so it can emit their indices and skip
+   paths entirely.
+5. **Emission is 15–20% of a compile** (`compile_emit` exclusive, 1.4 ms on the generated
+   story). The compiler emits through `ProgramBuilder` in the JSON loader's order, path
+   strings included. Lead: together with 4, build the Program straight from the lowered IR.
+6. **Play: `vm_run` is 56–71% and `clean_text` 15–18%.** `vm_run` returns to
+   `continue_internal` about 30 times per `cont`, once per output signal, and
+   `after_steps` (7–11% exclusive) runs after each return. Lead: let `vm.run` continue
+   through outputs that can't end the line, so the loop and `after_steps` run once per line.
+   `lookahead_take` and `choose_choice` are 3–4% each on the generated story.
+7. **Story init: `state_init` is 2.9–3.7 µs, and about 2.4 µs is outside zones.** Most of
+   the outside time is allocating and freeing the 2.2 MB default budget. Lead: fitted limits
+   (P10.2), or a way to re-initialise a story in place.
+8. **Two smaller safety costs on untrusted input.** `program_check` is 20–23% of an image
+   load. A save is read twice, once to validate and once to commit (`load_validate` and
+   `load_commit`, about 45% each). Lead: a trusted-input entry point for images made at
+   build time. This trades safety for speed, so the default keeps the checks.
+

@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const profile = @import("profile.zig");
 const Allocator = std.mem.Allocator;
 const index = @import("index.zig");
 const path_module = @import("path.zig");
@@ -513,11 +514,19 @@ pub const ProgramBuilder = struct {
     pub fn finish(builder: *ProgramBuilder) !Program {
         assert(builder.frames.items.len == 0);
         assert(builder.staged.items.len == builder.containers.len);
+        const variables_zone = profile.begin(.builder_resolve_variables);
         try builder.resolve_variables();
+        variables_zone.end();
+        const lists_zone = profile.begin(.builder_resolve_lists);
         try builder.resolve_lists();
+        lists_zone.end();
+        const layout_zone = profile.begin(.builder_layout);
         var program = try builder.layout();
+        layout_zone.end();
         errdefer program.deinit(builder.gpa);
+        const fixups_zone = profile.begin(.builder_fixups);
         try builder.resolve_fixups(&program);
+        fixups_zone.end();
         if (builder.diagnostics.items.len > 0) return error.UnresolvedPaths;
         resolve_root_names(&program);
         program.verify();
