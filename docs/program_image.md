@@ -85,8 +85,14 @@ order:
    name a value.
 
 A test truncates an image at every length and sets every byte to 0x00, to 0xff and to
-itself plus one; each load gives a valid program or a named error. `zig build fuzz` includes
-the loader; a 200,000-input fuzzing run (`zig build fuzz --fuzz=200K`) found no crash.
+itself plus one; each load gives a valid program or a named error.
+
+`zig build fuzz` has two loader targets. One takes raw bytes; random bytes rarely pass the
+magic, so its 200,000-input run (`zig build fuzz --fuzz=200K`) reached only 28 coverage
+points. The other (P10.7) starts from a valid image of a story with every kind of section
+and lets the fuzzer overwrite aligned words, set bytes, flip bits and truncate. Its inputs
+pass the header and reach the section, string, reference and `Program.check` validation:
+318,000 inputs reached 1,173 points (of 16,905 in the whole test binary), with no crash.
 
 ## Changing the format
 
