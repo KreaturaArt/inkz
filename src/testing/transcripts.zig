@@ -1,8 +1,7 @@
 //! The transcript corpus: every compiled fixture played on the runtime with a seeded choice
-//! policy, stored in `test/transcripts/`. The old runtime wrote them first; where the two
-//! runtimes differed, the new one was checked against ink before they were regenerated on
-//! it. The oracle compares the runtime against these files. `zig build transcripts`
-//! regenerates them; a test checks that the checked-in files are up to date.
+//! policy, stored in `test/transcripts/`. The oracle compares the runtime against these
+//! files. `zig build transcripts` regenerates them; a test checks that the checked-in files
+//! are up to date.
 //!
 //! Each story runs in its own process (`src/replay_case.zig`) with `turns_max` turns, so a
 //! looping story ends with `turns_max reached` and a crashing one with `crash: <how>`.
