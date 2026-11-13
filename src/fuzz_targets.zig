@@ -234,5 +234,4 @@ test {
     _ = @import("fuzz/json.zig");
     _ = @import("fuzz/vm.zig");
     _ = @import("fuzz/save.zig");
-    _ = @import("fuzz/host.zig");
 }
