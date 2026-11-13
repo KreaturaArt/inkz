@@ -363,24 +363,13 @@ const Fixture = struct {
     fn nth(fixture: *const Fixture, kind: sema.Kind, nth_wanted: u32) ObjectIndex {
         assert(fixture.tree.count() > 0);
         assert(fixture.resolution.targets.len == fixture.tree.count());
-        var stack: [256]ObjectIndex = undefined;
-        var depth: u32 = 1;
-        stack[0] = Tree.root;
+        var objects = fixture.tree.walk(std.testing.allocator, Tree.root, .pre);
+        defer objects.deinit();
         var seen: u32 = 0;
-        while (depth > 0) {
-            depth -= 1;
-            const object = stack[depth];
-            if (fixture.tree.kind(object) == kind) {
-                if (seen == nth_wanted) return object;
-                seen += 1;
-            }
-            const children = fixture.tree.children_of(object);
-            var position = children.len;
-            while (position > 0) {
-                position -= 1;
-                stack[depth] = children[position];
-                depth += 1;
-            }
+        while (objects.next() catch unreachable) |object| {
+            if (fixture.tree.kind(object) != kind) continue;
+            if (seen == nth_wanted) return object;
+            seen += 1;
         }
         unreachable;
     }

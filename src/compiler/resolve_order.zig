@@ -71,20 +71,9 @@ fn is_end_or_done(path: *const Path) bool {
 
 pub fn generation_pass(context: *Context) !void {
     assert(context.tree.count() > 0);
-    const gpa = context.gpa;
-    var stack: std.ArrayList(ObjectIndex) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, Tree.root);
-    while (stack.pop()) |object| {
-        try generate(context, object);
-        const children = context.tree.children_of(object);
-        var position = children.len;
-        while (position > 0) {
-            position -= 1;
-            try stack.append(gpa, children[position]);
-        }
-    }
-    assert(stack.items.len == 0);
+    var objects = context.tree.walk(context.gpa, Tree.root, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| try generate(context, object);
 }
 
 fn generate(context: *Context, object: ObjectIndex) !void {
@@ -209,25 +198,9 @@ fn generate_divert(context: *Context, divert: ObjectIndex) !void {
 
 pub fn references_pass(context: *Context) !void {
     assert(context.tree.count() > 0);
-    const gpa = context.gpa;
-    const Entry = struct { object: ObjectIndex, visited: bool };
-    var stack: std.ArrayList(Entry) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, .{ .object = Tree.root, .visited = false });
-    while (stack.pop()) |entry| {
-        if (entry.visited) {
-            try check(context, entry.object);
-            continue;
-        }
-        try stack.append(gpa, .{ .object = entry.object, .visited = true });
-        const children = context.tree.children_of(entry.object);
-        var position = children.len;
-        while (position > 0) {
-            position -= 1;
-            try stack.append(gpa, .{ .object = children[position], .visited = false });
-        }
-    }
-    assert(stack.items.len == 0);
+    var objects = context.tree.walk(context.gpa, Tree.root, .post);
+    defer objects.deinit();
+    while (try objects.next()) |object| try check(context, object);
 }
 
 fn check(context: *Context, object: ObjectIndex) !void {

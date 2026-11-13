@@ -35,13 +35,9 @@ pub fn prepare(context: *Context) !void {
     context.skipped = try .initEmpty(gpa, count);
     context.had_error = try .initEmpty(gpa, count);
     // ink's FindAll order: pre-order (objects are numbered in creation order).
-    var stack: std.ArrayList(ObjectIndex) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, Tree.root);
-    while (stack.pop()) |object| {
-        try prepare_object(context, object);
-        try push_reversed(context, &stack, object);
-    }
+    var objects = context.tree.walk(gpa, Tree.root, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| try prepare_object(context, object);
     assert(context.targets.len == count);
 }
 
@@ -129,10 +125,9 @@ fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
 fn name_weave_points(context: *Context, weave: ObjectIndex) !void {
     assert(context.tree.count() > 0);
     const gpa = context.gpa;
-    var stack: std.ArrayList(ObjectIndex) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, weave);
-    while (stack.pop()) |object| {
+    var objects = context.tree.walk(gpa, weave, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| {
         const kind = context.tree.kind(object);
         if (kind == .choice or kind == .gather) {
             const name = context.label(object);
@@ -142,21 +137,7 @@ fn name_weave_points(context: *Context, weave: ObjectIndex) !void {
                 entry.value_ptr.* = object;
             }
         }
-        try push_reversed(context, &stack, object);
     }
-    assert(stack.items.len == 0);
-}
-
-/// Pushes an object's children so that they pop in order (pre-order traversal).
-fn push_reversed(context: *Context, stack: *std.ArrayList(ObjectIndex), object: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    const children = context.tree.children_of(object);
-    var position = children.len;
-    while (position > 0) {
-        position -= 1;
-        try stack.append(context.gpa, children[position]);
-    }
-    assert(stack.items.len >= children.len);
 }
 
 // ink's lookups.
