@@ -23,7 +23,13 @@ const ListReference = value_module.ListReference;
 const ListItemIndex = index.ListItemIndex;
 const ListOriginIndex = index.ListOriginIndex;
 
-pub const Error = native.Error || error{ListLimit};
+pub const Error = native.Error;
+
+/// Lists are short, so membership is a linear scan.
+fn contains(comptime T: type, items: []const T, item: T) bool {
+    assert(items.len < 1 << 20);
+    return std.mem.indexOfScalar(T, items, item) != null;
+}
 
 pub const View = struct {
     items: []const ListItemIndex,
@@ -124,17 +130,10 @@ const Builder = struct {
     const items_max = 1024;
     const origins_max = 64;
 
-    fn contains(builder: *const Builder, item: ListItemIndex) bool {
-        assert(item.to_int() < std.math.maxInt(u32));
-        assert(builder.items_count <= items_max);
-        const items = builder.items[0..builder.items_count];
-        return std.mem.indexOfScalar(ListItemIndex, items, item) != null;
-    }
-
     fn add(builder: *Builder, item: ListItemIndex) error{ListLimit}!void {
         assert(builder.items_count <= items_max);
         assert(!item.is_none());
-        if (builder.contains(item)) return;
+        if (contains(ListItemIndex, builder.items[0..builder.items_count], item)) return;
         if (builder.items_count == items_max) return error.ListLimit;
         builder.items[builder.items_count] = item;
         builder.items_count += 1;
@@ -144,7 +143,7 @@ const Builder = struct {
         assert(builder.origins_count <= origins_max);
         assert(!origin.is_none());
         const known = builder.origins[0..builder.origins_count];
-        if (std.mem.indexOfScalar(ListOriginIndex, known, origin) != null) return;
+        if (contains(ListOriginIndex, known, origin)) return;
         if (builder.origins_count == origins_max) return error.ListLimit;
         builder.origins[builder.origins_count] = origin;
         builder.origins_count += 1;
@@ -178,12 +177,6 @@ pub const Lists = struct {
         return lists.program.list_items[item.to_int()].origin;
     }
 
-    fn contains(items: []const ListItemIndex, item: ListItemIndex) bool {
-        assert(items.len < 1 << 20);
-        assert(!item.is_none());
-        return std.mem.indexOfScalar(ListItemIndex, items, item) != null;
-    }
-
     /// ink's `originNames`: the items' origins in order when there are items, else the
     /// declared ones. Copies of a list keep these as their declared origins.
     fn origin_names(lists: Lists, list: View, builder: *Builder) error{ListLimit}!void {
@@ -196,26 +189,32 @@ pub const Lists = struct {
         for (list.items) |item| try builder.add_origin(lists.item_origin(item));
     }
 
-    /// The first item with the highest value, in iteration order (ink's `maxItem`).
-    pub fn max_item(lists: Lists, list: View) ?ListItemIndex {
-        assert(lists.slab.used <= lists.slab.words.len);
+    pub const End = enum { lowest, highest };
+
+    /// The first item with the lowest or highest value, in iteration order (ink's `minItem`
+    /// and `maxItem`); null for an empty list.
+    pub fn extreme_item(lists: Lists, list: View, comptime end: End) ?ListItemIndex {
         var best: ?ListItemIndex = null;
+        var best_value: i32 = 0;
         for (list.items) |item| {
-            if (best == null or lists.item_value(item) > lists.item_value(best.?)) best = item;
+            const value = lists.item_value(item);
+            const better = switch (end) {
+                .lowest => value < best_value,
+                .highest => value > best_value,
+            };
+            if (best == null or better) {
+                best = item;
+                best_value = value;
+            }
         }
         assert((best == null) == (list.items.len == 0));
         return best;
     }
 
-    /// The first item with the lowest value, in iteration order (ink's `minItem`).
-    pub fn min_item(lists: Lists, list: View) ?ListItemIndex {
-        assert(lists.slab.used <= lists.slab.words.len);
-        var best: ?ListItemIndex = null;
-        for (list.items) |item| {
-            if (best == null or lists.item_value(item) < lists.item_value(best.?)) best = item;
-        }
-        assert((best == null) == (list.items.len == 0));
-        return best;
+    /// The value of `extreme_item`, or 0 for an empty list.
+    fn extreme_value(lists: Lists, list: View, comptime end: End) i32 {
+        const item = lists.extreme_item(list, end) orelse return 0;
+        return lists.item_value(item);
     }
 
     /// ink's ListWithSubRange (LIST_RANGE): the items with values in `[minimum, maximum]`,
@@ -235,14 +234,14 @@ pub const Lists = struct {
         var high: i32 = std.math.maxInt(i32);
         switch (minimum) {
             .integer => |number| low = number,
-            .list => |bound| if (lists.min_item(lists.slab.view(bound))) |item| {
+            .list => |bound| if (lists.extreme_item(lists.slab.view(bound), .lowest)) |item| {
                 low = lists.item_value(item);
             },
             else => {},
         }
         switch (maximum) {
             .integer => |number| high = number,
-            .list => |bound| if (lists.max_item(lists.slab.view(bound))) |item| {
+            .list => |bound| if (lists.extreme_item(lists.slab.view(bound), .highest)) |item| {
                 high = lists.item_value(item);
             },
             else => {},
@@ -336,7 +335,7 @@ pub const Lists = struct {
         assert(lists.slab.used <= lists.slab.words.len);
         var origins: Builder = .{};
         try lists.origin_names(list, &origins);
-        const max = lists.max_item(list);
+        const max = lists.extreme_item(list, .highest);
         const origin = if (max) |item| lists.item_origin(item) else if (origins.origins_count > 0)
             origins.origins[0]
         else
@@ -402,7 +401,7 @@ pub const Lists = struct {
         var builder: Builder = .{};
         try lists.origin_names(a, &builder);
         for (a.items) |item| {
-            if (!contains(b.items, item)) try builder.add(item);
+            if (!contains(ListItemIndex, b.items, item)) try builder.add(item);
         }
         assert(builder.items_count <= a.items.len);
         return builder.finish(lists.slab);
@@ -413,7 +412,7 @@ pub const Lists = struct {
         // A new list in ink, so it has no declared origins.
         var builder: Builder = .{};
         for (a.items) |item| {
-            if (contains(b.items, item)) try builder.add(item);
+            if (contains(ListItemIndex, b.items, item)) try builder.add(item);
         }
         assert(builder.items_count <= @min(a.items.len, b.items.len));
         return builder.finish(lists.slab);
@@ -425,7 +424,7 @@ pub const Lists = struct {
         assert(a.items.len <= lists.program.list_items.len);
         if (a.items.len == 0 or b.items.len == 0) return false;
         for (b.items) |item| {
-            if (!contains(a.items, item)) return false;
+            if (!contains(ListItemIndex, a.items, item)) return false;
         }
         return true;
     }
@@ -435,17 +434,17 @@ pub const Lists = struct {
         assert(b.items.len <= lists.program.list_items.len);
         if (a.items.len != b.items.len) return false;
         for (a.items) |item| {
-            if (!contains(b.items, item)) return false;
+            if (!contains(ListItemIndex, b.items, item)) return false;
         }
         return true;
     }
 
     fn compare(lists: Lists, opcode: Opcode, a: View, b: View) bool {
         assert(lists.slab.used <= lists.slab.words.len);
-        const a_min = if (lists.min_item(a)) |item| lists.item_value(item) else 0;
-        const a_max = if (lists.max_item(a)) |item| lists.item_value(item) else 0;
-        const b_min = if (lists.min_item(b)) |item| lists.item_value(item) else 0;
-        const b_max = if (lists.max_item(b)) |item| lists.item_value(item) else 0;
+        const a_min = lists.extreme_value(a, .lowest);
+        const a_max = lists.extreme_value(a, .highest);
+        const b_min = lists.extreme_value(b, .lowest);
+        const b_max = lists.extreme_value(b, .highest);
         const result = switch (opcode) {
             .greater => a.items.len > 0 and (b.items.len == 0 or a_min > b_max),
             .greater_or_equal => a.items.len > 0 and
@@ -467,12 +466,9 @@ pub const Lists = struct {
             // ink returns an int here, not a bool.
             .not => .{ .integer = @intFromBool(list.items.len == 0) },
             .list_count => .{ .integer = @intCast(list.items.len) },
-            .list_value => valued: {
-                const max = lists.max_item(list) orelse break :valued .{ .integer = 0 };
-                break :valued .{ .integer = lists.item_value(max) };
-            },
-            .list_min => lists.single(lists.min_item(list)),
-            .list_max => lists.single(lists.max_item(list)),
+            .list_value => .{ .integer = lists.extreme_value(list, .highest) },
+            .list_min => lists.single(lists.extreme_item(list, .lowest)),
+            .list_max => lists.single(lists.extreme_item(list, .highest)),
             .list_all => lists.all(list, false),
             .list_invert => lists.all(list, true),
             else => error.UnsupportedOperation,
@@ -500,7 +496,7 @@ pub const Lists = struct {
             const first = info.items_first.to_int();
             for (first..first + info.items_count) |position| {
                 const item: ListItemIndex = .from_int(@intCast(position));
-                if (invert and contains(list.items, item)) continue;
+                if (invert and contains(ListItemIndex, list.items, item)) continue;
                 try builder.add(item);
             }
         }

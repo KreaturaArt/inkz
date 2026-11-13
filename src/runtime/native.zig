@@ -6,9 +6,10 @@
 //! and converting NaN or an out-of-range float to an int are story errors (D18). Lists are
 //! handled by the list slab (P4.2) through `context`.
 //!
-//! `context` provides `string_bytes(StringReference) []const u8` and
-//! `string_concat([]const u8, []const u8) !StringReference`; list operations also need
-//! `list_binary(Opcode, Value, Value) !Value` and `list_unary(Opcode, Value) !Value`.
+//! `context` provides `string_bytes(StringReference) []const u8`,
+//! `string_concat([]const u8, []const u8) !StringReference` and `list_count(ListReference)
+//! u32`; list operations also need `list_binary(Opcode, Value, Value) !Value` and
+//! `list_unary(Opcode, Value) !Value`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -27,7 +28,7 @@ pub const Error = error{
     UnsupportedOperation,
     /// The operands can't be coerced to one type, like a divert target and an int.
     IncompatibleTypes,
-    OutOfMemory,
+    ListLimit,
     HeapLimit,
 };
 
@@ -99,15 +100,15 @@ pub fn binary(context: anytype, opcode: Opcode, a: Value, b: Value) Error!Value 
     if (a == .list or b == .list) {
         // Lists aren't coerced the normal way; `&&` and `||` with a non-list use truth values.
         if ((opcode == .@"and" or opcode == .@"or") and (a != .list or b != .list)) {
-            const left = try to_truth(context, a);
-            const right = try to_truth(context, b);
+            const left = a.is_truthy(context) catch return error.IncompatibleTypes;
+            const right = b.is_truthy(context) catch return error.IncompatibleTypes;
             return .{ .bool = if (opcode == .@"and") left and right else left or right };
         }
         return context.list_binary(opcode, a, b);
     }
     const result = switch (try common_kind(a, b)) {
-        .integer => try integer_binary(opcode, try to_integer(a), try to_integer(b)),
-        .float => try float_binary(opcode, try to_float(a), try to_float(b)),
+        .integer => try numeric_binary(i32, opcode, try to_integer(a), try to_integer(b)),
+        .float => try numeric_binary(f32, opcode, try to_float(a), try to_float(b)),
         .string => try string_binary(context, opcode, a, b),
         .divert_target => try divert_binary(opcode, a, b),
         .list => unreachable,
@@ -116,27 +117,26 @@ pub fn binary(context: anytype, opcode: Opcode, a: Value, b: Value) Error!Value 
     return result;
 }
 
-fn to_truth(context: anytype, value: Value) Error!bool {
-    assert(value != .tag);
-    assert(value != .null);
-    return switch (value) {
-        .list => |list| context.list_count(list) > 0,
-        .string => |reference| context.string_bytes(reference).len > 0,
-        .integer => |number| number != 0,
-        .float => |number| number != 0,
-        .bool => |flag| flag,
-        else => error.IncompatibleTypes,
+/// An i32 or f32 as a value.
+fn number_value(number: anytype) Value {
+    return switch (@TypeOf(number)) {
+        i32 => .{ .integer = number },
+        f32 => .{ .float = number },
+        else => comptime unreachable,
     };
 }
 
-fn integer_binary(opcode: Opcode, a: i32, b: i32) Error!Value {
-    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
+/// Arithmetic, comparison and logic on two integers or two floats. Integers wrap; floats
+/// take C#'s Math.Max and Math.Min.
+fn numeric_binary(comptime T: type, opcode: Opcode, a: T, b: T) Error!Value {
+    comptime assert(T == i32 or T == f32);
+    const integer = T == i32;
     const result: Value = switch (opcode) {
-        .add => .{ .integer = a +% b },
-        .subtract => .{ .integer = a -% b },
-        .multiply => .{ .integer = a *% b },
-        .divide => .{ .integer = try integer_divide(a, b) },
-        .modulo => .{ .integer = try integer_modulo(a, b) },
+        .add => number_value(if (integer) a +% b else a + b),
+        .subtract => number_value(if (integer) a -% b else a - b),
+        .multiply => number_value(if (integer) a *% b else a * b),
+        .divide => number_value(if (integer) try integer_divide(a, b) else a / b),
+        .modulo => number_value(if (integer) try integer_modulo(a, b) else @rem(a, b)),
         .equal => .{ .bool = a == b },
         .not_equal => .{ .bool = a != b },
         .greater => .{ .bool = a > b },
@@ -145,10 +145,10 @@ fn integer_binary(opcode: Opcode, a: i32, b: i32) Error!Value {
         .less_or_equal => .{ .bool = a <= b },
         .@"and" => .{ .bool = a != 0 and b != 0 },
         .@"or" => .{ .bool = a != 0 or b != 0 },
-        .max => .{ .integer = @max(a, b) },
-        .min => .{ .integer = @min(a, b) },
-        // ink casts to float, since POW(2, -1) is a fraction.
-        .pow => .{ .float = pow(@floatFromInt(a), @floatFromInt(b)) },
+        .max => number_value(if (integer) @max(a, b) else maximum(a, b)),
+        .min => number_value(if (integer) @min(a, b) else minimum(a, b)),
+        // ink casts integers to float, since POW(2, -1) is a fraction.
+        .pow => .{ .float = if (integer) pow(@floatFromInt(a), @floatFromInt(b)) else pow(a, b) },
         else => return error.UnsupportedOperation,
     };
     assert(result != .null);
@@ -156,7 +156,6 @@ fn integer_binary(opcode: Opcode, a: i32, b: i32) Error!Value {
 }
 
 fn integer_divide(a: i32, b: i32) Error!i32 {
-    assert(@sizeOf(@TypeOf(a)) == 4);
     if (b == 0) return error.DivisionByZero;
     if (a == std.math.minInt(i32) and b == -1) return error.IntegerOverflow;
     const result = @divTrunc(a, b);
@@ -165,7 +164,6 @@ fn integer_divide(a: i32, b: i32) Error!i32 {
 }
 
 fn integer_modulo(a: i32, b: i32) Error!i32 {
-    assert(@sizeOf(@TypeOf(a)) == 4);
     if (b == 0) return error.DivisionByZero;
     // .NET throws for this one too.
     if (a == std.math.minInt(i32) and b == -1) return error.IntegerOverflow;
@@ -176,40 +174,13 @@ fn integer_modulo(a: i32, b: i32) Error!i32 {
 
 /// `(float)Math.Pow(x, y)`: computed in double precision, then rounded.
 fn pow(x: f32, y: f32) f32 {
-    assert(@sizeOf(@TypeOf(x)) == 4);
     const result: f32 = @floatCast(std.math.pow(f64, x, y));
     assert(!std.math.isNan(result) or std.math.isNan(x) or std.math.isNan(y) or x < 0);
     return result;
 }
 
-fn float_binary(opcode: Opcode, a: f32, b: f32) Error!Value {
-    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
-    const result: Value = switch (opcode) {
-        .add => .{ .float = a + b },
-        .subtract => .{ .float = a - b },
-        .multiply => .{ .float = a * b },
-        .divide => .{ .float = a / b },
-        .modulo => .{ .float = @rem(a, b) },
-        .equal => .{ .bool = a == b },
-        .not_equal => .{ .bool = a != b },
-        .greater => .{ .bool = a > b },
-        .less => .{ .bool = a < b },
-        .greater_or_equal => .{ .bool = a >= b },
-        .less_or_equal => .{ .bool = a <= b },
-        .@"and" => .{ .bool = a != 0 and b != 0 },
-        .@"or" => .{ .bool = a != 0 or b != 0 },
-        .max => .{ .float = maximum(a, b) },
-        .min => .{ .float = minimum(a, b) },
-        .pow => .{ .float = pow(a, b) },
-        else => return error.UnsupportedOperation,
-    };
-    assert(result != .null);
-    return result;
-}
-
 /// C#'s Math.Max(float, float): NaN if either is NaN, and +0 over -0.
 fn maximum(a: f32, b: f32) f32 {
-    assert(@sizeOf(@TypeOf(a)) == 4);
     if (std.math.isNan(a) or std.math.isNan(b)) return std.math.nan(f32);
     if (a == b) return if (std.math.signbit(a)) b else a;
     const result = if (a > b) a else b;
@@ -219,7 +190,6 @@ fn maximum(a: f32, b: f32) f32 {
 
 /// C#'s Math.Min(float, float): NaN if either is NaN, and -0 over +0.
 fn minimum(a: f32, b: f32) f32 {
-    assert(@sizeOf(@TypeOf(a)) == 4);
     if (std.math.isNan(a) or std.math.isNan(b)) return std.math.nan(f32);
     if (a == b) return if (std.math.signbit(a)) a else b;
     const result = if (a < b) a else b;
@@ -264,36 +234,24 @@ pub fn unary(context: anytype, opcode: Opcode, a: Value) Error!Value {
     if (a == .null) return error.VoidOperand;
     if (a == .list) return context.list_unary(opcode, a);
     const result: Value = switch (a) {
-        .bool, .integer => try integer_unary(opcode, try to_integer(a)),
-        .float => |number| try float_unary(opcode, number),
+        .bool, .integer => try numeric_unary(i32, opcode, try to_integer(a)),
+        .float => |number| try numeric_unary(f32, opcode, number),
         else => return error.UnsupportedOperation,
     };
     assert(result != .null);
     return result;
 }
 
-fn integer_unary(opcode: Opcode, a: i32) Error!Value {
-    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
+fn numeric_unary(comptime T: type, opcode: Opcode, a: T) Error!Value {
+    comptime assert(T == i32 or T == f32);
+    const integer = T == i32;
     const result: Value = switch (opcode) {
-        .negate => .{ .integer = -%a },
+        .negate => number_value(if (integer) -%a else -a),
         .not => .{ .bool = a == 0 },
-        .floor, .ceiling, .int => .{ .integer = a },
-        .float_cast => .{ .float = @floatFromInt(a) },
-        else => return error.UnsupportedOperation,
-    };
-    assert(result != .null);
-    return result;
-}
-
-fn float_unary(opcode: Opcode, a: f32) Error!Value {
-    assert(@backingInt(opcode) >= @backingInt(Opcode.add));
-    const result: Value = switch (opcode) {
-        .negate => .{ .float = -a },
-        .not => .{ .bool = a == 0 },
-        .floor => .{ .float = @floor(a) },
-        .ceiling => .{ .float = @ceil(a) },
-        .int => .{ .integer = try float_to_integer(a) },
-        .float_cast => .{ .float = a },
+        .floor => number_value(if (integer) a else @floor(a)),
+        .ceiling => number_value(if (integer) a else @ceil(a)),
+        .int => .{ .integer = if (integer) a else try float_to_integer(a) },
+        .float_cast => .{ .float = if (integer) @floatFromInt(a) else a },
         else => return error.UnsupportedOperation,
     };
     assert(result != .null);
@@ -303,7 +261,6 @@ fn float_unary(opcode: Opcode, a: f32) Error!Value {
 /// `(int)x`, truncating. Out of range or NaN is a story error (D18): .NET's answer depends on
 /// the processor, so inkz refuses instead of guessing.
 pub fn float_to_integer(a: f32) Error!i32 {
-    assert(@sizeOf(@TypeOf(a)) == 4);
     if (std.math.isNan(a)) return error.FloatToIntegerOutOfRange;
     const truncated = @trunc(a);
     if (truncated < -2147483648.0 or truncated >= 2147483648.0) {
@@ -319,7 +276,7 @@ const TestContext = struct {
     strings: std.ArrayList([]const u8) = .empty,
     arena: std.heap.ArenaAllocator,
 
-    fn string_bytes(context: *TestContext, reference: StringReference) []const u8 {
+    pub fn string_bytes(context: *TestContext, reference: StringReference) []const u8 {
         assert(reference.is_heap());
         const offset = reference.heap_offset();
         assert(offset < context.strings.items.len);
@@ -329,8 +286,8 @@ const TestContext = struct {
     fn string_concat(context: *TestContext, a: []const u8, b: []const u8) Error!StringReference {
         assert(a.len + b.len < 1 << 20);
         const allocator = context.arena.allocator();
-        const text = try std.mem.concat(allocator, u8, &.{ a, b });
-        try context.strings.append(allocator, text);
+        const text = std.mem.concat(allocator, u8, &.{ a, b }) catch return error.HeapLimit;
+        context.strings.append(allocator, text) catch return error.HeapLimit;
         assert(text.len == a.len + b.len);
         return .heap(@intCast(context.strings.items.len - 1));
     }
@@ -342,7 +299,7 @@ const TestContext = struct {
     }
 
     // This context has no lists: list operations are P4.2.
-    fn list_count(context: *TestContext, list: value_module.ListReference) u32 {
+    pub fn list_count(context: *TestContext, list: value_module.ListReference) u32 {
         assert(context.strings.items.len < 1 << 20);
         assert(@backingInt(list) < 1 << 31);
         return 0;
