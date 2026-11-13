@@ -67,11 +67,28 @@ pub const Diagnostic = struct {
 
 const Fixup = struct {
     kind: enum { divert, choice_point, container_operand },
-    path: StringId,
+    /// The target as a path: `path_bytes[path_first..][0..path_length]`, empty for a keyed
+    /// target outside Debug. Kept out of the program's strings: nothing reads it once
+    /// resolved (P12.4).
+    path_first: u32,
+    path_length: u32,
     container: ContainerIndex,
     /// The extra index of the record, or the content position for `container_operand`.
     at: u32,
+    /// A keyed target (P12.4): the container begun with this key, and a content position in
+    /// it (`no_index` for the container itself). `no_key` for a path target.
+    key: u32 = no_key,
+    index: u32 = no_index,
 };
+
+/// No key: a container without one, or a fixup with a path target.
+pub const no_key = std.math.maxInt(u32);
+const no_index = std.math.maxInt(u32);
+
+/// A target named by the caller's own key for a container (`ContainerOptions.key`) and,
+/// optionally, a content position in it, resolved in `finish` as a path to it would be. The
+/// compiler knows its targets, so it skips writing paths and parsing them back (P12.4).
+pub const KeyTarget = struct { key: u32, index: ?u32 = null };
 
 /// A `VAR?` read, resolved in `finish` as ink resolves it: a global, else a list item (as a
 /// one-item list), else a temp.
@@ -111,6 +128,8 @@ pub const ContainerOptions = struct {
     flags: ContainerFlags = .{},
     /// Reachable only by name (knots, stitches), not as a content item of the parent.
     named_only: bool = false,
+    /// The caller's key for `KeyTarget`s to this container.
+    key: u32 = no_key,
 };
 
 pub const ProgramBuilder = struct {
@@ -125,6 +144,10 @@ pub const ProgramBuilder = struct {
     named_scratch: std.ArrayList(NamedEntry) = .empty,
     frames: std.ArrayList(Frame) = .empty,
     fixups: std.ArrayList(Fixup) = .empty,
+    /// The fixups' path texts.
+    path_bytes: std.ArrayList(u8) = .empty,
+    /// The container begun with each key (`.none` for keys not used).
+    keys: std.ArrayList(ContainerIndex) = .empty,
     variable_fixups: std.ArrayList(VariableFixup) = .empty,
     list_fixups: std.ArrayList(ListFixup) = .empty,
     /// Item names, then origin names, of each list fixup.
@@ -161,6 +184,8 @@ pub const ProgramBuilder = struct {
         builder.named_scratch.deinit(gpa);
         builder.frames.deinit(gpa);
         builder.fixups.deinit(gpa);
+        builder.path_bytes.deinit(gpa);
+        builder.keys.deinit(gpa);
         builder.variable_fixups.deinit(gpa);
         builder.list_fixups.deinit(gpa);
         builder.list_names.deinit(gpa);
@@ -204,6 +229,7 @@ pub const ProgramBuilder = struct {
             try builder.scratch.append(gpa, .init(.enter_container, container));
         }
         const name: StringId = if (options.name) |text| try builder.intern(text) else .none;
+        if (options.key != no_key) try builder.set_key(options.key, container);
         try builder.containers.append(gpa, .{
             .instruction_first = .from_int(0),
             .instruction_count = 0,
@@ -226,6 +252,15 @@ pub const ProgramBuilder = struct {
         });
         assert(builder.current() == container);
         return container;
+    }
+
+    fn set_key(builder: *ProgramBuilder, key: u32, container: ContainerIndex) !void {
+        assert(key != no_key);
+        if (key >= builder.keys.items.len) {
+            try builder.keys.appendNTimes(builder.gpa, .none, key + 1 - builder.keys.items.len);
+        }
+        assert(builder.keys.items[key].is_none());
+        builder.keys.items[key] = container;
     }
 
     /// Names the current container. ink's JSON gives a container's name (`#n`) at its end.
@@ -493,6 +528,81 @@ pub const ProgramBuilder = struct {
         try builder.add(opcode, .none);
     }
 
+    /// `add_divert` to a keyed target. `check_path`, when given, is resolved too and must
+    /// name the same target (the compiler passes it in Debug).
+    pub fn add_divert_to(
+        builder: *ProgramBuilder,
+        target: KeyTarget,
+        check_path: ?[]const u8,
+        flags: instruction_module.DivertFlags,
+    ) !void {
+        assert(target.key != no_key);
+        assert(!flags.variable);
+        const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
+            .target_container = .none,
+            .target_index = 0,
+            .name = .none,
+            .flags = flags,
+        });
+        try builder.add_keyed_fixup(.divert, target, check_path, at);
+        try builder.add(.divert, @fromBackingInt(@intCast(at)));
+    }
+
+    /// `add_choice_point` to a keyed target.
+    pub fn add_choice_point_to(
+        builder: *ProgramBuilder,
+        target: KeyTarget,
+        check_path: ?[]const u8,
+        flags: instruction_module.ChoiceFlags,
+    ) !void {
+        assert(builder.frames.items.len > 0);
+        assert(target.key != no_key);
+        const at = try builder.extra.add(builder.gpa, instruction_module.ChoicePoint{
+            .target_container = .none,
+            .target_index = 0,
+            .flags = flags,
+        });
+        try builder.add_keyed_fixup(.choice_point, target, check_path, at);
+        try builder.add(.choice_point, @fromBackingInt(@intCast(at)));
+    }
+
+    /// `add_container_operand` to a keyed target.
+    pub fn add_container_operand_to(
+        builder: *ProgramBuilder,
+        comptime opcode: Opcode,
+        target: KeyTarget,
+        check_path: ?[]const u8,
+    ) !void {
+        assert(target.key != no_key);
+        comptime assert(instruction_module.operand_kind(opcode) == .container);
+        const position = builder.content_count();
+        try builder.add_keyed_fixup(.container_operand, target, check_path, position);
+        try builder.add(opcode, .none);
+    }
+
+    fn add_keyed_fixup(
+        builder: *ProgramBuilder,
+        kind: @FieldType(Fixup, "kind"),
+        target: KeyTarget,
+        check_path: ?[]const u8,
+        at: u32,
+    ) !void {
+        assert(builder.frames.items.len > 0);
+        assert(target.index != no_index);
+        const first: u32 = @intCast(builder.path_bytes.items.len);
+        if (check_path) |path| try builder.path_bytes.appendSlice(builder.gpa, path);
+        try builder.fixups.append(builder.gpa, .{
+            .kind = kind,
+            .path_first = first,
+            .path_length = if (check_path) |path| @intCast(path.len) else 0,
+            .container = builder.current(),
+            .at = at,
+            .key = target.key,
+            .index = target.index orelse no_index,
+        });
+        assert(builder.fixups.items.len > 0);
+    }
+
     fn add_fixup(
         builder: *ProgramBuilder,
         kind: @FieldType(Fixup, "kind"),
@@ -500,9 +610,12 @@ pub const ProgramBuilder = struct {
         at: u32,
     ) !void {
         assert(builder.frames.items.len > 0);
+        const first: u32 = @intCast(builder.path_bytes.items.len);
+        try builder.path_bytes.appendSlice(builder.gpa, path);
         try builder.fixups.append(builder.gpa, .{
             .kind = kind,
-            .path = try builder.intern(path),
+            .path_first = first,
+            .path_length = @intCast(path.len),
             .container = builder.current(),
             .at = at,
         });
@@ -726,7 +839,18 @@ pub const ProgramBuilder = struct {
         assert(program.containers.len == builder.staged.items.len);
         const extra: []u32 = @constCast(program.extra);
         for (builder.fixups.items) |fixup| {
-            const text = program.strings.get(fixup.path);
+            if (fixup.key != no_key) {
+                const target = builder.resolve_key(program, fixup) orelse {
+                    try builder.report(.unresolved_path, fixup, builder.fixup_text(fixup));
+                    continue;
+                };
+                if (fixup.path_length > 0) {
+                    check_keyed(program, fixup, target, builder.path_of(fixup));
+                }
+                try builder.apply(program, extra, fixup, target);
+                continue;
+            }
+            const text = builder.path_of(fixup);
             const parsed = path_module.Path.parse(text, path_components_max) catch {
                 try builder.report(.unresolved_path, fixup, text);
                 continue;
@@ -747,6 +871,60 @@ pub const ProgramBuilder = struct {
         assert(builder.diagnostics.items.len <= builder.fixups.items.len);
     }
 
+    /// A keyed target, found as `path.resolve` finds the last component of a path to it.
+    fn resolve_key(
+        builder: *const ProgramBuilder,
+        program: *const Program,
+        fixup: Fixup,
+    ) ?path_module.Target {
+        assert(fixup.key != no_key);
+        assert(program.containers.len == builder.staged.items.len);
+        if (fixup.key >= builder.keys.items.len) return null;
+        const container = builder.keys.items[fixup.key];
+        if (container.is_none()) return null;
+        var target: path_module.Target = .{
+            .container = container,
+            .content_index = null,
+            .approximate = false,
+        };
+        if (fixup.index == no_index) return target;
+        if (fixup.index >= program.content_count(container)) return null;
+        if (program.container_at(container, fixup.index)) |child| {
+            target.container = child;
+        } else target.content_index = fixup.index;
+        return target;
+    }
+
+    /// The keyed target equals the target of the path written for it (Debug's check).
+    fn check_keyed(
+        program: *const Program,
+        fixup: Fixup,
+        target: path_module.Target,
+        text: []const u8,
+    ) void {
+        assert(text.len > 0);
+        assert(fixup.key != no_key);
+        const parsed = path_module.Path.parse(text, path_components_max) catch unreachable;
+        const origin: path_module.Origin = .{ .container = fixup.container, .from_content = true };
+        const by_path = path_module.resolve(program, origin, parsed) catch unreachable;
+        assert(!by_path.approximate);
+        assert(by_path.container == target.container);
+        assert(std.meta.eql(by_path.content_index, target.content_index));
+    }
+
+    fn path_of(builder: *const ProgramBuilder, fixup: Fixup) []const u8 {
+        assert(fixup.path_first + fixup.path_length <= builder.path_bytes.items.len);
+        assert(builder.fixups.items.len > 0);
+        return builder.path_bytes.items[fixup.path_first..][0..fixup.path_length];
+    }
+
+    /// A fixup's path, or a placeholder for a keyed one without (for diagnostics).
+    fn fixup_text(builder: *const ProgramBuilder, fixup: Fixup) []const u8 {
+        assert(fixup.key != no_key or fixup.path_length > 0);
+        assert(builder.fixups.items.len > 0);
+        return if (fixup.path_length == 0) "(keyed target)" else builder.path_of(fixup);
+    }
+
     fn apply(
         builder: *ProgramBuilder,
         program: *Program,
@@ -764,7 +942,7 @@ pub const ProgramBuilder = struct {
             },
             .container_operand => {
                 if (target.content_index != null) {
-                    const text = program.strings.get(fixup.path);
+                    const text = builder.fixup_text(fixup);
                     try builder.report(.divert_target_not_a_container, fixup, text);
                     return;
                 }
@@ -782,7 +960,7 @@ pub const ProgramBuilder = struct {
         fixup: Fixup,
         text: []const u8,
     ) !void {
-        assert(!fixup.path.is_none());
+        assert(text.len > 0);
         const first: u32 = @intCast(builder.diagnostic_bytes.items.len);
         try builder.diagnostic_bytes.appendSlice(builder.gpa, text);
         try builder.diagnostics.append(builder.gpa, .{
