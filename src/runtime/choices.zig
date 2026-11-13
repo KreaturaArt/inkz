@@ -18,6 +18,7 @@ const Pointer = call_stack_module.Pointer;
 const Frame = call_stack_module.Frame;
 const Temp = call_stack_module.Temp;
 const CallStack = call_stack_module.CallStack;
+const copy_frames = call_stack_module.copy_frames;
 
 pub const Choice = struct {
     text: StringReference,
@@ -156,14 +157,11 @@ pub const Choices = struct {
             .temps_count = @intCast(temps.len),
             .previous_pointer = previous,
         };
-        const frames_mark = choices.frames.count;
-        errdefer choices.frames.truncate(frames_mark);
-        for (frames) |frame| {
-            var copy = frame;
-            copy.temps_first = frame.temps_first - first_temp + snapshot.temps_first;
-            choices.frames.push(copy) catch return error.SnapshotLimit;
-        }
-        choices.temps.push_slice(temps) catch return error.SnapshotLimit;
+        errdefer choices.frames.truncate(snapshot.frames_first);
+        errdefer choices.temps.truncate(snapshot.temps_first);
+        copy_frames(&choices.frames, &choices.temps, frames, stack.temps.slice()) catch
+            return error.SnapshotLimit;
+        assert(choices.temps.count == snapshot.temps_first + snapshot.temps_count);
         choices.snapshots.push(snapshot) catch unreachable;
         assert(choices.snapshots.count > 0);
         return choices.snapshots.count - 1;
@@ -212,12 +210,9 @@ pub const Choices = struct {
         stack.frames.clear();
         stack.temps.clear();
         stack.threads.clear();
-        for (frames) |frame| {
-            var copy = frame;
-            copy.temps_first = frame.temps_first - snapshot.temps_first;
-            stack.frames.push(copy) catch unreachable;
-        }
-        stack.temps.push_slice(temps) catch unreachable;
+        // Checked above: the copies fit.
+        copy_frames(&stack.frames, &stack.temps, frames, choices.temps.slice()) catch
+            unreachable;
         stack.threads.push(.{
             .frame_first = 0,
             .frame_count = snapshot.frames_count,

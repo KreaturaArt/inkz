@@ -10,37 +10,43 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Program = @import("../core/program.zig").Program;
 const state_module = @import("state.zig");
-const call_stack_module = @import("call_stack.zig");
-const output_module = @import("output.zig");
-const choices_module = @import("choices.zig");
-const value_module = @import("value.zig");
 const State = state_module.State;
 const FlowRecord = state_module.FlowRecord;
+const FlowBuffer = state_module.FlowBuffer;
+const FlowElement = state_module.FlowElement;
+const parked_buffers = state_module.parked_buffers;
 
 pub const default_name = "DEFAULT_FLOW";
 
 pub const Error = error{ FlowLimit, FlowNameTooLong, FlowParkingLimit, CannotRemoveDefaultFlow };
 
-const header_words = 11;
-
-/// The counts that start a parked flow, in the order its arrays follow. `extern` keeps the
-/// field order, so the first ten words are the array lengths in order.
+/// What starts a parked flow: the length of each parked buffer, in `parked_buffers` order,
+/// then the call stack's thread counter.
 const Header = extern struct {
-    frames: u32,
-    threads: u32,
-    temps: u32,
-    items: u32,
-    marks: u32,
-    choices: u32,
-    tags: u32,
-    snapshots: u32,
-    snapshot_frames: u32,
-    snapshot_temps: u32,
+    counts: [parked_buffers.len]u32,
     thread_counter: u32,
+
+    fn count(header: *const Header, comptime buffer: FlowBuffer) u32 {
+        comptime assert(buffer != .evaluation);
+        return header.counts[@backingInt(buffer) - 1];
+    }
 };
 
+const header_words = @sizeOf(Header) / 4;
+
 comptime {
-    assert(@typeInfo(Header).@"struct".field_names.len == header_words);
+    assert(header_words == parked_buffers.len + 1);
+    assert(@backingInt(parked_buffers[0]) == 1);
+}
+
+/// The words a parked flow with these buffer lengths takes, its header included.
+pub fn parked_size(counts: [parked_buffers.len]u32) u64 {
+    var words: u64 = header_words;
+    inline for (parked_buffers, counts) |buffer, count| {
+        words += @as(u64, count) * (@sizeOf(FlowElement(buffer)) / 4);
+    }
+    assert(words >= header_words);
+    return words;
 }
 
 fn words_of(comptime T: type, count: u32) u32 {
@@ -166,33 +172,18 @@ pub fn parking_used(state: *const State) u32 {
 
 /// Packs the current flow into the parking region.
 fn park_current(state: *State) Error!void {
-    const header: Header = .{
-        .frames = state.call_stack.frames.count,
-        .threads = state.call_stack.threads.count,
-        .temps = state.call_stack.temps.count,
-        .items = state.output.items.count,
-        .marks = state.output.string_marks.count,
-        .choices = state.choices.records.count,
-        .tags = state.choices.tags.count,
-        .snapshots = state.choices.snapshots.count,
-        .snapshot_frames = state.choices.frames.count,
-        .snapshot_temps = state.choices.temps.count,
-        .thread_counter = state.call_stack.thread_counter,
-    };
+    const thread_counter = state.call_stack.thread_counter;
+    var header: Header = .{ .counts = undefined, .thread_counter = thread_counter };
+    inline for (parked_buffers, &header.counts) |buffer, *count| {
+        count.* = state.flow_stack(buffer).count;
+    }
     const at = parking_used(state);
     assert(state.flows[state.current_flow].parked_words == 0);
     var writer: Writer = .{ .words = state.parking, .at = at };
     try writer.put(Header, &.{header});
-    try writer.put(call_stack_module.Frame, state.call_stack.frames.slice());
-    try writer.put(call_stack_module.Thread, state.call_stack.threads.slice());
-    try writer.put(call_stack_module.Temp, state.call_stack.temps.slice());
-    try writer.put(output_module.Item, state.output.items.slice());
-    try writer.put(u32, state.output.string_marks.slice());
-    try writer.put(choices_module.Choice, state.choices.records.slice());
-    try writer.put(value_module.StringReference, state.choices.tags.slice());
-    try writer.put(choices_module.Snapshot, state.choices.snapshots.slice());
-    try writer.put(call_stack_module.Frame, state.choices.frames.slice());
-    try writer.put(call_stack_module.Temp, state.choices.temps.slice());
+    inline for (parked_buffers) |buffer| {
+        try writer.put(FlowElement(buffer), state.flow_stack(buffer).slice());
+    }
     const record = &state.flows[state.current_flow];
     record.parked_first = at;
     record.parked_words = writer.at - at;
@@ -215,37 +206,20 @@ const Writer = struct {
     }
 };
 
-/// A view of a parked flow's arrays, in place.
+/// A parked flow's buffers, in place. Its evaluation stack is empty: flows share it.
 pub const Parked = struct {
-    header: Header,
-    frames: []call_stack_module.Frame,
-    threads: []call_stack_module.Thread,
-    temps: []call_stack_module.Temp,
-    items: []output_module.Item,
-    marks: []u32,
-    choices: []choices_module.Choice,
-    tags: []value_module.StringReference,
-    snapshots: []choices_module.Snapshot,
-    snapshot_frames: []call_stack_module.Frame,
-    snapshot_temps: []call_stack_module.Temp,
+    buffers: state_module.FlowBuffers,
+    thread_counter: u32,
 
     pub fn of(words: []u32) Parked {
         assert(words.len >= header_words);
         var reader: Reader = .{ .words = words };
         const header = reader.take(Header, 1)[0];
-        const parked: Parked = .{
-            .header = header,
-            .frames = reader.take(call_stack_module.Frame, header.frames),
-            .threads = reader.take(call_stack_module.Thread, header.threads),
-            .temps = reader.take(call_stack_module.Temp, header.temps),
-            .items = reader.take(output_module.Item, header.items),
-            .marks = reader.take(u32, header.marks),
-            .choices = reader.take(choices_module.Choice, header.choices),
-            .tags = reader.take(value_module.StringReference, header.tags),
-            .snapshots = reader.take(choices_module.Snapshot, header.snapshots),
-            .snapshot_frames = reader.take(call_stack_module.Frame, header.snapshot_frames),
-            .snapshot_temps = reader.take(call_stack_module.Temp, header.snapshot_temps),
-        };
+        var parked: Parked = .{ .buffers = undefined, .thread_counter = header.thread_counter };
+        parked.buffers.evaluation = &.{};
+        inline for (parked_buffers, header.counts) |buffer, count| {
+            @field(parked.buffers, @tagName(buffer)) = reader.take(FlowElement(buffer), count);
+        }
         assert(reader.at == words.len);
         return parked;
     }
@@ -275,29 +249,16 @@ pub fn parked_words(state: *State, record: *const FlowRecord) []u32 {
 fn unpark(state: *State, target: u32) void {
     const record = &state.flows[target];
     const parked = Parked.of(parked_words(state, record));
-    replace(&state.call_stack.frames, parked.frames);
-    replace(&state.call_stack.threads, parked.threads);
-    replace(&state.call_stack.temps, parked.temps);
-    state.call_stack.thread_counter = parked.header.thread_counter;
-    replace(&state.output.items, parked.items);
-    replace(&state.output.string_marks, parked.marks);
-    replace(&state.choices.records, parked.choices);
-    replace(&state.choices.tags, parked.tags);
-    replace(&state.choices.snapshots, parked.snapshots);
-    replace(&state.choices.frames, parked.snapshot_frames);
-    replace(&state.choices.temps, parked.snapshot_temps);
+    inline for (parked_buffers) |buffer| {
+        const stack = state.flow_stack(buffer);
+        stack.clear();
+        // The parked flow fit these buffers when it was live, so it fits again.
+        stack.push_slice(@field(parked.buffers, @tagName(buffer))) catch unreachable;
+    }
+    state.call_stack.thread_counter = parked.thread_counter;
     release(state, target);
     assert(record.parked_words == 0);
     state.call_stack.verify();
-}
-
-fn replace(stack: anytype, items: anytype) void {
-    assert(@typeInfo(@TypeOf(stack)) == .pointer);
-    // The parked flow fit these buffers when it was live, so it fits again.
-    assert(items.len <= stack.buffer.len);
-    stack.clear();
-    stack.push_slice(items) catch unreachable;
-    assert(stack.count == items.len);
 }
 
 /// Frees a flow's parked words and closes the gap so parked flows stay packed.
@@ -389,31 +350,11 @@ fn parked_shape_ok(state: *const State, record: *const FlowRecord) bool {
     if (record.parked_words < header_words) return false;
     const words = state.parking[record.parked_first..][0..header_words];
     const header = std.mem.bytesToValue(Header, std.mem.sliceAsBytes(words));
-    const capacities = [_]u32{
-        state.call_stack.frames.capacity(),
-        state.call_stack.threads.capacity(),
-        state.call_stack.temps.capacity(),
-        state.output.items.capacity(),
-        state.output.string_marks.capacity(),
-        state.choices.records.capacity(),
-        state.choices.tags.capacity(),
-        state.choices.snapshots.capacity(),
-        state.choices.frames.capacity(),
-        state.choices.temps.capacity(),
-    };
-    const counts = words[0..capacities.len];
-    for (counts, capacities) |count, capacity| if (count > capacity) return false;
-    assert(counts[1] == header.threads);
-    if (header.threads == 0) return false;
-    const expected = header_words + words_of(call_stack_module.Frame, header.frames) +
-        words_of(call_stack_module.Thread, header.threads) +
-        words_of(call_stack_module.Temp, header.temps) +
-        words_of(output_module.Item, header.items) + header.marks +
-        words_of(choices_module.Choice, header.choices) + header.tags +
-        words_of(choices_module.Snapshot, header.snapshots) +
-        words_of(call_stack_module.Frame, header.snapshot_frames) +
-        words_of(call_stack_module.Temp, header.snapshot_temps);
-    return expected == record.parked_words;
+    inline for (parked_buffers, header.counts) |buffer, count| {
+        if (count > state.flow_stack(buffer).capacity()) return false;
+    }
+    if (header.count(.threads) == 0) return false;
+    return parked_size(header.counts) == record.parked_words;
 }
 
 /// Visits the heap references of every parked flow, for compaction.
@@ -422,25 +363,8 @@ pub fn visit_parked(state: *State, visitor: anytype) void {
     for (state.flows) |*record| {
         if (!record.in_use or record.parked_words == 0) continue;
         const parked = Parked.of(parked_words(state, record));
-        assert(parked.threads.len > 0);
-        for (parked.temps) |*temp| visit_value(&temp.value, visitor);
-        for (parked.items) |*item| {
-            if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
-        }
-        for (parked.choices) |*choice| visitor.string(&choice.text);
-        for (parked.tags) |*tag| visitor.string(tag);
-        for (parked.snapshot_temps) |*temp| visit_value(&temp.value, visitor);
-    }
-}
-
-fn visit_value(value: *value_module.Value, visitor: anytype) void {
-    assert(@sizeOf(value_module.Value) == 12);
-    assert(@typeInfo(@TypeOf(visitor)) == .pointer);
-    switch (value.*) {
-        .string => |*reference| visitor.string(reference),
-        .tag => |*reference| visitor.string(reference),
-        .list => |*reference| visitor.list(reference),
-        else => {},
+        assert(parked.buffers.threads.len > 0);
+        state_module.visit_flow(parked.buffers, visitor);
     }
 }
 

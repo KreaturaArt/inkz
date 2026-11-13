@@ -75,6 +75,26 @@ comptime {
 
 pub const Error = error{ FrameLimit, ThreadLimit, TempLimit, MismatchedPop, CannotPopThread };
 
+/// Appends a copy of each of `frames` to `frames_into`, and of its temps (in `temps`, the
+/// stack the frames index) to `temps_into`, pointing each copy at its copied temps. Forking a
+/// thread, storing a choice's thread and restoring it all copy frames this way.
+pub fn copy_frames(
+    frames_into: *BoundedStack(Frame),
+    temps_into: *BoundedStack(Temp),
+    frames: []const Frame,
+    temps: []const Temp,
+) error{ FrameLimit, TempLimit }!void {
+    assert(frames.len > 0);
+    for (frames) |frame| {
+        assert(frame.temps_first + frame.temps_count <= temps.len);
+        var copy = frame;
+        copy.temps_first = temps_into.count;
+        const own = temps[frame.temps_first..][0..frame.temps_count];
+        temps_into.push_slice(own) catch return error.TempLimit;
+        frames_into.push(copy) catch return error.FrameLimit;
+    }
+}
+
 pub const CallStack = struct {
     frames: BoundedStack(Frame),
     threads: BoundedStack(Thread),
@@ -217,35 +237,23 @@ pub const CallStack = struct {
 
     /// A copy of the current thread becomes the current thread (ink's PushThread).
     pub fn push_thread(call_stack: *CallStack) Error!void {
-        assert(call_stack.frames.count <= call_stack.frames.buffer.len);
-        const source = call_stack.current_thread().*;
         if (call_stack.threads.is_full()) return error.ThreadLimit;
-        try call_stack.copy_thread(source, call_stack.frames.count);
-        assert(call_stack.current_thread().counter == call_stack.thread_counter);
-    }
-
-    /// Appends a copy of `source` (frames and their temps) as the new current thread.
-    fn copy_thread(call_stack: *CallStack, source: Thread, frame_first: u32) Error!void {
-        assert(source.frame_count > 0);
-        assert(frame_first == call_stack.frames.count);
+        const source = call_stack.current_thread().*;
         const frames_mark = call_stack.frames.count;
         const temps_mark = call_stack.temps.count;
         errdefer call_stack.frames.truncate(frames_mark);
         errdefer call_stack.temps.truncate(temps_mark);
-        for (0..source.frame_count) |offset| {
-            var frame = call_stack.frames.slice()[source.frame_first + offset];
-            const temps = call_stack.temps.slice()[frame.temps_first..][0..frame.temps_count];
-            frame.temps_first = call_stack.temps.count;
-            call_stack.temps.push_slice(temps) catch return error.TempLimit;
-            call_stack.frames.push(frame) catch return error.FrameLimit;
-        }
+        const frames = call_stack.current_frames();
+        try copy_frames(&call_stack.frames, &call_stack.temps, frames, call_stack.temps.slice());
         call_stack.thread_counter += 1;
         call_stack.threads.push(.{
-            .frame_first = frame_first,
+            .frame_first = frames_mark,
             .frame_count = source.frame_count,
             .counter = call_stack.thread_counter,
             .previous_pointer = source.previous_pointer,
-        }) catch return error.ThreadLimit;
+        }) catch unreachable;
+        assert(call_stack.current_thread().frame_first + source.frame_count ==
+            call_stack.frames.count);
     }
 
     /// ink's canPopThread: more than one thread, and not inside a function the game called.

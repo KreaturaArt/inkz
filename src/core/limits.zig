@@ -128,19 +128,10 @@ pub const Limits = struct {
 
     /// Buffers that belong to the active flow: call stack, evaluation, output and choices.
     pub fn live_flow_bytes(limits: *const Limits) u64 {
-        const bytes = element_bytes;
         var total: u64 = 0;
-        total += @as(u64, limits.evaluation_values_max) * bytes.value;
-        total += @as(u64, limits.frames_max) * bytes.frame;
-        total += @as(u64, limits.threads_max) * bytes.thread;
-        total += @as(u64, limits.temps_max) * bytes.temp;
-        total += @as(u64, limits.output_items_max) * bytes.output_item;
-        total += @as(u64, limits.string_marks_max) * bytes.string_mark;
-        total += @as(u64, limits.choices_max) * bytes.choice;
-        total += @as(u64, limits.tags_max) * bytes.tag;
-        total += @as(u64, limits.choices_max) * bytes.snapshot;
-        total += @as(u64, limits.choice_snapshot_frames_max) * bytes.frame;
-        total += @as(u64, limits.choice_snapshot_temps_max) * bytes.temp;
+        for (std.enums.values(FlowBuffer)) |buffer| {
+            total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
+        }
         assert(total > limits.evaluation_values_max);
         assert(total < std.math.maxInt(u64) / 4);
         return total;
@@ -167,6 +158,53 @@ pub const Limits = struct {
         assert(total >= limits.heap_bytes_max);
         assert(total < std.math.maxInt(u64) / 4);
         return total;
+    }
+};
+
+/// The buffers of one live flow, in the order they are carved and parked. The runtime's
+/// `FlowBuffers` has one field per tag; the lookahead copies all of them, and a parked flow
+/// all but the evaluation stack, which flows share.
+pub const FlowBuffer = enum {
+    evaluation,
+    frames,
+    threads,
+    temps,
+    items,
+    marks,
+    choices,
+    tags,
+    snapshots,
+    snapshot_frames,
+    snapshot_temps,
+
+    pub fn capacity(buffer: FlowBuffer, limits: *const Limits) u32 {
+        return switch (buffer) {
+            .evaluation => limits.evaluation_values_max,
+            .frames => limits.frames_max,
+            .threads => limits.threads_max,
+            .temps => limits.temps_max,
+            .items => limits.output_items_max,
+            .marks => limits.string_marks_max,
+            .choices, .snapshots => limits.choices_max,
+            .tags => limits.tags_max,
+            .snapshot_frames => limits.choice_snapshot_frames_max,
+            .snapshot_temps => limits.choice_snapshot_temps_max,
+        };
+    }
+
+    pub fn bytes_per_element(buffer: FlowBuffer) u32 {
+        const bytes = element_bytes;
+        return switch (buffer) {
+            .evaluation => bytes.value,
+            .frames, .snapshot_frames => bytes.frame,
+            .threads => bytes.thread,
+            .temps, .snapshot_temps => bytes.temp,
+            .items => bytes.output_item,
+            .marks => bytes.string_mark,
+            .choices => bytes.choice,
+            .tags => bytes.tag,
+            .snapshots => bytes.snapshot,
+        };
     }
 };
 
