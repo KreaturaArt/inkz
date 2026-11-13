@@ -27,7 +27,7 @@ pub fn build(b: *std.Build) void {
     const replay_case = add_executable(b, "replay_case", "src/replay_case.zig", target, optimize);
     build_options.addOptionPath("replay_case_path", replay_case.getEmittedBin());
     // `zig build replay` installs it, for replaying one case by hand.
-    const replay_step = b.step("replay", "Install replay_case (replay one case on an engine)");
+    const replay_step = b.step("replay", "Install replay_case (replay one case and print its transcript)");
     replay_step.dependOn(&b.addInstallArtifact(replay_case, .{}).step);
 
     // The library's module, for packages that depend on inkz (`b.dependency("inkz", ...)

@@ -14,7 +14,6 @@ const evaluate = @import("../runtime/evaluate.zig");
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
 const cases = @import("cases.zig");
-const ground_truth_test = @import("ground_truth_test.zig");
 const Story = story_module.Story;
 
 /// No field of `T` is an allocator (the types the story keeps after init).
@@ -89,7 +88,7 @@ test "the new runtime allocates nothing after init, on every ground-truth case" 
     const arena = arena_state.allocator();
     const io = std.testing.io;
     var checked: u32 = 0;
-    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+    for (try cases.ids(arena, io)) |id| {
         const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
             cases.cases_directory,
             id,

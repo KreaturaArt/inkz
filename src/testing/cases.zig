@@ -1,56 +1,32 @@
-//! Replays one ground-truth case on a named engine (plan P0.10). Shared by the in-process
-//! runner `src/replay_case.zig` and kept out of the gate test, which runs each case in a child
-//! process so a crashing engine can't take the test binary down with it.
+//! Replays one ground-truth case, or a story's JSON, on the runtime. Used by
+//! `src/replay_case.zig`, which the gates start once per story so that a crash can't take
+//! the test binary down with it.
 
 const std = @import("std");
-const assert = std.debug.assert;
-const transcript = @import("transcript.zig");
 const Harness = @import("harness.zig").Harness;
 
 pub const cases_directory = "test/ground_truth";
 const file_bytes_max = 16 * 1024 * 1024;
 
-/// Engines the ground-truth gate runs:
-/// - `new`: the runtime on the JSON compiled by ink v1.2.1.
-pub const engines = [_][]const u8{"new"};
-/// Engines the transcript gate runs; they read the compiled fixtures directly.
-pub const transcript_engines = [_][]const u8{"new"};
-
 /// A case's source: `test/ground_truth/<id>.ink`, or the fixture or story it came from.
 pub fn source_path(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
-    assert(id.len > 0);
     const candidates = [_][]const u8{ cases_directory, "test/fixture/original", "test/fixture" };
     for (candidates) |directory| {
         const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink", .{ directory, id });
         std.Io.Dir.cwd().access(io, path, .{}) catch continue;
-        assert(std.mem.endsWith(u8, path, ".ink"));
         return path;
     }
     return error.SourceNotFound;
 }
 
-/// Replays case `id` on `engine` and returns its transcript. `actions_override` replaces the
-/// case's own actions when given.
-pub fn replay(
+/// Replays case `id` and returns its transcript: its own actions (`play` when it has none),
+/// or `actions_override` when given.
+pub fn replay_case(
     arena: std.mem.Allocator,
     io: std.Io,
-    engine: []const u8,
-    id: []const u8,
-) ![]const u8 {
-    assert(id.len > 0);
-    assert(engine.len > 0);
-    return replay_with(arena, io, engine, id, null);
-}
-
-pub fn replay_with(
-    arena: std.mem.Allocator,
-    io: std.Io,
-    engine: []const u8,
     id: []const u8,
     actions_override: ?[]const u8,
 ) ![]const u8 {
-    assert(id.len > 0);
-    assert(engine.len > 0);
     const cwd = std.Io.Dir.cwd();
     const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{ cases_directory, id });
     const actions_path = try std.fmt.allocPrint(arena, "{s}/{s}.actions", .{ cases_directory, id });
@@ -60,45 +36,70 @@ pub fn replay_with(
             error.FileNotFound => "play",
             else => return err,
         };
-    return replay_json(arena, io, engine, json_path, actions);
+    return replay_json(arena, io, json_path, actions);
 }
 
-/// Replays `actions` on the story at `json_path` with `engine` and returns the transcript.
+/// Replays `actions` on the story at `json_path` and returns the transcript.
 pub fn replay_json(
     arena: std.mem.Allocator,
     io: std.Io,
-    engine: []const u8,
     json_path: []const u8,
     actions: []const u8,
 ) ![]const u8 {
-    assert(json_path.len > 0);
-    assert(engine.len > 0);
     const json = try std.Io.Dir.cwd().readFileAlloc(io, json_path, arena, .limited(file_bytes_max));
-    return replay_story(arena, engine, json, actions);
-}
-
-/// Replays `actions` on a story given as JSON text.
-fn replay_story(
-    arena: std.mem.Allocator,
-    engine: []const u8,
-    json: []const u8,
-    actions: []const u8,
-) ![]const u8 {
-    assert(json.len > 0);
-    assert(engine.len > 0);
-    if (!std.mem.eql(u8, engine, "new")) return error.UnknownEngine;
-    return replay_new(arena, json, actions);
-}
-
-fn replay_new(arena: std.mem.Allocator, json: []const u8, actions: []const u8) ![]const u8 {
-    assert(json.len > 0);
     var output: std.Io.Writer.Allocating = .init(arena);
-    var new = Harness.open(arena, json) catch |err| {
+    var harness: Harness = undefined;
+    harness.init(arena, json) catch |err| {
         try output.writer.print("exception: \"{t}\"\n", .{err});
         return output.written();
     };
-    defer new.deinit();
-    try transcript.replay(&new, actions, &output.writer);
-    assert(output.written().len > 0 or actions.len == 0);
+    defer harness.deinit();
+    try harness.replay(actions, &output.writer);
     return output.written();
+}
+
+/// The ground-truth case ids (paths below `cases_directory` without `.expected`), sorted.
+pub fn ids(arena: std.mem.Allocator, io: std.Io) ![]const []const u8 {
+    const all = try list_sorted(arena, io, cases_directory, ".expected");
+    var kept: std.ArrayList([]const u8) = .empty;
+    for (all) |id| {
+        // .NET reference data for unit tests, not story cases.
+        if (!std.mem.startsWith(u8, id, "dotnet_")) try kept.append(arena, id);
+    }
+    return kept.items;
+}
+
+/// The paths of the files below `directory_path` that end in `suffix`, without it, sorted.
+pub fn list_sorted(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    directory_path: []const u8,
+    suffix: []const u8,
+) ![]const []const u8 {
+    var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{ .iterate = true });
+    defer directory.close(io);
+    var walker = try directory.walk(arena);
+    defer walker.deinit();
+    var paths: std.ArrayList([]const u8) = .empty;
+    while (try walker.next(io)) |entry| {
+        if (entry.kind != .file or !std.mem.endsWith(u8, entry.path, suffix)) continue;
+        try paths.append(arena, try arena.dupe(u8, entry.path[0 .. entry.path.len - suffix.len]));
+    }
+    std.mem.sort([]const u8, paths.items, {}, less_than);
+    if (paths.items.len == 0) return error.EmptyCorpus;
+    return paths.items;
+}
+
+fn less_than(_: void, a: []const u8, b: []const u8) bool {
+    return std.mem.order(u8, a, b) == .lt;
+}
+
+/// Case `id`'s expected transcript, without the provenance header ink's harness wrote.
+pub fn read_expected(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
+    const path = try std.fmt.allocPrint(arena, "{s}/{s}.expected", .{ cases_directory, id });
+    const text = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(file_bytes_max));
+    const header = "# generated by tools/ink_harness";
+    if (!std.mem.startsWith(u8, text, header)) return error.MissingHeader;
+    const header_end = std.mem.indexOfScalar(u8, text, '\n') orelse return error.MissingHeader;
+    return text[header_end + 1 ..];
 }

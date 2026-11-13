@@ -13,7 +13,6 @@ const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
 const state_module = @import("../runtime/state.zig");
 const cases = @import("cases.zig");
-const ground_truth_test = @import("ground_truth_test.zig");
 const Story = story_module.Story;
 
 fn ignore_error(
@@ -104,7 +103,7 @@ test "a save and load at every turn doesn't change the play" {
     const io = std.testing.io;
     const save_buffer = try arena.alloc(u8, 1 << 20);
     var checked: u32 = 0;
-    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+    for (try cases.ids(arena, io)) |id| {
         const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
             cases.cases_directory,
             id,
@@ -133,7 +132,7 @@ test "every C# save in the ground truth loads and saves back to the same JSON" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     var checked: u32 = 0;
-    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+    for (try cases.ids(arena, io)) |id| {
         const expected_path = try std.fmt.allocPrint(arena, "{s}/{s}.expected", .{
             cases.cases_directory,
             id,

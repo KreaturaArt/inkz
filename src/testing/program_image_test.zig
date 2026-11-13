@@ -10,7 +10,6 @@ const program_testing = @import("../core/program_testing.zig");
 const Program = @import("../core/program.zig").Program;
 const compile = @import("../compiler/compile.zig");
 const cases = @import("cases.zig");
-const ground_truth_test = @import("ground_truth_test.zig");
 
 /// Writes `program`'s image, checks it's deterministic and loads back the same program.
 fn round_trip(gpa: std.mem.Allocator, program: *const Program) !u64 {
@@ -40,7 +39,7 @@ test "every ground-truth case round-trips through an image" {
     var json_total: u64 = 0;
     var image_total: u64 = 0;
     var checked: u32 = 0;
-    for (try ground_truth_test.collect_cases(arena, io)) |id| {
+    for (try cases.ids(arena, io)) |id| {
         const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
             cases.cases_directory,
             id,

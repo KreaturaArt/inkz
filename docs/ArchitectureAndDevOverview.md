@@ -211,7 +211,7 @@ entry whose case no longer differs fails too.
   layout order.
 - `inkz.compiler.compile_to_json` shows what the compiler made, in a form you can compare
   with inklecate's output.
-- `replay_case <engine> <case id>` replays a ground-truth case in its own process; the
+- `replay_case <case id>` replays a ground-truth case in its own process; the
   simulator prints the exact command that reproduces each failure it finds.
 - `State.check()` and `Program.check()` return a named `Fault` for the first broken
   invariant. `verify()` asserts on it at the boundaries: when a program is built or loaded,
