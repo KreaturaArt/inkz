@@ -17,6 +17,7 @@ const index = @import("index.zig");
 const instruction_module = @import("instruction.zig");
 const container_module = @import("container.zig");
 const extra = @import("extra.zig");
+const ink_json = @import("ink_json.zig");
 const ContainerIndex = index.ContainerIndex;
 const Instruction = instruction_module.Instruction;
 const Opcode = instruction_module.Opcode;
@@ -268,81 +269,15 @@ fn write_terminator(writer: *Writer, frame: *Frame) !?ContainerIndex {
     return null;
 }
 
-/// The JSON word of a bare instruction (ink_json's word table, read backwards).
-fn word(opcode: Opcode) ?[]const u8 {
-    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
-    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
-    return switch (opcode) {
-        .eval_start => "ev",
-        .eval_output => "out",
-        .eval_end => "/ev",
-        .duplicate => "du",
-        .pop => "pop",
-        .function_return => "~ret",
-        .tunnel_return => "->->",
-        .string_start => "str",
-        .string_end => "/str",
-        .nop => "nop",
-        .choice_count => "choiceCnt",
-        .turns => "turn",
-        .turns_since => "turns",
-        .read_count_of_target => "readc",
-        .random => "rnd",
-        .seed_random => "srnd",
-        .visit_index => "visit",
-        .sequence_shuffle_index => "seq",
-        .start_thread => "thread",
-        .done => "done",
-        .end => "end",
-        .list_from_int => "listInt",
-        .list_range => "range",
-        .list_random => "lrnd",
-        .tag_start => "#",
-        .tag_end => "/#",
-        .glue => "<>",
-        .void => "void",
-        else => native_word(opcode),
-    };
-}
-
-fn native_word(opcode: Opcode) ?[]const u8 {
-    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
-    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
-    return switch (opcode) {
-        .add => "+",
-        .subtract => "-",
-        .divide => "/",
-        .multiply => "*",
-        .modulo => "%",
-        .negate => "_",
-        .equal => "==",
-        .greater => ">",
-        .less => "<",
-        .greater_or_equal => ">=",
-        .less_or_equal => "<=",
-        .not_equal => "!=",
-        .not => "!",
-        .@"and" => "&&",
-        .@"or" => "||",
-        .min => "MIN",
-        .max => "MAX",
-        .pow => "POW",
-        .floor => "FLOOR",
-        .ceiling => "CEILING",
-        .int => "INT",
-        .float_cast => "FLOAT",
-        .has => "?",
-        .hasnt => "!?",
-        .intersect => "L^",
-        .list_min => "LIST_MIN",
-        .list_max => "LIST_MAX",
-        .list_all => "LIST_ALL",
-        .list_count => "LIST_COUNT",
-        .list_value => "LIST_VALUE",
-        .list_invert => "LIST_INVERT",
-        else => null,
-    };
-}
+/// The JSON word of each bare instruction: ink_json's word table, read backwards.
+const opcode_words = table: {
+    var table: [@typeInfo(Opcode).@"enum".field_names.len]?[]const u8 = @splat(null);
+    for (ink_json.words.keys(), ink_json.words.values()) |key, opcode| {
+        assert(table[@backingInt(opcode)] == null);
+        table[@backingInt(opcode)] = key;
+    }
+    break :table table;
+};
 
 fn write_instruction(
     writer: *Writer,
@@ -353,7 +288,7 @@ fn write_instruction(
     assert(writer.program.containers.len > 0);
     assert(writer.program.instructions.len < std.math.maxInt(u32));
     const out = writer.out;
-    if (word(instruction.opcode)) |text| return writer.json_string(text);
+    if (opcode_words[@backingInt(instruction.opcode)]) |text| return writer.json_string(text);
     switch (instruction.opcode) {
         .text => {
             const text = writer.string(instruction.get(.text));
