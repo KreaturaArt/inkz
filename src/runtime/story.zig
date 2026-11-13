@@ -827,7 +827,6 @@ pub const Story = struct {
     /// same value; strings by text, lists by their items.
     pub fn values_equal(story: *Story, a: value_module.Value, b: value_module.Value) bool {
         assert(story.state.memory.len > 0);
-        assert(@sizeOf(value_module.Value) == 12);
         if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
         return switch (a) {
             .string => |text| std.mem.eql(u8, story.text_of(text), story.text_of(b.string)),

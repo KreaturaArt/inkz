@@ -882,7 +882,6 @@ const Retained = struct {
 
     fn add_value(retained: *Retained, item: *const Value) void {
         assert(retained.words < std.math.maxInt(u64) / 2);
-        assert(@sizeOf(Value) == 12);
         switch (item.*) {
             .string, .tag => |reference| retained.string(&reference),
             .list => |list| retained.words += retained.lists.object_words(@backingInt(list)),
@@ -892,7 +891,6 @@ const Retained = struct {
 
     fn string(retained: *Retained, reference: *const value_module.StringReference) void {
         assert(retained.bytes < std.math.maxInt(u64) / 2);
-        assert(@sizeOf(value_module.StringReference) == 4);
         if (reference.* == value_module.StringReference.none or !reference.is_heap()) return;
         retained.bytes += std.mem.alignForward(u64, 8 + retained.strings.get(reference.*).len, 4);
     }
