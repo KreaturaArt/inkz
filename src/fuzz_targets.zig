@@ -224,3 +224,8 @@ test "fuzz: a mutated program image loads or is rejected" {
     assert(loaded.check() == .ok);
     try std.testing.fuzz(image.written(), load_mutated_image, .{ .corpus = &.{""} });
 }
+
+// One target per pipeline stage (plan P11), each in its own file.
+test {
+    _ = @import("fuzz/source.zig");
+}
