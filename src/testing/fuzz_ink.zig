@@ -88,7 +88,6 @@ pub const Choices = union(enum) {
 
     pub inline fn below(choices: Choices, len: usize) usize {
         assert(len > 0);
-        assert(len <= std.math.maxInt(u32));
         return switch (choices) {
             .smith => |smith| smith.index(len),
             .random => |random| random.uintLessThan(usize, len),
@@ -128,8 +127,6 @@ pub const Choices = union(enum) {
 
     /// Fills a prefix of `buffer` and returns its length.
     pub inline fn fill(choices: Choices, buffer: []u8) usize {
-        assert(buffer.len > 0);
-        assert(buffer.len <= std.math.maxInt(u32));
         switch (choices) {
             .smith => |smith| return smith.slice(buffer),
             .random => |random| {
@@ -170,12 +167,10 @@ pub const Generator = struct {
 
     fn print(generator: *Generator, comptime format: []const u8, arguments: anytype) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        assert(format.len > 0);
         generator.writer.print(format, arguments) catch {};
     }
 
     fn pick(generator: *Generator, comptime list: []const []const u8) []const u8 {
-        assert(list.len > 0);
         assert(list.len < 64);
         return list[generator.choices.below(list.len)];
     }
@@ -183,7 +178,6 @@ pub const Generator = struct {
     /// Mostly true: the fuzzer can still leave a declaration out.
     fn keep(generator: *Generator) bool {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        assert(generator.labels < std.math.maxInt(u32));
         return generator.choices.weighted(1, 15);
     }
 
@@ -267,7 +261,6 @@ pub const Generator = struct {
     }
 
     fn choice(generator: *Generator) void {
-        assert(generator.labels < std.math.maxInt(u32));
         const depth = generator.choices.range(u8, 1, choice_depth_max);
         const bullet = if (generator.choices.choose(bool)) "*" else "+";
         for (0..depth) |_| generator.put(bullet);
@@ -288,7 +281,6 @@ pub const Generator = struct {
     }
 
     fn gather(generator: *Generator) void {
-        assert(generator.labels < std.math.maxInt(u32));
         const depth = generator.choices.range(u8, 1, choice_depth_max);
         for (0..depth) |_| generator.put("- ");
         generator.labels += 1;

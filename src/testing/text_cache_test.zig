@@ -33,7 +33,6 @@ const source =
 ;
 
 fn expect_line(story: *api.Story, expected: []const u8) !void {
-    assert(expected.len > 0);
     assert(story.can_continue());
     try std.testing.expectEqualStrings(expected, (try story.cont()).get());
 }

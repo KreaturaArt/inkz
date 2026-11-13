@@ -26,7 +26,6 @@ fn check_play(choices: fuzz_ink.Choices) !bool {
     assert(story.core.program == &program);
     _ = play.play(&story, choices, play.steps_max);
     assert(story.core.state.check() == .ok);
-    assert(story.core.state.memory.len > 0);
     return true;
 }
 

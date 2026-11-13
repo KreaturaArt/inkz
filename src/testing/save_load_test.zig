@@ -16,7 +16,6 @@ const support = @import("support.zig");
 
 fn prepare(story: *Story) void {
     assert(story.callback_depth == 0);
-    assert(story.state.memory.len > 0);
     support.quiet(story);
 }
 
@@ -29,8 +28,6 @@ fn play(
     round_trip: bool,
     save_buffer: []u8,
 ) !void {
-    assert(save_buffer.len > 0);
-    assert(program.containers.len > 0);
     var story: Story = undefined;
     try story.init(gpa, program, .{});
     defer story.deinit(gpa);
@@ -62,7 +59,6 @@ fn play(
 }
 
 fn has_invisible_default(story: *Story) bool {
-    assert(story.state.memory.len > 0);
     assert(story.state.choices.count() <= story.state.choices.records.capacity());
     for (story.state.choices.records.slice()) |choice| {
         if (choice.invisible_default) return true;

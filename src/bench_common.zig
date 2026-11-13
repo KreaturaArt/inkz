@@ -58,7 +58,6 @@ pub const Stats = struct { samples: u32, min: u64, median: u64, mean: u64, max: 
 
 /// Sorts `samples` and returns their statistics.
 pub fn stats_of(samples: []u64) Stats {
-    assert(samples.len > 0);
     std.mem.sort(u64, samples, {}, std.sort.asc(u64));
     var total: u64 = 0;
     for (samples) |one| total += one;

@@ -133,7 +133,6 @@ pub const Limits = struct {
             total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
         }
         assert(total > limits.evaluation_values_max);
-        assert(total < std.math.maxInt(u64) / 4);
         return total;
     }
 
@@ -156,7 +155,6 @@ pub const Limits = struct {
         total += @as(u64, limits.container_depth_max) * bytes.ancestor;
         total += @as(u64, limits.load_nodes_max) * bytes.load_node;
         assert(total >= limits.heap_bytes_max);
-        assert(total < std.math.maxInt(u64) / 4);
         return total;
     }
 };

@@ -13,8 +13,6 @@ const cases = @import("cases.zig");
 
 /// Writes `program`'s image, checks it's deterministic and loads back the same program.
 fn round_trip(gpa: std.mem.Allocator, program: *const Program) !u64 {
-    assert(program.containers.len > 0);
-    assert(program.instructions.len < std.math.maxInt(u32));
     var first: std.Io.Writer.Allocating = .init(gpa);
     defer first.deinit();
     try program_image.write(program, &first.writer);

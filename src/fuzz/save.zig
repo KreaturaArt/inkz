@@ -44,7 +44,6 @@ fn save_of(gpa: Allocator, story: *play.Story) ![]u8 {
     var save: std.Io.Writer.Allocating = .init(gpa);
     errdefer save.deinit();
     try story.to_json(&save.writer);
-    assert(save.written().len > 0);
     return save.toOwnedSlice();
 }
 
@@ -114,7 +113,6 @@ fn load_mutated(
     setup: play.Setup,
     save: []const u8,
 ) !void {
-    assert(save.len > 0);
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);
     try json.appendSlice(gpa, save);

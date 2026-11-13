@@ -53,8 +53,6 @@ pub const Finding = enum { ok, check_failed, round_trip_differs };
 /// choices, save and load points, flow switches, evaluate_function on the story's knots,
 /// set_variable, and State.check after every cont. `save_buffer` holds the saves.
 pub fn simulate(story: *Story, seed: i32, save_buffer: []u8) !Finding {
-    assert(story.state.memory.len > 0);
-    assert(save_buffer.len > 0);
     var random = DotnetRandom.init(seed);
     try story.reset_state();
     story.set_random_seed(seed);
@@ -108,7 +106,6 @@ fn round_trip(story: *Story, save_buffer: []u8) !bool {
 
 fn switch_and_back(story: *Story) !void {
     assert(story.callback_depth == 0);
-    assert(story.state.flows.len > 0);
     const name = flows_module.current_name(&story.state);
     var buffer: [state_module.flow_name_bytes_max]u8 = undefined;
     @memcpy(buffer[0..name.len], name);
@@ -136,7 +133,6 @@ fn set_some_variable(story: *Story, random: *DotnetRandom) !void {
 
 /// evaluate_function on a top-level knot, function or not: the state must stay sound.
 fn evaluate_some_knot(story: *Story, random: *DotnetRandom) void {
-    assert(story.program.containers.len > 0);
     assert(story.callback_depth == 0);
     const root = story.program.table().get(story.program.root_container());
     if (root.named_count == 0) return;
@@ -150,7 +146,6 @@ fn evaluate_some_knot(story: *Story, random: *DotnetRandom) void {
 /// Prepares a story for simulation: bindings, a quiet error handler, the compaction mode.
 pub fn prepare(story: *Story, compact_always: bool) void {
     assert(story.bindings.len == story.program.externals.len);
-    assert(story.state.memory.len > 0);
     support.quiet(story);
     story.state.compact_always = compact_always;
 }

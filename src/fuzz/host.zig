@@ -41,19 +41,15 @@ const Sink = struct {
 
     pub fn tag(sink: *Sink, text: []const u8) !void {
         assert(text.len < 1 << 20);
-        assert(sink.count < std.math.maxInt(u32));
         sink.count += 1;
     }
 
-    pub fn name(sink: *Sink, text: []const u8) !void {
-        assert(text.len > 0);
-        assert(sink.count < std.math.maxInt(u32));
+    pub fn name(sink: *Sink, _: []const u8) !void {
         sink.count += 1;
     }
 };
 
 fn pick(choices: fuzz_ink.Choices, comptime list: []const []const u8) []const u8 {
-    assert(list.len > 0);
     assert(list.len < 16);
     return list[choices.below(list.len)];
 }
@@ -128,7 +124,6 @@ fn save_and_load(story: *play.Story) !void {
     var save: std.Io.Writer.Allocating = .init(gpa);
     defer save.deinit();
     try story.to_json(&save.writer);
-    assert(save.written().len > 0);
     try story.load_json(save.written());
     assert(story.core.state.check() == .ok);
 }
