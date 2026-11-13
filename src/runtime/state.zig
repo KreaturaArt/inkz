@@ -625,7 +625,6 @@ fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
 }
 
 fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
-    assert(@sizeOf(Value) == 12);
     hasher.update(&.{@backingInt(value)});
     switch (value) {
         .null => {},
@@ -643,7 +642,6 @@ fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
         std.hash.autoHash(hasher, temp.name);
         hash_value(hasher, temp.value);
     }
-    assert(@sizeOf(Temp) == element_bytes.temp);
 }
 
 /// Field by field, so struct padding never counts.
@@ -674,14 +672,12 @@ const ReferenceChecker = struct {
     lists_ok: bool = true,
 
     pub fn string(checker: *ReferenceChecker, reference: *StringReference) void {
-        assert(@sizeOf(StringReference) == 4);
         assert(checker.strings.used <= checker.strings.bytes.len);
         if (!reference.is_heap()) return;
         if (checker.strings.check_reference(reference.*) != .ok) checker.strings_ok = false;
     }
 
     pub fn list(checker: *ReferenceChecker, reference: *value_module.ListReference) void {
-        assert(@sizeOf(value_module.ListReference) == 4);
         assert(checker.lists.used <= checker.lists.words.len);
         if (!checker.lists.check_reference(reference.*)) checker.lists_ok = false;
     }
@@ -782,7 +778,6 @@ const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllo
 const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
 
 fn test_program(gpa: Allocator) !Program {
-    assert(@sizeOf(State) > 0);
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
     _ = try builder.begin_container(.{ .flags = .{ .visits_counted = true } });

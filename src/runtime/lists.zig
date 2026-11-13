@@ -537,7 +537,6 @@ const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
 
 /// colours: red 1, green 2, blue 3; sizes: small 1, large 3.
 fn test_program(gpa: std.mem.Allocator) !Program {
-    assert(@sizeOf(ListItemIndex) == 4);
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
     _ = try builder.begin_container(.{});

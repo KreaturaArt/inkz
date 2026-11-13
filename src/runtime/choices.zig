@@ -281,7 +281,6 @@ const TestState = struct {
 };
 
 fn test_choice(target: u32) Choice {
-    assert(@sizeOf(Choice) == 40);
     assert(target < 100);
     return .{
         .text = .heap(0),

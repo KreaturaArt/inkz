@@ -168,7 +168,6 @@ const instruction_module = @import("../core/instruction.zig");
 
 /// The root calls external `ext`; function `inner` calls it too and returns its result.
 fn external_program(gpa: std.mem.Allocator) !Program {
-    assert(@sizeOf(instruction_module.ExternalCall) > 0);
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
     const external = try builder.external("ext");

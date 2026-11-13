@@ -302,13 +302,11 @@ fn limit(err: call_stack_module.Error) Error {
 }
 
 pub fn push_evaluation(story: *Story, value: Value) Error!void {
-    assert(@sizeOf(Value) == 12);
     story.state.evaluation.push(value) catch return error.EvaluationLimit;
     assert(story.state.evaluation.count > 0);
 }
 
 pub fn pop_evaluation(story: *Story) Error!Value {
-    assert(@sizeOf(Value) == 12);
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
     const value = story.state.evaluation.pop() orelse return ops.fail(
         story,
@@ -352,7 +350,6 @@ fn perform(story: *Story, instruction: Instruction, pointer: Pointer) Error!Sign
 
 fn push_content(story: *Story, value: Value) Error!Signal {
     assert(value != .tag or in_expression(story));
-    assert(@sizeOf(Value) == 12);
     if (in_expression(story)) {
         try push_evaluation(story, value);
         return .none;
@@ -453,7 +450,6 @@ fn choice_point(story: *Story, instruction: Instruction, pointer: Pointer) Error
 
 fn variable_get(story: *Story, instruction: Instruction) Error!Signal {
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
-    assert(@sizeOf(Value) == 12);
     const value: Value = switch (instruction.opcode) {
         .read_count => .{ .integer = @bitCast(visit_count(story, instruction.get(.read_count))) },
         .global_get => try ops.global_value(story, instruction.get(.global_get)),
@@ -466,7 +462,6 @@ fn variable_get(story: *Story, instruction: Instruction) Error!Signal {
 
 fn assign(story: *Story, instruction: Instruction) Error!Signal {
     assert(story.state.evaluation.count <= story.state.evaluation.buffer.len);
-    assert(@sizeOf(Value) == 12);
     const value = try pop_evaluation(story);
     switch (instruction.opcode) {
         .global_declare => try ops.declare_global(story, instruction.get(.global_declare), value),

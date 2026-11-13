@@ -231,7 +231,6 @@ fn write_object_path(story: *Story, writer: *Writer, pointer: Pointer) Writer.Er
 
 fn write_item(story: *Story, writer: *Writer, item: Item) Writer.Error!void {
     assert(story.state.memory.len > 0);
-    assert(@sizeOf(Item) == 12);
     switch (item.kind) {
         .text => {
             if (item.class == .newline) return writer.writeAll("\"\\n\"");
@@ -335,7 +334,6 @@ fn write_counts(story: *Story, writer: *Writer, counts: Counts) Writer.Error!voi
 /// ink's Json.WriteRuntimeObject for a value.
 fn write_value(story: *Story, writer: *Writer, value: Value) Writer.Error!void {
     assert(story.state.memory.len > 0);
-    assert(@sizeOf(Value) == 12);
     switch (value) {
         .null => try writer.writeAll("\"void\""),
         .integer => |number| try writer.print("{d}", .{number}),
@@ -398,7 +396,6 @@ fn write_list(story: *Story, writer: *Writer, list: value_module.ListReference) 
 /// SimpleJson's float: .NET's text, `.0` when it has no point or exponent, and ink's
 /// stand-ins for infinities and NaN.
 pub fn write_float(writer: *Writer, number: f32) Writer.Error!void {
-    assert(@sizeOf(f32) == 4);
     assert(writer.end <= writer.buffer.len);
     if (std.math.isNan(number)) return writer.writeAll("0.0");
     if (std.math.isInf(number)) return writer.writeAll(if (number > 0) "3.4E+38" else "-3.4E+38");

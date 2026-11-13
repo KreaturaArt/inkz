@@ -27,7 +27,6 @@ pub const Pointer = struct {
     pub const container_self: u32 = std.math.maxInt(u32);
 
     pub fn is_null(pointer: Pointer) bool {
-        assert(@sizeOf(Pointer) == 8);
         const result = pointer.container.is_none();
         assert(!result or pointer.index == 0);
         return result;
