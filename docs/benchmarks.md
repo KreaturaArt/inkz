@@ -381,6 +381,17 @@ and zone. They carry the fields of `bench/load_store.jsonl` plus `workload`, `zo
 
 ### Findings and optimization leads (2026-11-13, Apple M3, ReleaseFast)
 
+Status (TASK-154, Phase 12; each item has its numbers in its issue):
+
+| Lead | Result |
+|---|---|
+| 2. Opcode check (P12.1) | A 256-entry table: `image_shape` 18.7 → 0.7 µs, image load about 2× faster. |
+| 1. Parser reparse (P12.2) | Workspace sized for dense stories: the generated story's compile is 17% faster. |
+| 6. VM hand-backs (P12.3) | Half the hand-backs, but play only 0–2% faster: the time is in the steps. |
+| 4. Path fixups (P12.4) | Keyed targets in the compiler: compile 12–15% faster; images lose dead path strings. |
+| 5. Emission (P12.5) | Most of it went with P12.4; a command-to-opcode table is within noise. |
+| 3. JSON reading (P12.6) | Not optimized: build-time hosts ship the image, now 18–20× faster to load. |
+
 One pass through the pipeline takes 0.73 ms on crime_scene and 12.7 ms on the generated
 story. The compiler is 70–80% of it, and the JSON load most of the rest.
 
