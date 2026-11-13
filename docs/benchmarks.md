@@ -303,3 +303,38 @@ writes the 2.2 MB budget. That cuts crime_scene's gain to 2.6×. Against the P0.
 old-runtime load (440 µs and 9,049 µs in ReleaseSafe), an image with fitted limits loads
 7.0× and 11.8× faster. Plan §9's 2× load target is met when images are used. The format is in
 `docs/program_image.md`.
+
+## Load and store (TASK-152)
+
+`zig build bench-io` times loading and storing a `Program` in both formats, on crime_scene
+and on the generated 1000-knot story, in ReleaseSafe and then ReleaseFast:
+
+- ink's JSON: `ink_json.load` and `ink_json.serialize`;
+- the binary program image: `program_image.load` and `program_image.write`.
+
+Before timing, it checks that both formats round-trip. Each measurement times one operation
+per sample: 3 warm-up runs, then samples until at least 10 have been taken and either 1 s has
+passed or 500 have been taken. A load includes `Program.check` but not freeing the program. A
+store writes into a buffer that already has room.
+
+Every run prints a table and appends one JSON object per measurement to
+`bench/load_store.jsonl` (JSON Lines). Commit the file to keep the history; compare runs by
+`commit`, `mode` and `cpu`.
+
+| Field | Meaning |
+|---|---|
+| `timestamp` | UTC time of the run, ISO 8601 |
+| `commit`, `dirty` | `git rev-parse --short=12 HEAD`; whether tracked files had changes |
+| `zig`, `mode`, `target`, `cpu` | compiler version, `safe` or `fast`, arch-os, CPU model |
+| `story` | `crime_scene` or `generated_1000_knots` |
+| `format`, `operation` | `json` or `image`; `load` or `store` |
+| `bytes` | the input of a load (inklecate's JSON, or the image); the output of a store |
+| `samples`, `min_ns`, `median_ns`, `mean_ns`, `max_ns` | the timings |
+| `megabytes_per_second` | `bytes` over the median time |
+
+For example, to show the median load times of the latest ReleaseFast run:
+
+```sh
+tail -n 8 bench/load_store.jsonl | jq -r 'select(.operation == "load") | [.story, .format, .median_ns] | @tsv'
+```
+
