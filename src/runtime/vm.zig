@@ -102,14 +102,30 @@ pub fn run(story: *Story, budget: u32, steps: *u32) Error!RunResult {
         taken += 1;
         switch (signal) {
             .ended => return .ended,
-            .output, .choice => return .output,
+            .output, .choice => if (loop_must_look(story)) return .output,
             .none => {},
         }
-        if (story.state.output.items.count != output_count) return .output;
+        if (story.state.output.items.count != output_count and loop_must_look(story)) {
+            return .output;
+        }
         if (current_pointer(story).is_null()) return .ended;
     }
     assert(taken == budget);
     return .budget_exhausted;
+}
+
+/// Whether ink's per-step checks (Story.after_steps) can act after an output or a choice
+/// (P12.3). They follow a default choice when the story can't continue, and otherwise,
+/// outside string evaluation, compare the line with the newline lookahead's or snapshot it
+/// when the output ends in a newline. Anywhere else, stepping on is the same as ink's
+/// check-after-every-step.
+fn loop_must_look(story: *Story) bool {
+    assert(story.state.call_stack.frames.count > 0);
+    const state = &story.state;
+    assert(state.output.items.count <= state.output.items.buffer.len);
+    if (!story.can_continue()) return true;
+    if (state.output.in_string_evaluation()) return false;
+    return lookahead.active(state) or state.output.ends_in_newline();
 }
 
 /// ink's Step.
