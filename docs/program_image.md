@@ -16,11 +16,12 @@ At run time, load the image instead of the JSON.
 
 | Story | JSON | Image | `ink_json.load` | `program_image.load` |
 |---|---:|---:|---:|---:|
-| crime_scene | 26,635 B | 39,536 B | 389 µs | 63 µs |
-| generated (1000 knots) | 378,714 B | 505,080 B | 5,605 µs | 764 µs |
+| crime_scene | 26,635 B | 38,696 B | 186 µs | 9.1 µs |
+| generated (1000 knots) | 378,714 B | 505,056 B | 3,161 µs | 175 µs |
 
-Both load times include `Story.init` with fitted limits. They come from `zig build bench`
-in ReleaseSafe, where the image loads 6–7× faster than the JSON. Images are larger than the
+The load times are `zig build bench-io` medians in ReleaseFast on an Apple M3 (the load only,
+no `Story.init`), after Phase 12: the image loads 18–20× faster than the JSON. Before P12.1,
+when checking the opcodes was most of an image load, it was 6–7×. Images are larger than the
 JSON: arrays of 4-byte indices, against short decimal text with shared names.
 
 ## Format, version 1

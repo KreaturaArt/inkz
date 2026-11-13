@@ -83,8 +83,20 @@ reference to `json` after `init_from_json` returns.
 ### Loading from a program image
 
 JSON has to be parsed. A program image is the `Program`'s arrays as bytes, so loading one
-copies and checks them instead, 6–7× faster than JSON (`docs/program_image.md`). Write the
-image once, at build time or the first time a story is loaded, and load it from then on:
+copies and checks them instead (`docs/program_image.md`).
+
+**If you compile at build time, ship the image, not the JSON.** Reading ink's JSON is most
+of a JSON load, and the image skips it entirely:
+
+| Story | JSON load | Image load |
+|---|---:|---:|
+| crime_scene | 188 µs | 9.3 µs |
+| generated (1000 knots) | 3.1 ms | 0.18 ms |
+
+The image loads 18–20× faster (`zig build bench-profile`, ReleaseFast, Apple M3). Keep
+loading JSON only when stories come from somewhere you don't build, such as inklecate output
+from players. Write the image once, at build time or the first time a story is loaded, and
+load it from then on:
 
 ```zig
 // Once: compile (or ink_json.load) and write the image.
