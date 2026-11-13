@@ -100,11 +100,14 @@ pub const Resolution = struct {
     item_values: []i32,
     /// The list definitions in declaration order (ink's _listDefs).
     lists: []ObjectIndex,
+    /// The EXTERNAL declarations, by name (at the root scope).
+    externals: Table,
     diagnostics: []Diagnostic,
 
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
         assert(resolution.targets.len == resolution.references.len);
         assert(resolution.variable_diverts.bit_length == resolution.targets.len);
+        resolution.externals.deinit(gpa);
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
         gpa.free(resolution.item_values);
@@ -212,16 +215,9 @@ pub const Context = struct {
         return &context.parsed.tree;
     }
 
-    /// The text of an identifier leaf (empty for none or missing).
-    pub fn leaf_text(context: *const Context, leaf: NodeIndex) []const u8 {
-        assert(context.tree.count() > 0);
-        const tree = context.ast();
-        const tag = tree.tag(leaf);
-        if (tag == .none or tag == .missing) return "";
-        assert(ast_module.shape(tag) == .leaf);
-        const token = tree.data[leaf.to_int()];
-        const workspace = &context.parsed.workspace;
-        return context.parsed.source[workspace.token_starts[token]..workspace.token_ends[token]];
+    /// The name in an object's syntax node child `position` (an identifier leaf).
+    pub fn child_name(context: *const Context, object: ObjectIndex, position: u32) []const u8 {
+        return context.parsed.child_text(context.tree.node(object), position);
     }
 
     /// Records an error on `object`; as in ink, an object gets at most one.
@@ -248,7 +244,7 @@ pub const Context = struct {
         assert(context.tree.count() > 0);
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return "";
-        return context.leaf_text(context.ast().child(context.tree.node(flow), 0));
+        return context.child_name(flow, 0);
     }
 
     /// A choice's or gather's label (empty if it has none).
@@ -258,7 +254,7 @@ pub const Context = struct {
         assert(kind == .choice or kind == .gather);
         const node = context.tree.node(point);
         if (node.is_none()) return "";
-        return context.leaf_text(context.ast().child(node, 1));
+        return context.parsed.child_text(node, 1);
     }
 
     /// The flow's parameters, as their identifier leaves.
@@ -278,7 +274,7 @@ pub const Context = struct {
         const list_node = context.ast().child(context.tree.node(flow), 1);
         const listed = context.ast().list(list_node);
         assert(position < listed.count);
-        return context.leaf_text(.from_int(listed.first.to_int() + position));
+        return context.parsed.leaf_text(.from_int(listed.first.to_int() + position));
     }
 
     /// The components of a `path` node.
@@ -289,7 +285,7 @@ pub const Context = struct {
         var path: Path = .{};
         for (0..@min(listed.count, path_components_max)) |position| {
             const component = context.ast().item(path_node, position);
-            path.components[position] = context.leaf_text(component);
+            path.components[position] = context.parsed.leaf_text(component);
             path.count += 1;
         }
         return path;
@@ -321,8 +317,10 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
         .variable_diverts = context.variable_diverts,
         .item_values = context.item_values,
         .lists = try context.list_order.toOwnedSlice(gpa),
+        .externals = context.externals,
         .diagnostics = try context.diagnostics.toOwnedSlice(gpa),
     };
+    context.externals = .empty;
     context.targets = &.{};
     context.references = &.{};
     context.item_values = &.{};

@@ -40,7 +40,7 @@ pub fn is_builtin(name: []const u8) bool {
 fn assigned_name(context: *const Context, object: ObjectIndex) []const u8 {
     assert(context.tree.count() > 0);
     assert(context.tree.kind(object) == .variable_assignment);
-    return context.leaf_text(context.ast().child(context.tree.node(object), 0));
+    return context.child_name(object, 0);
 }
 
 /// A divert's target path: the `path` child, or a call's name.
@@ -53,7 +53,7 @@ fn divert_path(context: *const Context, divert: ObjectIndex) ?Path {
     const ast = context.ast();
     if (ast.tag(node) == .function_call) {
         var path: Path = .{ .count = 1 };
-        path.components[0] = context.leaf_text(ast.child(node, 0));
+        path.components[0] = context.parsed.child_text(node, 0);
         return path;
     }
     const path_node = ast.child(node, 0);
@@ -97,7 +97,7 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             );
         },
         .external_declaration => {
-            const name = context.leaf_text(context.ast().child(tree.node(object), 0));
+            const name = context.child_name(object, 0);
             const entry = try context.externals.getOrPut(context.gpa, .{
                 .scope = Tree.root,
                 .name = name,
@@ -106,7 +106,7 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             entry.value_ptr.* = object;
         },
         .function_call => {
-            const name = context.leaf_text(context.ast().child(tree.node(object), 0));
+            const name = context.child_name(object, 0);
             const is_list = context.lookup(&context.lists, Tree.root, name) != null;
             // A built-in's proxy divert is never generated, so never resolved.
             const proxy = tree.children_of(object)[0];
@@ -211,7 +211,7 @@ fn check(context: *Context, object: ObjectIndex) !void {
         .list_literal => try check_list_literal(context, object),
         .function_call => {
             // A list's name called as a function makes a list (ink's ResolveList).
-            const name = context.leaf_text(context.ast().child(context.tree.node(object), 0));
+            const name = context.child_name(object, 0);
             const list = context.lookup(&context.lists, Tree.root, name);
             context.targets[object.to_int()] = list orelse .none;
         },
@@ -223,7 +223,7 @@ fn check(context: *Context, object: ObjectIndex) !void {
             try collisions.check(context, object, context.label(object), .sub_flow_and_weave);
         },
         .constant_declaration, .list_element => {
-            const name = context.leaf_text(context.ast().child(context.tree.node(object), 0));
+            const name = context.child_name(object, 0);
             const kind = context.tree.kind(object);
             try collisions.check(
                 context,
@@ -237,7 +237,7 @@ fn check(context: *Context, object: ObjectIndex) !void {
             try collisions.check(
                 context,
                 object,
-                context.leaf_text(context.ast().child(declaration, 0)),
+                context.parsed.child_text(declaration, 0),
                 .list,
             );
         },
@@ -320,7 +320,7 @@ fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
     const ast = context.ast();
     const node = context.tree.node(literal);
     for (0..ast.list(node).count) |position| {
-        const text = context.leaf_text(ast.item(node, position));
+        const text = context.parsed.leaf_text(ast.item(node, position));
         const dot = std.mem.indexOfScalar(u8, text, '.');
         const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
         const item = if (dot) |at| text[at + 1 ..] else text;
@@ -377,7 +377,7 @@ fn check_increment(context: *Context, increment: ObjectIndex) !void {
     const ast = context.ast();
     const node = tree.node(increment);
     const name = if (tree.has(increment, Flags.by_expression))
-        context.leaf_text(ast.child(node, 0))
+        context.parsed.child_text(node, 0)
     else
         joined_first(context, ast.child(ast.child(node, 0), 0));
     const found = lookups.resolve_variable(context, name, increment);

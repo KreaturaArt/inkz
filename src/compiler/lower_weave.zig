@@ -288,7 +288,7 @@ pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
     const container = try ir.new_container();
     const node = lowering.tree.node(gather);
     if (!node.is_none()) {
-        const label = lowering.token_text(lowering.ast().child(node, 1));
+        const label = lowering.parsed.child_text(node, 1);
         if (label.len > 0) ir.container(container).name = try ir.text(label);
     }
     ir.container(container).flags |= ir_module.count_start_only;

@@ -28,7 +28,7 @@ fn end_or_done(lowering: *const Lowering, divert: ObjectIndex) ?ir_module.Comman
     if (ast.tag(node) == .function_call or ast.tag(node) == .empty_divert) return null;
     const path = ast.child(node, 0);
     if (ast.tag(path) != .path or ast.list(path).count != 1) return null;
-    const name = lowering.token_text(ast.item(path, 0));
+    const name = lowering.parsed.leaf_text(ast.item(path, 0));
     if (std.mem.eql(u8, name, "END")) return .end;
     if (std.mem.eql(u8, name, "DONE")) return .done;
     return null;
@@ -62,10 +62,10 @@ fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
     const ast = lowering.ast();
     const node = lowering.tree.node(divert);
     assert(!node.is_none());
-    if (ast.tag(node) == .function_call) return lowering.token_text(ast.child(node, 0));
+    if (ast.tag(node) == .function_call) return lowering.parsed.child_text(node, 0);
     const path = ast.child(node, 0);
     if (ast.tag(path) != .path) return "";
-    return lowering.token_text(ast.item(path, 0));
+    return lowering.parsed.leaf_text(ast.item(path, 0));
 }
 
 /// Divert.GenerateRuntimeObject.

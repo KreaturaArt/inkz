@@ -460,6 +460,23 @@ pub const Parsed = struct {
         return parsed.workspace.diagnostics[0..parsed.diagnostics_count];
     }
 
+    /// The text of a leaf's token (empty for none or missing).
+    pub fn leaf_text(parsed: *const Parsed, leaf: ast.NodeIndex) []const u8 {
+        const tag = parsed.tree.tag(leaf);
+        if (tag == .none or tag == .missing) return "";
+        assert(ast.shape(tag) == .leaf);
+        const token = parsed.tree.data[leaf.to_int()];
+        assert(token < parsed.tokens_count);
+        const workspace = &parsed.workspace;
+        return parsed.source[workspace.token_starts[token]..workspace.token_ends[token]];
+    }
+
+    /// The text of the leaf that is child `position` of `node` (a name, mostly).
+    pub fn child_text(parsed: *const Parsed, node: ast.NodeIndex, position: u32) []const u8 {
+        assert(!node.is_none());
+        return parsed.leaf_text(parsed.tree.child(node, position));
+    }
+
     /// Frees the syntax tree and the tokens once the IR is lowered (plan P8.6), keeping the
     /// source (the IR's names are slices of it) and the diagnostics.
     pub fn release_syntax(parsed: *Parsed, gpa: std.mem.Allocator) void {

@@ -64,7 +64,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
         .list_definition => {
             // The name is the LIST declaration's.
             const declaration = tree.node(tree.parent(object));
-            const name = context.leaf_text(context.ast().child(declaration, 0));
+            const name = context.parsed.child_text(declaration, 0);
             try context.lists.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
             try context.list_order.append(context.gpa, object);
             values.number_list(context.parsed, tree, object, context.item_values);
@@ -79,8 +79,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
 fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
     assert(context.tree.count() > 0);
     assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    const tree = context.tree;
-    const name = context.leaf_text(context.ast().child(tree.node(constant), 0));
+    const name = context.child_name(constant, 0);
     const entry = try context.constants.getOrPut(context.gpa, .{
         .scope = Tree.root,
         .name = name,
@@ -110,9 +109,9 @@ fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
     assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const elements = context.tree.children_of(definition);
     for (elements, 0..) |element, position| {
-        const name = context.leaf_text(context.ast().child(context.tree.node(element), 0));
+        const name = context.child_name(element, 0);
         for (elements[position + 1 ..]) |later| {
-            const other = context.leaf_text(context.ast().child(context.tree.node(later), 0));
+            const other = context.child_name(later, 0);
             if (std.mem.eql(u8, name, other)) return context.report(
                 .duplicate_list_item,
                 definition,
@@ -304,7 +303,7 @@ fn list_item_named(
     assert(context.tree.count() > 0);
     assert(context.tree.kind(definition) == .list_definition);
     for (context.tree.children_of(definition)) |element| {
-        const name = context.leaf_text(context.ast().child(context.tree.node(element), 0));
+        const name = context.child_name(element, 0);
         if (std.mem.eql(u8, name, item)) return element;
     }
     return null;
