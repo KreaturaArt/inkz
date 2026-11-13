@@ -16,6 +16,7 @@ const Allocator = std.mem.Allocator;
 
 /// Steps (lines and choices) one play may take: generated stories loop.
 pub const steps_max = 256;
+const steps_per_continue_max = 10_000;
 
 /// The program of a generated story, or null when it doesn't compile.
 pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?Program {
@@ -64,6 +65,8 @@ pub const Setup = struct {
 pub fn init_story(story: *Story, gpa: Allocator, program: *const Program, setup: Setup) !void {
     assert(program.check() == .ok);
     try story.init(gpa, program, .{
+        // Generated stories loop; a small step budget keeps each input fast.
+        .limits = .{ .steps_per_continue_max = steps_per_continue_max },
         .random_seed = setup.random_seed,
         .allow_external_function_fallbacks = setup.fallbacks,
         .on_error = ignore_error,
@@ -73,8 +76,8 @@ pub fn init_story(story: *Story, gpa: Allocator, program: *const Program, setup:
 }
 
 /// Continues and chooses until the story ends, `steps` run out, or a call fails; the state
-/// checks after every call that returns. False when a call failed: as in ink, where these
-/// are exceptions (a missing binding, a call stack too deep), the story isn't resumable then.
+/// checks after every call that returns. False when a call failed (a limit or host error,
+/// ink's exceptions); the story is then back at its last line or has failed closed.
 pub fn play(story: *Story, choices: fuzz_ink.Choices, steps: u32) bool {
     assert(steps <= steps_max);
     var taken: u32 = 0;
