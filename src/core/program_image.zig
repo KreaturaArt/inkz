@@ -265,11 +265,29 @@ fn copy_section(
 
 /// The bytes of an opcode section are all opcodes; other enums are open (indices) or
 /// packed bits, checked below.
+/// Which byte values name an opcode: one lookup per byte (std.enums.fromInt scans the
+/// enum's values, and was two thirds of a load, P12.1).
+const opcode_bytes: [256]bool = table: {
+    var table: [256]bool = @splat(false);
+    for (std.enums.values(Opcode)) |opcode| table[@backingInt(opcode)] = true;
+    break :table table;
+};
+
 fn check_opcodes(bytes: []const u8) Error!void {
     assert(@sizeOf(Opcode) == 1);
     assert(bytes.len < std.math.maxInt(u32));
     for (bytes) |byte| {
-        _ = std.enums.fromInt(Opcode, byte) orelse return error.InvalidImage;
+        if (!opcode_bytes[byte]) return error.InvalidImage;
+    }
+}
+
+test "the opcode check accepts exactly the bytes that name an opcode" {
+    for (0..256) |value| {
+        const byte: u8 = @intCast(value);
+        const named = std.enums.fromInt(Opcode, byte) != null;
+        try std.testing.expectEqual(named, opcode_bytes[byte]);
+        const result = check_opcodes(&.{ @backingInt(Opcode.text), byte });
+        if (named) try result else try std.testing.expectError(error.InvalidImage, result);
     }
 }
 
