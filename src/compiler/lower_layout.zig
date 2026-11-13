@@ -1,8 +1,7 @@
 //! The end of ink's ExportRuntime on the lowering's IR: the count flags ResolveReferences
 //! sets (read counts, divert targets, TURNS_SINCE), FlattenContainersIn (an unnamed container
-//! without named content is spliced into its parent), the runtime paths of every target,
-//! and the emission through ProgramBuilder (in the order ink_json's loader would make the
-//! same calls).
+//! without named content is spliced into its parent), and where every item ends up, for the
+//! emission through ProgramBuilder (lower_emit.zig).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -10,17 +9,12 @@ const Allocator = std.mem.Allocator;
 const lower = @import("lower.zig");
 const sema = @import("sema.zig");
 const ir_module = @import("lower_ir.zig");
-const ink_json = @import("../core/ink_json.zig");
-const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
-const Program = @import("../core/program.zig").Program;
 const Lowering = lower.Lowering;
 const Lowered = lower.Lowered;
 const ObjectIndex = sema.ObjectIndex;
 const Ir = ir_module.Ir;
 const ContainerId = ir_module.ContainerId;
 const ItemId = ir_module.ItemId;
-const Item = ir_module.Item;
-const Target = ir_module.Target;
 
 /// The count flags ink's ResolveReferences sets on the containers it counts.
 pub fn set_count_flags(lowering: *Lowering) void {
@@ -116,54 +110,20 @@ pub fn flatten(lowering: *Lowering) !void {
     assert(pending.items.len == 0);
 }
 
-/// Where each item and container ended up, for paths.
+/// Where each item ended up: the targets the emission gives the builder.
 pub const Layout = struct {
     gpa: Allocator,
     item_container: []ContainerId,
     item_position: []u32,
-    container_position: []u32,
 
     pub fn deinit(layout: *Layout) void {
-        assert(layout.container_position.len > 0);
         assert(layout.item_container.len == layout.item_position.len);
         layout.gpa.free(layout.item_container);
         layout.gpa.free(layout.item_position);
-        layout.gpa.free(layout.container_position);
-    }
-
-    /// The runtime path of a container: names, or positions for unnamed ones.
-    pub fn container_path(
-        layout: *const Layout,
-        ir: *Ir,
-        id: ContainerId,
-        out: *std.ArrayList(u8),
-    ) !void {
-        assert(ir.items.items.len < std.math.maxInt(u32));
-        assert(ir.containers.items.len < std.math.maxInt(u32));
-        var chain: [64]ContainerId = undefined;
-        var depth: u32 = 0;
-        var current = id;
-        while (!ir.container(current).parent.is_none()) : (current = ir.container(current).parent) {
-            if (depth == chain.len) return error.PathTooDeep;
-            chain[depth] = current;
-            depth += 1;
-        }
-        while (depth > 0) {
-            depth -= 1;
-            const component = chain[depth];
-            if (out.items.len > 0) try out.append(layout.gpa, '.');
-            if (ir.container(component).name) |name| {
-                try out.appendSlice(layout.gpa, name);
-            } else try out.print(
-                layout.gpa,
-                "{d}",
-                .{layout.container_position[component.to_int()]},
-            );
-        }
     }
 };
 
-/// Sets each container's parent and records every position.
+/// Sets each container's parent and records every item's position.
 pub fn lay_out(lowered: *Lowered) !Layout {
     assert(!lowered.root.is_none());
     assert(lowered.ir.flat.items.len <= lowered.ir.items.items.len);
@@ -173,12 +133,10 @@ pub fn lay_out(lowered: *Lowered) !Layout {
         .gpa = gpa,
         .item_container = try gpa.alloc(ContainerId, ir.items.items.len),
         .item_position = try gpa.alloc(u32, ir.items.items.len),
-        .container_position = try gpa.alloc(u32, ir.containers.items.len),
     };
     errdefer layout.deinit();
     @memset(layout.item_container, .none);
     @memset(layout.item_position, 0);
-    @memset(layout.container_position, 0);
     var pending: std.ArrayList(ContainerId) = .empty;
     defer pending.deinit(gpa);
     try pending.append(gpa, lowered.root);
@@ -189,7 +147,6 @@ pub fn lay_out(lowered: *Lowered) !Layout {
             const value = ir.item(item_id);
             if (value != .container) continue;
             ir.container(value.container).parent = id;
-            layout.container_position[value.container.to_int()] = @intCast(position);
             try pending.append(gpa, value.container);
         }
         for (ir.container(id).named.items) |named| {
@@ -198,78 +155,4 @@ pub fn lay_out(lowered: *Lowered) !Layout {
         }
     }
     return layout;
-}
-
-/// A target's absolute runtime path (object targets are resolved to containers by now).
-pub fn target_path(ir: *Ir, layout: *const Layout, target: Target, out: *std.ArrayList(u8)) !void {
-    assert(ir.items.items.len == layout.item_container.len);
-    assert(target != .object);
-    switch (target) {
-        .none => {},
-        .container => |id| try layout.container_path(ir, id, out),
-        .object => unreachable,
-        .item => |item_id| {
-            const holder = layout.item_container[item_id.to_int()];
-            assert(!holder.is_none());
-            try layout.container_path(ir, holder, out);
-            if (out.items.len > 0) try out.append(layout.gpa, '.');
-            try out.print(layout.gpa, "{d}", .{layout.item_position[item_id.to_int()]});
-        },
-    }
-}
-
-/// The components of a target's runtime path, slices of its text (written to `text`).
-fn target_components(
-    ir: *Ir,
-    layout: *const Layout,
-    target: Target,
-    text: *std.ArrayList(u8),
-    out: *std.ArrayList([]const u8),
-) !void {
-    assert(ir.items.items.len == layout.item_container.len);
-    assert(out.items.len == 0 and text.items.len == 0);
-    try target_path(ir, layout, target, text);
-    if (text.items.len == 0) return;
-    var parts = std.mem.splitScalar(u8, text.items, '.');
-    while (parts.next()) |part| try out.append(layout.gpa, part);
-}
-
-/// Object.CompactPathString: the path from the item `from` to `target`, relative when that
-/// is shorter (as ink writes diverts, choices and read counts).
-pub fn compact_path(
-    ir: *Ir,
-    layout: *const Layout,
-    from: ItemId,
-    target: Target,
-    out: *std.ArrayList(u8),
-) !void {
-    assert(ir.items.items.len == layout.item_container.len);
-    assert(from.to_int() < ir.items.items.len);
-    const gpa = layout.gpa;
-    var own_text: std.ArrayList(u8) = .empty;
-    defer own_text.deinit(gpa);
-    var own: std.ArrayList([]const u8) = .empty;
-    defer own.deinit(gpa);
-    try target_components(ir, layout, .{ .item = from }, &own_text, &own);
-    var other_text: std.ArrayList(u8) = .empty;
-    defer other_text.deinit(gpa);
-    var other: std.ArrayList([]const u8) = .empty;
-    defer other.deinit(gpa);
-    try target_components(ir, layout, target, &other_text, &other);
-    const global = other_text.items;
-    var shared: ?usize = null;
-    for (0..@min(own.items.len, other.items.len)) |position| {
-        if (!std.mem.eql(u8, own.items[position], other.items[position])) break;
-        shared = position;
-    }
-    const last_shared = shared orelse return out.appendSlice(gpa, global);
-    var relative: std.ArrayList(u8) = .empty;
-    defer relative.deinit(gpa);
-    for (0..own.items.len - 1 - last_shared) |_| try relative.appendSlice(gpa, ".^");
-    for (other.items[last_shared + 1 ..]) |component| {
-        try relative.append(gpa, '.');
-        try relative.appendSlice(gpa, component);
-    }
-    const shorter = if (relative.items.len < global.len) relative.items else global;
-    try out.appendSlice(gpa, shorter);
 }

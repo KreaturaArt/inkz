@@ -1,12 +1,12 @@
 //! The laid-out IR as a Program, through ProgramBuilder, making the calls ink_json's loader
 //! makes for the same JSON, so the program equals the one loaded from inklecate's output;
 //! ink_json.serialize writes it back as JSON. Targets (of diverts, choices, read counts and
-//! divert targets) go to the builder as the IR's own containers and positions (P12.4), not
-//! as paths it would parse back. In Debug the path ink writes (CompactPathString, or
-//! absolute for divert targets) goes along, and the builder checks it names the same target.
+//! divert targets) go to the builder as the IR's own containers and positions, not as paths
+//! it would parse back. The lowering tests check the paths ink_json.serialize writes for
+//! them against inklecate's, and the verified pair that loading those paths gives the same
+//! targets.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
 const Allocator = std.mem.Allocator;
 const lower = @import("lower.zig");
@@ -19,13 +19,9 @@ const Program = @import("../core/program.zig").Program;
 const Lowered = lower.Lowered;
 const Layout = layout_module.Layout;
 const ContainerId = ir_module.ContainerId;
-const ItemId = ir_module.ItemId;
 const Item = ir_module.Item;
 const Target = ir_module.Target;
 const KeyTarget = program_builder.KeyTarget;
-
-/// Whether to write each target's path for the builder's check.
-const check_paths = builtin.mode == .debug;
 
 /// Container.countFlags: start-only alone serves no purpose, so it is dropped.
 fn count_flags(flags: u8) u8 {
@@ -64,13 +60,11 @@ pub fn emit_program(lowered: *Lowered, layout: *const Layout) !Program {
     builder.ink_version = 21;
     var frames: std.ArrayList(Frame) = .empty;
     defer frames.deinit(gpa);
-    var path: std.ArrayList(u8) = .empty;
-    defer path.deinit(gpa);
     _ = try builder.begin_container(.{ .key = lowered.root.to_int() });
     try frames.append(gpa, .{ .container = lowered.root });
     while (frames.items.len > 0) {
         const frame = &frames.items[frames.items.len - 1];
-        const child = try step(lowered, layout, &builder, frame, &path) orelse {
+        const child = try step(lowered, layout, &builder, frame) orelse {
             try builder.end_container();
             _ = frames.pop();
             continue;
@@ -87,10 +81,8 @@ fn step(
     layout: *const Layout,
     builder: *ProgramBuilder,
     frame: *Frame,
-    path: *std.ArrayList(u8),
 ) !?ContainerId {
     assert(lowered.ir.items.items.len == layout.item_container.len);
-    assert(!lowered.root.is_none());
     const ir = &lowered.ir;
     const container = ir.container(frame.container);
     if (frame.next_named == null) {
@@ -103,7 +95,7 @@ fn step(
                 _ = try builder.begin_container(.{ .key = value.container.to_int() });
                 return value.container;
             }
-            try add_item(lowered, layout, builder, item_id, value, path);
+            try add_item(lowered, layout, builder, value);
         }
         frame.next_named = 0;
     }
@@ -139,17 +131,8 @@ fn is_named_only(lowered: *Lowered, id: ContainerId) bool {
     return false;
 }
 
-fn add_item(
-    lowered: *Lowered,
-    layout: *const Layout,
-    builder: *ProgramBuilder,
-    item_id: ItemId,
-    value: Item,
-    path: *std.ArrayList(u8),
-) !void {
+fn add_item(lowered: *Lowered, layout: *const Layout, builder: *ProgramBuilder, value: Item) !void {
     assert(lowered.ir.items.items.len == layout.item_container.len);
-    assert(!lowered.root.is_none());
-    path.clearRetainingCapacity();
     switch (value) {
         .container => unreachable,
         .command => |command| try builder.add_bare(command_opcodes[@backingInt(command)]),
@@ -161,42 +144,30 @@ fn add_item(
         .integer => |integer| try builder.add(.integer, integer),
         .float => |float| try builder.add(.float, float),
         .boolean => |boolean| try builder.add(.bool, boolean),
-        .divert => |divert| try add_divert(lowered, layout, builder, item_id, divert, path),
+        .divert => |divert| try emit_divert(layout, builder, divert),
         .divert_target => |target| {
-            if (check_paths) try layout_module.target_path(&lowered.ir, layout, target, path);
-            const check = if (check_paths) path.items else null;
-            try builder.add_container_operand_to(.divert_target, key_of(layout, target), check);
+            try builder.add_container_operand(.divert_target, key_of(layout, target));
         },
         .read_count => |target| {
-            const check = try checked_path(lowered, layout, item_id, target, path);
-            try builder.add_container_operand_to(.read_count, key_of(layout, target), check);
+            try builder.add_container_operand(.read_count, key_of(layout, target));
         },
-        .variable_reference => |name| try builder.add_variable_get(name),
+        .variable_reference => |name| try builder.add_variable(name, .get),
         .assignment => |set| try add_assignment(builder, set.name, set.global, set.new),
         .variable_pointer => |pointer| {
             try ink_json.add_variable_pointer_to(builder, pointer.name, pointer.context);
         },
         .choice_point => |choice| {
-            const check = try checked_path(lowered, layout, item_id, choice.target, path);
             const flags: @import("../core/instruction.zig").ChoiceFlags = @bitCast(
                 @as(u32, choice.flags),
             );
-            try builder.add_choice_point_to(key_of(layout, choice.target), check, flags);
+            try builder.add_choice_point(key_of(layout, choice.target), flags);
         },
         .list => |list| try add_list(lowered, builder, list.items, list.origins),
     }
 }
 
-fn add_divert(
-    lowered: *Lowered,
-    layout: *const Layout,
-    builder: *ProgramBuilder,
-    item_id: ItemId,
-    divert: ir_module.Divert,
-    path: *std.ArrayList(u8),
-) !void {
-    assert(lowered.ir.items.items.len == layout.item_container.len);
-    assert(!lowered.root.is_none());
+fn emit_divert(layout: *const Layout, builder: *ProgramBuilder, divert: ir_module.Divert) !void {
+    assert(divert.external == null or divert.variable == null);
     var object: ink_json.DivertObject = .{
         .key = "->",
         .target = "",
@@ -218,8 +189,7 @@ fn add_divert(
         object.variable = true;
         return ink_json.add_divert_object_to(builder, object);
     }
-    const check = try checked_path(lowered, layout, item_id, divert.target, path);
-    try builder.add_divert_to(key_of(layout, divert.target), check, .{
+    try builder.add_divert(key_of(layout, divert.target), .{
         .kind = switch (divert.kind) {
             .plain => .plain,
             .function => .function,
@@ -244,26 +214,11 @@ fn key_of(layout: *const Layout, target: Target) KeyTarget {
     };
 }
 
-/// In Debug, the path ink writes from `from` to `target`, for the builder's check.
-fn checked_path(
-    lowered: *Lowered,
-    layout: *const Layout,
-    from: ItemId,
-    target: Target,
-    path: *std.ArrayList(u8),
-) !?[]const u8 {
-    assert(lowered.ir.items.items.len == layout.item_container.len);
-    assert(from.to_int() < lowered.ir.items.items.len);
-    if (!check_paths) return null;
-    try layout_module.compact_path(&lowered.ir, layout, from, target, path);
-    return path.items;
-}
-
 fn add_assignment(builder: *ProgramBuilder, name: []const u8, global: bool, new: bool) !void {
     assert(builder.containers.len < std.math.maxInt(u32));
     assert(name.len > 0);
     if (global and new) return builder.add(.global_declare, try builder.global(name));
-    if (global) return builder.add_variable_assign(name);
+    if (global) return builder.add_variable(name, .assign);
     const interned = try builder.intern(name);
     if (new) return builder.add(.temp_declare, interned);
     try builder.add(.temp_assign, interned);
