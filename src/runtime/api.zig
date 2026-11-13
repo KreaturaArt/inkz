@@ -415,7 +415,9 @@ pub const Story = struct {
         return story.core.usage();
     }
 
+    /// A failed story (`error.StoryFailed`) is half done and doesn't save.
     pub fn to_json(story: *Story, writer: *std.Io.Writer) !void {
+        if (story.core.failed) return error.StoryFailed;
         assert(story.core.state.memory.len > 0);
         assert(story.core.callback_depth == 0);
         try save.to_json(&story.core, writer);

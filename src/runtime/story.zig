@@ -50,6 +50,9 @@ pub const Error = error{
     Reentrant,
     /// A bound external function returned an error.
     ExternalFunctionFailed,
+    /// An earlier call failed in the middle of a step (a limit or host error), so the state
+    /// is half done; `reset_state` or a successful `load_json` brings the story back (P11.10).
+    StoryFailed,
 };
 
 /// A value as a host sees it: strings are slices, valid only until the story's next
@@ -153,6 +156,9 @@ pub const Story = struct {
     callback_depth: u32 = 0,
     /// evaluate_function calls running now.
     evaluate_depth: u32 = 0,
+    /// A limit or host error stopped a step half done: the story fails closed until
+    /// `reset_state` or `load_json` (P11.10).
+    failed: bool = false,
     events: Events = .{},
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
@@ -182,6 +188,7 @@ pub const Story = struct {
         if (story.callback_depth > 0) return error.Reentrant;
         story.state.reset();
         story.diverted_pointer = .null;
+        story.failed = false;
         try story.reset_globals();
         assert(story.state.call_stack.depth() == 1);
     }
@@ -298,6 +305,7 @@ pub const Story = struct {
     pub fn can_continue(story: *Story) bool {
         assert(story.state.call_stack.depth() > 0);
         assert(story.state.memory.len > 0);
+        if (story.failed) return false;
         return !vm.current_pointer(story).is_null() and !story.state.has_error();
     }
 
@@ -306,6 +314,7 @@ pub const Story = struct {
         assert(story.state.call_stack.depth() > 0);
         assert(story.state.line_bytes.len > 0);
         if (story.callback_depth > 0) return error.Reentrant;
+        if (story.failed) return error.StoryFailed;
         return story.next_line();
     }
 
@@ -380,15 +389,15 @@ pub const Story = struct {
         var steps: u32 = 0;
         const steps_max = story.state.limits.steps_per_continue_max;
         while (true) {
-            if (steps == steps_max) return error.StepLimit;
+            if (steps == steps_max) return story.fail_step(error.StepLimit);
             const result = vm.run(story, steps_max - steps, &steps) catch |err| switch (err) {
                 error.StoryError => break,
-                else => |other| return other,
+                else => |other| return story.fail_step(other),
             };
-            if (result == .budget_exhausted) return error.StepLimit;
+            if (result == .budget_exhausted) return story.fail_step(error.StepLimit);
             ends_in_newline = story.after_steps() catch |err| switch (err) {
                 error.StoryError => break,
-                else => |other| return other,
+                else => |other| return story.fail_step(other),
             };
             if (ends_in_newline or !story.can_continue()) break;
         }
@@ -410,6 +419,23 @@ pub const Story = struct {
         // Last, since observers may run more ink.
         if (story.continue_depth == 1 and !story.batching_observers) story.notify_observers();
         return length;
+    }
+
+    /// A limit or host error in the middle of a step (P11.9, P11.10). In the newline lookahead
+    /// of a host's `cont`, the state goes back to the end of the last line: it saves, and the
+    /// next `cont` runs the same steps again. Anywhere else the step is half done, and the
+    /// story fails closed (`failed`) instead of running on from there.
+    fn fail_step(story: *Story, err: Error) Error {
+        assert(err != error.StoryError);
+        assert(story.continue_depth > 0);
+        if (story.continue_depth > 1) return err;
+        if (story.evaluate_depth == 0 and lookahead.active(&story.state)) {
+            lookahead.restore(&story.state);
+            return err;
+        }
+        if (lookahead.active(&story.state)) lookahead.discard(&story.state);
+        story.failed = true;
+        return err;
     }
 
     /// ink's ObserveVariable. Observers of a global are called in the order they were added.
@@ -640,6 +666,7 @@ pub const Story = struct {
     /// The choices shown to the player (ink's currentChoices): none while the story can
     /// continue, and never the invisible defaults.
     pub fn visible_choices_count(story: *Story) u32 {
+        if (story.failed) return 0;
         if (!story.can_continue()) story.state.choices.indexed_count = story.state.choices.count();
         assert(story.state.choices.count() <= story.state.choices.records.buffer.len);
         if (story.can_continue()) return 0;
@@ -666,6 +693,7 @@ pub const Story = struct {
     /// ink's ChooseChoiceIndex.
     pub fn choose_choice_index(story: *Story, position: u32) Error!void {
         if (story.callback_depth > 0) return error.Reentrant;
+        if (story.failed) return error.StoryFailed;
         if (story.events.on_make_choice) |event| {
             const text = story.text_of(story.visible_choice(position).text);
             story.callback_depth += 1;
