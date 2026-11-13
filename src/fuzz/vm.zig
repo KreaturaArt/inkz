@@ -1,4 +1,4 @@
-//! Fuzz target for the VM (plan P11.8): a generated story compiled and played, the fuzzer
+//! Fuzz target for the VM: a generated story compiled and played, the fuzzer
 //! picking the seed, the external's binding and every choice. The state checks after every
 //! call; runtime errors go to a handler, and a run ends with the story, a named error or
 //! the step budget.

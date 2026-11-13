@@ -1,5 +1,5 @@
-//! Saving (plan §4.10, P6.1): ink's StoryState.ToJson, save format v10, streamed to a
-//! writer with no allocation. The output is JSON-equivalent to C# ink's (D15): the same keys
+//! Saving: ink's StoryState.ToJson, save format v10, streamed to a
+//! writer with no allocation. The output is JSON-equivalent to C# ink's: the same keys
 //! and values; object key order may differ.
 
 const std = @import("std");

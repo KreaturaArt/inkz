@@ -1,4 +1,4 @@
-//! The binary program image (plan P10.4, P10.5): a Program written as its arrays, so loading
+//! The binary program image: a Program written as its arrays, so loading
 //! is copying and checking, without parsing. A Program holds only indices into its own
 //! arrays, never pointers, so its arrays are the whole program; only the string table's hash
 //! index is rebuilt on load. The format is described in docs/program_image.md.
@@ -266,7 +266,7 @@ fn copy_section(
 /// The bytes of an opcode section are all opcodes; other enums are open (indices) or
 /// packed bits, checked below.
 /// Which byte values name an opcode: one lookup per byte (std.enums.fromInt scans the
-/// enum's values, and was two thirds of a load, P12.1).
+/// enum's values, and was two thirds of a load).
 const opcode_bytes: [256]bool = table: {
     var table: [256]bool = @splat(false);
     for (std.enums.values(Opcode)) |opcode| table[@backingInt(opcode)] = true;

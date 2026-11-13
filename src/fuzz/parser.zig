@@ -1,4 +1,4 @@
-//! Fuzz target for the parser (plan P11.4): generated ink, with raw bytes spliced in, through
+//! Fuzz target for the parser: generated ink, with raw bytes spliced in, through
 //! grammar.parse. A parse gives a tree or an error; a tree's every reachable node has a valid
 //! shape, each node is reached once, and its tokens lie in the source.
 

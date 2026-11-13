@@ -1,4 +1,4 @@
-//! Checks the audit-bug registry, `test/known_bugs.zon` (plan P0.7): each bug with the issue
+//! Checks the audit-bug registry, `test/known_bugs.zon`: each bug with the issue
 //! that fixes it. Zero-debt rule: every one must be fixed by the end of P9.
 //!
 //! Most bugs are reproduced by a ground-truth case whose divergence is in the ledger, with
@@ -73,7 +73,7 @@ fn is_semantic_kind(kind: oracle.Kind) bool {
 }
 
 test "every audit bug and audit divergence names its fixing issue" {
-    // Goal: P0.7; nothing skipped can be forgotten before P9. Method: check the registry and
+    // Nothing skipped can be forgotten before P9: check the registry and
     // the ledger, and print the list.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -105,7 +105,7 @@ test "every audit bug and audit divergence names its fixing issue" {
 }
 
 test "the new front end reports an unclosed brace (TASK-147.8)" {
-    // Goal: P7.8 fixes "compile() ignores errors" in the new front end. Method: parse the
+    // Fixes "compile() ignores errors" in the new front end: parse the
     // same source; it gets ink's diagnostics (the inner logic, then the line end).
     const gpa = std.testing.allocator;
     var parsed = try new_grammar.parse(gpa, "Hello {unclosed\n", .{});

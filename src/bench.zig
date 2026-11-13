@@ -4,7 +4,7 @@
 //! docs/benchmarks.md (between its markers).
 //!
 //! The runtime plays ink's JSON of the stories (test/ground_truth/crime_scene.ink.json,
-//! test/fixture/bench/generated.ink.json) with seeded choices, as the P0.6 baseline played the
+//! test/fixture/bench/generated.ink.json) with seeded choices, as the first baseline played the
 //! old runtime, so turns/s and lines/s compare with it; the baseline sections are kept as they
 //! were measured.
 
@@ -248,7 +248,7 @@ fn write_runtime_report(arena: Allocator, io: std.Io, measurements: []const Meas
     }
     try writer.print(
         "\nThe state is the limits' fixed budget, allocated once: the defaults, or limits " ++
-            "fitted to the bench's own play with margin 2 (P10.2).\n{s}\n",
+            "fitted to the bench's own play with margin 2.\n{s}\n",
         .{markers.end},
     );
     try write_section(arena, io, section.written(), markers);

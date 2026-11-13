@@ -1,10 +1,10 @@
-//! ink's native functions (plan P4.1), following ink's NativeFunctionCall.cs: both operands
+//! ink's native functions, following ink's NativeFunctionCall.cs: both operands
 //! are coerced to the higher of their two types (bool < int < float < list < string, starting
 //! from int so bools always become ints), then the operation for that type runs.
 //!
 //! Integers wrap like C#'s unchecked arithmetic. Division and modulo by zero, `minInt / -1`
-//! and converting NaN or an out-of-range float to an int are story errors (D18). Lists are
-//! handled by the list slab (P4.2) through `context`.
+//! and converting NaN or an out-of-range float to an int are story errors. Lists are
+//! handled by the list slab through `context`.
 //!
 //! `context` provides `string_bytes(StringReference) []const u8`,
 //! `string_concat([]const u8, []const u8) !StringReference` and `list_count(ListReference)
@@ -258,7 +258,7 @@ fn numeric_unary(comptime T: type, opcode: Opcode, a: T) Error!Value {
     return result;
 }
 
-/// `(int)x`, truncating. Out of range or NaN is a story error (D18): .NET's answer depends on
+/// `(int)x`, truncating. Out of range or NaN is a story error: .NET's answer depends on
 /// the processor, so inkz refuses instead of guessing.
 pub fn float_to_integer(a: f32) Error!i32 {
     if (std.math.isNan(a)) return error.FloatToIntegerOutOfRange;
@@ -298,7 +298,7 @@ const TestContext = struct {
         return .{ .string = try context.string_concat(text, "") };
     }
 
-    // This context has no lists: list operations are P4.2.
+    // This context has no lists.
     pub fn list_count(context: *TestContext, list: value_module.ListReference) u32 {
         assert(context.strings.items.len < 1 << 20);
         assert(@backingInt(list) < 1 << 31);
@@ -326,7 +326,7 @@ fn test_context() TestContext {
 }
 
 test "integer arithmetic wraps like C# and faults where C# throws" {
-    // Goal: D14 and D18. Method: overflow on each operator, then the faulting cases.
+    // Overflow on each operator, then the faulting cases.
     var context = test_context();
     defer context.arena.deinit();
     const max: Value = .{ .integer = std.math.maxInt(i32) };
@@ -352,7 +352,7 @@ test "integer arithmetic wraps like C# and faults where C# throws" {
 }
 
 test "coercion follows ink's order" {
-    // Goal: bool < int < float < string. Method: mixed operands for each step.
+    // Bool < int < float < string: mixed operands for each step.
     var context = test_context();
     defer context.arena.deinit();
     const yes: Value = .{ .bool = true };
@@ -386,7 +386,7 @@ test "coercion follows ink's order" {
 }
 
 test "float operations follow C#" {
-    // Goal: float semantics (D14). Method: modulo, MIN/MAX with NaN and signed zero, POW,
+    // Float semantics: modulo, MIN/MAX with NaN and signed zero, POW,
     // FLOOR/CEILING, and INT with its faults.
     var context = test_context();
     defer context.arena.deinit();
@@ -421,7 +421,7 @@ test "float operations follow C#" {
 }
 
 test "logic and string membership" {
-    // Goal: truth values and `?`/`!?` on strings. Method: a few combinations.
+    // Truth values and `?`/`!?` on strings: a few combinations.
     var context = test_context();
     defer context.arena.deinit();
     try std.testing.expectEqual(Value{ .bool = false }, try unary(&context, .not, .{

@@ -1,4 +1,4 @@
-//! Flows (plan §4.5, P4.8), as ink's StoryState flows: each flow has its own call stack,
+//! Flows, as ink's StoryState flows: each flow has its own call stack,
 //! output and choices; globals, counts, the evaluation stack and the random state are shared.
 //!
 //! Only the current flow lives in the state's live buffers. Switching packs the used part of
@@ -382,7 +382,7 @@ fn test_state(gpa: std.mem.Allocator, program: *Program, state: *State) !void {
 }
 
 test "flows keep their own call stack and output, and new flows start at the root" {
-    // Goal: P4.8; ink's TestMultiFlowBasics shape. Method: change the default flow, switch to a
+    // Ink's TestMultiFlowBasics shape: change the default flow, switch to a
     // new flow (fresh), change it, switch back and forth.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
@@ -416,7 +416,7 @@ const NameSink = struct {
 };
 
 test "removing flows frees their parking and switching stays bounded" {
-    // Goal: P4.8 bounds. Method: switch between flows many times; remove one; check the
+    // Bounds: switch between flows many times; remove one; check the
     // parking region stays packed, and that the limits return their errors.
     const gpa = std.testing.allocator;
     var program: Program = undefined;

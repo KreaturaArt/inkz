@@ -1,4 +1,4 @@
-//! A stack over a fixed buffer (plan §4.1). It never grows; pushing onto a full stack returns
+//! A stack over a fixed buffer. It never grows; pushing onto a full stack returns
 //! `error.Overflow`, which callers translate into their named limit error, such as
 //! `error.FrameLimit`. It replaces every unchecked `appendAssumeCapacity`.
 
@@ -13,7 +13,7 @@ pub fn BoundedStack(comptime T: type) type {
     return struct {
         buffer: []T,
         count: u32,
-        /// The highest count since init (P10.2): what the buffer actually needed.
+        /// The highest count since init: what the buffer actually needed.
         peak: u32 = 0,
 
         const Self = @This();
@@ -147,7 +147,7 @@ pub fn BoundedStack(comptime T: type) type {
 }
 
 test "push and pop follow last-in first-out order" {
-    // Goal: basic stack behaviour. Method: push three values and pop them back.
+    // Basic stack behaviour: push three values and pop them back.
     var buffer: [4]u32 = undefined;
     var stack = BoundedStack(u32).init(&buffer);
     try stack.push(1);
@@ -162,7 +162,7 @@ test "push and pop follow last-in first-out order" {
 }
 
 test "overflow returns an error and leaves the stack unchanged" {
-    // Goal: a full stack refuses more, for single pushes and slices. Method: fill a stack of 2.
+    // A full stack refuses more, for single pushes and slices: fill a stack of 2.
     var buffer: [2]u8 = undefined;
     var stack = BoundedStack(u8).init(&buffer);
     try stack.push_slice("ab");
@@ -173,7 +173,7 @@ test "overflow returns an error and leaves the stack unchanged" {
 }
 
 test "truncate restores an earlier count" {
-    // Goal: marks undo speculative pushes (used for backtracking and lookahead). Method: take
+    // Marks undo speculative pushes (used for backtracking and lookahead): take
     // a mark, push more, truncate to the mark.
     const gpa = std.testing.allocator;
     var stack = try BoundedStack(u32).init_capacity(gpa, 8);
@@ -188,7 +188,7 @@ test "truncate restores an earlier count" {
 }
 
 test "check reports a corrupted count" {
-    // Goal: negative space for verify (D20). Method: corrupt the count past the capacity.
+    // Negative space for verify: corrupt the count past the capacity.
     var buffer: [3]u32 = undefined;
     var stack = BoundedStack(u32).init(&buffer);
     try std.testing.expectEqual(BoundedStack(u32).Fault.ok, stack.check());
@@ -197,7 +197,7 @@ test "check reports a corrupted count" {
 }
 
 test "the peak remembers the highest count" {
-    // Goal: P10.2's usage measurement. Method: push, pop and push_slice; clearing keeps it.
+    // The usage measurement: push, pop and push_slice; clearing keeps it.
     var buffer: [8]u32 = undefined;
     var stack = BoundedStack(u32).init(&buffer);
     try stack.push(1);

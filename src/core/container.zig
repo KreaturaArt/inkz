@@ -1,4 +1,4 @@
-//! Containers (plan §4.2, D2): the unit of addressing. Their instructions are one contiguous
+//! Containers: the unit of addressing. Their instructions are one contiguous
 //! range of the program's instruction array; named children (knots, stitches, labelled
 //! gathers) are a range of the named table. Stored as SoA (`std.MultiArrayList`).
 
@@ -15,7 +15,7 @@ pub const named_only = std.math.maxInt(u32);
 pub const ContainerFlags = packed struct(u8) {
     visits_counted: bool = false,
     turns_counted: bool = false,
-    /// Count a visit only when the container is entered at its start (plan S4).
+    /// Count a visit only when the container is entered at its start.
     count_start_only: bool = false,
     padding: u5 = 0,
 };
@@ -33,7 +33,7 @@ pub const ContainerInfo = struct {
     name: StringId,
     /// The dotted path, for save/load and choice ids.
     path: StringId,
-    /// ink's shuffle seed for this container (plan P2.4).
+    /// ink's shuffle seed for this container.
     path_hash: u32,
     named_first: u32,
     named_count: u32,
@@ -208,7 +208,7 @@ const test_named = [_]NamedEntry{
 };
 
 test "named lookup and tree navigation" {
-    // Goal: names resolve by id within one container only. Method: look up `knot` at the root
+    // Names resolve by id within one container only: look up `knot` at the root
     // and `stitch` inside it, and miss `stitch` at the root.
     const gpa = std.testing.allocator;
     var containers = try build_test_table(gpa);
@@ -226,7 +226,7 @@ test "named lookup and tree navigation" {
 }
 
 test "check reports broken tree invariants" {
-    // Goal: negative space (D20). Method: corrupt one field at a time.
+    // Negative space: corrupt one field at a time.
     const gpa = std.testing.allocator;
     var containers = try build_test_table(gpa);
     defer containers.deinit(gpa);

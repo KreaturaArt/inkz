@@ -1,4 +1,4 @@
-//! Interned strings (plan T8). All bytes live in one buffer. `StringId`s are dense, so side
+//! Interned strings. All bytes live in one buffer. `StringId`s are dense, so side
 //! tables can be indexed by them, and `get` is O(1). Id 0 is always the empty string.
 //!
 //! A `StringPool` grows while a program is built (control plane). `freeze` turns it into an
@@ -200,7 +200,7 @@ pub const FrozenStringPool = struct {
     }
 
     /// A frozen pool over `bytes` and `ends` (taken on success, as from `freeze`), with its
-    /// hash index rebuilt; two equal strings are an error (program images, P10.5). `ends`
+    /// hash index rebuilt; two equal strings are an error (program images). `ends`
     /// must be valid: `ends[0] == 0`, never decreasing, the last `bytes.len`.
     pub fn init_unique(
         gpa: Allocator,
@@ -237,7 +237,7 @@ pub const FrozenStringPool = struct {
 };
 
 test "interning deduplicates and id 0 is the empty string" {
-    // Goal: equal bytes get equal ids, different bytes different ids. Method: intern a few
+    // Equal bytes get equal ids, different bytes different ids: intern a few
     // strings twice, including "".
     const gpa = std.testing.allocator;
     var pool = try StringPool.init(gpa);
@@ -252,7 +252,7 @@ test "interning deduplicates and id 0 is the empty string" {
 }
 
 test "find never inserts" {
-    // Goal: lookups have no side effects. Method: find a missing string, then check the count.
+    // Lookups have no side effects: find a missing string, then check the count.
     const gpa = std.testing.allocator;
     var pool = try StringPool.init(gpa);
     defer pool.deinit(gpa);
@@ -263,7 +263,7 @@ test "find never inserts" {
 }
 
 test "100k strings round-trip through a frozen pool without allocating on lookup" {
-    // Goal: scale, freezing, and allocation-free lookups. Method: intern 100k distinct strings,
+    // Scale, freezing, and allocation-free lookups: intern 100k distinct strings,
     // freeze, then look each one up with a failing allocator in scope (lookups take none).
     const gpa = std.testing.allocator;
     var pool = try StringPool.init(gpa);
@@ -286,8 +286,8 @@ test "100k strings round-trip through a frozen pool without allocating on lookup
 }
 
 test "bytes may contain zeros and look alike" {
-    // Goal: strings are byte ranges, not NUL-terminated, so prefixes and zeros are distinct.
-    // Method: intern "a", "a\x00" and "ab".
+    // Strings are byte ranges, not NUL-terminated, so prefixes and zeros are distinct.
+    // Intern "a", "a\x00" and "ab".
     const gpa = std.testing.allocator;
     var pool = try StringPool.init(gpa);
     defer pool.deinit(gpa);

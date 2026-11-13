@@ -1,4 +1,4 @@
-//! A readable listing of a `Program` (plan P2.6), for debugging the loader, the compiler and
+//! A readable listing of a `Program`, for debugging the loader, the compiler and
 //! the VM. Containers are listed in index order, which is also the instruction layout, so the
 //! dump is one pass with no recursion.
 //!
@@ -150,7 +150,7 @@ fn write_tables(program: *const Program, writer: *std.Io.Writer) !void {
 }
 
 test "dump snapshot of a small program" {
-    // Goal: P2.6; a stable listing. Method: build a program with each operand family and
+    // A stable listing: build a program with each operand family and
     // compare the dump with the expected text.
     const gpa = std.testing.allocator;
     const Builder = @import("program_builder.zig").ProgramBuilder;

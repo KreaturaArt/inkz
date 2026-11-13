@@ -1,4 +1,4 @@
-//! Shared by the runtime's fuzz targets (plan P11.8–P11.10): a generated story compiled into
+//! Shared by the runtime's fuzz targets: a generated story compiled into
 //! a program, a story on it whose errors go to a handler, and play with fuzzer-picked
 //! choices.
 

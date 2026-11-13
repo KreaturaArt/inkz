@@ -1,4 +1,4 @@
-//! The binary program image (P10.4, P10.5) on real programs: every ground-truth case and
+//! The binary program image on real programs: every ground-truth case and
 //! compiled sources write deterministically and load back to the same program; corrupted
 //! images are rejected with named errors, never a crash.
 
@@ -30,7 +30,7 @@ fn round_trip(gpa: std.mem.Allocator, program: *const Program) !u64 {
 }
 
 test "every ground-truth case round-trips through an image" {
-    // Goal: P10.4 and P10.5. Method: each case's JSON loaded, written twice (same bytes) and
+    // Each case's JSON loaded, written twice (same bytes) and
     // loaded from the image (the same program); the sizes are reported next to the JSON's.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -60,7 +60,7 @@ test "every ground-truth case round-trips through an image" {
 }
 
 test "compiled programs round-trip through an image" {
-    // Goal: P10.5 for the compiler's output. Method: two whole stories compiled from source.
+    // For the compiler's output: two whole stories compiled from source.
     const gpa = std.testing.allocator;
     const paths = [_][]const u8{
         "test/fixture/crime_scene.ink",
@@ -87,7 +87,7 @@ fn load_or_reject(bytes: []const u8) bool {
 }
 
 test "corrupted images are rejected without crashing" {
-    // Goal: P10.5's negative space. Method: a small story's image truncated at every length,
+    // The image loader's negative space: a small story's image truncated at every length,
     // and every byte set to 0x00, 0xff and itself plus one; each load either gives a valid
     // program or an error. The named errors for the header are checked directly.
     const gpa = std.testing.allocator;

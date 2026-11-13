@@ -1,7 +1,7 @@
-//! A flat JSON tree for loading saves (plan §4.10, P6.2): the document is tokenized once
+//! A flat JSON tree for loading saves: the document is tokenized once
 //! into a caller-provided node array, with no allocation and no recursion. Each node knows
 //! where its subtree ends, so objects can be searched by key in any order (saves are
-//! JSON-equivalent, D15) and skipped in O(1).
+//! JSON-equivalent) and skipped in O(1).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -411,7 +411,7 @@ const Parser = struct {
 };
 
 test "a save-shaped document parses into a searchable tree" {
-    // Goal: P6.2; keys in any order, nested containers, escapes. Method: parse and look up.
+    // Keys in any order, nested containers, escapes: parse and look up.
     var storage: [64]Node = undefined;
     const text =
         \\{"b": [1, 2.5, {"x": true}], "a": "line\nnext é", "c": {}, "d": null}
@@ -434,7 +434,7 @@ test "a save-shaped document parses into a searchable tree" {
 }
 
 test "malformed JSON is rejected" {
-    // Goal: negative space. Method: truncations and stray tokens.
+    // Negative space: truncations and stray tokens.
     var storage: [64]Node = undefined;
     const malformed = [_][]const u8{
         "{", "[1,]", "{\"a\" 1}", "{\"a\":1,}", "[1] x", "\"open", "{1:2}",

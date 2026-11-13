@@ -40,7 +40,7 @@ fn transcript_results(arena: std.mem.Allocator, io: std.Io) ![]const oracle.Resu
 }
 
 test "oracle: ground truth" {
-    // Goal: every difference from ink is ledgered, and every entry still holds.
+    // Every difference from ink is ledgered, and every entry still holds.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -49,7 +49,7 @@ test "oracle: ground truth" {
 }
 
 test "oracle: transcripts" {
-    // Goal: every difference from the stored transcripts is ledgered.
+    // Every difference from the stored transcripts is ledgered.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

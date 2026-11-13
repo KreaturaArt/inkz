@@ -1,4 +1,4 @@
-//! Structure-aware fuzz target for the JSON loader (plan P11.7). Random bytes rarely make
+//! Structure-aware fuzz target for the JSON loader. Random bytes rarely make
 //! JSON, so the raw target stops in the tokenizer; here every input starts as a valid ink
 //! JSON (a generated story, compiled and serialized), and the fuzzer edits its tokens:
 //! replaces a number or a string (with ink's control words among the choices), deletes or

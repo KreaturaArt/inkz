@@ -1,15 +1,15 @@
-//! List values (plan §4.4, P4.2) and ink's list operations (InkList.cs).
+//! List values and ink's list operations (InkList.cs).
 //!
 //! A C# InkList is a Dictionary, so its iteration order is insertion order, and that order
 //! decides LIST_RANDOM, ties in LIST_MIN and LIST_MAX, and the origin an int is converted
 //! through. ink only ever copies a list and then adds to or removes from the copy, so freed
 //! dictionary slots are never reused and the order is exactly insertion order with removals
-//! taken out. A list value therefore stores its items as an ordered array (plan D15), plus the
+//! taken out. A list value therefore stores its items as an ordered array, plus the
 //! origins it was declared with, which only matter while it is empty. Lists are short, so
 //! membership is a linear scan.
 //!
 //! The slab is a fixed array of words: a list is `[items_count, origins_count, items...,
-//! origins...]`. Reclaiming dead lists is the heap's job (P4.3).
+//! origins...]`. Reclaiming dead lists is the heap's job.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -40,7 +40,7 @@ pub const View = struct {
 pub const ListSlab = struct {
     words: []u32,
     used: u32 = 0,
-    /// The most words in use at once since init (P10.2).
+    /// The most words in use at once since init.
     peak: u32 = 0,
 
     /// A list is `[forward, items_count, origins_count, items..., origins...]`. `forward` is
@@ -570,7 +570,7 @@ fn expect_items(lists: Lists, value: Value, expected: []const ListItemIndex) !vo
 }
 
 test "set operations keep ink's iteration order" {
-    // Goal: union, without and intersection follow C# Dictionary order. Method: lists built
+    // Union, without and intersection follow C# Dictionary order: lists built
     // in an order different from value order.
     var program = try test_program(std.testing.allocator);
     defer program.deinit(std.testing.allocator);
@@ -591,7 +591,7 @@ test "set operations keep ink's iteration order" {
 }
 
 test "comparisons, min, max and value" {
-    // Goal: ink's GreaterThan etc. use min and max values; ties keep the first item.
+    // Ink's GreaterThan etc. use min and max values; ties keep the first item.
     var program = try test_program(std.testing.allocator);
     defer program.deinit(std.testing.allocator);
     var words: [256]u32 = undefined;
@@ -609,7 +609,7 @@ test "comparisons, min, max and value" {
 }
 
 test "all, invert, increment and int coercion" {
-    // Goal: origin-based operations, including an empty list that keeps its declared origin.
+    // Origin-based operations, including an empty list that keeps its declared origin.
     var program = try test_program(std.testing.allocator);
     defer program.deinit(std.testing.allocator);
     var words: [256]u32 = undefined;
@@ -631,7 +631,7 @@ test "all, invert, increment and int coercion" {
 }
 
 test "a list prints ordered by value, then origin name" {
-    // Goal: InkList.ToString. Method: mixed origins with a value tie.
+    // InkList.ToString: mixed origins with a value tie.
     var program = try test_program(std.testing.allocator);
     defer program.deinit(std.testing.allocator);
     var words: [256]u32 = undefined;
@@ -645,7 +645,7 @@ test "a list prints ordered by value, then origin name" {
 }
 
 test "a full slab returns ListLimit" {
-    // Goal: the slab never grows. Method: fill a tiny one.
+    // The slab never grows: fill a tiny one.
     var words: [6]u32 = undefined;
     var slab = ListSlab.init(&words);
     _ = try slab.store(&.{ red, green }, &.{colours});

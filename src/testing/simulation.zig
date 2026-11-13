@@ -17,8 +17,8 @@ pub fn run_seed(arena: std.mem.Allocator, io: std.Io, id: []const u8, seed: i32)
 }
 
 test "a simulation run is reproducible by seed" {
-    // Goal: the same case and seed give the same run, and other seeds explore other paths.
-    // Method: run a branching weave twice with one seed, then with others.
+    // The same case and seed give the same run, and other seeds explore other paths.
+    // Run a branching weave twice with one seed, then with others.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -156,7 +156,7 @@ pub fn prepare(story: *Story, compact_always: bool) void {
 }
 
 test "the simulation keeps the state sound" {
-    // Goal: a few seeds of the full action mix on every ground-truth case, with and without
+    // A few seeds of the full action mix on every ground-truth case, with and without
     // compact-always. `zig build simulate` runs many more.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();

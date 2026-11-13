@@ -1,4 +1,4 @@
-//! Cases that must panic, run by `zig build test-death` (plan D20).
+//! Cases that must panic, run by `zig build test-death`.
 //!
 //! Each public function in `must_panic` is one case. The build runs `tools/death.zig` once per
 //! case as a child process and expects it to abort. If a case returns instead, the runner
@@ -48,7 +48,7 @@ pub const must_panic = struct {
         _ = pool.get(unissued);
     }
 
-    /// P6.3: a borrowed view used after the next mutating call asserts in Debug.
+    /// A borrowed view used after the next mutating call asserts in Debug.
     pub fn stale_view_access_panics() void {
         assert(std.debug.runtime_safety);
         const json = "{\"inkVersion\":21,\"root\":[[\"^One\",\"\\n\",\"^Two\",\"\\n\"," ++
@@ -80,8 +80,8 @@ pub const self_test_must_panic = struct {
 };
 
 test "case names are unique across both groups" {
-    // Goal: the build derives one step argument per name, so duplicates would hide a case.
-    // Method: compare every pair of declaration names at compile time.
+    // The build derives one step argument per name, so duplicates would hide a case.
+    // Compare every pair of declaration names at compile time.
     const panic_names = comptime std.meta.declarations(must_panic);
     const return_names = comptime std.meta.declarations(must_return);
     inline for (panic_names) |a| {

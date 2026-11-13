@@ -1,4 +1,4 @@
-//! The structural gate (plan P8.5): every ground-truth case (test/ground_truth, compiled by
+//! The structural gate: every ground-truth case (test/ground_truth, compiled by
 //! ink v1.2.1) is compiled from its `.ink` by the new compiler, serialized with
 //! ink_json.serialize, and must equal inklecate's `.ink.json` exactly (which covers container
 //! names, nesting, flags and every instruction), or be in the divergence ledger (corpus
@@ -103,7 +103,7 @@ fn find(ledger: []const oracle.Entry, id: []const u8) ?oracle.Entry {
 }
 
 test "the verified pair: loading the serialized program gives the same program" {
-    // Goal: P8.5's round trip. Method: for stories covering every kind of content, the
+    // The image round trip: for stories covering every kind of content, the
     // program compiled from source equals the one loaded from its serialized JSON.
     const gpa = std.testing.allocator;
     const sources = [_][]const u8{
@@ -126,8 +126,8 @@ test "the verified pair: loading the serialized program gives the same program" 
 }
 
 test "the verified pair holds for whole stories" {
-    // Goal: TASK-149.5; the round trip keeps even the string table's order on stories with
-    // nested named content. Method: crime_scene.ink and simple_taster_tutorial.ink compiled,
+    // The round trip keeps even the string table's order on stories with
+    // nested named content. Crime_scene.ink and simple_taster_tutorial.ink compiled,
     // serialized and loaded give the same program.
     const gpa = std.testing.allocator;
     const paths = [_][]const u8{

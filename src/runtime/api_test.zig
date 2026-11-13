@@ -1,4 +1,4 @@
-//! The public API test (plan P6.3): every public method of `api.Story`, every limit error,
+//! The public API test: every public method of `api.Story`, every limit error,
 //! two stories sharing one program, reentrancy, and ChoosePathString inside a function. The
 //! stories are compiled by ink (test/fixture/api/*.ink).
 
@@ -95,7 +95,7 @@ const Recorder = struct {
 };
 
 test "the public API, method by method" {
-    // Goal: P6.3; every public method of api.Story on one story. Method: play the tour.
+    // Every public method of api.Story on one story: play the tour.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
     defer arena_state.deinit();
@@ -200,7 +200,7 @@ fn exercise_flows_and_saves(story: *Story, recorder: *Recorder, gpa: std.mem.All
 }
 
 test "errors without a handler are kept for the host" {
-    // Goal: P6.3 has_error, error_count, write_error and reset_errors. Method: a knot that
+    // Has_error, error_count, write_error and reset_errors: a knot that
     // runs out of content, played without a handler, then with one.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -240,7 +240,7 @@ fn cases_ink_json(comptime id: []const u8) []const u8 {
 }
 
 test "two stories share one program and run independently" {
-    // Goal: P6.3; a Program is immutable and shareable. Method: two stories on one program
+    // A Program is immutable and shareable: two stories on one program
     // take different choices.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -262,7 +262,7 @@ test "two stories share one program and run independently" {
 }
 
 test "a mutating call from a callback is reentrant, and evaluate may nest" {
-    // Goal: P6.3 reentrancy. Method: an external that calls cont, then one that evaluates a
+    // Reentrancy: an external that calls cont, then one that evaluates a
     // function, with evaluate_depth_max 1 so the nested evaluation is refused.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -318,7 +318,7 @@ fn play_until_error(story: *Story) !void {
 }
 
 test "every limit error of cont" {
-    // Goal: P6.3; each buffer limit returns its own error. Method: one knot per limit, with
+    // Each buffer limit returns its own error: one knot per limit, with
     // that limit made small.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -411,7 +411,7 @@ test "every limit error of cont" {
 }
 
 test "the other limit errors" {
-    // Goal: P6.3; observers, flows, text length, evaluate depth and save size. Method: the
+    // Observers, flows, text length, evaluate depth and save size: the
     // call that runs into each.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);

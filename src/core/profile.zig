@@ -1,4 +1,4 @@
-//! Profile zones (TASK-153): time spent in each stage of the pipeline, for
+//! Profile zones: time spent in each stage of the pipeline, for
 //! `zig build bench-profile`. A zone is opened at a stage's start and closed at its end:
 //!
 //!     const zone = profile.begin(.compile_sema);

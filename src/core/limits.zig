@@ -1,4 +1,4 @@
-//! Limits on everything (plan §3.1). `Story.Options.limits` and `Compiler.Options.limits`
+//! Limits on everything. `Story.Options.limits` and `Compiler.Options.limits`
 //! override the defaults at runtime; every buffer is sized from them once, at init.
 //!
 //! `element_bytes` records the planned size of each buffer element. Each real type asserts
@@ -8,7 +8,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const fault = @import("fault.zig");
 
-/// Planned element sizes in bytes (plan §4.3, §4.5). Checked by each type's comptime assert.
+/// Planned element sizes in bytes. Checked by each type's comptime assert.
 pub const element_bytes = struct {
     pub const value = 12;
     pub const frame = 24;
@@ -25,8 +25,8 @@ pub const element_bytes = struct {
     pub const observer_event = 4; // GlobalSlot
     pub const diagnostic = 24; // argument, two numbers, pointer, code, severity
     pub const count_slot = 8; // visit count u32 + turn index i32
-    pub const global = value * 2; // current value + default value (§4.10)
-    pub const ancestor = 4; // ContainerIndex, for the visit-counting walk (§4.6)
+    pub const global = value * 2; // current value + default value
+    pub const ancestor = 4; // ContainerIndex, for the visit-counting walk
     pub const snapshot = 24; // a choice's stored thread: frame and temp ranges, previous pointer
     pub const load_node = 16; // a token of a save being loaded (vm/json_tree.zig)
 };
@@ -58,7 +58,7 @@ pub const Limits = struct {
     evaluate_depth_max: u32 = 4,
     container_depth_max: u32 = 256,
     path_components_max: u32 = 64,
-    /// Tokens of a save document `load_json` can hold (its fixed scratch, plan §4.10).
+    /// Tokens of a save document `load_json` can hold (its fixed scratch).
     load_nodes_max: u32 = 16 * 1024,
 
     pub const Fault = enum {
@@ -116,7 +116,7 @@ pub const Limits = struct {
 
     fn bytes_total_checked(limits: *const Limits, shape: ProgramShape) ?u64 {
         const live = limits.live_flow_bytes();
-        // The lookahead snapshot (§4.6) is a second copy of the live-flow buffers.
+        // The lookahead snapshot is a second copy of the live-flow buffers.
         const lookahead = live + @as(u64, limits.patch_entries_max) * element_bytes.patch_entry;
         const shared = limits.shared_bytes(shape);
         const total = std.math.add(u64, live, lookahead) catch return null;
@@ -144,7 +144,7 @@ pub const Limits = struct {
         total += @as(u64, shape.globals_count) * bytes.global;
         total += @as(u64, shape.count_slots) * bytes.count_slot;
         total += limits.output_bytes_max;
-        // The cleaned-text cache (P10.1): a copy of the cleaned items and their text.
+        // The cleaned-text cache: a copy of the cleaned items and their text.
         total += @as(u64, limits.output_items_max) * bytes.output_item + limits.output_bytes_max;
         total += limits.heap_bytes_max;
         total += @as(u64, limits.list_words_max) * bytes.list_word;
@@ -208,7 +208,7 @@ pub const FlowBuffer = enum {
     }
 };
 
-/// What a story instance needed (P10.2): the peak of every limit that sizes a buffer, in
+/// What a story instance needed: the peak of every limit that sizes a buffer, in
 /// that limit's unit. `Limits.fitted` turns it into limits with a margin.
 pub const Usage = struct {
     evaluation_values: u32 = 0,
@@ -280,7 +280,7 @@ pub const CompilerLimits = struct {
             comptime assert(Field == u32);
             if (@field(limits, name) == 0) return .zero_limit;
         }
-        // Each retry doubles the workspace (plan T15); more than a few means a sizing bug.
+        // Each retry doubles the workspace; more than a few means a sizing bug.
         if (limits.compile_retries_max > 8) return .retries_unbounded;
         assert(limits.parse_depth_max > 0);
         return .ok;
@@ -300,7 +300,7 @@ comptime {
 }
 
 test "default limits are consistent" {
-    // Goal: the defaults pass their own check. Method: check both limit sets.
+    // The defaults pass their own check: check both limit sets.
     const limits: Limits = .{};
     try std.testing.expectEqual(Limits.Fault.ok, limits.check());
     const compiler: CompilerLimits = .{};
@@ -308,7 +308,7 @@ test "default limits are consistent" {
 }
 
 test "inconsistent limits are rejected by name" {
-    // Goal: negative space; each relationship has its own fault. Method: break one at a time.
+    // Negative space; each relationship has its own fault: break one at a time.
     var limits: Limits = .{};
     limits.frames_max = 0;
     try std.testing.expectEqual(Limits.Fault.zero_limit, limits.check());
@@ -330,14 +330,14 @@ test "inconsistent limits are rejected by name" {
 }
 
 test "the default byte budget is pinned" {
-    // Goal: any change to limits or element sizes shows up here and gets a conscious update.
-    // Method: compute the budget for the defaults and a small program shape.
+    // Any change to limits or element sizes shows up here and gets a conscious update.
+    // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
     try std.testing.expectEqual(@as(u64, 2_203_392), limits.bytes_total(shape));
 }
 
-/// The limits of docs/benchmarks.md's sizing example for small side stories (P4.12).
+/// The limits of docs/benchmarks.md's sizing example for small side stories.
 pub const small_story_limits: Limits = .{
     .evaluation_values_max = 256,
     .frames_max = 128,
@@ -365,7 +365,7 @@ pub const small_story_limits: Limits = .{
 };
 
 test "the sizing example in docs/benchmarks.md" {
-    // Goal: P4.12; the documented numbers are the computed ones. Method: the example's main
+    // The documented numbers are the computed ones: the example's main
     // story (default limits, four flows) and side story (small limits), part by part.
     var main: Limits = .{};
     main.flows_max = 4;
@@ -381,7 +381,7 @@ test "the sizing example in docs/benchmarks.md" {
 }
 
 test "the budget grows with the program and with every buffer" {
-    // Goal: every input moves the budget, so no buffer is left out. Method: grow each limit
+    // Every input moves the budget, so no buffer is left out: grow each limit
     // by one and check that the total grows.
     const base: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 0, .globals_count = 0 };
@@ -414,7 +414,7 @@ fn is_not_a_buffer(comptime name: []const u8) bool {
 }
 
 test "fitted limits cover the usage with a margin and stay consistent" {
-    // Goal: P10.2. Method: a usage with some zero fields, fitted with margin 2: every buffer
+    // A usage with some zero fields, fitted with margin 2: every buffer
     // holds twice its peak (at least the floor), and the result passes check.
     const usage: Usage = .{
         .evaluation_values = 10,

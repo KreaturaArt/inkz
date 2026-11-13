@@ -15,7 +15,7 @@ const build_options = @import("build_options");
 pub const ledger_path = "test/divergence_ledger.zon";
 const file_bytes_max = 16 * 1024 * 1024;
 
-/// Why the runtime differs from the expected transcript: a known divergence (plan §1.1), or
+/// Why the runtime differs from the expected transcript: a known divergence, or
 /// what the comparison saw.
 pub const Kind = enum {
     s1,
@@ -44,11 +44,11 @@ pub const Kind = enum {
 };
 
 pub const Corpus = enum {
-    /// `test/ground_truth`: compared with what ink v1.2.1 produced (P0.10).
+    /// `test/ground_truth`: compared with what ink v1.2.1 produced.
     ground_truth,
-    /// `test/transcripts`: compared with what the old runtime produced (P0.3).
+    /// `test/transcripts`: compared with what the old runtime produced.
     transcripts,
-    /// The new compiler's JSON for each ground-truth case, compared with inklecate's (P8.5).
+    /// The new compiler's JSON for each ground-truth case, compared with inklecate's.
     structure,
 };
 
@@ -59,7 +59,7 @@ pub const Entry = struct {
     reason: []const u8,
     /// The evidence for the expected behaviour, such as a Tests.cs test or a ground-truth case.
     source: []const u8 = "",
-    /// The issue whose work removes this divergence, such as `TASK-145.8` (plan P0.7).
+    /// The issue whose work removes this divergence, such as `TASK-145.8`.
     fix: []const u8 = "",
 };
 
@@ -174,7 +174,7 @@ fn first_line(text: []const u8) []const u8 {
 
 const Equivalence = enum { exact, without_tags, whitespace };
 
-/// Compares line by line. `save:` lines are JSON-equivalent (key order ignored, D15).
+/// Compares line by line. `save:` lines are JSON-equivalent (key order ignored).
 fn lines_equivalent(
     arena: std.mem.Allocator,
     expected: []const u8,
@@ -430,7 +430,7 @@ fn test_entry(case: []const u8, corpus: Corpus, kind: Kind) Entry {
 }
 
 test "a seeded divergence reports the first differing turn" {
-    // Goal: P0.4; the reason points at the turn. Method: two transcripts that agree on the
+    // The reason points at the turn: two transcripts that agree on the
     // first turn and differ on the second.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -443,7 +443,7 @@ test "a seeded divergence reports the first differing turn" {
 }
 
 test "a ledgered divergence passes and a stale entry fails" {
-    // Goal: P0.4; the two ledger rules. Method: one listed case that still differs, one listed
+    // The two ledger rules: one listed case that still differs, one listed
     // case that now matches, and an entry of another corpus that must be ignored.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -464,7 +464,7 @@ test "a ledgered divergence passes and a stale entry fails" {
 }
 
 test "compare classifies differences" {
-    // Goal: the classification used for automatic ledger reasons. Method: one pair per kind.
+    // The classification used for automatic ledger reasons: one pair per kind.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -483,7 +483,7 @@ test "compare classifies differences" {
 }
 
 test "save lines compare as JSON, ignoring key order" {
-    // Goal: D15 JSON-equivalent saves. Method: the same object with keys in another order.
+    // JSON-equivalent saves: the same object with keys in another order.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

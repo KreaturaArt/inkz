@@ -1,4 +1,4 @@
-//! ink's EvaluateFunction (plan §4.7, S1, P5.8): runs an ink function on the live state.
+//! ink's EvaluateFunction: runs an ink function on the live state.
 //! The output stream is set aside, a `function_evaluation_from_game` frame is pushed, and
 //! the Continue loop runs until the function ends; every other side effect (globals, visit
 //! counts, the random state) persists. It may be called from an external function, up to
@@ -216,8 +216,8 @@ const Probe = struct {
 };
 
 test "evaluate_function nests from an external up to evaluate_depth_max" {
-    // Goal: P5.8; an external may evaluate an ink function, which may call the external
-    // again, until evaluate_depth_max. Method: an external that always evaluates `inner`.
+    // An external may evaluate an ink function, which may call the external
+    // again, until evaluate_depth_max. An external that always evaluates `inner`.
     const gpa = std.testing.allocator;
     var program = try external_program(gpa);
     defer program.deinit(gpa);
@@ -233,8 +233,8 @@ test "evaluate_function nests from an external up to evaluate_depth_max" {
 }
 
 test "other mutating calls from a callback are reentrant" {
-    // Goal: P5.8; cont from inside an external returns Reentrant (ink would corrupt its
-    // state). Method: an external that calls cont.
+    // Cont from inside an external returns Reentrant (ink would corrupt its
+    // state). An external that calls cont.
     const gpa = std.testing.allocator;
     var program = try external_program(gpa);
     defer program.deinit(gpa);

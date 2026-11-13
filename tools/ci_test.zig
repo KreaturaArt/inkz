@@ -1,4 +1,4 @@
-//! Checks that the CI workflow, the `ci` build step and the pinned toolchain agree (TASK-155).
+//! Checks that the CI workflow, the `ci` build step and the pinned toolchain agree.
 
 const std = @import("std");
 const assert = std.debug.assert;

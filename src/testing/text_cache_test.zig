@@ -1,4 +1,4 @@
-//! The cleaned-text cache (P10.1) through the story API: glue, function-end trimming,
+//! The cleaned-text cache through the story API: glue, function-end trimming,
 //! string evaluation, the newline lookahead, a flow switch and a save loaded mid-play all
 //! change the output stream behind the cache. Each line equals ink's (ink v1.2.1, checked
 //! with the .NET harness), and in Debug every line is also compared with a full clean.
@@ -39,7 +39,7 @@ fn expect_line(story: *api.Story, expected: []const u8) !void {
 }
 
 test "lines stay ink's through glue, functions, flows and a load" {
-    // Goal: P10.1's invalidation in a real story. Method: play to the choice with a flow
+    // The cache's invalidation in a real story: play to the choice with a flow
     // switch in between, save before the third line, load it back and play on.
     const gpa = std.testing.allocator;
     var program = try compile.compile_source(gpa, source);

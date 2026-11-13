@@ -1,4 +1,4 @@
-//! Ink path strings, parsed and resolved without allocating (plan §4.1). Used on the control
+//! Ink path strings, parsed and resolved without allocating. Used on the control
 //! plane only: the loader, `choose_path_string`, `visit_count_at_path_string` and save/load.
 //!
 //! A path is components separated by `.`: a name (`knot`), an index into a container's content
@@ -303,7 +303,7 @@ const exact = false;
 const inexact = true;
 
 test "shuffle_hash sums UTF-16 code units like ink" {
-    // Goal: P2.4. Method: values from test/ground_truth/audit/unicode_paths.paths (ink on
+    // Values from test/ground_truth/audit/unicode_paths.paths (ink on
     // .NET 8), and a character outside the Basic Multilingual Plane.
     try std.testing.expectEqual(@as(u32, 0), shuffle_hash(""));
     try std.testing.expectEqual(@as(u32, 290), shuffle_hash("0.g-0"));
@@ -314,7 +314,7 @@ test "shuffle_hash sums UTF-16 code units like ink" {
 }
 
 test "parse components, relative paths and the root path" {
-    // Goal: the component grammar. Method: parse each kind and walk the components.
+    // The component grammar: parse each kind and walk the components.
     const path = try Path.parse(".^.knot.2", 8);
     try std.testing.expect(path.relative);
     var components = path.iterator();
@@ -330,7 +330,7 @@ test "parse components, relative paths and the root path" {
 }
 
 test "malformed paths return named errors" {
-    // Goal: negative space for the parser. Method: one string per error.
+    // Negative space for the parser: one string per error.
     try std.testing.expectError(error.EmptyComponent, Path.parse("a..b", 8));
     try std.testing.expectError(error.EmptyComponent, Path.parse("knot.", 8));
     try std.testing.expectError(error.EmptyComponent, Path.parse(".", 8));
@@ -339,7 +339,7 @@ test "malformed paths return named errors" {
 }
 
 test "absolute paths resolve through names, indices and nested containers" {
-    // Goal: the common absolute forms. Method: resolve against the test table.
+    // The common absolute forms: resolve against the test table.
     try expect_target("", root_origin, test_target(0, null, exact));
     try expect_target("knot.stitch", root_origin, test_target(3, null, exact));
     try expect_target("knot.stitch.2", root_origin, test_target(3, 2, exact));
@@ -349,7 +349,7 @@ test "absolute paths resolve through names, indices and nested containers" {
 }
 
 test "relative paths from a container and from a content item" {
-    // Goal: ink's two relative cases. Method: `.^` from a container goes to its parent; from a
+    // Ink's two relative cases: `.^` from a container goes to its parent; from a
     // content item the first `^` only leaves the item.
     const stitch: Origin = .{ .container = .from_int(3) };
     try expect_target(".^", stitch, test_target(2, null, exact));
@@ -362,8 +362,8 @@ test "relative paths from a container and from a content item" {
 }
 
 test "paths that stop matching are approximate" {
-    // Goal: ink's fallback for stale paths (for example after a story changed under a save).
-    // Method: a missing name, an index out of range, descending into plain content, and going
+    // Ink's fallback for stale paths (for example after a story changed under a save).
+    // A missing name, an index out of range, descending into plain content, and going
     // above the root.
     try expect_target("knot.missing", root_origin, test_target(2, null, inexact));
     try expect_target("knot.5", root_origin, test_target(2, null, inexact));

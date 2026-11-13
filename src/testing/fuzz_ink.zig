@@ -1,4 +1,4 @@
-//! An ink source generator for the fuzz targets (plan P11.1). The fuzzer's choices, read
+//! An ink source generator for the fuzz targets. The fuzzer's choices, read
 //! through `std.testing.Smith`, pick each construct, so the fuzzer explores ink instead of
 //! bytes: knots, stitches, functions, declarations, text, glue, tags, choices, gathers,
 //! diverts, tunnels, threads, conditionals, sequences, expressions and assignments.
@@ -441,7 +441,7 @@ pub fn generate_seeded(seed: u64, buffer: []u8, options: Options) []const u8 {
 }
 
 test "the same choices give the same source" {
-    // Goal: the generator reads only the Smith. Method: one seed generated twice.
+    // The generator reads only the Smith: one seed generated twice.
     var first: [source_bytes_max]u8 = undefined;
     var second: [source_bytes_max]u8 = undefined;
     const a = generate_seeded(7, &first, .{});
@@ -451,7 +451,7 @@ test "the same choices give the same source" {
 }
 
 test "most generated sources compile, and every construct appears" {
-    // Goal: the sources reach the stages after the parser. Method: 64 seeds compiled; the
+    // The sources reach the stages after the parser: 64 seeds compiled; the
     // constructs counted across all of them.
     const gpa = std.testing.allocator;
     var buffer: [source_bytes_max]u8 = undefined;
@@ -481,7 +481,7 @@ test "most generated sources compile, and every construct appears" {
 }
 
 test "splices change the source and stay in bounds" {
-    // Goal: the parser targets get broken input. Method: the same seed with and without
+    // The parser targets get broken input: the same seed with and without
     // splices.
     var plain: [source_bytes_max]u8 = undefined;
     var spliced: [source_bytes_max]u8 = undefined;

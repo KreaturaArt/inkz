@@ -1,4 +1,4 @@
-//! TigerStyle lint for inkz (plan §3, P0.8), run with `zig build lint`.
+//! TigerStyle lint for inkz, run with `zig build lint`.
 //!
 //! Rules: function length, line length, recursion (a name-based call graph), `usize` struct
 //! fields and snake_case file names on all code, and assertion density (`assert` and `verify`
@@ -37,7 +37,7 @@ pub const Rule = enum {
     usize_field,
     assertion_density,
     recursion,
-    /// Path-string resolution, string hashing or `mem.eql` in the VM's hot path (plan §9).
+    /// Path-string resolution, string hashing or `mem.eql` in the VM's hot path.
     hot_path,
 };
 
@@ -668,7 +668,7 @@ fn group_components(arena: Allocator, components: []const u32) !ComponentMembers
     return .{ .first = counts[0..components_count], .first_next = counts[1..], .nodes = nodes };
 }
 
-/// `assert` and `verify` (the D20 convention, which asserts on `check()`) count as assertions.
+/// `assert` and `verify` (the `check()`/`verify()` convention) count as assertions.
 fn is_assertion(name: []const u8) bool {
     assert(name.len > 0);
     const result = std.mem.eql(u8, name, "assert") or std.mem.eql(u8, name, "verify");
@@ -865,7 +865,7 @@ const clean_function =
 ;
 
 test "a clean file has no problems" {
-    // Goal: the rules don't fire on code that follows them. Method: lint one small function.
+    // The rules don't fire on code that follows them: lint one small function.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const samples = [_][2][:0]const u8{.{ "src/core/half.zig", clean_function }};
@@ -874,7 +874,7 @@ test "a clean file has no problems" {
 }
 
 test "file names must be snake_case" {
-    // Goal: the file-name rule. Method: check accepted and rejected names directly.
+    // The file-name rule: check accepted and rejected names directly.
     try std.testing.expect(is_snake_case_file_name("string_pool.zig"));
     try std.testing.expect(is_snake_case_file_name("utf16.zig"));
     try std.testing.expect(!is_snake_case_file_name("StringPool.zig"));
@@ -884,7 +884,7 @@ test "file names must be snake_case" {
 }
 
 test "long lines and long functions are reported" {
-    // Goal: line-length and function-length rules. Method: generate a 71-line function whose
+    // Line-length and function-length rules: generate a 71-line function whose
     // first line is also 101 columns wide.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -900,7 +900,7 @@ test "long lines and long functions are reported" {
 }
 
 test "the VM's hot path may not compare or hash strings" {
-    // Goal: plan §9's grep gate. Method: the same line in the VM and in another file, and in
+    // The hot-path grep gate: the same line in the VM and in another file, and in
     // a comment.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -913,7 +913,7 @@ test "the VM's hot path may not compare or hash strings" {
 }
 
 test "a suppression comment allows a long function" {
-    // Goal: suppressions need the comment block above the function. Method: the same long
+    // Suppressions need the comment block above the function: the same long
     // function with a reasoned suppression and a doc comment in between.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -928,7 +928,7 @@ test "a suppression comment allows a long function" {
 }
 
 test "usize struct fields are reported, usize locals are not" {
-    // Goal: the usize-field rule. Method: one struct with a usize field and a u32 field, and a
+    // The usize-field rule: one struct with a usize field and a u32 field, and a
     // function using usize only for a local.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -942,8 +942,8 @@ test "usize struct fields are reported, usize locals are not" {
 }
 
 test "library code below one assertion per function is reported" {
-    // Goal: the density rule, verify() counting as an assertion, and the file-level
-    // suppression. Method: sparse and verified samples, with and without the suppression.
+    // The density rule, verify() counting as an assertion, and the file-level
+    // suppression. Sparse and verified samples, with and without the suppression.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const sparse =
@@ -987,7 +987,7 @@ test "tests, harnesses and tools have no density rule" {
 }
 
 test "direct, mutual and cross-file recursion are reported" {
-    // Goal: the call-graph rule. Method: a self-call, a two-function cycle through a method
+    // The call-graph rule: a self-call, a two-function cycle through a method
     // call, and a cycle across two files through an import alias.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1038,7 +1038,7 @@ test "direct, mutual and cross-file recursion are reported" {
 }
 
 test "type-returning functions are exempt from length and density" {
-    // Goal: the generic-type idiom isn't one long function. Method: a 72-line type function
+    // The generic-type idiom isn't one long function: a 72-line type function
     // whose methods each follow the rules.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1062,7 +1062,7 @@ test "type-returning functions are exempt from length and density" {
 }
 
 test "calls into std and through field chains are not recursion" {
-    // Goal: the common false positives are gone. Method: functions named like std functions
+    // The common false positives are gone: functions named like std functions
     // that call them through `std.x`, an alias of std, and a field chain.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
@@ -1091,8 +1091,8 @@ test "calls into std and through field chains are not recursion" {
 }
 
 test "a suppressed false positive is not reported" {
-    // Goal: name-based resolution can confuse two `init`s; a reasoned suppression silences it.
-    // Method: `init` calls `other.init()` on a local whose type has its own `init`.
+    // Name-based resolution can confuse two `init`s; a reasoned suppression silences it.
+    // `init` calls `other.init()` on a local whose type has its own `init`.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const source =
@@ -1109,7 +1109,7 @@ test "a suppressed false positive is not reported" {
 }
 
 test "unparsable files are reported" {
-    // Goal: syntax errors are reported. Method: lint a broken file.
+    // Syntax errors are reported: lint a broken file.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/core/broken.zig", "fn (" }});

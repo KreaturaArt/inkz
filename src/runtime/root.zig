@@ -1,4 +1,4 @@
-//! The runtime (plan §4.5–4.8): values, state and the VM.
+//! The runtime: values, state and the VM.
 
 pub const value = @import("value.zig");
 pub const native = @import("native.zig");

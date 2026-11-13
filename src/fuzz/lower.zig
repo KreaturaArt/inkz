@@ -1,4 +1,4 @@
-//! Fuzz target for lowering and emission, and the JSON serializer (plan P11.6): generated
+//! Fuzz target for lowering and emission, and the JSON serializer: generated
 //! ink through the whole compiler. A compiled program passes Program.check, compiling is
 //! deterministic, and its JSON loads back into the same program (compared as images).
 

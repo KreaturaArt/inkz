@@ -1,4 +1,4 @@
-//! Fuzz target for the host API (plan P11.10): on a generated story, a fuzzer-chosen sequence
+//! Fuzz target for the host API: on a generated story, a fuzzer-chosen sequence
 //! of the calls a host makes, with names and values from the story's pool and outside it.
 //! Every call returns a result or an error, and the state checks after each one.
 

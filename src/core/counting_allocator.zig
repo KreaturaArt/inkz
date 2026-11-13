@@ -1,5 +1,5 @@
-//! An allocator that counts what passes through it (plan P0.5). The zero-allocation gates
-//! (P5.11) wrap a story's allocator, run `cont`, `choose_choice_index` and the rest, and
+//! An allocator that counts what passes through it. The zero-allocation gates
+//! wrap a story's allocator, run `cont`, `choose_choice_index` and the rest, and
 //! assert that `growths()` didn't change.
 
 const std = @import("std");
@@ -127,7 +127,7 @@ pub const CountingAllocator = struct {
 };
 
 test "counts allocations, frees and live bytes" {
-    // Goal: the counters match what was done. Method: allocate, grow through an ArrayList,
+    // The counters match what was done: allocate, grow through an ArrayList,
     // then free everything, and check each counter.
     var counting = CountingAllocator.init(std.testing.allocator);
     const gpa = counting.allocator();
@@ -144,7 +144,7 @@ test "counts allocations, frees and live bytes" {
 }
 
 test "a gate sees no growth when nothing allocates" {
-    // Goal: the pattern the zero-allocation gates use. Method: take growths() before and after
+    // The pattern the zero-allocation gates use: take growths() before and after
     // work that only uses preallocated memory.
     var counting = CountingAllocator.init(std.testing.allocator);
     const gpa = counting.allocator();

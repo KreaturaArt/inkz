@@ -1,4 +1,4 @@
-//! The `extra` side table (plan T9): structs too wide for an instruction operand are stored
+//! The `extra` side table: structs too wide for an instruction operand are stored
 //! as consecutive `u32` words, and the instruction keeps their index.
 //!
 //! A struct's fields must each fit one word: `u32`, `i32`, `f32`, `bool`, an enum whose tag
@@ -104,7 +104,7 @@ pub fn get(comptime T: type, words: []const u32, index: u32) Decoded(T) {
 
 /// Whether the words at `index` decode as a `T`: each bool word is 0 or 1, and each enum
 /// word fits its tag type and, for a closed enum, names a value. Checking untrusted data
-/// (program images, P10.5) calls this before `get`, which asserts it.
+/// (program images) calls this before `get`, which asserts it.
 pub fn decodable(comptime T: type, words: []const u32, index: u32) bool {
     const info = @typeInfo(T).@"struct";
     if (index > words.len or info.field_names.len > words.len - index) return false;
@@ -182,8 +182,8 @@ fn from_word(comptime Field: type, word: u32) Field {
 const StringId = @import("index.zig").StringId;
 
 test "a struct with every field kind and a trailing slice round-trips" {
-    // Goal: every supported field kind survives, and the tail is found through `end`.
-    // Method: store a struct, then a 3-word tail, and read both back.
+    // Every supported field kind survives, and the tail is found through `end`.
+    // Store a struct, then a 3-word tail, and read both back.
     const gpa = std.testing.allocator;
     const Flags = packed struct(u32) { sticky: bool, invisible: bool, rest: u30 = 0 };
     const Kind = enum(u8) { divert, call, tunnel };
@@ -219,7 +219,7 @@ test "a struct with every field kind and a trailing slice round-trips" {
 }
 
 test "reserve then set fills a forward reference" {
-    // Goal: a struct can be written before its contents are known. Method: reserve, append
+    // A struct can be written before its contents are known: reserve, append
     // more words, then set the reserved struct and read it back.
     const gpa = std.testing.allocator;
     const Jump = struct { target: u32, condition: bool };

@@ -1,4 +1,4 @@
-//! Size guards for core types (plan T14, P1.7). Every hot-path type registers its size here,
+//! Size guards for core types. Every hot-path type registers its size here,
 //! so a field added in passing can't silently grow memory use or `Limits.bytes_total`.
 //!
 //! Types stored as SoA (`std.MultiArrayList`) are measured with `soa_bytes`: the sum of the
@@ -24,15 +24,15 @@ pub fn soa_bytes(comptime T: type) comptime_int {
 }
 
 test "soa_bytes adds field sizes without padding" {
-    // Goal: the helper measures SoA cost, not struct size. Method: a u8 + u32 struct is 8 B as
-    // a struct but 5 B per element in SoA (plan T2, T11).
+    // The helper measures SoA cost, not struct size: a u8 + u32 struct is 8 B as
+    // a struct but 5 B per element in SoA.
     const Sample = struct { tag: u8, payload: u32 };
     try std.testing.expectEqual(8, @sizeOf(Sample));
     try std.testing.expectEqual(5, soa_bytes(Sample));
 }
 
 test "index newtypes are one word" {
-    // Goal: typed indices cost nothing over u32. Method: check each one.
+    // Typed indices cost nothing over u32: check each one.
     const types = [_]type{
         index.ContainerIndex, index.InstructionIndex, index.StringId,      index.NodeIndex,
         index.TokenIndex,     index.GlobalSlot,       index.ListItemIndex, index.ListOriginIndex,
@@ -42,7 +42,7 @@ test "index newtypes are one word" {
 }
 
 test "limits and stack headers stay small" {
-    // Goal: control structures don't bloat the per-story footprint. Method: limits are all u32
+    // Control structures don't bloat the per-story footprint: limits are all u32
     // fields; a stack header is a slice plus a count.
     const field_count = @typeInfo(limits.Limits).@"struct".field_names.len;
     try std.testing.expectEqual(field_count * 4, @sizeOf(limits.Limits));
@@ -50,8 +50,8 @@ test "limits and stack headers stay small" {
 }
 
 test "planned element sizes leave room for their contents" {
-    // Goal: the budget's planned sizes are consistent with each other before the types exist.
-    // Method: a temp is a name plus a value; a global is a value plus its default.
+    // The budget's planned sizes are consistent with each other before the types exist.
+    // A temp is a name plus a value; a global is a value plus its default.
     const bytes = limits.element_bytes;
     try std.testing.expectEqual(@sizeOf(index.StringId) + bytes.value, bytes.temp);
     try std.testing.expectEqual(2 * bytes.value, bytes.global);
@@ -59,7 +59,7 @@ test "planned element sizes leave room for their contents" {
 }
 
 test "an instruction is 5 bytes in SoA" {
-    // Goal: plan D1. Method: soa_bytes of Instruction, and the opcode alone is one byte.
+    // Soa_bytes of Instruction, and the opcode alone is one byte.
     try std.testing.expectEqual(5, soa_bytes(instruction.Instruction));
     try std.testing.expectEqual(1, @sizeOf(instruction.Opcode));
 }
