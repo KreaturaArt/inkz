@@ -283,7 +283,7 @@ pub fn records_of(
         zoned += totals.exclusive_ns[zone];
         const exclusive: f64 = @floatFromInt(totals.exclusive_ns[zone]);
         var record = base;
-        record.zone = @tagName(@as(profile.Zone, @enumFromInt(zone)));
+        record.zone = @tagName(@as(profile.Zone, @fromBackingInt(@intCast(zone))));
         record.calls_per_iteration = @as(f64, @floatFromInt(totals.calls[zone])) / iterations;
         record.exclusive_ns_per_iteration = exclusive / iterations;
         const inclusive: f64 = @floatFromInt(totals.inclusive_ns[zone]);
@@ -324,7 +324,11 @@ fn print_measurement(
         story, measurement.workload, measurement.iterations, wall, plain, sign, overhead,
     });
     std.debug.print("  {s:<26} {s:>14} {s:>7} {s:>14} {s:>10}\n", .{
-        "zone", "exclusive µs", "share", "inclusive µs", "calls",
+        "zone",
+        "exclusive µs",
+        "share",
+        "inclusive µs",
+        "calls",
     });
     for (records) |record| {
         std.debug.print("  {s:<26} {d:>14.2} {d:>6.1}% {d:>14.2} {d:>10.1}\n", .{

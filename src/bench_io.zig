@@ -293,7 +293,9 @@ pub fn main(init: std.process.Init) !void {
     const dirty = if (run.dirty) " (dirty)" else "";
     std.debug.print("{s} {s}{s}, {s}\n", .{ run.mode, run.commit, dirty, run.cpu });
     std.debug.print("{s:<22} {s:<6} {s:<6} {s:>10} {s:>12} {s:>10}\n", .{
-        "story", "format", "op", "bytes", "median µs", "MB/s",
+        "story", "format", "op", "bytes",
+        "median µs",
+        "MB/s",
     });
     for (stories) |story| {
         const limit: std.Io.Limit = .limited(1 << 26);

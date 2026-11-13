@@ -59,7 +59,7 @@ const Term = enum {
 };
 
 const binary_operators = [_][]const u8{
-    " + ", " - ", " * ", " / ", " % ", " == ", " != ", " < ", " > ", " <= ", " >= ",
+    " + ",   " - ",  " * ", " / ",  " % ",   " == ", " != ", " < ", " > ", " <= ", " >= ",
     " and ", " or ", " ? ", " !? ", " has ",
 };
 const words = [_][]const u8{ "Hello", "the cat", "a", "", "!", "  spaced  ", "x\\{y\\}" };
@@ -456,8 +456,10 @@ test "most generated sources compile, and every construct appears" {
     const gpa = std.testing.allocator;
     var buffer: [source_bytes_max]u8 = undefined;
     const markers = [_][]const u8{
-        "=== k", "= s0", "function", "VAR", "CONST", "LIST", "EXTERNAL", "<>", "#", "*", "+",
-        "- ", "->->", "-> k", "<- ", "~ ", "{&", "{~", "{!", "stopping", "RANDOM", "TURNS_SINCE",
+        "=== k",    "= s0",     "function", "VAR",         "CONST", "LIST",
+        "EXTERNAL", "<>",       "#",        "*",           "+",     "- ",
+        "->->",     "-> k",     "<- ",      "~ ",          "{&",    "{~",
+        "{!",       "stopping", "RANDOM",   "TURNS_SINCE",
     };
     var seen: [markers.len]bool = @splat(false);
     var compiled: u32 = 0;

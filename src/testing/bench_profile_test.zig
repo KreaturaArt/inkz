@@ -10,8 +10,8 @@ test "records are the zones by exclusive time, then the time outside zones" {
     // Goal: the per-iteration figures and the outside time. Method: made-up totals for two
     // zones over 4 iterations and 10 µs of wall time.
     var totals: profile.Totals = .{};
-    const parse = @intFromEnum(profile.Zone.compile_parse);
-    const sema = @intFromEnum(profile.Zone.compile_sema);
+    const parse = @backingInt(profile.Zone.compile_parse);
+    const sema = @backingInt(profile.Zone.compile_sema);
     totals.calls[parse] = 4;
     totals.inclusive_ns[parse] = 6000;
     totals.exclusive_ns[parse] = 2000;
