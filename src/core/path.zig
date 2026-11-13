@@ -106,7 +106,6 @@ pub const Iterator = struct {
     remaining: u32,
 
     pub fn next(iterator: *Iterator) ?Component {
-        assert(iterator.remaining <= std.math.maxInt(u32));
         if (iterator.remaining == 0) return null;
         const part = iterator.parts.next().?;
         iterator.remaining -= 1;

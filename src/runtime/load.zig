@@ -88,7 +88,6 @@ const Loader = struct {
     parking_words: u64 = 0,
 
     fn state(loader: *Loader) *state_module.State {
-        assert(loader.tree.nodes.len > 0);
         assert(loader.story.state.memory.len > 0);
         return &loader.story.state;
     }
@@ -101,15 +100,11 @@ const Loader = struct {
     }
 
     fn integer(loader: *Loader, node: u32) Error!i32 {
-        assert(loader.tree.nodes.len > 0);
-        assert(node < loader.tree.nodes.len);
         return loader.tree.integer(node) catch error.InvalidSave;
     }
 
     fn kind_is(loader: *Loader, node: u32, kind: json_tree.Kind) Error!void {
-        assert(loader.tree.nodes.len > 0);
         assert(@backingInt(kind) <= @backingInt(json_tree.Kind.null));
-        assert(node < loader.tree.nodes.len);
         if (loader.tree.nodes[node].kind != kind) return error.InvalidSave;
     }
 
@@ -151,7 +146,6 @@ const Loader = struct {
     }
 
     fn document(loader: *Loader) Error!void {
-        assert(loader.tree.nodes.len > 0);
         assert(loader.tree.nodes[0].kind == .object);
         const tree = loader.tree;
         const version = try loader.integer(try loader.member(0, "inkSaveVersion"));
@@ -219,7 +213,6 @@ const Loader = struct {
         node: u32,
         buffer: *[state_module.flow_name_bytes_max]u8,
     ) Error![]const u8 {
-        assert(node < loader.tree.nodes.len);
         assert(buffer.len == state_module.flow_name_bytes_max);
         try loader.kind_is(node, .string);
         var writer: std.Io.Writer = .fixed(buffer);
@@ -231,7 +224,6 @@ const Loader = struct {
     /// One flow (ink's Flow constructor): loaded into the live buffers, then parked unless
     /// it is the current flow.
     fn flow(loader: *Loader, node: u32, name: []const u8, is_current: bool) Error!void {
-        assert(node < loader.tree.nodes.len);
         assert(name.len > 0);
         try loader.kind_is(node, .object);
         const s = loader.state();
@@ -273,7 +265,6 @@ const Loader = struct {
     }
 
     fn call_stack(loader: *Loader, node: u32, tally: *Tally) Error!void {
-        assert(node < loader.tree.nodes.len);
         const threads = try loader.member(node, "threads");
         try loader.kind_is(threads, .array);
         const counter = try loader.integer(try loader.member(node, "threadCounter"));
@@ -316,7 +307,6 @@ const Loader = struct {
         tally: *Tally,
         destination: Destination,
     ) Error!LoadedThread {
-        assert(node < loader.tree.nodes.len);
         assert(@backingInt(destination) <= 1);
         try loader.kind_is(node, .object);
         const counter = try loader.integer(try loader.member(node, "threadIndex"));
@@ -337,8 +327,6 @@ const Loader = struct {
     }
 
     fn frame(loader: *Loader, node: u32, tally: *Tally, destination: Destination) Error!void {
-        assert(node < loader.tree.nodes.len);
-        assert(tally.frames < std.math.maxInt(u32));
         try loader.kind_is(node, .object);
         const kind_number = try loader.integer(try loader.member(node, "type"));
         if (kind_number < 0 or kind_number > 2) return error.InvalidSave;
@@ -395,8 +383,6 @@ const Loader = struct {
     }
 
     fn output_stream(loader: *Loader, node: u32, tally: *Tally) Error!void {
-        assert(node < loader.tree.nodes.len);
-        assert(tally.items < std.math.maxInt(u32));
         try loader.kind_is(node, .array);
         var walker = loader.tree.children(node);
         while (walker.next()) |item_node| {
@@ -412,8 +398,6 @@ const Loader = struct {
     }
 
     fn output_item(loader: *Loader, node: u32) Error!Item {
-        assert(node < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         const tree = loader.tree;
         if (tree.nodes[node].kind == .object) {
             const text = try loader.member(node, "#");
@@ -466,8 +450,6 @@ const Loader = struct {
     }
 
     fn decoded_length(loader: *Loader, node: u32) Error!u16 {
-        assert(node < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         const length = loader.tree.string_length(node) catch return error.InvalidSave;
         if (length > std.math.maxInt(u16)) return error.SaveTooLarge;
         return @intCast(length);
@@ -476,7 +458,6 @@ const Loader = struct {
     /// The decoded text of string `node` from byte `skip` on, as a new heap string. While
     /// validating, only its size is counted.
     fn string(loader: *Loader, node: u32, skip: u32) Error!value_module.StringReference {
-        assert(node < loader.tree.nodes.len);
         try loader.kind_is(node, .string);
         const length = loader.tree.string_length(node) catch return error.InvalidSave;
         if (length < skip) return error.InvalidSave;
@@ -494,7 +475,6 @@ const Loader = struct {
     }
 
     fn choices(loader: *Loader, node: u32, threads: ?u32, tally: *Tally) Error!void {
-        assert(node < loader.tree.nodes.len);
         assert(tally.choices == 0);
         try loader.kind_is(node, .array);
         if (threads) |object| try loader.kind_is(object, .object);
@@ -514,7 +494,6 @@ const Loader = struct {
 
     /// ink's JObjectToChoice and LoadFlowChoiceThreads.
     fn choice(loader: *Loader, node: u32, threads: ?u32, tally: *Tally) Error!void {
-        assert(node < loader.tree.nodes.len);
         assert(threads == null or threads.? < loader.tree.nodes.len);
         try loader.kind_is(node, .object);
         const text = try loader.string(try loader.member(node, "text"), 0);
@@ -553,7 +532,6 @@ const Loader = struct {
     /// one in choiceThreads.
     fn choice_thread(loader: *Loader, counter: u32, threads: ?u32, tally: *Tally) Error!u32 {
         assert(threads == null or threads.? < loader.tree.nodes.len);
-        assert(tally.snapshots < std.math.maxInt(u32));
         const s = loader.state();
         const snapshot_index = tally.snapshots;
         const frames_first = tally.snapshot_frames;
@@ -594,7 +572,6 @@ const Loader = struct {
     }
 
     fn variables(loader: *Loader, node: u32) Error!void {
-        assert(node < loader.tree.nodes.len);
         assert(loader.state().globals.len == loader.story.program.globals.len);
         try loader.kind_is(node, .object);
         const program = loader.story.program;
@@ -606,8 +583,6 @@ const Loader = struct {
     }
 
     fn evaluation(loader: *Loader, node: u32) Error!void {
-        assert(node < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         try loader.kind_is(node, .array);
         const capacity = loader.state().evaluation.capacity();
         if (loader.tree.count(node) > capacity) return error.SaveTooLarge;
@@ -621,7 +596,6 @@ const Loader = struct {
     const Counts = enum { visits, turns };
 
     fn counts(loader: *Loader, node: u32, which: Counts) Error!void {
-        assert(node < loader.tree.nodes.len);
         assert(@backingInt(which) <= 1);
         try loader.kind_is(node, .object);
         var members = loader.tree.children(node);
@@ -642,8 +616,6 @@ const Loader = struct {
 
     /// ink's JTokenToRuntimeObject for a value.
     fn load_value(loader: *Loader, node: u32) Error!Value {
-        assert(node < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         const tree = loader.tree;
         switch (tree.nodes[node].kind) {
             .number => {
@@ -667,7 +639,6 @@ const Loader = struct {
     }
 
     fn object_value(loader: *Loader, node: u32) Error!Value {
-        assert(node < loader.tree.nodes.len);
         assert(loader.tree.nodes[node].kind == .object);
         const tree = loader.tree;
         if (tree.get(node, "^->")) |path| {
@@ -725,7 +696,6 @@ const Loader = struct {
 
     fn list_item(loader: *Loader, name: u32) Error!index.ListItemIndex {
         assert(name < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         var buffer: [256]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buffer);
         loader.tree.decode(name, &writer) catch return error.InvalidSave;
@@ -755,8 +725,6 @@ const Loader = struct {
 
     /// The container at the path in string `node` (ink's ContentAtPath(...).container).
     fn container_at(loader: *Loader, node: u32) Error!ContainerIndex {
-        assert(node < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         const target = try loader.resolve(node);
         if (target.content_index != null) return error.SaveDoesNotMatchStory;
         return target.container;
@@ -765,15 +733,12 @@ const Loader = struct {
     /// ink's PointerAtPath: an index at the end points at that item; a container path points
     /// at the container itself.
     fn pointer_at(loader: *Loader, node: u32) Error!Pointer {
-        assert(node < loader.tree.nodes.len);
-        assert(loader.tree.nodes.len > 0);
         const target = try loader.resolve(node);
         const position = target.content_index orelse Pointer.container_self;
         return .{ .container = target.container, .index = position };
     }
 
     fn resolve(loader: *Loader, node: u32) Error!path_module.Target {
-        assert(node < loader.tree.nodes.len);
         try loader.kind_is(node, .string);
         var buffer: [1024]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buffer);
@@ -796,7 +761,6 @@ const Loader = struct {
 };
 
 fn live_thread(s: *state_module.State, counter: u32) ?call_stack_module.Thread {
-    assert(counter < std.math.maxInt(u32));
     assert(s.call_stack.threads.count > 0);
     for (s.call_stack.threads.slice()) |thread| {
         if (thread.counter == counter) return thread;
@@ -843,7 +807,6 @@ const Tally = struct {
 
     fn has_live_thread(tally: *const Tally, counter: u32) bool {
         assert(tally.live_count <= tally.live.len);
-        assert(counter < std.math.maxInt(u32));
         for (tally.live[0..tally.live_count]) |thread| {
             if (thread.counter == counter) return true;
         }

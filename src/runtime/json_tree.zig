@@ -45,7 +45,6 @@ pub const Tree = struct {
 
     pub fn raw(tree: Tree, node: u32) []const u8 {
         assert(tree.nodes[node].start <= tree.text.len);
-        assert(node < tree.nodes.len);
         const item = tree.nodes[node];
         return tree.text[item.start..][0..item.length];
     }
@@ -87,7 +86,6 @@ pub const Tree = struct {
 
     /// The decoded length of string `node`.
     pub fn string_length(tree: Tree, node: u32) Error!u32 {
-        assert(node < tree.nodes.len);
         assert(tree.nodes[node].kind == .string);
         if (!tree.nodes[node].escaped) return tree.nodes[node].length;
         var counter: std.Io.Writer.Discarding = .init(&.{});
@@ -97,7 +95,6 @@ pub const Tree = struct {
 
     /// Writes the decoded text of string `node`.
     pub fn decode(tree: Tree, node: u32, writer: *std.Io.Writer) !void {
-        assert(node < tree.nodes.len);
         assert(tree.nodes[node].kind == .string);
         return tree.decode_from(node, 0, writer);
     }
@@ -121,7 +118,6 @@ pub const Tree = struct {
     }
 
     fn string_equals(tree: Tree, node: u32, expected: []const u8) bool {
-        assert(node < tree.nodes.len);
         assert(expected.len < 256);
         var buffer: [256]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buffer);
@@ -130,7 +126,6 @@ pub const Tree = struct {
     }
 
     pub fn integer(tree: Tree, node: u32) Error!i32 {
-        assert(node < tree.nodes.len);
         if (tree.nodes[node].kind != .number) return error.InvalidJson;
         const text = tree.raw(node);
         assert(text.len > 0);
@@ -142,20 +137,17 @@ pub const Tree = struct {
     }
 
     pub fn is_float(tree: Tree, node: u32) bool {
-        assert(node < tree.nodes.len);
         assert(tree.nodes[node].kind == .number);
         return std.mem.indexOfAny(u8, tree.raw(node), ".eE") != null;
     }
 
     pub fn float(tree: Tree, node: u32) Error!f32 {
-        assert(node < tree.nodes.len);
         assert(tree.text.len > 0);
         if (tree.nodes[node].kind != .number) return error.InvalidJson;
         return std.fmt.parseFloat(f32, tree.raw(node)) catch error.InvalidJson;
     }
 
     pub fn boolean(tree: Tree, node: u32) Error!bool {
-        assert(node < tree.nodes.len);
         assert(tree.text.len > 0);
         const kind = tree.nodes[node].kind;
         if (kind != .true and kind != .false) return error.InvalidJson;

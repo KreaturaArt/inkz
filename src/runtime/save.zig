@@ -154,7 +154,6 @@ fn write_choice_threads(story: *Story, writer: *Writer, view: FlowView) Writer.E
 }
 
 fn thread_is_live(view: FlowView, counter: u32) bool {
-    assert(counter < std.math.maxInt(u32));
     assert(view.buffers.threads.len > 0);
     for (view.buffers.threads) |thread| {
         if (thread.counter == counter) return true;
@@ -170,7 +169,6 @@ fn write_thread(
     counter: u32,
     previous: Pointer,
 ) Writer.Error!void {
-    assert(story.state.memory.len > 0);
     assert(frames.len > 0);
     try writer.writeAll("{\"callstack\":[");
     for (frames, 0..) |frame, position| {
@@ -230,7 +228,6 @@ fn write_object_path(story: *Story, writer: *Writer, pointer: Pointer) Writer.Er
 }
 
 fn write_item(story: *Story, writer: *Writer, item: Item) Writer.Error!void {
-    assert(story.state.memory.len > 0);
     switch (item.kind) {
         .text => {
             if (item.class == .newline) return writer.writeAll("\"\\n\"");
@@ -257,7 +254,6 @@ fn write_choice(
     choice: Choice,
     choice_index: u32,
 ) Writer.Error!void {
-    assert(story.state.memory.len > 0);
     assert(choice.tags_first + choice.tags_count <= view.buffers.tags.len);
     try writer.writeAll("{\"text\":");
     try write_json_string(writer, story.text_of(choice.text));
@@ -333,7 +329,6 @@ fn write_counts(story: *Story, writer: *Writer, counts: Counts) Writer.Error!voi
 
 /// ink's Json.WriteRuntimeObject for a value.
 fn write_value(story: *Story, writer: *Writer, value: Value) Writer.Error!void {
-    assert(story.state.memory.len > 0);
     switch (value) {
         .null => try writer.writeAll("\"void\""),
         .integer => |number| try writer.print("{d}", .{number}),

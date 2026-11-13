@@ -281,7 +281,6 @@ pub const State = struct {
     };
 
     pub fn shape_of(program: *const Program) Limits.ProgramShape {
-        assert(program.globals.len < std.math.maxInt(u32));
         assert(program.containers.len > 0);
         return .{
             .count_slots = program.count_slots_count,
@@ -307,7 +306,6 @@ pub const State = struct {
 
     pub fn deinit(state: *State, gpa: Allocator) void {
         assert(state.memory.len == state.limits.bytes_total(shape_of(state.program)));
-        assert(state.memory.len > 0);
         gpa.free(state.memory);
         state.* = undefined;
     }
@@ -316,7 +314,6 @@ pub const State = struct {
     /// container nesting of the program (the visit-counting walk's scratch). Observers are
     /// the story's (`Story.usage`).
     pub fn usage(state: *const State) limits_module.Usage {
-        assert(state.memory.len > 0);
         const stack = &state.call_stack;
         const choices = &state.choices;
         const result: limits_module.Usage = .{
@@ -349,7 +346,6 @@ pub const State = struct {
     /// The story's starting state: one thread at the root, empty output and choices, zeroed
     /// counts, globals undefined until the global declaration has run.
     pub fn reset(state: *State) void {
-        assert(state.memory.len > 0);
         state.evaluation.clear();
         state.call_stack.reset(.start_of(Program.root));
         state.output.clear();
@@ -409,7 +405,6 @@ pub const State = struct {
     /// the root set of heap compaction.
     pub fn visit(state: *State, visitor: anytype) void {
         assert(@TypeOf(visitor) != void);
-        assert(state.memory.len > 0);
         visit_flow(state.live_flow(), visitor);
         visit_values(state.globals, visitor);
         visit_values(state.global_defaults, visitor);
@@ -522,7 +517,6 @@ pub const State = struct {
     /// flow, the shared arrays and scalars, and the used heap. Values hash by tag and payload,
     /// so padding never counts. For tests of take and restore, and of determinism.
     pub fn hash(state: *const State) u64 {
-        assert(state.memory.len > 0);
         var hasher: std.hash.Wyhash = .init(0);
         inline for (flow_buffers) |buffer| {
             const elements = state.flow_stack(buffer).slice();
@@ -551,7 +545,6 @@ pub const State = struct {
     }
 
     pub fn check(state: *State) Fault {
-        assert(state.memory.len > 0);
         if (state.call_stack.check() != .ok) return .call_stack;
         if (state.output.check() != .ok) return .output;
         if (state.choices.check() != .ok) return .choices;
@@ -569,7 +562,6 @@ pub const State = struct {
     }
 
     pub fn verify(state: *State) void {
-        assert(state.memory.len > 0);
         fault.verify(state.check());
     }
 };
@@ -586,7 +578,6 @@ pub fn visit_flow(buffers: FlowBuffers, visitor: anytype) void {
 }
 
 fn visit_items(items: []output_module.Item, visitor: anytype) void {
-    assert(items.len < std.math.maxInt(u32));
     for (items) |*item| {
         if (item.kind == .text or item.kind == .tag) visitor.string(&item.string);
     }
@@ -594,7 +585,6 @@ fn visit_items(items: []output_module.Item, visitor: anytype) void {
 
 pub fn visit_values(values: []Value, visitor: anytype) void {
     assert(@TypeOf(visitor) != void);
-    assert(values.len < std.math.maxInt(u32));
     for (values) |*value| {
         switch (value.*) {
             .string => |*reference| visitor.string(reference),
@@ -607,7 +597,6 @@ pub fn visit_values(values: []Value, visitor: anytype) void {
 
 pub fn visit_temps(temps: []Temp, visitor: anytype) void {
     assert(@TypeOf(visitor) != void);
-    assert(temps.len < std.math.maxInt(u32));
     for (temps) |*temp| {
         switch (temp.value) {
             .string => |*reference| visitor.string(reference),
@@ -619,7 +608,6 @@ pub fn visit_temps(temps: []Temp, visitor: anytype) void {
 }
 
 fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
-    assert(values.len < std.math.maxInt(u32));
     for (values) |value| hash_value(hasher, value);
     assert(@typeInfo(@TypeOf(hasher)) == .pointer);
 }
@@ -637,7 +625,6 @@ fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
 }
 
 fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
-    assert(temps.len < std.math.maxInt(u32));
     for (temps) |temp| {
         std.hash.autoHash(hasher, temp.name);
         hash_value(hasher, temp.value);
@@ -646,7 +633,6 @@ fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
 
 /// Field by field, so struct padding never counts.
 fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
-    assert(records.len < std.math.maxInt(u32));
     for (records) |record| std.hash.autoHash(hasher, record);
     assert(@typeInfo(@TypeOf(records)) == .pointer);
 }

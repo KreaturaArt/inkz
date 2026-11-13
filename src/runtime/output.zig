@@ -202,7 +202,6 @@ pub const Output = struct {
 
     /// Glue: newlines and whitespace after the last real text are removed, then the glue goes in.
     pub fn push_glue(output: *Output) Error!void {
-        assert(output.items.count <= output.items.buffer.len);
         output.trim_newlines();
         output.items.push(.command(.glue)) catch return error.OutputLimit;
         assert(output.items.peek().?.kind == .glue);
@@ -220,7 +219,6 @@ pub const Output = struct {
 
     /// A finished tag value (a v20 tag literal, or a tag rescued from string evaluation).
     pub fn push_tag(output: *Output, string: StringReference, start: u32, length: u32) Error!void {
-        assert(output.items.count <= output.items.buffer.len);
         if (length > std.math.maxInt(u16)) return error.TextTooLong;
         output.items.push(.{
             .string = string,
@@ -234,7 +232,6 @@ pub const Output = struct {
 
     /// ink's TrimNewlinesFromOutputStream.
     fn trim_newlines(output: *Output) void {
-        assert(output.items.count <= output.items.buffer.len);
         const items = output.items.slice();
         var remove_from: ?usize = null;
         var position = items.len;
@@ -259,7 +256,6 @@ pub const Output = struct {
 
     /// ink's RemoveExistingGlue: glue after the last command goes.
     fn remove_existing_glue(output: *Output) void {
-        assert(output.items.count <= output.items.buffer.len);
         const items = output.items.slice();
         var first_kept: usize = items.len;
         while (first_kept > 0 and items[first_kept - 1].kind != .begin_string and
@@ -280,7 +276,6 @@ pub const Output = struct {
     /// ink's outputStreamEndsInNewline.
     pub fn ends_in_newline(output: *const Output) bool {
         assert(output.string_marks.count <= output.items.count);
-        assert(output.items.count <= output.items.buffer.len);
         const items = output.items.slice();
         var position = items.len;
         while (position > 0) {
@@ -298,17 +293,14 @@ pub const Output = struct {
 
     /// ink's outputStreamContainsContent: any text at all.
     pub fn contains_content(output: *const Output) bool {
-        assert(output.items.count <= output.items.buffer.len);
         for (output.items.slice()) |item| {
             if (item.kind == .text) return true;
         }
-        assert(output.items.count < std.math.maxInt(u32));
         return false;
     }
 
     /// ink's TrimWhitespaceFromFunctionEnd, when a function returns.
     pub fn trim_function_end(output: *Output, function_start: u32) void {
-        assert(output.items.count <= output.items.buffer.len);
         const start: usize = if (function_start == no_function_start) 0 else function_start;
         const items = output.items.slice();
         var position = items.len;
@@ -364,7 +356,6 @@ pub const Output = struct {
 
     /// The current text: text outside tags, cleaned as ink's CleanOutputWhitespace does.
     pub fn write_text(output: *const Output, strings: anytype, writer: *std.Io.Writer) !void {
-        assert(output.items.count <= output.items.buffer.len);
         var cleaner: Cleaner = .{ .writer = writer };
         var in_tag = false;
         for (output.items.slice()) |item| {
@@ -380,7 +371,6 @@ pub const Output = struct {
 
     /// The current tags, as ink's currentTags builds them; `tag(text)` is called for each.
     pub fn collect_tags(output: *const Output, strings: anytype, sink: anytype) !void {
-        assert(output.items.count <= output.items.buffer.len);
         var buffer: [1024]u8 = undefined;
         var pending: std.Io.Writer = .fixed(&buffer);
         var in_tag = false;

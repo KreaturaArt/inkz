@@ -27,7 +27,6 @@ pub fn Index(comptime name: []const u8) type {
         pub fn to_int(index: Self) u32 {
             assert(index != .none);
             const value = @backingInt(index);
-            assert(value < std.math.maxInt(u32));
             return value;
         }
 

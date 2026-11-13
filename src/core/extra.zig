@@ -13,7 +13,6 @@ pub const ExtraBuilder = struct {
     words: std.ArrayList(u32) = .empty,
 
     pub fn deinit(builder: *ExtraBuilder, gpa: Allocator) void {
-        assert(builder.words.items.len <= std.math.maxInt(u32));
         builder.words.deinit(gpa);
         builder.* = undefined;
         assert(@sizeOf(ExtraBuilder) > 0);
@@ -22,7 +21,6 @@ pub const ExtraBuilder = struct {
     pub fn count(builder: *const ExtraBuilder) u32 {
         const words_count: u32 = @intCast(builder.words.items.len);
         assert(words_count == builder.words.items.len);
-        assert(words_count <= std.math.maxInt(u32));
         return words_count;
     }
 

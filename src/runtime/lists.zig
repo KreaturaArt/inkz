@@ -49,7 +49,6 @@ pub const ListSlab = struct {
     pub const unmarked = std.math.maxInt(u32);
 
     pub fn init(words: []u32) ListSlab {
-        assert(words.len <= std.math.maxInt(u32));
         const slab: ListSlab = .{ .words = words };
         assert(slab.used == 0);
         return slab;
@@ -61,7 +60,6 @@ pub const ListSlab = struct {
         items: []const ListItemIndex,
         origins: []const ListOriginIndex,
     ) error{ListLimit}!ListReference {
-        assert(slab.used <= slab.words.len);
         const words_count = header_words + items.len + origins.len;
         if (words_count > slab.words.len - slab.used) return error.ListLimit;
         const at = slab.used;
@@ -74,14 +72,12 @@ pub const ListSlab = struct {
         for (origins, 0..) |origin, offset| slab.words[origins_at + offset] = @backingInt(origin);
         slab.used += @intCast(words_count);
         slab.peak = @max(slab.peak, slab.used);
-        assert(slab.used <= slab.words.len);
         return @fromBackingInt(@intCast(at));
     }
 
     /// Drops every list from `top` on; `top` must be an object boundary.
     pub fn truncate(slab: *ListSlab, top: u32) void {
         assert(top <= slab.used);
-        assert(slab.used <= slab.words.len);
         if (std.debug.runtime_safety) @memset(slab.words[top..slab.used], unmarked);
         slab.used = top;
     }
@@ -89,7 +85,6 @@ pub const ListSlab = struct {
     /// Whether `list` can be a list's start: its header fits, counts fit the used words.
     /// Not proof that it is one; a full walk would be (heap.zig's compaction does that).
     pub fn check_reference(slab: *const ListSlab, list: ListReference) bool {
-        assert(slab.used <= slab.words.len);
         const at: u64 = @backingInt(list);
         if (at + header_words > slab.used) return false;
         const index_at: u32 = @intCast(at);
@@ -108,7 +103,6 @@ pub const ListSlab = struct {
     }
 
     pub fn view(slab: *const ListSlab, list: ListReference) View {
-        assert(slab.used <= slab.words.len);
         const at = @backingInt(list);
         const total = slab.object_words(at);
         const items_count = slab.words[at + 1];
@@ -180,7 +174,6 @@ pub const Lists = struct {
     /// ink's `originNames`: the items' origins in order when there are items, else the
     /// declared ones. Copies of a list keep these as their declared origins.
     fn origin_names(lists: Lists, list: View, builder: *Builder) error{ListLimit}!void {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(builder.origins_count == 0);
         if (list.items.len == 0) {
             for (list.origins) |origin| try builder.add_origin(origin);
@@ -226,7 +219,6 @@ pub const Lists = struct {
         minimum: Value,
         maximum: Value,
     ) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         const view = lists.slab.view(list);
         var builder: Builder = .{};
         if (view.items.len == 0) return builder.finish(lists.slab);
@@ -259,7 +251,6 @@ pub const Lists = struct {
     /// empty list if the origin has no such item, or null if there is no such origin
     /// (ink's ListFromInt).
     pub fn from_int(lists: Lists, origin_name: []const u8, value: i32) Error!?Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         const strings = &lists.program.strings;
         for (lists.program.list_origins, 0..) |origin, position| {
             if (!std.mem.eql(u8, strings.get(origin.name), origin_name)) continue;
@@ -270,13 +261,11 @@ pub const Lists = struct {
             }
             return try builder.finish(lists.slab);
         }
-        assert(lists.program.list_origins.len < std.math.maxInt(u32));
         return null;
     }
 
     /// The item at `position` in iteration (insertion) order, as a one-item list.
     pub fn item_list(lists: Lists, list: ListReference, position: u32) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         const view = lists.slab.view(list);
         assert(position < view.items.len);
         const item = view.items[position];
@@ -288,7 +277,6 @@ pub const Lists = struct {
 
     /// An empty list declared with `old`'s origins (ink's RetainListOriginsForAssignment).
     pub fn empty_with_origins_of(lists: Lists, old: ListReference) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         var builder: Builder = .{};
         try lists.origin_names(lists.slab.view(old), &builder);
         assert(builder.items_count == 0);
@@ -296,7 +284,6 @@ pub const Lists = struct {
     }
 
     pub fn count(lists: Lists, list: ListReference) u32 {
-        assert(lists.slab.used <= lists.slab.words.len);
         const items_count: u32 = @intCast(lists.slab.view(list).items.len);
         assert(items_count <= lists.program.list_items.len);
         return items_count;
@@ -305,7 +292,6 @@ pub const Lists = struct {
     /// `list + int` and `list - int`: each item moves to the item of its origin with the new
     /// value, if there is one.
     fn increment(lists: Lists, list: View, opcode: Opcode, amount: i32) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(opcode == .add or opcode == .subtract);
         var builder: Builder = .{};
         for (list.items) |item| {
@@ -332,7 +318,6 @@ pub const Lists = struct {
     /// Coerces an int to a one-item list through the origin of `list`'s highest item, as
     /// ink's CoerceValuesToSingleType does.
     fn int_as_list(lists: Lists, list: View, number: i32) Error!View {
-        assert(lists.slab.used <= lists.slab.words.len);
         var origins: Builder = .{};
         try lists.origin_names(list, &origins);
         const max = lists.extreme_item(list, .highest);
@@ -347,7 +332,6 @@ pub const Lists = struct {
     }
 
     pub fn binary(lists: Lists, opcode: Opcode, a: Value, b: Value) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(a == .list or b == .list);
         if (a == .list and b == .integer and (opcode == .add or opcode == .subtract)) {
             return lists.increment(lists.slab.view(a.list), opcode, b.integer);
@@ -358,7 +342,6 @@ pub const Lists = struct {
     }
 
     fn as_list(lists: Lists, value: Value, other: Value) Error!View {
-        assert(lists.slab.used <= lists.slab.words.len);
         if (value == .list) return lists.slab.view(value.list);
         if (value == .integer and other == .list) {
             return lists.int_as_list(lists.slab.view(other.list), value.integer);
@@ -368,7 +351,6 @@ pub const Lists = struct {
     }
 
     fn list_binary(lists: Lists, opcode: Opcode, a: View, b: View) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(a.items.len <= lists.program.list_items.len);
         return switch (opcode) {
             .add => lists.@"union"(a, b),
@@ -397,7 +379,6 @@ pub const Lists = struct {
     }
 
     fn without(lists: Lists, a: View, b: View) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         var builder: Builder = .{};
         try lists.origin_names(a, &builder);
         for (a.items) |item| {
@@ -408,7 +389,6 @@ pub const Lists = struct {
     }
 
     fn intersect(lists: Lists, a: View, b: View) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         // A new list in ink, so it has no declared origins.
         var builder: Builder = .{};
         for (a.items) |item| {
@@ -420,7 +400,6 @@ pub const Lists = struct {
 
     /// ink's `Contains`: false if either list is empty.
     fn contains_all(lists: Lists, a: View, b: View) bool {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(a.items.len <= lists.program.list_items.len);
         if (a.items.len == 0 or b.items.len == 0) return false;
         for (b.items) |item| {
@@ -430,7 +409,6 @@ pub const Lists = struct {
     }
 
     fn equal(lists: Lists, a: View, b: View) bool {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(b.items.len <= lists.program.list_items.len);
         if (a.items.len != b.items.len) return false;
         for (a.items) |item| {
@@ -440,7 +418,6 @@ pub const Lists = struct {
     }
 
     fn compare(lists: Lists, opcode: Opcode, a: View, b: View) bool {
-        assert(lists.slab.used <= lists.slab.words.len);
         const a_min = lists.extreme_value(a, .lowest);
         const a_max = lists.extreme_value(a, .highest);
         const b_min = lists.extreme_value(b, .lowest);
@@ -459,7 +436,6 @@ pub const Lists = struct {
     }
 
     pub fn unary(lists: Lists, opcode: Opcode, a: Value) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         assert(a == .list);
         const list = lists.slab.view(a.list);
         return switch (opcode) {
@@ -476,7 +452,6 @@ pub const Lists = struct {
     }
 
     fn single(lists: Lists, item: ?ListItemIndex) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         const items: []const ListItemIndex = if (item) |found| &.{found} else &.{};
         const reference = try lists.slab.store(items, &.{});
         assert(lists.slab.view(reference).items.len == items.len);
@@ -487,7 +462,6 @@ pub const Lists = struct {
     /// Every item of the list's origins (LIST_ALL), or those it lacks (LIST_INVERT), in
     /// definition order.
     fn all(lists: Lists, list: View, invert: bool) Error!Value {
-        assert(lists.slab.used <= lists.slab.words.len);
         var origins: Builder = .{};
         try lists.origin_names(list, &origins);
         var builder: Builder = .{};
@@ -506,7 +480,6 @@ pub const Lists = struct {
 
     /// The list's text: item names ordered by value, then by origin name (InkList.ToString).
     pub fn write(lists: Lists, list: ListReference, writer: *std.Io.Writer) !void {
-        assert(lists.slab.used <= lists.slab.words.len);
         const items = lists.slab.view(list).items;
         var ordered: [Builder.items_max]ListItemIndex = undefined;
         @memcpy(ordered[0..items.len], items);

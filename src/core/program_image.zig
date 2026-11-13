@@ -136,7 +136,6 @@ fn section_bytes(program: *const Program, comptime section: Section) []const u8 
         .externals => program.externals,
         else => program.containers.items(comptime column_of(section)),
     };
-    assert(items.len < std.math.maxInt(u32));
     return std.mem.sliceAsBytes(items);
 }
 
@@ -148,7 +147,6 @@ fn element_count(program: *const Program, comptime section: Section) u32 {
 }
 
 fn padding_of(length: usize) usize {
-    assert(length < std.math.maxInt(u32));
     const padded = std.mem.alignForward(usize, length, section_alignment);
     assert(padded - length < section_alignment);
     return padded - length;
@@ -204,7 +202,6 @@ const Layout = struct {
     sections: [sections_count][]const u8,
 
     fn of(bytes: []const u8) Error!Layout {
-        assert(bytes.len < std.math.maxInt(u32));
         if (bytes.len < @sizeOf(Header)) return error.NotAProgramImage;
         var layout: Layout = undefined;
         @memcpy(std.mem.asBytes(&layout.header), bytes[0..@sizeOf(Header)]);
@@ -243,7 +240,6 @@ const Layout = struct {
     fn count(layout: *const Layout, comptime section: Section) u32 {
         assert(@sizeOf(section.Element()) > 0);
         const length = layout.get(section).len / @sizeOf(section.Element());
-        assert(length < std.math.maxInt(u32));
         return @intCast(length);
     }
 };
@@ -256,7 +252,6 @@ fn copy_section(
     comptime section: Section,
 ) Allocator.Error![]section.Element() {
     const bytes = layout.get(section);
-    assert(bytes.len < std.math.maxInt(u32));
     const items = try gpa.alloc(section.Element(), layout.count(section));
     @memcpy(std.mem.sliceAsBytes(items), bytes);
     assert(items.len == layout.count(section));
@@ -275,7 +270,6 @@ const opcode_bytes: [256]bool = table: {
 
 fn check_opcodes(bytes: []const u8) Error!void {
     assert(@sizeOf(Opcode) == 1);
-    assert(bytes.len < std.math.maxInt(u32));
     for (bytes) |byte| {
         if (!opcode_bytes[byte]) return error.InvalidImage;
     }
@@ -293,8 +287,6 @@ test "the opcode check accepts exactly the bytes that name an opcode" {
 
 /// String ends: string 0 is empty, ends never decrease, the last is the byte count.
 fn check_string_ends(ends: []const u32, bytes_count: usize) Error!void {
-    assert(bytes_count < std.math.maxInt(u32));
-    assert(ends.len < std.math.maxInt(u32));
     if (ends.len == 0 or ends[0] != 0) return error.InvalidImage;
     var previous: u32 = 0;
     for (ends) |end| {
@@ -306,7 +298,6 @@ fn check_string_ends(ends: []const u32, bytes_count: usize) Error!void {
 
 /// Loads a program from an image, copying everything out of `bytes`.
 pub fn load(gpa: Allocator, bytes: []const u8) Error!Program {
-    assert(bytes.len < std.math.maxInt(u32));
     assert(sections_count > 0);
     const shape_zone = profile.begin(.image_shape);
     const layout = try Layout.of(bytes);
@@ -450,6 +441,5 @@ fn check_references(program: *const Program) Error!void {
 
 fn is_string(id: index.StringId, strings: u64) bool {
     assert(strings > 0);
-    assert(strings <= std.math.maxInt(u32));
     return @backingInt(id) < strings;
 }

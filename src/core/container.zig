@@ -70,7 +70,6 @@ pub const ContainerTable = struct {
     pub fn count(table: *const ContainerTable) u32 {
         const containers_count: u32 = @intCast(table.containers.len);
         assert(containers_count == table.containers.len);
-        assert(containers_count < std.math.maxInt(u32));
         return containers_count;
     }
 
@@ -120,7 +119,6 @@ pub const ContainerTable = struct {
 
     /// Structural invariants; `instructions_count` is the program's instruction count.
     pub fn check(table: *const ContainerTable, instructions_count: u32) Fault {
-        assert(instructions_count < std.math.maxInt(u32));
         if (table.containers.len == 0) return .empty;
         const parents = table.containers.items(.parent);
         const depths = table.containers.items(.depth);
@@ -163,7 +161,6 @@ pub const ContainerTable = struct {
                 }
             }
         }
-        assert(table.named.len < std.math.maxInt(u32));
         return .ok;
     }
 };

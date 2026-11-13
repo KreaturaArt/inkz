@@ -26,7 +26,6 @@ pub fn expect_same_program(expected: *const Program, actual: *const Program) !vo
 
 fn expect_same_columns(expected: anytype, actual: @TypeOf(expected)) !void {
     comptime assert(@TypeOf(expected) == @TypeOf(actual));
-    assert(expected.len < std.math.maxInt(u32));
     try std.testing.expectEqual(expected.len, actual.len);
     const Item = @TypeOf(expected.get(0));
     inline for (comptime std.meta.fieldNames(Item)) |name| {

@@ -52,7 +52,6 @@ pub const StringHeap = struct {
 
     /// Room for a string of `length` bytes, or null if it doesn't fit without compacting.
     pub fn try_allocate(heap: *StringHeap, length: u32) ?StringReference {
-        assert(heap.used <= heap.bytes.len);
         if (length >= mark_bit) return null;
         const total = object_bytes(length);
         if (total > heap.bytes.len - heap.used) return null;
@@ -61,7 +60,6 @@ pub const StringHeap = struct {
         std.mem.writeInt(u32, heap.bytes[at + 4 ..][0..4], 0, .little);
         heap.used += total;
         heap.peak = @max(heap.peak, heap.used);
-        assert(heap.used <= heap.bytes.len);
         return .heap(at);
     }
 
@@ -103,7 +101,6 @@ pub const StringHeap = struct {
 
     /// Whether `reference` points at an object boundary in the used part of the heap.
     pub fn check_reference(heap: *const StringHeap, reference: StringReference) Fault {
-        assert(heap.used <= heap.bytes.len);
         const at = reference.heap_offset();
         if (at % 4 != 0) return .misaligned;
         if (at + header_bytes > heap.used) return .object_out_of_bounds;
@@ -132,7 +129,6 @@ pub const StringHeap = struct {
     }
 
     pub fn verify(heap: *const StringHeap) void {
-        assert(heap.used <= heap.bytes.len);
         fault.verify(heap.check());
     }
 };
@@ -289,7 +285,6 @@ fn slide_strings(heap: *StringHeap) void {
     if (std.debug.runtime_safety) @memset(heap.bytes[next..heap.used], poison);
     heap.used = next;
     heap.generation +%= 1;
-    assert(heap.used <= heap.bytes.len);
 }
 
 fn slide_lists(slab: *ListSlab) void {
