@@ -99,7 +99,7 @@ pub fn build(b: *std.Build) void {
     // Fuzz targets (P0.9): each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
     // Zig's fuzzer writes its log to <cache>/tmp and fails if that directory is missing.
     std.Io.Dir.cwd().createDirPath(b.graph.io, ".zig-cache/tmp") catch {};
-    _ = add_test_suite(b, .{
+    const fuzz_corpus = add_test_suite(b, .{
         .step = "fuzz",
         .root = "src/fuzz_targets.zig",
         .description = "Run fuzz targets on their corpus (add --fuzz to fuzz)",
@@ -203,6 +203,20 @@ pub fn build(b: *std.Build) void {
     run_lint.setCwd(b.path("."));
     run_lint.addArgs(&.{ "src", "tools" });
     b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
+
+    const fmt = b.addFmt(.{
+        .paths = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("tools") },
+        .check = true,
+    });
+    b.step("fmt", "Check that the Zig sources are formatted").dependOn(&fmt.step);
+
+    // `zig build ci` (.github/workflows/ci.yml): everything a change must pass. It needs no
+    // reference harness (no dotnet, no reference/).
+    const ci_step = b.step("ci", "Run formatting, lint, every test and the fuzz corpus");
+    ci_step.dependOn(&fmt.step);
+    ci_step.dependOn(&run_lint.step);
+    ci_step.dependOn(test_all);
+    ci_step.dependOn(fuzz_corpus);
 }
 
 /// The docs whose ```zig blocks are compiled by `zig build doctest` (tools/doctest.zig).
