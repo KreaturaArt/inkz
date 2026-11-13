@@ -128,13 +128,11 @@ pub const Key = struct {
 const KeyContext = struct {
     pub fn hash(_: KeyContext, key: Key) u64 {
         assert(!key.scope.is_none());
-        assert(key.name.len < std.math.maxInt(u32));
         return std.hash.Wyhash.hash(@backingInt(key.scope), key.name);
     }
 
     pub fn eql(_: KeyContext, a: Key, b: Key) bool {
         assert(!a.scope.is_none() and !b.scope.is_none());
-        assert(a.name.len < std.math.maxInt(u32));
         return a.scope == b.scope and std.mem.eql(u8, a.name, b.name);
     }
 };
@@ -186,7 +184,6 @@ pub const Context = struct {
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn deinit(context: *Context) void {
-        assert(context.tree.count() > 0);
         const gpa = context.gpa;
         assert(context.root_weaves.len == context.tree.count() or context.root_weaves.len == 0);
         inline for (.{
@@ -212,7 +209,6 @@ pub const Context = struct {
 
     pub fn ast(context: *const Context) *const ast_module.Ast {
         assert(context.parsed.tree.tags.len > 0);
-        assert(context.tree.count() > 0);
         return &context.parsed.tree;
     }
 
@@ -224,14 +220,12 @@ pub const Context = struct {
     /// Records an error on `object`; as in ink, an object gets at most one.
     pub fn report(context: *Context, code: Code, object: ObjectIndex) !void {
         assert(object.to_int() < context.tree.count());
-        assert(context.diagnostics.items.len < std.math.maxInt(u32));
         if (context.had_error.isSet(object.to_int())) return;
         context.had_error.set(object.to_int());
         try context.diagnostics.append(context.gpa, .{ .code = code, .object = object });
     }
 
     pub fn level(context: *const Context, flow: ObjectIndex) FlowLevel {
-        assert(context.tree.count() > 0);
         assert(context.tree.is_flow(flow));
         return switch (context.tree.kind(flow)) {
             .story => .story,
@@ -242,7 +236,6 @@ pub const Context = struct {
 
     /// A flow's name (empty for the story).
     pub fn flow_name(context: *const Context, flow: ObjectIndex) []const u8 {
-        assert(context.tree.count() > 0);
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return "";
         return context.child_name(flow, 0);
@@ -250,7 +243,6 @@ pub const Context = struct {
 
     /// A choice's or gather's label (empty if it has none).
     pub fn label(context: *const Context, point: ObjectIndex) []const u8 {
-        assert(context.tree.count() > 0);
         const kind = context.tree.kind(point);
         assert(kind == .choice or kind == .gather);
         const node = context.tree.node(point);
@@ -260,7 +252,6 @@ pub const Context = struct {
 
     /// The flow's parameters, as their identifier leaves.
     pub fn parameters(context: *const Context, flow: ObjectIndex) []const ast_module.Tag {
-        assert(context.tree.count() > 0);
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return &.{};
         const list_node = context.ast().child(context.tree.node(flow), 1);
@@ -271,7 +262,6 @@ pub const Context = struct {
 
     /// The name of parameter `position` of `flow`.
     pub fn parameter_name(context: *const Context, flow: ObjectIndex, position: u32) []const u8 {
-        assert(context.tree.count() > 0);
         const list_node = context.ast().child(context.tree.node(flow), 1);
         const listed = context.ast().list(list_node);
         assert(position < listed.count);
@@ -280,7 +270,6 @@ pub const Context = struct {
 
     /// The components of a `path` node.
     pub fn path_of(context: *const Context, path_node: NodeIndex) Path {
-        assert(context.tree.count() > 0);
         assert(context.ast().tag(path_node) == .path);
         const listed = context.ast().list(path_node);
         var path: Path = .{};
@@ -310,6 +299,10 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     var context: Context = .{ .gpa = gpa, .parsed = parsed, .tree = tree };
     defer context.deinit();
     try lookups.prepare(&context);
+    // The passes index the per-object tables by object without checking their length.
+    assert(context.targets.len == tree.count());
+    assert(context.references.len == tree.count());
+    assert(context.root_weaves.len == tree.count());
     try passes.generation_pass(&context);
     try passes.references_pass(&context);
     const resolution: Resolution = .{
@@ -338,7 +331,6 @@ const Fixture = struct {
     resolution: Resolution,
 
     fn init(fixture: *Fixture, source: []const u8) !void {
-        assert(source.len < std.math.maxInt(u32));
         const gpa = std.testing.allocator;
         fixture.parsed = try grammar.parse(gpa, source, .{});
         errdefer fixture.parsed.deinit(gpa);

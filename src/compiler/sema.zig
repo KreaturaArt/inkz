@@ -437,7 +437,6 @@ fn render_label(
 }
 
 fn expect_tree(source: []const u8, expected: []const u8) !void {
-    assert(source.len < std.math.maxInt(u32));
     assert(expected.len > 0);
     const gpa = std.testing.allocator;
     var parsed = try grammar.parse(gpa, source, .{});

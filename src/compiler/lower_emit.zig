@@ -215,7 +215,6 @@ fn key_of(layout: *const Layout, target: Target) KeyTarget {
 }
 
 fn add_assignment(builder: *ProgramBuilder, name: []const u8, global: bool, new: bool) !void {
-    assert(builder.containers.len < std.math.maxInt(u32));
     assert(name.len > 0);
     if (global and new) return builder.add(.global_declare, try builder.global(name));
     if (global) return builder.add_variable(name, .assign);
@@ -230,7 +229,6 @@ fn add_list(
     items: []const ir_module.ListItem,
     origins: []const []const u8,
 ) !void {
-    assert(origins.len < std.math.maxInt(u32));
     assert(!lowered.root.is_none());
     const arena = lowered.ir.arena.allocator();
     const names = try arena.alloc([]const u8, items.len);
@@ -253,5 +251,4 @@ fn add_lists(lowered: *Lowered, builder: *ProgramBuilder) !void {
         for (list.items) |item| try items.append(gpa, .{ .name = item.name, .value = item.value });
         _ = try builder.list_origin(list.name, items.items);
     }
-    assert(items.items.len < std.math.maxInt(u32));
 }

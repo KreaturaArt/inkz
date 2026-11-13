@@ -130,7 +130,6 @@ fn leaf(parsed: *const grammar.Parsed, node: ast.NodeIndex, out: *std.Io.Writer)
 
 /// Parses `source` and returns its dump (for tests); `diagnostics` gets the count.
 pub fn dump_alloc(gpa: std.mem.Allocator, source: []const u8, diagnostics: *u32) ![]u8 {
-    assert(source.len < std.math.maxInt(u32));
     var parsed = try grammar.parse(gpa, source, .{});
     defer parsed.deinit(gpa);
     diagnostics.* = parsed.diagnostics_count;
