@@ -267,25 +267,11 @@ pub const Lowering = struct {
     /// Generates every object, children first.
     pub fn generate_all(lowering: *Lowering) !void {
         assert(lowering.results.len == lowering.tree.count());
-        const gpa = lowering.gpa;
-        const Entry = struct { object: ObjectIndex, done: bool };
-        var stack: std.ArrayList(Entry) = .empty;
-        defer stack.deinit(gpa);
-        try stack.append(gpa, .{ .object = Tree.root, .done = false });
-        while (stack.pop()) |entry| {
-            if (entry.done) {
-                lowering.results[entry.object.to_int()] = try lowering.generate(entry.object);
-                continue;
-            }
-            try stack.append(gpa, .{ .object = entry.object, .done = true });
-            const children = lowering.tree.children_of(entry.object);
-            var position = children.len;
-            while (position > 0) {
-                position -= 1;
-                try stack.append(gpa, .{ .object = children[position], .done = false });
-            }
+        var objects = lowering.tree.walk(lowering.gpa, Tree.root, .post);
+        defer objects.deinit();
+        while (try objects.next()) |object| {
+            lowering.results[object.to_int()] = try lowering.generate(object);
         }
-        assert(stack.items.len == 0);
     }
 
     /// One object's GenerateRuntimeObject.
@@ -422,17 +408,10 @@ pub const Lowering = struct {
         const declarations = try ir.new_container();
         _ = try ir.add_command(declarations, .eval_start);
         var any = false;
-        var stack: std.ArrayList(ObjectIndex) = .empty;
-        defer stack.deinit(lowering.gpa);
-        try stack.append(lowering.gpa, Tree.root);
-        while (stack.pop()) |object| {
+        var objects = lowering.tree.walk(lowering.gpa, Tree.root, .pre);
+        defer objects.deinit();
+        while (try objects.next()) |object| {
             any = try lowering.add_declaration(declarations, object) or any;
-            const children = lowering.tree.children_of(object);
-            var position = children.len;
-            while (position > 0) {
-                position -= 1;
-                try stack.append(lowering.gpa, children[position]);
-            }
         }
         _ = try ir.add_command(declarations, .eval_end);
         _ = try ir.add_command(declarations, .end);

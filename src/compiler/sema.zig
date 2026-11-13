@@ -170,6 +170,17 @@ pub const Tree = struct {
         return current;
     }
 
+    /// A walk of `root_object`'s subtree (itself included); `deinit` it.
+    pub fn walk(
+        tree: *const Tree,
+        gpa: Allocator,
+        root_object: ObjectIndex,
+        order: Walk.Order,
+    ) Walk {
+        assert(root_object.to_int() < tree.count());
+        return .{ .tree = tree, .gpa = gpa, .order = order, .start = root_object };
+    }
+
     /// ink's Object.FindAll: every object of `root`'s subtree (itself included) that `query`
     /// accepts, in pre-order (so the first is ink's Object.Find).
     pub fn find_all(
@@ -179,19 +190,10 @@ pub const Tree = struct {
         comptime query: fn (*const Tree, ObjectIndex) bool,
         found: *std.ArrayList(ObjectIndex),
     ) !void {
-        assert(root_object.to_int() < tree.count());
-        assert(found.items.len < tree.count());
-        var stack: std.ArrayList(ObjectIndex) = .empty;
-        defer stack.deinit(gpa);
-        try stack.append(gpa, root_object);
-        while (stack.pop()) |object| {
+        var objects = tree.walk(gpa, root_object, .pre);
+        defer objects.deinit();
+        while (try objects.next()) |object| {
             if (query(tree, object)) try found.append(gpa, object);
-            const children = tree.children_of(object);
-            var position = children.len;
-            while (position > 0) {
-                position -= 1;
-                try stack.append(gpa, children[position]);
-            }
         }
     }
 
@@ -202,19 +204,10 @@ pub const Tree = struct {
         root_object: ObjectIndex,
         comptime query: fn (*const Tree, ObjectIndex) bool,
     ) !?ObjectIndex {
-        assert(root_object.to_int() < tree.count());
-        assert(tree.kinds.len == tree.parents.len);
-        var stack: std.ArrayList(ObjectIndex) = .empty;
-        defer stack.deinit(gpa);
-        try stack.append(gpa, root_object);
-        while (stack.pop()) |object| {
+        var objects = tree.walk(gpa, root_object, .pre);
+        defer objects.deinit();
+        while (try objects.next()) |object| {
             if (query(tree, object)) return object;
-            const children = tree.children_of(object);
-            var position = children.len;
-            while (position > 0) {
-                position -= 1;
-                try stack.append(gpa, children[position]);
-            }
         }
         return null;
     }
@@ -231,6 +224,56 @@ pub const Tree = struct {
         gpa.free(tree.children);
         gpa.free(tree.indents);
         tree.* = undefined;
+    }
+};
+
+/// A walk of a subtree without recursion, in pre-order (an object, then its children) or
+/// post-order (the children, then the object). The stack holds one frame per level, not the
+/// pending siblings, so it grows to the subtree's depth once and nothing is allocated per
+/// object.
+pub const Walk = struct {
+    tree: *const Tree,
+    gpa: Allocator,
+    order: Order,
+    /// The subtree's root, until the first `next`.
+    start: ?ObjectIndex,
+    frames: std.ArrayList(Frame) = .empty,
+
+    pub const Order = enum { pre, post };
+    const Frame = struct { object: ObjectIndex, next_child: u32 = 0 };
+
+    pub fn deinit(walk: *Walk) void {
+        assert(walk.frames.items.len <= walk.tree.count());
+        walk.frames.deinit(walk.gpa);
+    }
+
+    pub fn next(walk: *Walk) Allocator.Error!?ObjectIndex {
+        if (walk.start) |root| {
+            walk.start = null;
+            try walk.frames.append(walk.gpa, .{ .object = root });
+            if (walk.order == .pre) return root;
+        }
+        while (walk.frames.items.len > 0) {
+            const top = &walk.frames.items[walk.frames.items.len - 1];
+            const children = walk.tree.children_of(top.object);
+            if (top.next_child == children.len) {
+                const done = walk.frames.pop().?;
+                if (walk.order == .post) return done.object;
+                continue;
+            }
+            const child = children[top.next_child];
+            top.next_child += 1;
+            try walk.frames.append(walk.gpa, .{ .object = child });
+            if (walk.order == .pre) return child;
+        }
+        return null;
+    }
+
+    /// The depth below the subtree's root of the object `next` returned last (pre-order).
+    pub fn depth(walk: *const Walk) u32 {
+        assert(walk.order == .pre);
+        assert(walk.frames.items.len > 0);
+        return @intCast(walk.frames.items.len - 1);
     }
 };
 
@@ -346,21 +389,13 @@ fn render(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree) ![]u
     assert(tree.children.len < tree.kinds.len);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    const Entry = struct { object: ObjectIndex, depth: u32 };
-    var stack: std.ArrayList(Entry) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, .{ .object = Tree.root, .depth = 0 });
-    while (stack.pop()) |entry| {
-        try out.writer.splatByteAll(' ', 2 * entry.depth);
-        try out.writer.print("{t}", .{tree.kind(entry.object)});
-        try render_label(parsed, tree, entry.object, &out.writer);
+    var objects = tree.walk(gpa, Tree.root, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| {
+        try out.writer.splatByteAll(' ', 2 * objects.depth());
+        try out.writer.print("{t}", .{tree.kind(object)});
+        try render_label(parsed, tree, object, &out.writer);
         try out.writer.writeByte('\n');
-        const children = tree.children_of(entry.object);
-        var position = children.len;
-        while (position > 0) {
-            position -= 1;
-            try stack.append(gpa, .{ .object = children[position], .depth = entry.depth + 1 });
-        }
     }
     return out.toOwnedSlice();
 }
@@ -404,6 +439,50 @@ fn expect_tree(source: []const u8, expected: []const u8) !void {
     defer gpa.free(text);
     try std.testing.expectEqualStrings(expected, text);
     _ = dump;
+}
+
+test "walks visit a subtree in pre-order and post-order" {
+    // Goal: the walker's orders. Method: a nested story's walks against the definitions:
+    // every object once; pre-order puts each object right before its children's subtrees,
+    // post-order is the mirror image of pre-order over reversed children.
+    const gpa = std.testing.allocator;
+    const source = "A\n* B\n  ** C\n- D {x: E|F}\n== k ==\nG\n= s\nH\n";
+    var parsed = try grammar.parse(gpa, source, .{});
+    defer parsed.deinit(gpa);
+    var tree = try build_tree(gpa, &parsed);
+    defer tree.deinit(gpa);
+    var pre: std.ArrayList(ObjectIndex) = .empty;
+    defer pre.deinit(gpa);
+    var post: std.ArrayList(ObjectIndex) = .empty;
+    defer post.deinit(gpa);
+    inline for (.{ .pre, .post }, .{ &pre, &post }) |order, list| {
+        var objects = tree.walk(gpa, Tree.root, order);
+        defer objects.deinit();
+        while (try objects.next()) |object| try list.append(gpa, object);
+        try std.testing.expectEqual(tree.count(), list.items.len);
+    }
+    try std.testing.expectEqual(Tree.root, pre.items[0]);
+    try std.testing.expectEqual(Tree.root, post.items[post.items.len - 1]);
+    // Pre-order: the object after a parent is its first child; post-order: before it, its
+    // last child.
+    for (pre.items, 0..) |object, position| {
+        const children = tree.children_of(object);
+        if (children.len > 0) try std.testing.expectEqual(children[0], pre.items[position + 1]);
+    }
+    for (post.items, 0..) |object, position| {
+        const children = tree.children_of(object);
+        if (children.len == 0) continue;
+        try std.testing.expectEqual(children[children.len - 1], post.items[position - 1]);
+    }
+    // A walk of a subtree stays in it.
+    const weave = tree.children_of(Tree.root)[0];
+    var objects = tree.walk(gpa, weave, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| {
+        var ancestor = object;
+        while (ancestor != weave) ancestor = tree.parent(ancestor);
+        if (object != weave) try std.testing.expect(objects.depth() > 0);
+    }
 }
 
 test "the story's weave ends with a gather and -> DONE; knots come after it" {

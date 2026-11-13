@@ -120,18 +120,10 @@ pub fn check_weave(context: *Context, weave: ObjectIndex) !void {
         flows[flows_count] = flow;
         flows_count += 1;
     }
-    const gpa = context.gpa;
-    var stack: std.ArrayList(ObjectIndex) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, weave);
-    while (stack.pop()) |object| {
+    var objects = tree.walk(context.gpa, weave, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| {
         try check_label(context, object, weave, flows[0..flows_count]);
-        const children = tree.children_of(object);
-        var position = children.len;
-        while (position > 0) {
-            position -= 1;
-            try stack.append(gpa, children[position]);
-        }
     }
 }
 
