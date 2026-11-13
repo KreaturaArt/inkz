@@ -57,6 +57,13 @@ fn expect_source_parts(source: []const u8, parts: []const []const u8) !void {
     try expect_parts(try dump_of(arena_state.allocator(), source), parts);
 }
 
+/// Checks that the dump of fixture `path` contains each of `parts`, and has no diagnostics.
+fn expect_fixture_parts(comptime path: []const u8, parts: []const []const u8) !void {
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    try expect_parts(try dump_of_fixture(arena_state.allocator(), path), parts);
+}
+
 /// The dump of the expression in `~ temp e = <expression>`, on one line.
 fn expect_expression(expression: []const u8, expected: []const u8) !void {
     assert(expected.len > 0);
@@ -75,25 +82,20 @@ fn expect_expression(expression: []const u8, expected: []const u8) !void {
 // Fixtures.
 
 test "hello_world.ink: one line of text" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const text = try dump_of_fixture(arena_state.allocator(), "runtime/misc/hello_world.ink");
-    try expect_parts(text, &.{"(statements\n    text\"Hello world\"\n    newline))"});
+    try expect_fixture_parts("runtime/misc/hello_world.ink", &.{
+        "(statements\n    text\"Hello world\"\n    newline))",
+    });
 }
 
 test "end_of_content.ink: the knot's name" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const text = try dump_of_fixture(arena_state.allocator(), "runtime/misc/end_of_content.ink");
-    try expect_parts(text, &.{"(knot identifier\"test\" none"});
+    try expect_fixture_parts("runtime/misc/end_of_content.ink", &.{
+        "(knot identifier\"test\" none",
+    });
 }
 
 test "knot_do_not_gather.ink: a divert, then the knot" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
     const path = "runtime/knots/knot_do_not_gather.ink";
-    const text = try dump_of_fixture(arena_state.allocator(), path);
-    try expect_parts(text, &.{
+    try expect_fixture_parts(path, &.{
         "(statements\n    (divert (path identifier\"knot\") none)",
         "(knot identifier\"knot\" none",
     });
@@ -109,28 +111,21 @@ test "variable_get_set_api.ink: VAR x = 5" {
 }
 
 test "const.ink: CONST c = 5" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const text = try dump_of_fixture(arena_state.allocator(), "runtime/variables/const.ink");
-    try expect_parts(text, &.{"(const_declaration identifier\"c\" integer\"5\")"});
+    try expect_fixture_parts("runtime/variables/const.ink", &.{
+        "(const_declaration identifier\"c\" integer\"5\")",
+    });
 }
 
 test "include.ink: two INCLUDE paths" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
-    const text = try dump_of_fixture(arena_state.allocator(), "runtime/misc/include.ink");
-    try expect_parts(text, &.{
+    try expect_fixture_parts("runtime/misc/include.ink", &.{
         "include\"includes/included_file.ink\"",
         "include\"includes/included_file_2.ink\"",
     });
 }
 
 test "knot_thread_interaction.ink: three knots" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
     const path = "runtime/knots/knot_thread_interaction.ink";
-    const text = try dump_of_fixture(arena_state.allocator(), path);
-    try expect_parts(text, &.{
+    try expect_fixture_parts(path, &.{
         "(knot identifier\"knot\"",
         "(knot identifier\"tunnel\"",
         "(knot identifier\"threadB\"",
@@ -138,11 +133,8 @@ test "knot_thread_interaction.ink: three knots" {
 }
 
 test "knot_stitch_gather_counts.ink: VARs anywhere are declarations" {
-    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
-    defer arena_state.deinit();
     const path = "runtime/knots/knot_stitch_gather_counts.ink";
-    const text = try dump_of_fixture(arena_state.allocator(), path);
-    try expect_parts(text, &.{
+    try expect_fixture_parts(path, &.{
         "(variable_declaration identifier\"knotCount\"",
         "(variable_declaration identifier\"stitchCount\"",
         "(variable_declaration identifier\"gatherCount\"",
