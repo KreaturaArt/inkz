@@ -58,14 +58,16 @@ pub const Workspace = struct {
     token_ends: []u32,
     diagnostics: []Diagnostic,
 
-    /// Capacities proportional to the source, from what ink stories use (about 0.17 nodes
-    /// and 0.04 stored tokens per byte; dense inline logic needs more); `scale` doubles on
-    /// each retry (plan T15).
+    /// Capacities proportional to the source, from what ink stories use: about 0.17 nodes
+    /// and 0.04 stored tokens per byte, and up to 0.43 nodes and 0.1 tokens in dense stories
+    /// of short knots (the bench's generated story). A full workspace means a whole new
+    /// parse, so the estimate covers dense stories (P12.2); `settle` gives back what wasn't
+    /// used. `scale` doubles on each retry (plan T15).
     pub fn init(gpa: Allocator, source_length: u32, diagnostics_max: u32, scale: u32) !Workspace {
         assert(scale >= 1);
         const length: usize = source_length;
-        const nodes: usize = (length / 4 + 256) * scale;
-        const tokens: usize = (length / 8 + 256) * scale;
+        const nodes: usize = (length / 2 + 256) * scale;
+        const tokens: usize = (length / 6 + 256) * scale;
         var workspace: Workspace = undefined;
         workspace.node_tags = try gpa.alloc(ast.Tag, nodes);
         errdefer gpa.free(workspace.node_tags);
