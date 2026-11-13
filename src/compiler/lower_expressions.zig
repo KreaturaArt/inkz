@@ -22,6 +22,8 @@ const frames_max = 256;
 
 /// Emits `expression` into `container`.
 pub fn emit(lowering: *Lowering, container: ContainerId, expression: ObjectIndex) !void {
+    assert(!container.is_none());
+    assert(lower.is_expression(lowering.tree.kind(expression)));
     var frames: [frames_max]Frame = undefined;
     var depth: u32 = 1;
     frames[0] = .{ .object = expression };
@@ -44,10 +46,10 @@ const done = std.math.maxInt(u32);
 
 /// Emits the frame's next items; returns a sub-expression to emit next, or null.
 fn step(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectIndex {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const object = frame.object;
+    // A finished frame is popped before the next step.
+    assert(frame.stage != done);
     const children = tree.children_of(object);
     switch (tree.kind(object)) {
         .binary => return binary(lowering, container, frame, children),
@@ -93,7 +95,6 @@ fn binary(
     frame: *Frame,
     children: []const ObjectIndex,
 ) !?ObjectIndex {
-    assert(lowering.results.len == lowering.tree.count());
     assert(children.len == 2);
     if (frame.stage < 2) {
         frame.stage += 1;
@@ -145,8 +146,6 @@ fn literal_item(value: values.Literal) Item {
 
 /// The expressions with no sub-expression frames of their own.
 fn leaf(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const ir = &lowering.ir;
     switch (tree.kind(object)) {
@@ -172,8 +171,8 @@ fn leaf(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void 
 
 /// A variable reference's name: its path joined with dots (ink's VariableReference.name).
 pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const u8 {
-    assert(lowering.results.len == lowering.tree.count());
     const ast = lowering.ast();
+    assert(ast.tag(lowering.tree.node(reference)) == .variable_reference);
     const path = ast.child(lowering.tree.node(reference), 0);
     const first = lowering.parsed.leaf_text(ast.item(path, 0));
     const last = lowering.parsed.leaf_text(ast.item(path, ast.list(path).count - 1));
@@ -187,9 +186,8 @@ pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const
 /// VariableReference.GenerateIntoContainer. A constant is its value, copied in
 /// (GenerateConstantIntoContainer): the constant's expression is the next frame.
 fn variable_reference(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectIndex {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const reference = frame.object;
+    assert(lowering.tree.kind(reference) == .variable_reference);
     const target = lowering.resolution.targets[reference.to_int()];
     if (frame.stage == 1) {
         frame.stage = done;
@@ -198,10 +196,12 @@ fn variable_reference(lowering: *Lowering, container: ContainerId, frame: *Frame
     frame.stage = done;
     switch (lowering.resolution.references[reference.to_int()]) {
         .constant => {
+            assert(lowering.tree.kind(target) == .constant_declaration);
             frame.stage = 1;
             return lowering.tree.children_of(target)[0];
         },
         .read_count => {
+            assert(!target.is_none());
             _ = try lowering.ir.add(container, .{ .read_count = .{ .object = target } });
             return null;
         },
@@ -215,11 +215,10 @@ fn variable_reference(lowering: *Lowering, container: ContainerId, frame: *Frame
 /// IncDecExpression.GenerateIntoContainer: `VAR? x`, the amount (an expression, or 1), the
 /// operator and the assignment.
 fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectIndex {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const ir = &lowering.ir;
     const object = frame.object;
+    assert(tree.kind(object) == .increment);
     const node = tree.node(object);
     const name = if (tree.has(object, Flags.by_expression))
         lowering.parsed.child_text(node, 0)
@@ -240,7 +239,6 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
 }
 
 fn reference_name_of_node(lowering: *const Lowering, reference: ast_module.NodeIndex) []const u8 {
-    assert(lowering.results.len == lowering.tree.count());
     const ast = lowering.ast();
     assert(ast.tag(reference) == .variable_reference);
     return lowering.parsed.leaf_text(ast.item(ast.child(reference, 0), 0));
@@ -250,13 +248,13 @@ fn reference_name_of_node(lowering: *const Lowering, reference: ast_module.NodeI
 /// function, a list's name making a list, or the proxy divert; then `pop` if the value is
 /// dropped. Stage n means n arguments are done.
 fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectIndex {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const tree = lowering.tree;
     const ir = &lowering.ir;
     const call = frame.object;
     const name = lowering.child_name(call, 0);
     const proxy = tree.children_of(call)[0];
+    // A call's first child is the proxy divert that holds its arguments.
+    assert(tree.kind(proxy) == .divert);
     const arguments = tree.children_of(proxy);
     const is_list = !lowering.resolution.targets[call.to_int()].is_none();
     if (is_builtin_call(name) or (is_list and arguments.len == 1)) {
@@ -282,14 +280,12 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
 /// Whether a call is to a built-in (a control command or a native function).
 pub fn is_builtin_call(name: []const u8) bool {
     assert(name.len == 0 or name[0] != ' ');
-    assert(name.len < std.math.maxInt(u32));
     return builtin_command(name) != null or is_native(name);
 }
 
 /// The built-ins that are control commands (their arguments come first).
 fn builtin_command(name: []const u8) ?ir_module.Command {
     assert(name.len == 0 or name[0] != '.');
-    assert(name.len < std.math.maxInt(u32));
     const names = [_][]const u8{
         "CHOICE_COUNT", "TURNS",       "TURNS_SINCE", "READ_COUNT",
         "RANDOM",       "SEED_RANDOM", "LIST_RANGE",  "LIST_RANDOM",
@@ -307,7 +303,6 @@ fn builtin_command(name: []const u8) ?ir_module.Command {
 /// Runtime.NativeFunctionCall.CallExistsWithName, for names written as calls.
 fn is_native(name: []const u8) bool {
     assert(name.len == 0 or name[0] != '.');
-    assert(name.len < std.math.maxInt(u32));
     const names = [_][]const u8{
         "MIN",      "MAX",      "POW",        "FLOOR",      "CEILING",     "INT",      "FLOAT",
         "LIST_MIN", "LIST_MAX", "LIST_COUNT", "LIST_VALUE", "LIST_INVERT", "LIST_ALL",
@@ -320,10 +315,9 @@ fn is_native(name: []const u8) bool {
 
 /// List.GenerateIntoContainer: each item by its list and value.
 fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     const ast = lowering.ast();
     const node = lowering.tree.node(literal);
+    assert(ast.tag(node) == .list_literal);
     const arena = lowering.ir.arena.allocator();
     var items: std.ArrayList(ir_module.ListItem) = .empty;
     for (0..ast.list(node).count) |position| {
@@ -342,7 +336,6 @@ fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
 }
 
 fn contains_item(items: []const ir_module.ListItem, origin: []const u8, name: []const u8) bool {
-    assert(items.len < std.math.maxInt(u32));
     assert(origin.len > 0);
     for (items) |item| {
         if (std.mem.eql(u8, item.origin, origin) and std.mem.eql(u8, item.name, name)) return true;
@@ -354,8 +347,7 @@ const Found = struct { definition: ObjectIndex, element: ObjectIndex };
 
 /// Story.ResolveListItem (its ambiguity error was reported when resolving).
 fn find_list_item(lowering: *const Lowering, list_name: ?[]const u8, item: []const u8) ?Found {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(item.len > 0);
     for (lowering.resolution.lists) |definition| {
         if (list_name) |name| {
             const own = lowering.child_name(lowering.tree.parent(definition), 0);
@@ -375,8 +367,8 @@ pub fn list_definition_value(
     definition: ObjectIndex,
     origin: []const u8,
 ) !Item {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
+    assert(lowering.tree.kind(definition) == .list_definition);
+    assert(origin.len > 0);
     const ast = lowering.ast();
     const arena = lowering.ir.arena.allocator();
     var items: std.ArrayList(ir_module.ListItem) = .empty;

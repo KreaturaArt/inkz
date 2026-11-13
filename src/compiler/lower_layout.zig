@@ -18,7 +18,6 @@ const ItemId = ir_module.ItemId;
 
 /// The count flags ink's ResolveReferences sets on the containers it counts.
 pub fn set_count_flags(lowering: *Lowering) void {
-    assert(lowering.results.len == lowering.tree.count());
     const tree = lowering.tree;
     for (0..tree.count()) |position| {
         const object: ObjectIndex = .from_int(@intCast(position));
@@ -30,6 +29,7 @@ pub fn set_count_flags(lowering: *Lowering) void {
             },
             .divert_target => {
                 const divert = tree.children_of(object)[0];
+                assert(tree.kind(divert) == .divert);
                 const counted = lowering.resolution.targets[divert.to_int()];
                 // ink moves a TURNS_SINCE argument under the call (out of its proxy divert).
                 var parent = tree.parent(object);
@@ -49,8 +49,6 @@ pub fn set_count_flags(lowering: *Lowering) void {
 }
 
 fn flag(lowering: *Lowering, object: ObjectIndex, flags: u8) void {
-    assert(lowering.results.len == lowering.tree.count());
-    assert(lowering.runtime_containers.len == lowering.tree.count());
     if (object.is_none()) return;
     const container = lowering.runtime_containers[object.to_int()];
     if (container.is_none()) return;
@@ -59,7 +57,6 @@ fn flag(lowering: *Lowering, object: ObjectIndex, flags: u8) void {
 
 /// TryFlattenContainer's test: no name and no named content (named-only or in content).
 fn flattenable(ir: *Ir, id: ContainerId) bool {
-    assert(ir.items.items.len < std.math.maxInt(u32));
     const container = ir.container(id);
     if (container.name != null or container.named.items.len > 0) return false;
     var item_id = container.first;
@@ -74,7 +71,8 @@ fn flattenable(ir: *Ir, id: ContainerId) bool {
 /// nearest unflattened ancestor, in place. Each kept container's final content becomes one
 /// run of `Ir.flat`.
 pub fn flatten(lowering: *Lowering) !void {
-    assert(lowering.results.len == lowering.tree.count());
+    // finish_story has set the root, which is kept (it is named in the program).
+    assert(!lowering.root.is_none());
     const gpa = lowering.gpa;
     const ir = &lowering.ir;
     var pending: std.ArrayList(ContainerId) = .empty;
