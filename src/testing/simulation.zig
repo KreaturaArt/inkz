@@ -8,6 +8,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const isolated = @import("isolated.zig");
 const cases = @import("cases.zig");
+const support = @import("support.zig");
 
 /// Plays case `id` with choices from `new Random(seed)` (`play_seeded`), in a child process.
 pub fn run_seed(arena: std.mem.Allocator, io: std.Io, id: []const u8, seed: i32) !isolated.Run {
@@ -38,35 +39,15 @@ test "a simulation run is reproducible by seed" {
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
-const story_module = @import("../runtime/story.zig");
+const Story = @import("../runtime/story.zig").Story;
 const state_module = @import("../runtime/state.zig");
 const flows_module = @import("../runtime/flows.zig");
 const save_module = @import("../runtime/save.zig");
 const load_module = @import("../runtime/load.zig");
 const evaluate_module = @import("../runtime/evaluate.zig");
-const Story = story_module.Story;
 
 /// What a simulated run found.
 pub const Finding = enum { ok, check_failed, round_trip_differs };
-
-fn ignore_message(
-    context: ?*anyopaque,
-    message: []const u8,
-    severity: state_module.Diagnostic.Severity,
-) void {
-    assert(context == null);
-    assert(message.len > 0 or severity == .warning);
-}
-
-fn noop_external(
-    context: ?*anyopaque,
-    story: *Story,
-    arguments: []const story_module.HostValue,
-) anyerror!story_module.HostValue {
-    assert(context == null);
-    assert(arguments.len <= story_module.external_arguments_max and story.callback_depth > 0);
-    return .{ .integer = 1 };
-}
 
 /// Plays `story` with the full action mix driven by `new Random(seed)`: seeded
 /// choices, save and load points, flow switches, evaluate_function on the story's knots,
@@ -170,11 +151,7 @@ fn evaluate_some_knot(story: *Story, random: *DotnetRandom) void {
 pub fn prepare(story: *Story, compact_always: bool) void {
     assert(story.bindings.len == story.program.externals.len);
     assert(story.state.memory.len > 0);
-    for (story.program.externals) |external| {
-        const name = story.program.strings.get(external.name);
-        story.bind_external_function(name, noop_external, null, true) catch {};
-    }
-    story.on_error = ignore_message;
+    support.quiet(story);
     story.state.compact_always = compact_always;
 }
 

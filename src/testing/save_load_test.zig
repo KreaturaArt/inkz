@@ -8,40 +8,16 @@ const std = @import("std");
 const assert = std.debug.assert;
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
-const story_module = @import("../runtime/story.zig");
+const Story = @import("../runtime/story.zig").Story;
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
-const state_module = @import("../runtime/state.zig");
 const cases = @import("cases.zig");
-const Story = story_module.Story;
-
-fn ignore_error(
-    context: ?*anyopaque,
-    message: []const u8,
-    severity: state_module.Diagnostic.Severity,
-) void {
-    assert(context == null);
-    assert(message.len > 0 or severity == .warning);
-}
-
-fn noop_external(
-    context: ?*anyopaque,
-    story: *Story,
-    arguments: []const story_module.HostValue,
-) anyerror!story_module.HostValue {
-    assert(context == null);
-    assert(arguments.len <= story_module.external_arguments_max and story.callback_depth > 0);
-    return .{ .integer = 1 };
-}
+const support = @import("support.zig");
 
 fn prepare(story: *Story) void {
     assert(story.callback_depth == 0);
     assert(story.state.memory.len > 0);
-    for (story.program.externals) |external| {
-        const name = story.program.strings.get(external.name);
-        story.bind_external_function(name, noop_external, null, true) catch {};
-    }
-    story.on_error = ignore_error;
+    support.quiet(story);
 }
 
 /// Plays up to `turns` turns choosing the first choice, writing every line and choice to
@@ -232,7 +208,7 @@ test "a cont that fails in the newline lookahead leaves a state that saves" {
     var story: Story = undefined;
     try story.init(gpa, &program, limits);
     defer story.deinit(gpa);
-    story.on_error = ignore_error;
+    story.on_error = support.ignore_message;
     try std.testing.expectError(error.FrameLimit, story.cont());
     try std.testing.expect(story.state.check() == .ok);
     var buffer: [4096]u8 = undefined;
@@ -268,7 +244,7 @@ test "a cont that fails in the middle of a step fails closed until reset or load
     var story: Story = undefined;
     try story.init(gpa, &program, limits);
     defer story.deinit(gpa);
-    story.on_error = ignore_error;
+    story.on_error = support.ignore_message;
     var buffer: [4096]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
     try save.to_json(&story, &writer);

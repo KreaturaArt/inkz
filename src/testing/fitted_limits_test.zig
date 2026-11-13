@@ -10,17 +10,12 @@ const Story = @import("../runtime/story.zig").Story;
 const State = @import("../runtime/state.zig").State;
 const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
 const cases = @import("cases.zig");
-const Severity = @import("../runtime/state.zig").Diagnostic.Severity;
-
-fn ignore_message(context: ?*anyopaque, message: []const u8, severity: Severity) void {
-    assert(context == null);
-    assert(message.len > 0 or severity == .warning);
-}
+const support = @import("support.zig");
 
 /// Plays seeds 1..`seeds` with random choices and returns all text.
 fn play(gpa: std.mem.Allocator, story: *Story, seeds: u32) ![]u8 {
     assert(seeds > 0);
-    story.on_error = ignore_message;
+    story.on_error = support.ignore_message;
     var text: std.ArrayList(u8) = .empty;
     errdefer text.deinit(gpa);
     for (1..seeds + 1) |seed| {
