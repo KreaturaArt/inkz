@@ -190,6 +190,7 @@ Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 | `zig build transcripts` | Regenerates `test/transcripts/`. |
 | `zig build replay` | Installs `replay_case`, which replays one case and prints its transcript. |
 | `zig build bench` | Benchmarks in ReleaseSafe and ReleaseFast; writes `docs/benchmarks.md`. |
+| `zig build bench-io` | Program load and store, ink's JSON against the binary image, in ReleaseSafe and ReleaseFast; appends to `bench/load_store.jsonl` (see `docs/benchmarks.md`). |
 
 ### Ground truth
 

@@ -125,6 +125,28 @@ pub fn build(b: *std.Build) void {
         bench_step.dependOn(&run_bench.step);
     }
 
+    // Program load and store, as ink's JSON and as the binary image, in both release modes;
+    // results are appended to bench/load_store.jsonl.
+    const bench_io_step = b.step("bench-io", "Benchmark JSON and binary image load/store");
+    var previous_bench_io: ?*std.Build.Step = null;
+    for ([_]std.builtin.OptimizeMode{ .ReleaseSafe, .ReleaseFast }) |mode| {
+        const bench_io = b.addExecutable(.{
+            .name = b.fmt("bench_io_{t}", .{mode}),
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("src/bench_io.zig"),
+                .target = target,
+                .optimize = mode,
+            }),
+        });
+        const run_bench_io = b.addRunArtifact(bench_io);
+        run_bench_io.setCwd(b.path("."));
+        // Always run: each run is a new measurement.
+        run_bench_io.has_side_effects = true;
+        if (previous_bench_io) |previous| run_bench_io.step.dependOn(previous);
+        previous_bench_io = &run_bench_io.step;
+        bench_io_step.dependOn(&run_bench_io.step);
+    }
+
     const simulate = b.addExecutable(.{
         .name = "simulate",
         .root_module = b.createModule(.{
