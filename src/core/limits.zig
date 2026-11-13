@@ -195,15 +195,6 @@ pub const Usage = struct {
     warnings: u32 = 0,
     container_depth: u32 = 0,
     load_nodes: u32 = 0,
-
-    /// The larger of each field.
-    pub fn merge(usage: *Usage, other: Usage) void {
-        inline for (@typeInfo(Usage).@"struct".field_names) |name| {
-            @field(usage, name) = @max(@field(usage, name), @field(other, name));
-        }
-        assert(usage.frames >= other.frames);
-        assert(usage.heap_bytes >= other.heap_bytes);
-    }
 };
 
 /// The smallest value `Limits.fitted` gives a buffer, so a story that never used one (no
@@ -408,8 +399,4 @@ test "fitted limits cover the usage with a margin and stay consistent" {
     try std.testing.expectEqual(@as(u32, 80), limits.temps_per_frame_max); // at most the temps
     const default: Limits = .{};
     try std.testing.expectEqual(default.steps_per_continue_max, limits.steps_per_continue_max);
-    var merged = usage;
-    merged.merge(.{ .frames = 50 });
-    try std.testing.expectEqual(@as(u32, 50), merged.frames);
-    try std.testing.expectEqual(@as(u32, 10), merged.evaluation_values);
 }
