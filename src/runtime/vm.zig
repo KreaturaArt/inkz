@@ -18,24 +18,17 @@ const extra = @import("../core/extra.zig");
 const container_module = @import("../core/container.zig");
 const Program = @import("../core/program.zig").Program;
 const value_module = @import("value.zig");
-const native = @import("native.zig");
 const call_stack_module = @import("call_stack.zig");
-const output_module = @import("output.zig");
-const choices_module = @import("choices.zig");
 const lookahead = @import("lookahead.zig");
 const state_module = @import("state.zig");
 const story_module = @import("story.zig");
 const ops = @import("ops.zig");
-const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
 const Story = story_module.Story;
 const Opcode = instruction_module.Opcode;
 const Instruction = instruction_module.Instruction;
 const Value = value_module.Value;
-const StringReference = value_module.StringReference;
 const Pointer = call_stack_module.Pointer;
 const ContainerIndex = index.ContainerIndex;
-const StringId = index.StringId;
-const Diagnostic = state_module.Diagnostic;
 
 pub const Error = story_module.Error;
 
@@ -546,15 +539,4 @@ fn count_of_target(story: *Story, opcode: Opcode) Error!void {
     else
         @bitCast(visit_count(story, container));
     try push_evaluation(story, .{ .integer = count });
-}
-
-comptime {
-    assert(@sizeOf(Pointer) == 8);
-    _ = DotnetRandom;
-    _ = native;
-    _ = output_module;
-    _ = choices_module;
-    _ = StringReference;
-    _ = StringId;
-    _ = Diagnostic;
 }

@@ -1065,7 +1065,3 @@ pub fn value_of_host(story: *Story, host: story_module.HostValue) Error!Value {
         .divert_target => |target| .{ .divert_target = target },
     };
 }
-
-comptime {
-    _ = Pointer;
-}

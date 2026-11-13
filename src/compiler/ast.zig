@@ -9,7 +9,7 @@
 //! and absent required slots, so fixed shapes stay fixed.
 //!
 //! `shape` is one switch with no `else`, so a new tag can't be added without deciding its
-//! shape, and `to_typed` turns a node into a view generated from that shape at compile time.
+//! shape.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -204,26 +204,6 @@ pub fn shape(tag: Tag) Shape {
     };
 }
 
-/// The typed view of a node with tag `tag` (T6): a token for leaves, the child nodes for
-/// fixed shapes, the items for lists.
-pub fn View(comptime tag: Tag) type {
-    comptime assert(@backingInt(tag) < 256);
-    comptime assert(@sizeOf(TokenIndex) == 4);
-    return switch (comptime shape(tag)) {
-        .leaf => struct { token: TokenIndex },
-        .fixed => |count| struct { children: [count]NodeIndex },
-        .list => struct { items: []const Tag, first: NodeIndex },
-    };
-}
-
-/// A view of any node.
-pub const Typed = blk: {
-    const tags = @typeInfo(Tag).@"enum".field_names;
-    var types: [tags.len]type = undefined;
-    for (tags, 0..) |name, position| types[position] = View(@field(Tag, name));
-    break :blk @Union(.auto, Tag, tags, &types, &@splat(.{}));
-};
-
 pub const Ast = struct {
     tags: []const Tag,
     data: []const u32,
@@ -267,35 +247,6 @@ pub const Ast = struct {
         assert(position < items.count);
         return .from_int(items.first.to_int() + @as(u32, @intCast(position)));
     }
-
-    /// The node as its typed view (T6).
-    pub fn to_typed(ast: *const Ast, node: NodeIndex) Typed {
-        const node_tag = ast.tag(node);
-        assert(node.to_int() < ast.data.len);
-        assert(ast.root.to_int() < ast.tags.len);
-        switch (node_tag) {
-            inline else => |comptime_tag| {
-                const value: View(comptime_tag) = switch (comptime shape(comptime_tag)) {
-                    .leaf => .{ .token = ast.token(node) },
-                    .fixed => |count| fixed: {
-                        var children: [count]NodeIndex = undefined;
-                        for (&children, 0..) |*slot, position| slot.* = ast.child(
-                            node,
-                            @intCast(position),
-                        );
-                        break :fixed .{ .children = children };
-                    },
-                    .list => list: {
-                        const items = ast.list(node);
-                        const first = items.first.to_int();
-                        const tags = ast.tags[first..][0..items.count];
-                        break :list .{ .items = tags, .first = items.first };
-                    },
-                };
-                return @unionInit(Typed, @tagName(comptime_tag), value);
-            },
-        }
-    }
 };
 
 comptime {
@@ -310,26 +261,18 @@ comptime {
     }
 }
 
-test "views follow each tag's shape" {
-    // Goal: P7.2 coverage check: every tag has a typed view of its shape. Method: build a
-    // tiny tree by hand (a choice with a list child) and read it back typed.
-    // Nodes: 0 count(2), 1 text, 2 text, 3 content_list (list at 0), then the choice's six
-    // children 4..9 and the choice 10.
+test "accessors follow each tag's shape" {
+    // A tiny tree by hand. Nodes: 0 count(2), 1 text, 2 text, 3 content_list (list at 0),
+    // then the choice's six children 4..9 and the choice 10.
     const tags = [_]Tag{
         .count,        .text,   .text, .content_list, .header, .none, .none, .content_list, .none,
         .content_list, .choice,
     };
     const data = [_]u32{ 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 4 };
     const ast: Ast = .{ .tags = &tags, .data = &data, .root = .from_int(10) };
-    const choice = ast.to_typed(ast.root).choice;
-    try std.testing.expectEqual(@as(u32, 6), @as(u32, @intCast(choice.children.len)));
-    try std.testing.expectEqual(Tag.none, ast.tag(choice.children[2]));
-    try std.testing.expectEqual(Tag.content_list, ast.tag(choice.children[3]));
-    const line = ast.to_typed(.from_int(3)).content_list;
-    try std.testing.expectEqual(@as(usize, 2), line.items.len);
-    try std.testing.expectEqual(@as(u32, 1), ast.to_typed(.from_int(2)).text.token.to_int());
-    inline for (@typeInfo(Tag).@"enum".field_names) |name| {
-        // Every tag has a view type of its shape.
-        _ = View(@field(Tag, name));
-    }
+    try std.testing.expectEqual(Tag.none, ast.tag(ast.child(ast.root, 2)));
+    try std.testing.expectEqual(Tag.content_list, ast.tag(ast.child(ast.root, 3)));
+    const line = ast.list(.from_int(3));
+    try std.testing.expectEqual(@as(u32, 2), line.count);
+    try std.testing.expectEqual(@as(u32, 1), ast.token(ast.item(.from_int(3), 1)).to_int());
 }
