@@ -63,61 +63,11 @@ pub const Grammar = struct {
         expression_divert_target,
     };
 
+    /// Runs the rule's step function: the function of the rule's name in the grammar modules.
     pub fn step(machine: *Machine, frame: *Machine.Frame) Action {
         assert(frame.phase < 64);
-        assert(machine.at <= machine.source.len);
-        assert(machine.frames_count > 0);
         const result = switch (frame.rule) {
-            .story => statements.story(machine, frame),
-            .statements => statements.statements(machine, frame),
-            .statement => statements.statement(machine, frame),
-            .statements_break => statements.statements_break(machine, frame),
-            .knot_definition => statements.knot_definition(machine, frame),
-            .knot_declaration => statements.knot_declaration(machine, frame),
-            .stitch_definition => statements.stitch_definition(machine, frame),
-            .stitch_declaration => statements.stitch_declaration(machine, frame),
-            .declaration_line => statements.declaration_line(machine, frame),
-            .logic_line => statements.logic_line(machine, frame),
-            .return_statement => statements.return_statement(machine, frame),
-            .temp_declaration_or_assignment => statements.temp_declaration_or_assignment(
-                machine,
-                frame,
-            ),
-            .line_of_mixed_text_and_logic => content.line_of_mixed_text_and_logic(machine, frame),
-            .mixed_text_and_logic => content.mixed_text_and_logic(machine, frame),
-            .inline_logic_or_glue_or_start_tag => content.inline_logic_or_glue_or_start_tag(
-                machine,
-                frame,
-            ),
-            .inline_logic => content.inline_logic(machine, frame),
-            .inner_logic => content.inner_logic(machine, frame),
-            .condition_expression => content.condition_expression(machine, frame),
-            .inner_conditional_content => content.inner_conditional_content(machine, frame),
-            .single_multiline_condition => content.single_multiline_condition(machine, frame),
-            .inner_sequence => content.inner_sequence(machine, frame),
-            .inner_sequence_objects => content.inner_sequence_objects(machine, frame),
-            .single_multiline_sequence_element => content.single_multiline_sequence_element(
-                machine,
-                frame,
-            ),
-            .inner_expression => content.inner_expression(machine, frame),
-            .multi_divert => weave.multi_divert(machine, frame),
-            .start_thread => weave.start_thread(machine, frame),
-            .divert_identifier_with_arguments => weave.divert_identifier_with_arguments(
-                machine,
-                frame,
-            ),
-            .single_divert => weave.single_divert(machine, frame),
-            .choice => weave.choice(machine, frame),
-            .choice_single_condition => weave.choice_single_condition(machine, frame),
-            .gather => weave.gather(machine, frame),
-            .expression => expressions.expression(machine, frame),
-            .expression_unary => expressions.expression_unary(machine, frame),
-            .expression_paren => expressions.expression_paren(machine, frame),
-            .expression_function_call => expressions.expression_function_call(machine, frame),
-            .function_call_arguments => expressions.function_call_arguments(machine, frame),
-            .expression_string => expressions.expression_string(machine, frame),
-            .expression_divert_target => expressions.expression_divert_target(machine, frame),
+            inline else => |rule| rule_function(rule)(machine, frame),
         };
         return result catch |err| switch (err) {
             // The workspace is too small: fail everything; the caller retries larger.
@@ -127,6 +77,18 @@ pub const Grammar = struct {
                 return .fail;
             },
         };
+    }
+
+    /// The one function named `rule` in the grammar modules.
+    fn rule_function(comptime rule: Grammar.Rule) fn (*Machine, *Frame) Error!Action {
+        const name = @tagName(rule);
+        var found: ?fn (*Machine, *Frame) Error!Action = null;
+        for (.{ statements, content, weave, expressions }) |module| {
+            if (!@hasDecl(module, name)) continue;
+            if (found != null) @compileError("two grammar modules define rule " ++ name);
+            found = @field(module, name);
+        }
+        return found orelse @compileError("no grammar module defines rule " ++ name);
     }
 };
 
@@ -214,7 +176,6 @@ pub const Message = enum(u32) {
 };
 
 pub fn report_expected(machine: *Machine, expectation: Expectation) void {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     assert(machine.at <= machine.source.len);
     machine.report(.expected, machine.at, @backingInt(expectation));
 }
@@ -228,7 +189,6 @@ pub fn expect_string(machine: *Machine, literal: []const u8, expectation: Expect
 }
 
 pub fn report_message(machine: *Machine, message: Message) void {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     assert(machine.at <= machine.source.len);
     machine.report(.message, machine.at, @backingInt(message));
 }
@@ -236,19 +196,16 @@ pub fn report_message(machine: *Machine, message: Message) void {
 // StringParser's character-level primitives.
 
 pub fn at(machine: *const Machine) u32 {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     assert(machine.at <= machine.source.len);
     return machine.at;
 }
 
 pub fn rest(machine: *const Machine) []const u8 {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     assert(machine.at <= machine.source.len);
     return machine.source[machine.at..];
 }
 
 pub fn at_end(machine: *const Machine) bool {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     assert(machine.at <= machine.source.len);
     return machine.at == machine.source.len;
 }
@@ -265,7 +222,6 @@ pub fn parse_string(machine: *Machine, literal: []const u8) bool {
 /// Whitespace: one or more spaces and tabs.
 pub fn whitespace(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     while (!at_end(machine) and (rest(machine)[0] == ' ' or rest(machine)[0] == '\t')) {
         machine.at += 1;
@@ -276,7 +232,6 @@ pub fn whitespace(machine: *Machine) bool {
 /// ParseNewline: an optional `\r` and a `\n`; nothing is consumed if there is no `\n`.
 pub fn parse_newline(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     _ = parse_string(machine, "\r");
     if (parse_string(machine, "\n")) return true;
@@ -287,7 +242,6 @@ pub fn parse_newline(machine: *Machine) bool {
 /// Newline called directly: whitespace is consumed even when no newline follows.
 pub fn newline_direct(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = whitespace(machine);
     return parse_newline(machine);
 }
@@ -295,7 +249,6 @@ pub fn newline_direct(machine: *Machine) bool {
 /// Newline through Parse or OneOf: on failure, nothing is consumed.
 pub fn newline(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     if (newline_direct(machine)) return true;
     machine.at = start;
@@ -305,7 +258,6 @@ pub fn newline(machine: *Machine) bool {
 /// EndOfFile through OneOf.
 pub fn end_of_file(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     _ = whitespace(machine);
     if (at_end(machine)) return true;
@@ -315,7 +267,6 @@ pub fn end_of_file(machine: *Machine) bool {
 
 /// EndOfLine: OneOf(Newline, EndOfFile).
 pub fn end_of_line(machine: *Machine) bool {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     assert(machine.at <= machine.source.len);
     return newline(machine) or end_of_file(machine);
 }
@@ -323,7 +274,6 @@ pub fn end_of_line(machine: *Machine) bool {
 /// MultilineWhitespace: one or more newlines.
 pub fn multiline_whitespace(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     var count: u32 = 0;
     while (newline(machine)) count += 1;
     return count > 0;
@@ -332,7 +282,6 @@ pub fn multiline_whitespace(machine: *Machine) bool {
 /// AnyWhitespace: any mix of whitespace and newlines.
 pub fn any_whitespace(machine: *Machine) bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     var any = false;
     while (whitespace(machine) or multiline_whitespace(machine)) any = true;
     return any;
@@ -350,7 +299,6 @@ pub fn until_line_end(machine: *Machine) struct { start: u32, end: u32 } {
 
 /// SkipToNextLine, the usual recovery rule.
 pub fn skip_to_next_line(machine: *Machine) void {
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     _ = until_line_end(machine);
     _ = parse_newline(machine);
     assert(machine.at <= machine.source.len);
@@ -359,7 +307,6 @@ pub fn skip_to_next_line(machine: *Machine) void {
 /// Expect(EndOfLine, ..., recoveryRule: SkipToNextLine).
 pub fn expect_end_of_line(machine: *Machine) void {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     if (end_of_line(machine)) return;
     report_expected(machine, .end_of_line);
     skip_to_next_line(machine);
@@ -368,7 +315,6 @@ pub fn expect_end_of_line(machine: *Machine) void {
 /// Identifier: a run of identifier characters that isn't only digits; its token.
 pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     const length = lexical.identifier_length(rest(machine)) orelse return null;
     const text = rest(machine)[0..length];
@@ -391,7 +337,6 @@ pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
 /// Parse(Identifier) == word: consumes the identifier only if it is `word`.
 pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
     const token = try identifier(machine) orelse return false;
@@ -404,7 +349,6 @@ pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
 /// Pushes an identifier leaf, or returns false if there is no identifier.
 pub fn push_identifier(machine: *Machine) Error!bool {
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const token = try identifier(machine) orelse return false;
     try machine.push_node(.identifier, token.to_int());
     return true;

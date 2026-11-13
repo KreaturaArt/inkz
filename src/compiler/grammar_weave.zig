@@ -36,7 +36,6 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
                 bits = choice_sticky;
             }
             if (depth == 0) return .fail;
-            frame.locals[0] = machine.scratch_count;
             frame.locals[2] = bits;
             try machine.push_node(.header, depth);
             const named = try bracketed_name(machine);
@@ -138,7 +137,7 @@ fn finish_choice(machine: *Machine, frame: *Frame) Error!Action {
     try grammar.end_tag_if_necessary(machine, true);
     try machine.push_node(.newline, 0);
     try machine.wrap(.content_list, frame.locals[1]);
-    const header = frame.locals[0];
+    const header = frame.checkpoint.scratch;
     const header_data = &machine.workspace.scratch_data[header];
     if (bits & choice_brackets != 0) header_data.* |= header_weave_brackets;
     if (empty) header_data.* |= header_invisible_default;
@@ -185,7 +184,6 @@ pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "{")) return .fail;
-        frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
         machine.argument = 0;
         return .{ .call = .expression };
@@ -195,7 +193,7 @@ pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
         grammar.expect_string(machine, "}", .closing_brace);
         return .fail;
     }
-    @import("grammar_content.zig").disallow_increment(machine, frame.locals[0]);
+    @import("grammar_content.zig").disallow_increment(machine, frame.checkpoint.scratch);
     grammar.expect_string(machine, "}", .closing_brace);
     return .succeed;
 }
@@ -248,7 +246,6 @@ pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             _ = grammar.whitespace(machine);
             frame.phase = 1;
             return .{ .call = .start_thread };
@@ -290,7 +287,7 @@ fn divert_arrow(machine: *Machine, frame: *Frame) bool {
 fn finish_multi_divert(machine: *Machine, frame: *Frame) Error!void {
     assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    const marker = frame.locals[0];
+    const marker = frame.checkpoint.scratch;
     const count = frame.locals[1];
     const workspace = machine.workspace;
     // A target is element 2k+1, value marker+k; one followed by an arrow is a tunnel.
@@ -351,7 +348,6 @@ pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!
     assert(frame.rule == .divert_identifier_with_arguments);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         _ = grammar.whitespace(machine);
         if (!try divert_path(machine)) return .fail;
         _ = grammar.whitespace(machine);
@@ -360,7 +356,7 @@ pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!
     }
     if (machine.outcome == .failed) try grammar.push_none(machine);
     _ = grammar.whitespace(machine);
-    try machine.wrap(.divert, frame.locals[0]);
+    try machine.wrap(.divert, frame.checkpoint.scratch);
     return .succeed;
 }
 
@@ -389,13 +385,12 @@ pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .single_divert);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
         return .{ .call = .multi_divert };
     }
     if (machine.outcome == .failed) return .fail;
-    if (machine.scratch_count != frame.locals[0] + 1) return .fail;
-    const tag = grammar.top_tag(machine, frame.locals[0]).?;
+    if (machine.scratch_count != frame.checkpoint.scratch + 1) return .fail;
+    const tag = grammar.top_tag(machine, frame.checkpoint.scratch).?;
     if (tag == .tunnel or tag == .tunnel_onwards or tag == .tag_end) return .fail;
     return .succeed;
 }

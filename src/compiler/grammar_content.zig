@@ -120,13 +120,12 @@ pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Acti
     switch (frame.phase) {
         0 => {
             _ = grammar.whitespace(machine);
-            frame.locals[0] = machine.scratch_count;
             frame.phase = 1;
             return .{ .call = .mixed_text_and_logic };
         },
         else => {
             if (machine.outcome == .failed) return .fail;
-            const marker = frame.locals[0];
+            const marker = frame.checkpoint.scratch;
             const workspace = machine.workspace;
             if (workspace.scratch_tags[marker] == .text) {
                 const text = grammar.token_text(machine, .from_int(workspace.scratch_data[marker]));
@@ -152,7 +151,6 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             const start = grammar.at(machine);
             _ = grammar.whitespace(machine);
             if (grammar.parse_string(machine, "~")) {
@@ -184,7 +182,7 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
                 if (tag_was_active) try grammar.insert_node(machine, diverts, .tag_end, 0);
                 machine.flags &= ~grammar.tag_active;
                 const last = diverts + @intFromBool(tag_was_active);
-                if (last > frame.locals[0]) {
+                if (last > frame.checkpoint.scratch) {
                     const tag = machine.workspace.scratch_tags[last - 1];
                     if (tag == .text or tag == .text_space) _ = try trim_text_at(
                         machine,
@@ -200,8 +198,8 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
 
 fn finish_mixed(machine: *Machine, frame: *Frame) Action {
     assert(frame.rule == .mixed_text_and_logic);
-    assert(machine.scratch_count >= frame.locals[0]);
-    if (machine.scratch_count == frame.locals[0]) return .fail;
+    assert(machine.scratch_count >= frame.checkpoint.scratch);
+    if (machine.scratch_count == frame.checkpoint.scratch) return .fail;
     return .succeed;
 }
 
@@ -247,7 +245,6 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
     switch (frame.phase) {
         0 => {
             if (!grammar.parse_string(machine, "{")) return .fail;
-            frame.locals[0] = machine.scratch_count;
             frame.locals[1] = machine.flags;
             _ = grammar.whitespace(machine);
             frame.phase = 1;
@@ -264,7 +261,7 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
             machine.flags &= ~grammar.parsing_string;
             machine.flags |= was & grammar.parsing_string;
             if (was & grammar.tag_active == 0) try grammar.end_tag_if_necessary(machine, true);
-            try machine.wrap(.content_list, frame.locals[0]);
+            try machine.wrap(.content_list, frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -277,7 +274,6 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             _ = grammar.whitespace(machine);
             if (try sequence_type_annotation(machine)) |kind| {
                 try machine.push_node(.sequence_kind, kind);
@@ -293,7 +289,7 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_expected(machine, .sequence_elements);
                 return .fail;
             }
-            try machine.wrap(.sequence, frame.locals[0]);
+            try machine.wrap(.sequence, frame.checkpoint.scratch);
             return .succeed;
         },
         2 => {
@@ -351,14 +347,13 @@ pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_expression);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
         machine.argument = 0;
         return .{ .call = .expression };
     }
     if (machine.outcome == .failed) return .fail;
-    disallow_increment(machine, frame.locals[0]);
-    try machine.wrap(.inline_value, frame.locals[0]);
+    disallow_increment(machine, frame.checkpoint.scratch);
+    try machine.wrap(.inline_value, frame.checkpoint.scratch);
     return .succeed;
 }
 
@@ -378,13 +373,12 @@ pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .condition_expression);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
         machine.argument = 0;
         return .{ .call = .expression };
     }
     if (machine.outcome == .failed) return .fail;
-    disallow_increment(machine, frame.locals[0]);
+    disallow_increment(machine, frame.checkpoint.scratch);
     _ = grammar.whitespace(machine);
     if (!grammar.parse_string(machine, ":")) return .fail;
     return .succeed;
@@ -538,7 +532,6 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             _ = grammar.whitespace(machine);
             if (grammar.parse_string(machine, "->")) return .fail;
             if (!grammar.parse_string(machine, "-")) return .fail;
@@ -559,21 +552,22 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
         },
         else => {
             const is_else = frame.locals[1] == 1;
+            const marker = frame.checkpoint.scratch;
             if (machine.outcome == .failed) {
-                const no_expression = is_else or grammar.top_tag(machine, frame.locals[0]) == .none;
+                const no_expression = is_else or grammar.top_tag(machine, marker) == .none;
                 if (no_expression) {
                     grammar.report_message(machine, .branch_without_content);
-                    const marker = machine.scratch_count;
+                    const statements_marker = machine.scratch_count;
                     const empty = try machine.add_token(
                         grammar.at(machine),
                         grammar.at(machine),
                     );
                     try machine.push_node(.text, empty.to_int());
-                    try machine.wrap(.statements, marker);
+                    try machine.wrap(.statements, statements_marker);
                 } else try grammar.push_none(machine);
             }
             _ = grammar.multiline_whitespace(machine);
-            try machine.wrap(if (is_else) .else_branch else .conditional_branch, frame.locals[0]);
+            try machine.wrap(if (is_else) .else_branch else .conditional_branch, marker);
             return .succeed;
         },
     }
@@ -665,7 +659,6 @@ pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .inner_sequence);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         _ = grammar.whitespace(machine);
         const kind = try sequence_type_annotation(machine) orelse stopping;
         try machine.push_node(.sequence_kind, kind);
@@ -675,7 +668,7 @@ pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
     if (machine.outcome == .failed) return .fail;
     const elements = machine.workspace.scratch_data[machine.scratch_count - 1];
     if (machine.workspace.node_data[elements] <= 1) return .fail;
-    try machine.wrap(.sequence, frame.locals[0]);
+    try machine.wrap(.sequence, frame.checkpoint.scratch);
     return .succeed;
 }
 
@@ -686,7 +679,6 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             if (grammar.newline(machine)) {
                 _ = grammar.multiline_whitespace(machine);
                 frame.phase = 1;
@@ -700,8 +692,8 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
         1 => {
             const element: grammar.Rule = .single_multiline_sequence_element;
             if (machine.outcome == .succeeded) return .{ .call = element };
-            if (machine.scratch_count == frame.locals[0]) return .fail;
-            try machine.wrap(.branches, frame.locals[0]);
+            if (machine.scratch_count == frame.checkpoint.scratch) return .fail;
+            try machine.wrap(.branches, frame.checkpoint.scratch);
             return .succeed;
         },
         else => {
@@ -714,7 +706,7 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
                 return .{ .call = .mixed_text_and_logic };
             }
             if (frame.locals[1] == 0) return .fail;
-            try machine.wrap(.branches, frame.locals[0]);
+            try machine.wrap(.branches, frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -729,16 +721,15 @@ pub fn single_multiline_sequence_element(machine: *Machine, frame: *Frame) Error
         if (grammar.parse_string(machine, "->")) return .fail;
         if (!grammar.parse_string(machine, "-")) return .fail;
         _ = grammar.whitespace(machine);
-        frame.locals[0] = machine.scratch_count;
         try machine.push_node(.newline, 0);
         frame.phase = 1;
         machine.argument = @backingInt(Level.inner_block);
         return .{ .call = .statements };
     }
     if (machine.outcome == .failed) {
-        machine.scratch_count = frame.locals[0];
+        machine.scratch_count = frame.checkpoint.scratch;
         _ = grammar.multiline_whitespace(machine);
     }
-    try machine.wrap(.content_list, frame.locals[0]);
+    try machine.wrap(.content_list, frame.checkpoint.scratch);
     return .succeed;
 }
