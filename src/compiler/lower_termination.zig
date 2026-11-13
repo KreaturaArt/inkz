@@ -43,7 +43,7 @@ pub fn check_flow(lowering: *Lowering, flow: ObjectIndex, loose_ends: []const Ob
     if (tree.kind(flow) == .story or tree.has(flow, Flags.function)) return;
     const children = tree.children_of(flow);
     if (children.len == 0 or tree.kind(children[0]) != .weave) return;
-    if (try tree.find(lowering.gpa, flow, is_return) != null) return;
+    if (try tree.find(lowering.gpa, flow, Tree.is_return) != null) return;
     try validate(lowering, children[0], loose_ends, .flow);
 }
 
@@ -70,7 +70,7 @@ fn validate(
     }
     // Any weaving would have left a loose end: only a linear flow is checked.
     for (tree.children_of(weave)) |child| {
-        if (is_weave_point(tree, child)) return;
+        if (tree.is_weave_point(child)) return;
     }
     var flow: Following = .linear(tree, weave);
     try validate_flow(lowering, &flow, weave, handler);
@@ -109,7 +109,7 @@ const Following = struct {
     stops: bool,
 
     fn after_point(tree: *const Tree, point: ObjectIndex) Following {
-        assert(is_weave_point(tree, point));
+        assert(tree.is_weave_point(point));
         const weave = tree.parent(point);
         assert(tree.kind(weave) == .weave);
         const siblings = tree.children_of(weave);
@@ -142,7 +142,7 @@ const Following = struct {
             const object = following.outer[0];
             following.outer = following.outer[1..];
             if (following.stops and is_global_declaration(tree, object)) continue;
-            const ends = is_weave_point(tree, object) or tree.kind(object) == .weave;
+            const ends = tree.is_weave_point(object) or tree.kind(object) == .weave;
             if (following.stops and ends) {
                 following.outer = &.{};
                 return null;
@@ -195,17 +195,10 @@ fn report_nested(lowering: *Lowering, terminating: ObjectIndex) !void {
     if (tree.kind(ancestor) == .conditional) {
         var choices: std.ArrayList(ObjectIndex) = .empty;
         defer choices.deinit(lowering.gpa);
-        try tree.find_all(lowering.gpa, ancestor, is_choice, &choices);
+        try tree.find_all(lowering.gpa, ancestor, Tree.is_choice, &choices);
         if (choices.items.len == 1) return lowering.report(.conditional_choice_syntax, terminating);
     }
     try lowering.report(.nested_choice_needs_divert, terminating);
-}
-
-fn is_weave_point(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    const kind = tree.kind(object);
-    assert(tree.count() > 0);
-    return kind == .choice or kind == .gather;
 }
 
 /// Weave.IsGlobalDeclaration: VAR and CONST are outside the flow.
@@ -231,16 +224,4 @@ fn is_tunnel_onwards(tree: *const Tree, object: ObjectIndex) bool {
     assert(object.to_int() < tree.count());
     assert(tree.count() > 0);
     return tree.kind(object) == .tunnel_onwards;
-}
-
-fn is_return(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
-    return tree.kind(object) == .@"return";
-}
-
-fn is_choice(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
-    return tree.kind(object) == .choice;
 }

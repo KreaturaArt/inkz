@@ -207,7 +207,7 @@ fn variable_reference(lowering: *Lowering, container: ContainerId, frame: *Frame
         },
         else => {},
     }
-    const name = try lowering.ir.text(reference_name(lowering, reference));
+    const name = reference_name(lowering, reference);
     _ = try lowering.ir.add(container, .{ .variable_reference = name });
     return null;
 }
@@ -221,10 +221,10 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
     const ir = &lowering.ir;
     const object = frame.object;
     const node = tree.node(object);
-    const name = try ir.text(if (tree.has(object, Flags.by_expression))
+    const name = if (tree.has(object, Flags.by_expression))
         lowering.parsed.child_text(node, 0)
     else
-        reference_name_of_node(lowering, lowering.ast().child(node, 0)));
+        reference_name_of_node(lowering, lowering.ast().child(node, 0));
     const children = tree.children_of(object);
     if (frame.stage == 0) {
         _ = try ir.add(container, .{ .variable_reference = name });
@@ -260,7 +260,7 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
     const arguments = tree.children_of(proxy);
     const is_list = !lowering.resolution.targets[call.to_int()].is_none();
     if (is_builtin_call(name) or (is_list and arguments.len == 1)) {
-        if (frame.stage == 0 and is_list) _ = try ir.add(container, .{ .text = try ir.text(name) });
+        if (frame.stage == 0 and is_list) _ = try ir.add(container, .{ .text = name });
         if (frame.stage < arguments.len) {
             frame.stage += 1;
             return arguments[frame.stage - 1];
@@ -269,9 +269,9 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
             _ = try ir.add_command(container, .list_from_int);
         } else if (builtin_command(name)) |command| {
             _ = try ir.add_command(container, command);
-        } else _ = try ir.add(container, .{ .native = try ir.text(name) });
+        } else _ = try ir.add(container, .{ .native = name });
     } else if (is_list) {
-        const origins = try ir.arena.allocator().dupe([]const u8, &.{try ir.text(name)});
+        const origins = try ir.arena.allocator().dupe([]const u8, &.{name});
         _ = try ir.add(container, .{ .list = .{ .items = &.{}, .origins = origins } });
     } else try lowering.add_result(container, proxy);
     if (tree.has(call, Flags.pop_result)) _ = try ir.add_command(container, .pop);
@@ -382,7 +382,7 @@ pub fn list_definition_value(
     var items: std.ArrayList(ir_module.ListItem) = .empty;
     for (lowering.tree.children_of(definition)) |element| {
         if (ast.tag(lowering.tree.node(element)) != .selected_list_item) continue;
-        const name = try lowering.ir.text(lowering.child_name(element, 0));
+        const name = lowering.child_name(element, 0);
         try items.append(arena, .{
             .origin = origin,
             .name = name,

@@ -84,6 +84,8 @@ pub const Divert = struct {
 
 pub const ListItem = struct { origin: []const u8, name: []const u8, value: i32 };
 
+/// A runtime object. Its names and texts are slices of the source (which outlives the IR) or
+/// of the IR's arena.
 pub const Item = union(enum) {
     container: ContainerId,
     command: Command,
@@ -284,9 +286,8 @@ pub const Ir = struct {
         return ir.add(to, .{ .container = child });
     }
 
-    /// Container.InsertContent at the start (the only position ink inserts at).
-    pub fn insert(ir: *Ir, to: ContainerId, position: usize, value: Item) !ItemId {
-        assert(position == 0);
+    /// Container.InsertContent at index 0 (the only position ink inserts at).
+    pub fn prepend(ir: *Ir, to: ContainerId, value: Item) !ItemId {
         assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
         ir.placed.items[id.to_int()] = true;
@@ -336,14 +337,6 @@ pub const Ir = struct {
         const entry = ir.containers.items[id.to_int()];
         assert(entry.flat_first + entry.flat_count <= ir.flat.items.len);
         return ir.flat.items[entry.flat_first..][0..entry.flat_count];
-    }
-
-    /// A name or text for an item: names are slices of the source, which outlives the IR,
-    /// so nothing is copied.
-    pub fn text(ir: *Ir, value: []const u8) ![]const u8 {
-        assert(ir.items.items.len < std.math.maxInt(u32));
-        assert(value.len < std.math.maxInt(u32));
-        return value;
     }
 
     /// Adds an existing (unplaced) item to the end of a container's content.

@@ -57,13 +57,6 @@ const Generation = struct {
     choices: u32 = 0,
 };
 
-fn is_weave_point(lowering: *const Lowering, object: ObjectIndex) bool {
-    assert(lowering.results.len == lowering.tree.count());
-    const kind = lowering.tree.kind(object);
-    assert(object.to_int() < lowering.tree.count());
-    return kind == .choice or kind == .gather;
-}
-
 /// Weave.GenerateRuntimeObject.
 pub fn generate_weave(lowering: *Lowering, weave: ObjectIndex) !Result {
     assert(lowering.results.len == lowering.tree.count());
@@ -74,7 +67,7 @@ pub fn generate_weave(lowering: *Lowering, weave: ObjectIndex) !Result {
     defer generation.loose_ends.deinit(lowering.gpa);
     for (lowering.tree.children_of(weave)) |child| {
         try take_passed(lowering, &generation, weave, child);
-        if (is_weave_point(lowering, child)) {
+        if (lowering.tree.is_weave_point(child)) {
             try add_weave_point(lowering, &generation, child);
         } else if (lowering.tree.kind(child) == .weave) {
             try add_general(lowering, &generation, lowering.result(child));
@@ -289,7 +282,7 @@ pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
     const node = lowering.tree.node(gather);
     if (!node.is_none()) {
         const label = lowering.parsed.child_text(node, 1);
-        if (label.len > 0) ir.container(container).name = try ir.text(label);
+        if (label.len > 0) ir.container(container).name = label;
     }
     ir.container(container).flags |= ir_module.count_start_only;
     if (lowering.count_all_visits) ir.container(container).flags |= ir_module.count_visits;
