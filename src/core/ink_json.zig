@@ -1,5 +1,5 @@
-//! Loads ink's compiled JSON (`.ink.json`, versions 18 to 21) into a `Program` (plan §4.9,
-//! P3.1), streaming: no JSON value tree, and an explicit frame stack instead of recursion.
+//! Loads ink's compiled JSON (`.ink.json`, versions 18 to 21) into a `Program`, streaming:
+//! no JSON value tree, and an explicit frame stack instead of recursion.
 //!
 //! A container is a JSON array of content items whose last element is `null` or a dictionary
 //! holding its named-only children, its counting flags (`#f`) and its name (`#n`). One
@@ -346,7 +346,7 @@ const Loader = struct {
         var fields: Fields = .{};
         var key = first;
         while (true) {
-            // No ink key is empty (found by fuzzing, P11.7).
+            // No ink key is empty (found by fuzzing).
             if (key.len == 0) return error.InvalidInkJson;
             try loader.content_field(&fields, key);
             key = switch (try loader.next_token()) {
@@ -603,7 +603,7 @@ fn load_file(gpa: Allocator, path: []const u8) !Program {
 }
 
 test "hello world loads into the expected instructions" {
-    // Goal: the basic mapping of content items to instructions. Method: load a tiny story and
+    // The basic mapping of content items to instructions: load a tiny story and
     // dump it.
     const gpa = std.testing.allocator;
     const json =
@@ -661,7 +661,7 @@ fn collect_json(arena: Allocator, directory: []const u8) ![]const []const u8 {
 }
 
 test "every compiled fixture and ground-truth story loads" {
-    // Goal: P3.1. Method: load every .ink.json from inklecate (test/fixture/compiled) and from
+    // Load every .ink.json from inklecate (test/fixture/compiled) and from
     // the pinned ink compiler (test/ground_truth), and count the v20 ones.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -688,7 +688,7 @@ test "every compiled fixture and ground-truth story loads" {
 }
 
 test "malformed input returns an error instead of crashing" {
-    // Goal: untrusted JSON can't reach an assertion. Method: inputs the fuzzer and review
+    // Untrusted JSON can't reach an assertion: inputs the fuzzer and review
     // found: an empty named-child key, an empty name, out-of-range integer fields, empty
     // content object keys.
     const gpa = std.testing.allocator;
@@ -703,7 +703,7 @@ test "malformed input returns an error instead of crashing" {
         ,
         \\{"inkVersion":21,"root":["done",null],"listDefs":{"l":{"a":99999999999}}}
         ,
-        // Found by the structure-aware JSON target (P11.7): empty content object keys.
+        // Found by the structure-aware JSON target: empty content object keys.
         \\{"inkVersion":21,"root":[{"":"$r"},"done",null]}
         ,
         \\{"inkVersion":21,"root":[{"->":"0","":true},"done",null]}
@@ -751,7 +751,7 @@ fn count_resolved_targets(program: *const Program) !u32 {
 }
 
 test "every path is resolved at load time" {
-    // Goal: P3.2; the hot path never sees a path string. Method: for every story, every
+    // The hot path never sees a path string: for every story, every
     // divert, choice, divert-target and read-count operand points at a container, and the
     // program passes its check. Operands are typed, so none can hold a path string.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -818,7 +818,7 @@ fn find_by_path(program: *const Program, path: []const u8) ?@import("index.zig")
 }
 
 test "container paths, hashes and flags match ink" {
-    // Goal: P3.3 (moved from P2.4). Method: load each story and compare every container with
+    // Load each story and compare every container with
     // the listing ink v1.2.1 printed for it (mise run reference:paths).
     const gpa = std.testing.allocator;
     const io = std.testing.io;

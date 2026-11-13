@@ -1,4 +1,4 @@
-//! ink's grammar (plan §4.11, P7.4-P7.8), ported from InkParser*.cs onto the parser core:
+//! ink's grammar, ported from InkParser*.cs onto the parser core:
 //! each InkParser method that can (indirectly) recurse is a rule of the machine; the purely
 //! lexical ones are helper functions here. The rules live in grammar_statements.zig,
 //! grammar_content.zig, grammar_weave.zig and grammar_expressions.zig; this file has the rule
@@ -477,7 +477,7 @@ pub const Parsed = struct {
         return parsed.leaf_text(parsed.tree.child(node, position));
     }
 
-    /// Frees the syntax tree and the tokens once the IR is lowered (plan P8.6), keeping the
+    /// Frees the syntax tree and the tokens once the IR is lowered, keeping the
     /// source (the IR's names are slices of it) and the diagnostics.
     pub fn release_syntax(parsed: *Parsed, gpa: std.mem.Allocator) void {
         assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
@@ -516,7 +516,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
 /// A file's range in a shared source space.
 pub const Region = struct { start: u32, end: u32 };
 
-/// Parses each region of `buffer` (comment-free files laid end to end, plan §4.11) into one
+/// Parses each region of `buffer` (comment-free files laid end to end) into one
 /// tree, so token and node indices are global. Takes ownership of `buffer`.
 pub fn parse_space(
     gpa: std.mem.Allocator,
@@ -583,8 +583,8 @@ fn parse_regions(
 }
 
 test "a dense story of short knots parses in one attempt" {
-    // Goal: P12.2. The bench's generated story (0.43 nodes per byte) overflowed the workspace
-    // and was parsed twice. Method: 300 of its knots, parsed; one attempt, and denser than
+    // The bench's generated story (0.43 nodes per byte) overflowed the workspace
+    // and was parsed twice. 300 of its knots, parsed; one attempt, and denser than
     // the old estimate of a node per 4 bytes.
     const gpa = std.testing.allocator;
     var source: std.Io.Writer.Allocating = .init(gpa);

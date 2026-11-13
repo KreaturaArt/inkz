@@ -1,8 +1,8 @@
-//! Builds a `Program` (plan §4.2, P2.3). The JSON loader and the compiler both drive it.
+//! Builds a `Program`. The JSON loader and the compiler both drive it.
 //!
 //! Containers arrive nested, but each container's instructions must end up contiguous. Open
 //! containers write to a scratch stack; when a container ends, its instructions move out, and
-//! `finish` lays every container out back to back in container order (plan T10). Container
+//! `finish` lays every container out back to back in container order. Container
 //! indices are given out when a container begins, so parents come before their children.
 //!
 //! Paths in operands are fixups: they are resolved in `finish`, once every container exists,
@@ -637,7 +637,7 @@ pub const ProgramBuilder = struct {
         errdefer gpa.free(list_items);
         const externals = try builder.externals.toOwnedSlice(gpa);
         errdefer gpa.free(externals);
-        // The VM's newline output items point at this string (plan §4.2).
+        // The VM's newline output items point at this string.
         const newline = try builder.intern("\n");
         var containers = builder.containers;
         builder.containers = .empty;
@@ -895,8 +895,8 @@ fn build_sample(builder: *ProgramBuilder) !void {
 }
 
 test "nested containers come out contiguous with ink paths" {
-    // Goal: P2.3; each container's instructions are one range in container order, and paths
-    // use names or content indices like ink. Method: build the sample and inspect it.
+    // Each container's instructions are one range in container order, and paths
+    // use names or content indices like ink. Build the sample and inspect it.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
     try build_sample(&builder);
@@ -916,7 +916,7 @@ test "nested containers come out contiguous with ink paths" {
 }
 
 test "path fixups resolve to containers and positions" {
-    // Goal: forward and relative references resolve in finish. Method: check each operand of
+    // Forward and relative references resolve in finish: check each operand of
     // the sample.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
@@ -937,7 +937,7 @@ test "path fixups resolve to containers and positions" {
 }
 
 test "an unresolved path is a diagnostic" {
-    // Goal: P2.3 negative space. Method: divert to a knot that doesn't exist.
+    // Negative space: divert to a knot that doesn't exist.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
     _ = try builder.begin_container(.{});
@@ -950,7 +950,7 @@ test "an unresolved path is a diagnostic" {
 }
 
 test "check catches a corrupted program" {
-    // Goal: Program.check reports corruption by name (D20). Method: break the partition, an
+    // Program.check reports corruption by name: break the partition, an
     // enter_container operand, and a string operand, one at a time.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
@@ -972,7 +972,7 @@ test "check catches a corrupted program" {
 }
 
 test "globals, lists, externals and the global declaration" {
-    // Goal: P2.5. Method: a story shaped like ink's JSON for
+    // A story shaped like ink's JSON for
     //   VAR mood = 1  LIST colours = red, (green), blue = 5  EXTERNAL roll()  and a fallback
     //   function `roll`, then look everything up.
     const gpa = std.testing.allocator;
@@ -1015,7 +1015,7 @@ test "globals, lists, externals and the global declaration" {
 }
 
 test "check catches bad global and list tables" {
-    // Goal: negative space for P2.5. Method: a global operand past the table, then list items
+    // Negative space: a global operand past the table, then list items
     // whose origin doesn't own them.
     const gpa = std.testing.allocator;
     var builder = try ProgramBuilder.init(gpa);
@@ -1038,7 +1038,7 @@ test "check catches bad global and list tables" {
 }
 
 test "VAR? reads resolve to globals, list items or temps" {
-    // Goal: ink's lookup order, after everything is declared. Method: three reads made before
+    // Ink's lookup order, after everything is declared: three reads made before
     // the global and the list exist.
     const gpa = std.testing.allocator;
     var builder = try ProgramBuilder.init(gpa);
@@ -1065,7 +1065,7 @@ test "VAR? reads resolve to globals, list items or temps" {
 }
 
 test "names and flags can arrive at a container's end" {
-    // Goal: ink's JSON gives #n and #f last. Method: name and flag a nested container after
+    // Ink's JSON gives #n and #f last: name and flag a nested container after
     // its content, then check its path, named entry and count slot.
     const gpa = std.testing.allocator;
     var builder = try ProgramBuilder.init(gpa);

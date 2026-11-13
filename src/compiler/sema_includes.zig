@@ -1,4 +1,4 @@
-//! INCLUDE in the object tree (plan P8.2), as ink's Story.PreProcessTopLevelObjects does it:
+//! INCLUDE in the object tree, as ink's Story.PreProcessTopLevelObjects does it:
 //! at a story's top level, an INCLUDE becomes the included story's weave (if it has one)
 //! and a "\n", and the included story's flows (its own, then those of its includes) go to
 //! the end of the including story's flows. An INCLUDE that failed is dropped; one below the

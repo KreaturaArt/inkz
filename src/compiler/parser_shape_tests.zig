@@ -1,5 +1,5 @@
 //! The old parser's 51 shape tests (src/compiler/parser.zig), ported to the new grammar
-//! (plan P7.10). Each keeps the old test's input and checks the same facts on the new tree.
+//!. Each keeps the old test's input and checks the same facts on the new tree.
 //! Where the old parser disagreed with ink, the expectation follows ink, and the test says so.
 
 const std = @import("std");
@@ -382,7 +382,7 @@ test "a knot with three stitches" {
 }
 
 test "VAR inside a stitch" {
-    // Where the declaration lives is sema's business (P8.1); the tree keeps it in place.
+    // Where the declaration lives is sema's business; the tree keeps it in place.
     try expect_source_parts(("=== k ===\n= s\nVAR counter = 0\n"), &.{
         "(stitch identifier\"s\" none (statements\n" ++
             "            (variable_declaration identifier\"counter\" integer\"0\")",
@@ -480,8 +480,8 @@ test "expression: in braces with spaces" {
 }
 
 test "dense logic stays within the step bound" {
-    // Goal: the core's gas bound (steps per byte) holds for ink's backtracking on dense input,
-    // the worst case being short inline logic (each brace tries several rules). Method: lines
+    // The core's gas bound (steps per byte) holds for ink's backtracking on dense input,
+    // the worst case being short inline logic (each brace tries several rules). Lines
     // of `{a}{f(b)}{c:d|e}` and choices with conditions, with no no_progress diagnostic.
     const gpa = std.testing.allocator;
     var source: std.ArrayList(u8) = .empty;

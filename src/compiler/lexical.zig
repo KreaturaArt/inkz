@@ -91,7 +91,7 @@ pub fn line_and_column(text: []const u8, offset: u32) struct { line: u32, column
 }
 
 test "line_and_column counts from one" {
-    // Goal: diagnostics positions. Method: offsets at the start, mid-line and after a newline.
+    // Diagnostics positions: offsets at the start, mid-line and after a newline.
     try std.testing.expectEqual(@as(u32, 1), line_and_column("ab\ncd", 0).column);
     try std.testing.expectEqual(@as(u32, 2), line_and_column("ab\ncd", 4).line);
     try std.testing.expectEqual(@as(u32, 2), line_and_column("ab\ncd", 4).column);

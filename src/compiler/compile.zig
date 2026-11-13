@@ -1,4 +1,4 @@
-//! The new compiler's entry points (plan P8.4): source to Program, as ink's
+//! The new compiler's entry points: source to Program, as ink's
 //! Compiler.Compile does it: parse (with INCLUDEs), and with no parse error, build the object
 //! tree, resolve names, and with no error, lower, flatten, lay out and emit.
 
@@ -165,11 +165,11 @@ test "a 0 byte inside the source is text, not the end" {
 }
 
 /// The old compiler's peak bytes compiling test/fixture/crime_scene.ink to JSON in a Debug
-/// build (the P8.6 baseline; `zig build bench` measures both compilers in release builds).
+/// build, the baseline of the memory criterion.
 const old_compiler_peak_bytes_crime_scene = 535_946;
 
-test "the compiler peaks at no more than half the old compiler's memory (P8.6)" {
-    // Goal: P8.6's memory criterion. Method: crime_scene compiled with a counting
+test "the compiler peaks at no more than half the old compiler's memory" {
+    // crime_scene compiled with a counting
     // allocator; the peak, with the object tree, resolution and syntax freed before
     // emission, is at most half the old compiler's.
     const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllocator;
@@ -187,7 +187,7 @@ test "the compiler peaks at no more than half the old compiler's memory (P8.6)" 
 }
 
 test "the parse workspace is sized from the source and retries at most compile_retries_max times" {
-    // Goal: P8.6's sizing criterion. Method: dense arithmetic (more nodes and tokens per byte
+    // Dense arithmetic (more nodes and tokens per byte
     // than the first workspace has room for) needs two doublings: with one retry allowed the
     // parse fails with WorkspaceFull, with two it succeeds, settled to the nodes it used.
     const gpa = std.testing.allocator;

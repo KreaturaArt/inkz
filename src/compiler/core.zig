@@ -1,4 +1,4 @@
-//! The parser core (plan §4.11, P7.3, D9): an explicit-stack machine that runs backtracking
+//! The parser core: an explicit-stack machine that runs backtracking
 //! grammar rules the way ink's StringParser does, without recursion.
 //!
 //! A rule is a step function with phases. A step returns an `Action`: call another rule,
@@ -7,7 +7,7 @@
 //! checkpoint, which gives StringParser's BeginRule/FailRule/SucceedRule and so OneOf,
 //! Optional and Interleave. The caller reads the callee's outcome in its next phase.
 //!
-//! Nodes are built with zirp's scratch stack (T4): finished nodes are values on the scratch
+//! Nodes are built with zirp's scratch stack: finished nodes are values on the scratch
 //! stack, and `wrap` moves a parent's children into one contiguous run of the node arrays.
 //! Diagnostics survive backtracking, as ink's errors do.
 //!
@@ -39,11 +39,11 @@ pub const Diagnostic = struct {
 };
 
 pub const Error = error{
-    /// The workspace is too small for this source: retry with more (plan T15).
+    /// The workspace is too small for this source: retry with more.
     WorkspaceFull,
 };
 
-/// Fixed-capacity arrays, sized once from the source length (T15).
+/// Fixed-capacity arrays, sized once from the source length.
 pub const Workspace = struct {
     node_tags: []ast.Tag,
     node_data: []u32,
@@ -56,8 +56,8 @@ pub const Workspace = struct {
     /// Capacities proportional to the source, from what ink stories use: about 0.17 nodes
     /// and 0.04 stored tokens per byte, and up to 0.43 nodes and 0.1 tokens in dense stories
     /// of short knots (the bench's generated story). A full workspace means a whole new
-    /// parse, so the estimate covers dense stories (P12.2); `settle` gives back what wasn't
-    /// used. `scale` doubles on each retry (plan T15).
+    /// parse, so the estimate covers dense stories; `settle` gives back what wasn't
+    /// used. `scale` doubles on each retry.
     pub fn init(gpa: Allocator, source_length: u32, diagnostics_max: u32, scale: u32) !Workspace {
         assert(scale >= 1);
         const length: usize = source_length;
@@ -82,7 +82,7 @@ pub const Workspace = struct {
     }
 
     /// After a parse: drops the scratch stack (only the parse uses it)
-    /// and shrinks the node and token arrays to what was used (plan P8.6).
+    /// and shrinks the node and token arrays to what was used.
     pub fn settle(workspace: *Workspace, gpa: Allocator, nodes: u32, tokens: u32) !void {
         assert(nodes <= workspace.node_tags.len);
         assert(tokens <= workspace.token_starts.len);
@@ -359,7 +359,7 @@ pub fn Machine(comptime Grammar: type) type {
             try machine.push_node(tag, first);
         }
 
-        /// Starts the next region of a shared source space (plan §4.11): `source` ends where
+        /// Starts the next region of a shared source space: `source` ends where
         /// the region ends, and parsing starts at `start`. Tokens, nodes and diagnostics
         /// accumulate across regions, so their indices are global.
         pub fn begin_region(machine: *Self, source: []const u8, start: u32) void {
@@ -497,7 +497,7 @@ fn parse_toy(source: []const u8, depth_max: u32, start: Toy.Rule) !ToyResult {
 }
 
 test "the core runs nested rules without recursion" {
-    // Goal: P7.3. Method: a toy grammar with parentheses; the result keeps its shape.
+    // A toy grammar with parentheses; the result keeps its shape.
     const result = try parse_toy("a + (b + (c)) + d", 64, .expression);
     try std.testing.expectEqual(Outcome.succeeded, result.outcome);
     try std.testing.expectEqual(@as(u32, 0), result.diagnostics);
@@ -505,7 +505,7 @@ test "the core runs nested rules without recursion" {
 }
 
 test "10k-deep nesting yields a diagnostic, not a crash" {
-    // Goal: P7.3 bound. Method: 10,000 opening parentheses with parse_depth_max 256.
+    // Bound: 10,000 opening parentheses with parse_depth_max 256.
     var source: [20_001]u8 = undefined;
     @memset(source[0..10_000], '(');
     source[10_000] = 'x';
@@ -517,7 +517,7 @@ test "10k-deep nesting yields a diagnostic, not a crash" {
 }
 
 test "a failed rule undoes everything since its call" {
-    // Goal: P7.3 backtracking. Method: an unclosed parenthesis fails the term, leaving the
+    // Backtracking: an unclosed parenthesis fails the term, leaving the
     // expression's earlier terms as they were, and records one diagnostic.
     const result = try parse_toy("(a + b", 64, .expression);
     try std.testing.expectEqual(Outcome.failed, result.outcome);
@@ -526,7 +526,7 @@ test "a failed rule undoes everything since its call" {
 }
 
 test "a rule that stops making progress runs out of gas" {
-    // Goal: P7.3 progress invariant: steps are bounded by the input length. Method: a rule
+    // Progress invariant: steps are bounded by the input length: a rule
     // that repeats forever ends with a no_progress diagnostic.
     const result = try parse_toy("anything", 8, .stall);
     try std.testing.expectEqual(Outcome.failed, result.outcome);

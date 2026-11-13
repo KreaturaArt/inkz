@@ -1,4 +1,4 @@
-//! Name resolution on the object tree (plan §4.12, P8.1), as ink does it in two phases:
+//! Name resolution on the object tree, as ink does it in two phases:
 //!
 //! 1. While ink generates runtime objects, in tree order, it registers declarations (VAR,
 //!    temp, LIST, EXTERNAL) and resolves each divert's target: a name declared so far as a

@@ -1,4 +1,4 @@
-//! The parser's snapshot corpus (plan P7.4-P7.8): every `test/snapshots/parser/*.ink` is
+//! The parser's snapshot corpus: every `test/snapshots/parser/*.ink` is
 //! parsed and its tree and diagnostics are checked against the `.snap` next to it
 //! (`SNAP_UPDATE=1` rewrites them). A line marked `// inkz-error` (or `// inkz-warning`)
 //! must get a diagnostic, and no other line may get one, so the resilience files show that

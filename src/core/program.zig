@@ -1,4 +1,4 @@
-//! The program: one immutable, pre-resolved story image (plan §4.2). The compiler and the JSON
+//! The program: one immutable, pre-resolved story image. The compiler and the JSON
 //! loader both produce it through `ProgramBuilder`; many stories may share one.
 
 const std = @import("std");
@@ -193,7 +193,7 @@ pub const Program = struct {
         return child;
     }
 
-    /// The pair assertion after building and after loading (plan §3.1).
+    /// The pair assertion after building and after loading.
     pub fn check(program: *const Program) Fault {
         const profile_zone = profile.begin(.program_check);
         defer profile_zone.end();

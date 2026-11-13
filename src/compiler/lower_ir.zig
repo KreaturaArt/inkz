@@ -1,4 +1,4 @@
-//! The lowering's runtime IR (plan P8.4): ink's Runtime.Container tree as the compiler builds
+//! The lowering's runtime IR: ink's Runtime.Container tree as the compiler builds
 //! it, before ProgramBuilder. Items have stable ids, so a divert can target an item (ink's
 //! rejoin `nop`s) and keep pointing at it through flattening; targets that are parsed objects
 //! (knots, labels) are resolved to containers once generation is done, as ink resolves them
@@ -111,7 +111,7 @@ pub const Assignment = struct { name: []const u8, global: bool, new: bool };
 pub const VariablePointer = struct { name: []const u8, context: i32 };
 pub const List = struct { items: []const ListItem, origins: []const []const u8 };
 
-/// How an item is stored: 24 bytes, the larger payloads in side arrays (plan P8.6).
+/// How an item is stored: 24 bytes, the larger payloads in side arrays.
 const Stored = union(enum) {
     container: ContainerId,
     command: Command,

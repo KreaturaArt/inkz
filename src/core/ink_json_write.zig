@@ -1,4 +1,4 @@
-//! A Program as ink's JSON (plan §4.12, P8.5), as ink's Runtime JsonSerialisation writes a
+//! A Program as ink's JSON, as ink's Runtime JsonSerialisation writes a
 //! story: each container an array of its content, ending in a dictionary of its named-only
 //! children, `#f` and `#n` (or null); paths as Object.CompactPathString writes them (relative
 //! when shorter), except divert-target values, which ink writes absolute. Iterative over the
