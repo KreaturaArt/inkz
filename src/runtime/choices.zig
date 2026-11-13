@@ -1,4 +1,4 @@
-//! Current choices (plan §4.5, P4.6) and the thread each was generated in (P4.7, plan S5).
+//! Current choices and the thread each was generated in.
 //!
 //! ink's ProcessChoice stores `threadAtGeneration = callStack.ForkThread()` in every choice:
 //! a copy of the current thread with a new thread counter. Choosing a choice makes that copy
@@ -296,7 +296,7 @@ fn test_choice(target: u32) Choice {
 }
 
 test "choices keep their tags and fork counters, and share identical snapshots" {
-    // Goal: P4.6 and P4.7. Method: two choices from the same thread state, one after a temp
+    // Two choices from the same thread state, one after a temp
     // changes; check tags, counters and how many snapshots were stored.
     var state: TestState = .{};
     var stack = state.stack();
@@ -316,7 +316,7 @@ test "choices keep their tags and fork counters, and share identical snapshots" 
 }
 
 test "choosing restores the thread the choice was made in" {
-    // Goal: plan S5; a choice made inside a thread brings that thread back. Method: generate a
+    // A choice made inside a thread brings that thread back: generate a
     // choice inside a pushed thread with its own temp, pop the thread, restore the choice.
     var state: TestState = .{};
     var stack = state.stack();
@@ -337,7 +337,7 @@ test "choosing restores the thread the choice was made in" {
 const Value = value_module.Value;
 
 test "choice limits return their errors" {
-    // Goal: negative space. Method: fill the choices, then the tags.
+    // Negative space: fill the choices, then the tags.
     var state: TestState = .{};
     var stack = state.stack();
     var choices = state.choices();

@@ -1,4 +1,4 @@
-//! The output stream (plan §4.5, P4.5), ported from ink's StoryState.cs: what the story has
+//! The output stream, ported from ink's StoryState.cs: what the story has
 //! printed since the last line was taken, with glue, `str` markers and tags.
 //!
 //! An item is 12 bytes. Text items are slices of a string (the program pool or the heap), so
@@ -610,7 +610,7 @@ const TestOutput = struct {
 };
 
 test "head and tail whitespace splits like ink" {
-    // Goal: TrySplittingHeadTailWhitespace. Method: leading and trailing newlines with spaces.
+    // TrySplittingHeadTailWhitespace: leading and trailing newlines with spaces.
     var pieces: [5]Piece = undefined;
     try std.testing.expectEqual(@as(u32, 0), split_head_tail_whitespace("plain text", &pieces));
     const count = split_head_tail_whitespace("  \nHello\n  ", &pieces);
@@ -623,7 +623,7 @@ test "head and tail whitespace splits like ink" {
 }
 
 test "newlines collapse, glue joins lines, and text is cleaned" {
-    // Goal: the common output rules. Method: leading newline dropped, double newline dropped,
+    // The common output rules: leading newline dropped, double newline dropped,
     // glue removing a newline, and whitespace runs collapsed.
     const table = [_][]const u8{ "\n", "Hello  ", "  world", "\n", "Again" };
     var test_output: TestOutput = .{ .strings = .{ .table = &table } };
@@ -642,7 +642,7 @@ test "newlines collapse, glue joins lines, and text is cleaned" {
 }
 
 test "a function drops leading newlines and trailing whitespace" {
-    // Goal: plan S10. Method: a function frame whose output starts with a newline and ends
+    // A function frame whose output starts with a newline and ends
     // with spaces and a newline.
     const table = [_][]const u8{ "Before ", "\n", "Inside", "   ", " after." };
     var test_output: TestOutput = .{ .strings = .{ .table = &table } };
@@ -664,7 +664,7 @@ test "a function drops leading newlines and trailing whitespace" {
 }
 
 test "string evaluation returns its text and keeps tags" {
-    // Goal: `/str` and the string mark stack. Method: text and a tag inside str ... /str.
+    // `/str` and the string mark stack: text and a tag inside str ... /str.
     var test_output: TestOutput = .{ .strings = .{ .table = &.{ "A", "B", "tagged" } } };
     test_output.setup();
     try test_output.output.push_command(.begin_string);
@@ -697,7 +697,7 @@ const TagSink = struct {
 };
 
 test "dynamic tags are assembled and cleaned" {
-    // Goal: currentTags for v21 `#` ... `/#` tags. Method: a tag made of two text items with
+    // CurrentTags for v21 `#` ... `/#` tags: a tag made of two text items with
     // extra spaces, then text after it, which is not part of the tag.
     const table = [_][]const u8{ "Line", "  big ", "  red  ", " after" };
     var test_output: TestOutput = .{ .strings = .{ .table = &table } };

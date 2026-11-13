@@ -1,4 +1,4 @@
-//! A bit-exact port of .NET's seeded `System.Random` (plan S7, D17). .NET 8 still uses the
+//! A bit-exact port of .NET's seeded `System.Random`. .NET 8 still uses the
 //! legacy Knuth subtractive generator for `new Random(seed)`, and ink creates one per random
 //! choice: `RANDOM` and `LIST_RANDOM` use `new Random(storySeed + previousRandom).Next()`, and
 //! shuffles use `new Random(pathHash + loopIndex + storySeed)`. Only `Next()` is needed.
@@ -76,7 +76,7 @@ comptime {
 }
 
 test "sequences match .NET 8 for the reference seeds" {
-    // Goal: bit-exact .NET behaviour (P1.8). Method: compare the first 1000 values for each
+    // Bit-exact .NET behaviour: compare the first 1000 values for each
     // seed in test/ground_truth/dotnet_random.expected, generated on .NET 8 by the harness.
     const io = std.testing.io;
     const gpa = std.testing.allocator;
@@ -102,7 +102,7 @@ test "sequences match .NET 8 for the reference seeds" {
 }
 
 test "negative seeds behave like their absolute value" {
-    // Goal: the documented .NET quirk that ink inherits. Method: compare seeds 5 and -5.
+    // The documented .NET quirk that ink inherits: compare seeds 5 and -5.
     var positive = DotnetRandom.init(5);
     var negative = DotnetRandom.init(-5);
     for (0..10) |_| try std.testing.expectEqual(positive.next(), negative.next());

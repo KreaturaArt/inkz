@@ -1,4 +1,4 @@
-//! Differential fuzz target for save and load (plan P11.9). A generated story plays to a
+//! Differential fuzz target for save and load. A generated story plays to a
 //! fuzzer-chosen point and is saved; a fresh story loads the save. The loaded story saves the
 //! same JSON, and when the play ended cleanly (and no invisible default choice is pending),
 //! both play on the same choices to the same transcript. A save mutated at the

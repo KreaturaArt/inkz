@@ -18,7 +18,7 @@ test "the statistics are the sorted samples' minimum, median, mean and maximum" 
 }
 
 test "a record is one JSON line with its sizes, times and throughput" {
-    // Goal: the persisted format. Method: a compiled story's subject, a record of made-up
+    // The persisted format: a compiled story's subject, a record of made-up
     // times, written as the bench writes it and parsed back.
     const gpa = std.testing.allocator;
     const source = "Hello\n* [Go] -> knot\n=== knot ===\nDone\n-> END\n";
@@ -61,7 +61,7 @@ test "a record is one JSON line with its sizes, times and throughput" {
 }
 
 test "sampling warms up, then samples to the budget, within the minimum and maximum" {
-    // Goal: the stopping rule. Method: a call that claims 100 ns, under three budgets.
+    // The stopping rule: a call that claims 100 ns, under three budgets.
     const Counter = struct {
         calls: u32 = 0,
         fn once(counter: *@This(), iteration: u32) !u64 {

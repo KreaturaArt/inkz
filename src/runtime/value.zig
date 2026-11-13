@@ -1,4 +1,4 @@
-//! Runtime values (plan §4.3, D14): 12 bytes, scalars exactly as C# ink has them (32-bit
+//! Runtime values: 12 bytes, scalars exactly as C# ink has them (32-bit
 //! wrapping integers, 32-bit floats). Strings and lists live elsewhere (the program's string
 //! pool, the state heap, the list slab) and values hold references.
 
@@ -192,7 +192,7 @@ fn write_fixed(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !void 
 }
 
 test "float formatting matches .NET 8" {
-    // Goal: plan D17; floats print exactly as ink on .NET 8. Method: every value in
+    // Floats print exactly as ink on .NET 8: every value in
     // test/ground_truth/dotnet_floats.expected, given as raw bits.
     const io = std.testing.io;
     const gpa = std.testing.allocator;
@@ -216,7 +216,7 @@ test "float formatting matches .NET 8" {
 }
 
 test "a value is 12 bytes and string references keep their source" {
-    // Goal: plan D14 sizes and the pool/heap split. Method: size and round trips.
+    // Sizes and the pool/heap split: size and round trips.
     try std.testing.expectEqual(12, @sizeOf(Value));
     const in_program = StringReference.program(.from_int(5));
     try std.testing.expect(!in_program.is_heap());

@@ -1,4 +1,4 @@
-//! inkz: an ink runtime and compiler. The runtime's API is at the top level (plan §4.7);
+//! inkz: an ink runtime and compiler. The runtime's API is at the top level;
 //! `compiler` compiles ink source to a Program, `core` holds the shared program image.
 
 const api = @import("runtime/api.zig");

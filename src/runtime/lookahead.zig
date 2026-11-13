@@ -1,4 +1,4 @@
-//! The newline lookahead (plan §4.6, P4.9): ink's StateSnapshot, RestoreStateSnapshot and
+//! The newline lookahead: ink's StateSnapshot, RestoreStateSnapshot and
 //! DiscardSnapshot without copying the whole state.
 //!
 //! Taking a snapshot copies the used prefixes of the live-flow buffers into the lookahead
@@ -274,7 +274,7 @@ fn change_everything(state: *State) !void {
 }
 
 test "take then restore leaves the state bit-identical" {
-    // Goal: P4.9; ink's RestoreStateSnapshot. Method: hash a state with content, take, change
+    // Ink's RestoreStateSnapshot: hash a state with content, take, change
     // every part a lookahead can change, restore, compare hashes and the heap tops.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
@@ -301,7 +301,7 @@ test "take then restore leaves the state bit-identical" {
 }
 
 test "discard keeps the lookahead's changes" {
-    // Goal: P4.9; ink's DiscardSnapshot applies the patch. Method: take, change, discard.
+    // Ink's DiscardSnapshot applies the patch: take, change, discard.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
     var state: State = undefined;
@@ -322,8 +322,8 @@ test "discard keeps the lookahead's changes" {
 }
 
 test "the heap tops follow a compaction during lookahead" {
-    // Goal: P4.9; compaction relocates the snapshot's heap marks (plan §4.6, point 5).
-    // Method: garbage below the mark, live strings on both sides, compact, then restore.
+    // Compaction relocates the snapshot's heap marks: garbage below the mark, live strings on
+    // both sides, compact, then restore.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
     var state: State = undefined;
@@ -353,7 +353,7 @@ test "the heap tops follow a compaction during lookahead" {
 }
 
 test "the undo log returns its error when full" {
-    // Goal: P4.9 bound. Method: a two-entry log and three writes during a lookahead.
+    // Bound: a two-entry log and three writes during a lookahead.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
     var state: State = undefined;

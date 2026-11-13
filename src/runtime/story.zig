@@ -1,5 +1,5 @@
-//! A story on the new runtime (plan §4.6, §4.7): a borrowed program, one state, and ink's
-//! Continue loop around the VM. The public API (P6) wraps this.
+//! A story on the new runtime: a borrowed program, one state, and ink's
+//! Continue loop around the VM. The public API wraps this.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -51,7 +51,7 @@ pub const Error = error{
     /// A bound external function returned an error.
     ExternalFunctionFailed,
     /// An earlier call failed in the middle of a step (a limit or host error), so the state
-    /// is half done; `reset_state` or a successful `load_json` brings the story back (P11.10).
+    /// is half done; `reset_state` or a successful `load_json` brings the story back.
     StoryFailed,
 };
 
@@ -67,7 +67,7 @@ pub const HostValue = union(enum) {
     divert_target: ContainerIndex,
 };
 
-/// An external function (plan §4.7, D22). It may call `evaluate_function` on `story`.
+/// An external function. It may call `evaluate_function` on `story`.
 pub const ExternalFunction = *const fn (
     context: ?*anyopaque,
     story: *Story,
@@ -91,7 +91,7 @@ pub const ErrorHandler = *const fn (
 /// A variable observer (ink's VariableObserver): the global's name and new value.
 pub const Observer = *const fn (context: ?*anyopaque, name: []const u8, value: HostValue) void;
 
-/// ink's host events (D22), each optional, each called with `context`, at ink's points:
+/// ink's host events, each optional, each called with `context`, at ink's points:
 /// after each Continue, before a choice is taken, around evaluate_function and at the start
 /// of choose_path_string.
 pub const Events = struct {
@@ -175,7 +175,7 @@ pub const Story = struct {
     /// evaluate_function calls running now.
     evaluate_depth: u32 = 0,
     /// A limit or host error stopped a step half done: the story fails closed until
-    /// `reset_state` or `load_json` (P11.10).
+    /// `reset_state` or `load_json`.
     failed: bool = false,
     events: Events = .{},
     /// Bumped by every call that may change what a `Borrowed` view points at.
@@ -209,7 +209,7 @@ pub const Story = struct {
         story.generation +%= 1;
     }
 
-    /// What this story has needed since init (P10.2), for `Limits.fitted`.
+    /// What this story has needed since init, for `Limits.fitted`.
     pub fn usage(story: *const Story) limits_module.Usage {
         assert(story.state.memory.len > 0);
         assert(story.observers_count <= story.state.observers.len);
@@ -474,7 +474,7 @@ pub const Story = struct {
         return length;
     }
 
-    /// A limit or host error in the middle of a step (P11.9, P11.10). In the newline lookahead
+    /// A limit or host error in the middle of a step. In the newline lookahead
     /// of a host's `cont`, the state goes back to the end of the last line: it saves, and the
     /// next `cont` runs the same steps again. Anywhere else the step is half done, and the
     /// story fails closed (`failed`) instead of running on from there.
@@ -619,7 +619,7 @@ pub const Story = struct {
         return story.line_text(length);
     }
 
-    /// The current text, cleaned, in the text cache (P10.1); returns its length.
+    /// The current text, cleaned, in the text cache; returns its length.
     fn write_current_text(story: *Story) Error!u32 {
         const profile_zone = profile.begin(.clean_text);
         defer profile_zone.end();
@@ -888,7 +888,7 @@ const TagCounter = struct {
 const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
 
 test "a step budget stops a story that loops without output" {
-    // Goal: P5.1; `steps_per_continue_max` is a hard limit. Method: a container that diverts
+    // `steps_per_continue_max` is a hard limit: a container that diverts
     // to itself forever; run reports the exhausted budget and cont returns StepLimit.
     const gpa = std.testing.allocator;
     var builder = try ProgramBuilder.init(gpa);
@@ -934,8 +934,8 @@ const Collected = struct {
 };
 
 test "an arithmetic fault is a story error, reported to the error handler" {
-    // Goal: D18 and P5.10; `1 / 0` is a story error with ink's prefix, not a panic; without
-    // a handler cont returns StoryError. Method: a two-line story dividing by zero.
+    // `1 / 0` is a story error with ink's prefix, not a panic; without
+    // a handler cont returns StoryError. A two-line story dividing by zero.
     const gpa = std.testing.allocator;
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
@@ -968,7 +968,7 @@ test "an arithmetic fault is a story error, reported to the error handler" {
 }
 
 test "continue_maximally writes every line until the story stops" {
-    // Goal: P5.5; ink's ContinueMaximally. Method: two lines, then the end.
+    // Ink's ContinueMaximally: two lines, then the end.
     const gpa = std.testing.allocator;
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();

@@ -1,5 +1,5 @@
-//! State.check against seeded corruptions (P4.11), and heap compaction through State's root
-//! visitor, one root kind at a time (carried over from P4.3).
+//! State.check against seeded corruptions, and heap compaction through State's root
+//! visitor, one root kind at a time.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -93,7 +93,7 @@ fn corrupt(state: *State, corruption: Corruption) !State.Fault {
 }
 
 test "check reports each seeded corruption" {
-    // Goal: P4.11. Method: one fresh state per corruption; check names the broken part.
+    // One fresh state per corruption; check names the broken part.
     const gpa = std.testing.allocator;
     for (std.enums.values(Corruption)) |corruption| {
         var fixture: Fixture = undefined;
@@ -130,8 +130,8 @@ fn expect_text(state: *State, reference: StringReference, text: []const u8) !voi
 }
 
 test "compaction keeps every root kind" {
-    // Goal: P4.3 carried; each kind of root that holds heap references survives compaction
-    // through State.visit. Method: per kind, a live string after garbage; compact; read back.
+    // Carried; each kind of root that holds heap references survives compaction
+    // through State.visit. Per kind, a live string after garbage; compact; read back.
     const gpa = std.testing.allocator;
     var fixture: Fixture = undefined;
     try fixture.setup(gpa);

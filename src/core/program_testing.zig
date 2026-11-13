@@ -1,5 +1,4 @@
-//! Test helpers for programs: field-by-field equality (the verified pairs of plan P8.0 and
-//! P8.5).
+//! Test helpers for programs: field-by-field equality.
 
 const std = @import("std");
 const assert = std.debug.assert;

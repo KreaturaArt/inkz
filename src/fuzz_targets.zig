@@ -104,7 +104,7 @@ test "fuzz: the compiler never crashes" {
 
 const program_image = @import("core/program_image.zig");
 
-/// The binary program image loader (P10.5): any bytes either load into a program that passes
+/// The binary program image loader: any bytes either load into a program that passes
 /// its check, or return a named error.
 fn load_image(_: void, smith: *std.testing.Smith) anyerror!void {
     var buffer: [input_bytes_max + 1]u8 = undefined;
@@ -140,7 +140,7 @@ test "fuzz: the program image loader never crashes" {
     try std.testing.fuzz({}, load_image, .{ .corpus = corpus });
 }
 
-/// A valid image, mutated by the fuzzer (P10.7). Random bytes rarely pass the image's magic, so
+/// A valid image, mutated by the fuzzer. Random bytes rarely pass the image's magic, so
 /// the raw target stops at the header; here every input starts valid, and the fuzzer picks
 /// what to change: an aligned word, a byte, a bit, or the length.
 const Mutation = enum { word, byte, bit, truncate };
@@ -200,7 +200,7 @@ test "fuzz: a mutated program image loads or is rejected" {
     try std.testing.fuzz(image.written(), load_mutated_image, .{ .corpus = &.{""} });
 }
 
-// One target per pipeline stage (plan P11), each in its own file.
+// One target per pipeline stage, each in its own file.
 test {
     _ = @import("fuzz/source.zig");
     _ = @import("fuzz/parser.zig");

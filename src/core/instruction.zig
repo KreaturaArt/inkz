@@ -1,8 +1,8 @@
-//! Instructions (plan §4.2, D1): a one-byte opcode and a 32-bit operand, stored as two SoA
+//! Instructions: a one-byte opcode and a 32-bit operand, stored as two SoA
 //! arrays, so 5 bytes per instruction. Wider operands live in `extra` (see `extra.zig`), and
 //! the operand is then their index.
 //!
-//! One ink content item is exactly one instruction (plan P2.1, constraint from P1.9): path
+//! One ink content item is exactly one instruction: path
 //! indices address a container's content, so the loader must keep the count equal.
 
 const std = @import("std");
@@ -22,7 +22,7 @@ pub const Opcode = enum(u8) {
     float,
     bool,
     void,
-    /// A divert-target value; divert targets point at containers (plan §4.3).
+    /// A divert-target value; divert targets point at containers.
     divert_target,
     variable_pointer,
     list,
@@ -266,7 +266,7 @@ pub const Instruction = struct {
     opcode: Opcode,
     operand: u32,
 
-    /// Builds an instruction from a typed operand (plan T13).
+    /// Builds an instruction from a typed operand.
     pub fn init(comptime opcode: Opcode, operand: Operand(operand_kind(opcode))) Instruction {
         const kind = comptime operand_kind(opcode);
         const word = word_of(kind, operand);
@@ -296,7 +296,7 @@ pub const Instruction = struct {
 };
 
 test "every opcode round-trips through its typed operand" {
-    // Goal: encode and decode agree for every opcode (P2.1). Method: build a sample operand of
+    // Encode and decode agree for every opcode: build a sample operand of
     // each opcode's kind, encode it, decode it and compare.
     @setEvalBranchQuota(100_000);
     inline for (@typeInfo(Opcode).@"enum".field_names) |name| {
@@ -319,7 +319,7 @@ test "every opcode round-trips through its typed operand" {
 }
 
 test "integer and float operands keep their exact bits" {
-    // Goal: i32 and f32 literals live in the operand (D14). Method: extremes and a NaN.
+    // i32 and f32 literals live in the operand: extremes and a NaN.
     const minimum = Instruction.init(.integer, std.math.minInt(i32));
     try std.testing.expectEqual(@as(i32, std.math.minInt(i32)), minimum.get(.integer));
     const nan = Instruction.init(.float, std.math.nan(f32));
@@ -329,7 +329,7 @@ test "integer and float operands keep their exact bits" {
 }
 
 test "packed flags fit one word" {
-    // Goal: divert and choice flags are single extra words. Method: size checks.
+    // Divert and choice flags are single extra words: size checks.
     try std.testing.expectEqual(4, @sizeOf(DivertFlags));
     try std.testing.expectEqual(4, @sizeOf(ChoiceFlags));
 }

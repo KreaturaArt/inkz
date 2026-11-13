@@ -1,4 +1,4 @@
-//! The Story calls that take ink path strings (plan §4.7): ChoosePathString,
+//! The Story calls that take ink path strings: ChoosePathString,
 //! VisitCountAtPathString, TagsForContentAtPath and globalTags. Paths are resolved with
 //! `core/path.zig` against the program, off the hot path.
 

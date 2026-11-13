@@ -1,4 +1,4 @@
-//! The call stack (plan §4.5, P4.4), as ink's CallStack.cs but flat: every thread's frames sit
+//! The call stack, as ink's CallStack.cs but flat: every thread's frames sit
 //! in one array, each thread a range of it, and every frame's temps sit in one array, each
 //! frame a range of it. Only the current (last) thread's top frame ever grows, so pushes and
 //! new temps always append, and forking a thread is a range copy.
@@ -46,7 +46,7 @@ pub const Frame = struct {
     pointer: Pointer,
     temps_first: u32,
     evaluation_height: u32,
-    /// ink's functionStartInOutputStream: where this function's output began (plan S10).
+    /// ink's functionStartInOutputStream: where this function's output began.
     function_start_in_output: u32,
     temps_count: u16,
     kind: FrameKind,
@@ -377,7 +377,7 @@ const x: StringId = .from_int(1);
 const y: StringId = .from_int(2);
 
 test "frames push and pop, and temps belong to their frame" {
-    // Goal: P4.4. Method: temps in two frames, lookups by context, then pop.
+    // Temps in two frames, lookups by context, then pop.
     var storage: TestStorage = .{};
     var stack = storage.call_stack();
     try stack.temp_set(x, .{ .integer = 1 }, true, -1);
@@ -398,7 +398,7 @@ test "frames push and pop, and temps belong to their frame" {
 }
 
 test "a forked thread copies frames and temps, and popping it restores the state" {
-    // Goal: P4.4; fork by range copy. Method: fork, change the fork, pop it, compare.
+    // Fork by range copy: fork, change the fork, pop it, compare.
     var storage: TestStorage = .{};
     var stack = storage.call_stack();
     try stack.temp_set(x, .{ .integer = 1 }, true, -1);
@@ -419,7 +419,7 @@ test "a forked thread copies frames and temps, and popping it restores the state
 }
 
 test "every limit returns its named error" {
-    // Goal: negative space for P4.4. Method: exhaust frames, temps per frame, and threads.
+    // Negative space: exhaust frames, temps per frame, and threads.
     var storage: TestStorage = .{};
     var stack = storage.call_stack();
     for (0..7) |_| try stack.push(.tunnel, 0, 0);
@@ -434,7 +434,7 @@ test "every limit returns its named error" {
 }
 
 test "check reports a corrupted call stack" {
-    // Goal: negative space (D20). Method: break thread and temp ranges.
+    // Negative space: break thread and temp ranges.
     var storage: TestStorage = .{};
     var stack = storage.call_stack();
     try stack.push(.function, 0, 0);

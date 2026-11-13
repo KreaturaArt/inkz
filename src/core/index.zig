@@ -1,4 +1,4 @@
-//! Typed `u32` indices (plan T1). Each index type is a distinct non-exhaustive enum, so a
+//! Typed `u32` indices. Each index type is a distinct non-exhaustive enum, so a
 //! `ContainerIndex` can't be passed where a `StringId` is expected. `.none` is the largest
 //! `u32` and means "no index"; it is never a valid position.
 
@@ -79,7 +79,7 @@ comptime {
 }
 
 test "from_int and to_int round-trip, including the extremes" {
-    // Goal: positions survive wrapping. Method: round-trip 0, a middle value and the largest
+    // Positions survive wrapping: round-trip 0, a middle value and the largest
     // valid position (one below `.none`).
     const values = [_]u32{ 0, 1, 12345, std.math.maxInt(u32) - 1 };
     for (values) |value| {
@@ -90,7 +90,7 @@ test "from_int and to_int round-trip, including the extremes" {
 }
 
 test "none and optionals" {
-    // Goal: `.none` and `null` map onto each other in both directions. Method: convert both
+    // `.none` and `null` map onto each other in both directions: convert both
     // ways for a present and an absent value.
     try std.testing.expect(StringId.none.is_none());
     try std.testing.expectEqual(StringId.none, StringId.from_optional(null));
@@ -99,7 +99,7 @@ test "none and optionals" {
 }
 
 test "index types are distinct and 4 bytes" {
-    // Goal: type safety without size cost. Method: compare the types and their sizes.
+    // Type safety without size cost: compare the types and their sizes.
     try std.testing.expect(ContainerIndex != InstructionIndex);
     try std.testing.expectEqual(4, @sizeOf(FileIndex));
     try std.testing.expectEqualStrings("list_item", ListItemIndex.type_name);

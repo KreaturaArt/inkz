@@ -1,10 +1,10 @@
-//! The `check()` / `verify()` convention for invariants (plan D20).
+//! The `check()` / `verify()` convention for invariants.
 //!
 //! Every structure with invariants has two methods:
 //! - `check(self) Fault` returns the first broken invariant as a named value, or `.ok`. It
 //!   never panics, so tests can corrupt a structure on purpose and inspect the result.
 //! - `verify(self) void` calls `fault.verify(self.check())`, which panics on anything but
-//!   `.ok`. Production code calls `verify` at its boundaries (plan §3.1, pair assertions).
+//!   `.ok`. Production code calls `verify` at its boundaries (pair assertions).
 //!
 //! `Fault` is a per-structure `enum` that has an `ok` member.
 
@@ -39,7 +39,7 @@ const Window = struct {
 };
 
 test "check reports each broken invariant by name" {
-    // Goal: check() makes corruption visible without panicking (D20). Method: one valid
+    // check() makes corruption visible without panicking: one valid
     // window, then one corruption per invariant.
     const valid: Window = .{ .first = 2, .count = 3, .capacity = 8 };
     try std.testing.expectEqual(Window.Fault.ok, valid.check());

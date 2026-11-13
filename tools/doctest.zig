@@ -1,4 +1,4 @@
-//! `zig build doctest` (plan P9.3): compiles every ```zig block of the given Markdown files
+//! `zig build doctest`: compiles every ```zig block of the given Markdown files
 //! against the library, imported as "inkz" (src/root.zig). `zig build test` runs it too.
 //!
 //! Usage: `doctest <output directory> <doc.md>...`. It writes one Zig file per block,
@@ -214,7 +214,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 test "extract finds zig blocks only, with their lines, and dedents indented fences" {
-    // Goal: the extraction rules of the module comment. Method: a document with a zig block,
+    // The extraction rules of the module comment: a document with a zig block,
     // a sh block and an indented zig block inside a list item.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -240,7 +240,7 @@ test "extract finds zig blocks only, with their lines, and dedents indented fenc
 }
 
 test "an unterminated block is an error" {
-    // Goal: a missing closing fence is reported, not silently dropped. Method: one open fence.
+    // A missing closing fence is reported, not silently dropped: one open fence.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const result = extract(arena_state.allocator(), "```zig\nconst a = 1;\n");
@@ -248,7 +248,7 @@ test "an unterminated block is an error" {
 }
 
 test "classify tells files from bodies" {
-    // Goal: the file/body rule. Method: one example of each starting form, and bodies whose
+    // The file/body rule: one example of each starting form, and bodies whose
     // indented or non-import lines look like declarations.
     try std.testing.expectEqual(Kind.file, classify("const std = @import(\"std\");\n"));
     try std.testing.expectEqual(Kind.file, classify("pub fn main() void {}\n"));
@@ -259,7 +259,7 @@ test "classify tells files from bodies" {
 }
 
 test "a body is wrapped with gpa, io and a story unless it makes its own" {
-    // Goal: the wrapper of the module comment. Method: render two bodies and look for the
+    // The wrapper of the module comment: render two bodies and look for the
     // signature and the indented text.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();

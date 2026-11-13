@@ -159,7 +159,7 @@ pub fn write_json_string(writer: *std.Io.Writer, text: []const u8) !void {
 }
 
 test "control bytes are escaped like the harness" {
-    // Goal: identical escaping for bytes below 0x20. Method: escape a mix and compare.
+    // Identical escaping for bytes below 0x20: escape a mix and compare.
     var buffer: [64]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&buffer);
     try write_json_string(&writer, "a\x01\x1fé");
@@ -167,7 +167,7 @@ test "control bytes are escaped like the harness" {
 }
 
 test "unknown actions are rejected" {
-    // Goal: a typo in an .actions file fails loudly. Method: parse a bad and a good line.
+    // A typo in an .actions file fails loudly: parse a bad and a good line.
     try std.testing.expectError(error.UnknownAction, parse_action("contineu"));
     const choose = (try parse_action("  choose 3 ")).?;
     try std.testing.expectEqual(Kind.choose, choose.kind);
@@ -178,7 +178,7 @@ test "unknown actions are rejected" {
 }
 
 test "typed values parse one after another" {
-    // Goal: `evaluate` arguments, including a string with spaces and escapes. Method: parse
+    // `evaluate` arguments, including a string with spaces and escapes: parse
     // a mixed list.
     var buffer: [4096]u8 = undefined;
     var arguments: Arguments = .{};

@@ -1,4 +1,4 @@
-//! Diagnostic messages (plan P5.10): the text ink gives each runtime error and warning, with
+//! Diagnostic messages: the text ink gives each runtime error and warning, with
 //! ink's prefix from Story.AddError. Compiled JSON has no debug metadata, so the prefix is
 //! `RUNTIME ERROR: (<pointer path>): ` while the story has a pointer, else `RUNTIME ERROR: `.
 

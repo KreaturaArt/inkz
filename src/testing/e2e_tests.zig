@@ -98,7 +98,7 @@ test "fixture rows" {
 }
 
 test "no table row goes missing" {
-    // Goal: deleting a row is a visible change. Method: the tables' sizes are pinned.
+    // Deleting a row is a visible change: the tables' sizes are pinned.
     try std.testing.expectEqual(source_rows_count, source_rows.len);
     try std.testing.expectEqual(fixture_rows_count, fixture_rows.len);
 }

@@ -1,10 +1,10 @@
-//! The public API of the runtime (plan §4.7, P6.3, D5, D8, D22). It wraps the runtime's
+//! The public API of the runtime. It wraps the runtime's
 //! Story with ink's host calls, in snake_case.
 //!
 //! Views (line text, choice text and tags, variable strings, flow names) are borrowed: valid
 //! until the next mutating call. With runtime safety on, each view carries the story's
 //! generation and asserts on use if a mutating call happened since. Callbacks take a
-//! `context` pointer registered with them (D22) and come last in each parameter list.
+//! `context` pointer registered with them and come last in each parameter list.
 //!
 //! The core Story checks its arguments and state, so most calls here only forward.
 // lint: allow assertion_density: a forwarding layer; the core Story asserts.
@@ -26,7 +26,7 @@ const state_module = @import("state.zig");
 const ops = @import("ops.zig");
 
 pub const Limits = limits_module.Limits;
-/// A story's measured needs (`Story.usage`), for `fitted_limits` (P10.2).
+/// A story's measured needs (`Story.usage`), for `fitted_limits`.
 pub const Usage = limits_module.Usage;
 pub const fitted_limits = limits_module.fitted;
 /// A value as the host sees it; strings are borrowed slices.
@@ -284,7 +284,7 @@ pub const Story = struct {
 
     // State.
 
-    /// What the story has needed since init: every buffer's peak (P10.2). Play it well
+    /// What the story has needed since init: every buffer's peak. Play it well
     /// (every path, saves and loads), then size `Limits` with `fitted_limits(usage, 2)`.
     pub fn usage(story: *const Story) Usage {
         return story.core.usage();

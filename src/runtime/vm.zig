@@ -1,4 +1,4 @@
-//! The VM (plan §4.8): ink's Story.Step, NextContent and PerformLogicAndFlowControl over the
+//! The VM: ink's Story.Step, NextContent and PerformLogicAndFlowControl over the
 //! flat program and state. One `step` runs one instruction; `run` steps until something the
 //! Continue loop (story.zig) must look at happens, or the budget runs out.
 //!
@@ -108,7 +108,7 @@ pub fn run(story: *Story, budget: u32, steps: *u32) Error!RunResult {
 }
 
 /// Whether ink's per-step checks (Story.after_steps) can act after an output or a choice
-/// (P12.3). They follow a default choice when the story can't continue, and otherwise,
+///. They follow a default choice when the story can't continue, and otherwise,
 /// outside string evaluation, compare the line with the newline lookahead's or snapshot it
 /// when the output ends in a newline. Anywhere else, stepping on is the same as ink's
 /// check-after-every-step.

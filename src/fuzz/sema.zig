@@ -1,4 +1,4 @@
-//! Fuzz target for the object tree and name resolution (plan P11.5): generated ink that
+//! Fuzz target for the object tree and name resolution: generated ink that
 //! parses without errors, as the compiler takes it, through sema.build_tree and
 //! resolve.resolve.
 

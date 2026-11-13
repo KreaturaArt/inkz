@@ -1,4 +1,4 @@
-//! The state heap (plan §4.5, D4): runtime strings in a fixed byte buffer and lists in a fixed
+//! The state heap: runtime strings in a fixed byte buffer and lists in a fixed
 //! word slab, both reclaimed by sliding mark-compact, which keeps objects in allocation order.
 //! Compaction runs only when an allocation doesn't fit, and can happen at any instruction
 //! boundary, since a single `cont()` may build any amount of garbage.
@@ -32,7 +32,7 @@ pub const StringHeap = struct {
     /// Bumped whenever existing bytes may change meaning (truncate, shrink, compact, reset),
     /// so the cleaned-text cache knows a reference may now read other text.
     generation: u32 = 0,
-    /// The most bytes in use at once since init (P10.2).
+    /// The most bytes in use at once since init.
     peak: u32 = 0,
 
     pub const Fault = enum { ok, used_exceeds_capacity, object_out_of_bounds, misaligned, marked };
@@ -337,7 +337,7 @@ fn store_text(heap: *StringHeap, text: []const u8) ?StringReference {
 }
 
 test "live strings and lists survive compaction and keep their order" {
-    // Goal: P4.3. Method: interleave live and dead objects, compact, check every live value.
+    // Interleave live and dead objects, compact, check every live value.
     var bytes: [256]u8 align(4) = undefined;
     var words: [64]u32 = undefined;
     var strings = StringHeap.init(&bytes);
@@ -370,7 +370,7 @@ test "live strings and lists survive compaction and keep their order" {
 }
 
 test "a loop that builds garbage stays bounded through compaction" {
-    // Goal: P4.3; 10k rounds of string concatenation in a heap far smaller than the total.
+    // 10k rounds of string concatenation in a heap far smaller than the total.
     var bytes: [512]u8 align(4) = undefined;
     var words: [16]u32 = undefined;
     var strings = StringHeap.init(&bytes);
@@ -396,7 +396,7 @@ test "a loop that builds garbage stays bounded through compaction" {
 }
 
 test "a heap full of live data still fails" {
-    // Goal: HeapLimit on a true overflow: compaction frees nothing when everything is live.
+    // HeapLimit on a true overflow: compaction frees nothing when everything is live.
     var bytes: [64]u8 align(4) = undefined;
     var words: [8]u32 = undefined;
     var strings = StringHeap.init(&bytes);
@@ -413,8 +413,8 @@ test "a heap full of live data still fails" {
 }
 
 test "a stale reference after compaction is caught" {
-    // Goal: negative space; poisoning and check_reference reject a reference that wasn't a
-    // root. Method: keep a copy of a reference out of the roots, compact, check it.
+    // Negative space; poisoning and check_reference reject a reference that wasn't a
+    // root. Keep a copy of a reference out of the roots, compact, check it.
     if (!std.debug.runtime_safety) return error.SkipZigTest;
     var bytes: [128]u8 align(4) = undefined;
     var words: [8]u32 = undefined;
@@ -435,8 +435,8 @@ test "a stale reference after compaction is caught" {
 }
 
 test "truncating, shrinking and compacting the heap start a new generation" {
-    // Goal: P10.1; the text cache sees every change that can give a reference other text.
-    // Method: each operation once; allocating alone keeps the generation.
+    // The text cache sees every change that can give a reference other text.
+    // Each operation once; allocating alone keeps the generation.
     var bytes: [256]u8 align(4) = undefined;
     var words: [16]u32 = undefined;
     var strings = StringHeap.init(&bytes);

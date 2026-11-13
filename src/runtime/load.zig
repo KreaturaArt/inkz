@@ -1,4 +1,4 @@
-//! Loading (plan §4.10, P6.2): ink's StoryState.LoadJson for save format versions 8 to 10.
+//! Loading: ink's StoryState.LoadJson for save format versions 8 to 10.
 //!
 //! The save is tokenized into the state's fixed scratch (`json_tree.zig`), then read twice
 //! by the same code: first to validate it (every path, name and value, and that everything

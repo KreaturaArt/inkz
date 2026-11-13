@@ -1,4 +1,4 @@
-//! `zig build test-profile` (TASK-153): the profile zones with profiling compiled in, which a
+//! `zig build test-profile`: the profile zones with profiling compiled in, which a
 //! test can't do (a test's root is the test runner, not this file). Exits with an error when a
 //! check fails.
 

@@ -1,4 +1,4 @@
-//! Fuzz targets for source preparation (plan P11.2): comment removal, and INCLUDE discovery
+//! Fuzz targets for source preparation: comment removal, and INCLUDE discovery
 //! over files the fuzzer writes.
 
 const std = @import("std");

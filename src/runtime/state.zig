@@ -1,8 +1,8 @@
-//! The runtime state of one story (plan §4.5). Every buffer comes from one allocation of
+//! The runtime state of one story. Every buffer comes from one allocation of
 //! exactly `Limits.bytes_total()` bytes, made in `init`; nothing allocates afterwards.
 //!
 //! The live flow (evaluation stack, call stack, output, choices) is what the lookahead
-//! snapshot copies (P4.9) and what flows park (P4.8). Globals, counts, the heap, the random
+//! snapshot copies and what flows park. Globals, counts, the heap, the random
 //! state and the diagnostics are shared by every flow.
 
 const std = @import("std");
@@ -50,7 +50,7 @@ pub const Diagnostic = struct {
     severity: Severity,
 
     pub const Severity = enum(u8) { @"error", warning };
-    /// Filled in by the VM's error handling (P5.10).
+    /// Filled in by the VM's error handling.
     pub const Code = enum(u16) {
         story_error,
         evaluation_stack_empty,
@@ -96,21 +96,21 @@ pub const Diagnostic = struct {
     };
 };
 
-/// One undo record of the lookahead change log (P4.9): what a shared value was before.
+/// One undo record of the lookahead change log: what a shared value was before.
 pub const PatchEntry = struct {
     /// What changed; see lookahead.zig.
     target: u32,
     old: Value,
 };
 
-/// A variable observer registered by the host (P5.7, P6.3).
+/// A variable observer registered by the host.
 pub const Observer = struct {
     callback: ?*const anyopaque,
     context: ?*anyopaque,
     slot: GlobalSlot,
 };
 
-/// A flow's directory entry (P4.8). Flow names are stored inline.
+/// A flow's directory entry. Flow names are stored inline.
 pub const FlowRecord = struct {
     name: [flow_name_bytes_max]u8,
     parked_first: u32,
@@ -222,23 +222,23 @@ pub const State = struct {
     lists: lists_module.ListSlab,
     /// Scratch for text being assembled (`/str`, tags) and for Debug checks.
     line_bytes: []u8,
-    /// The current line's cleaned text, kept between calls (P10.1).
+    /// The current line's cleaned text, kept between calls.
     text_cache: text_cache_module.TextCache,
     observers: []Observer,
     observer_events: BoundedStack(GlobalSlot),
-    /// ink's currentErrors and currentWarnings (P4.10). They are not saved (ink doesn't
+    /// ink's currentErrors and currentWarnings. They are not saved (ink doesn't
     /// save them), the lookahead restore drops ones added since its snapshot, and
-    /// `reset_errors` clears them once `cont()` has reported them (P5.10).
+    /// `reset_errors` clears them once `cont()` has reported them.
     errors: BoundedStack(Diagnostic),
     warnings: BoundedStack(Diagnostic),
     /// Diagnostics that didn't fit; reported as a count after the kept ones.
     diagnostics_dropped: u32 = 0,
-    /// Scratch for the visit-counting walk (plan §4.6).
+    /// Scratch for the visit-counting walk.
     ancestors: []ContainerIndex,
-    /// The fixed scratch `load_json` tokenizes a save into (plan §4.10).
+    /// The fixed scratch `load_json` tokenizes a save into.
     load_nodes: []json_tree.Node,
 
-    // The lookahead snapshot (P4.9) and parked flows (P4.8).
+    // The lookahead snapshot and parked flows.
     lookahead: FlowBuffers,
     patch: []PatchEntry,
     flows: []FlowRecord,
@@ -250,12 +250,12 @@ pub const State = struct {
     output_stashes_count: u32 = 0,
     /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
     did_safe_exit: bool = false,
-    /// For the simulator (P5.12): compact before every heap allocation, so a reference held
+    /// For the simulator: compact before every heap allocation, so a reference held
     /// across an allocation without being a root shows up at once.
     compact_always: bool = false,
     snapshot: lookahead_module.Snapshot = .{},
     /// High-water marks of the buffers that aren't stacks (the stacks keep their own, and
-    /// the heaps theirs); `usage` reports them all (P10.2).
+    /// the heaps theirs); `usage` reports them all.
     peaks: Peaks = .{},
 
     pub const Peaks = struct {
@@ -312,7 +312,7 @@ pub const State = struct {
         state.* = undefined;
     }
 
-    /// What this state has needed since init (P10.2): every buffer's peak, and the deepest
+    /// What this state has needed since init: every buffer's peak, and the deepest
     /// container nesting of the program (the visit-counting walk's scratch). Observers are
     /// the story's (`Story.usage`).
     pub fn usage(state: *const State) limits_module.Usage {
@@ -347,7 +347,7 @@ pub const State = struct {
     }
 
     /// The story's starting state: one thread at the root, empty output and choices, zeroed
-    /// counts, globals undefined until the global declaration has run (P5).
+    /// counts, globals undefined until the global declaration has run.
     pub fn reset(state: *State) void {
         assert(state.memory.len > 0);
         state.evaluation.clear();
@@ -406,7 +406,7 @@ pub const State = struct {
     }
 
     /// Calls `visitor.string` and `visitor.list` for every heap reference the state holds:
-    /// the root set of heap compaction (plan §4.5).
+    /// the root set of heap compaction.
     pub fn visit(state: *State, visitor: anytype) void {
         assert(@TypeOf(visitor) != void);
         assert(state.memory.len > 0);
@@ -485,7 +485,7 @@ pub const State = struct {
     }
 
     /// Room for a heap string of `length` bytes, compacting once if the heap is full
-    /// (plan §4.5). `error.HeapLimit` when even the compacted heap has no room.
+    ///. `error.HeapLimit` when even the compacted heap has no room.
     pub fn allocate_string(
         state: *State,
         length: u32,
@@ -790,7 +790,7 @@ fn test_program(gpa: Allocator) !Program {
 }
 
 test "init allocates exactly the byte budget, once" {
-    // Goal: P4.12; Story.init's memory is Limits.bytes_total, in one allocation. Method: a
+    // Story.init's memory is Limits.bytes_total, in one allocation: a
     // counting allocator around init.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
@@ -806,8 +806,8 @@ test "init allocates exactly the byte budget, once" {
 }
 
 test "the flow buffer table covers every FlowBuffers field, each with its own live stack" {
-    // Goal: lookahead, parking, save and load iterate `flow_buffers`, so a buffer missing
-    // from it would silently not be copied. Method: every FlowBuffers field has a tag whose
+    // Lookahead, parking, save and load iterate `flow_buffers`, so a buffer missing
+    // from it would silently not be copied. Every FlowBuffers field has a tag whose
     // live stack and lookahead copy are sized from its limit, and no two tags share a stack.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
@@ -831,7 +831,7 @@ test "the flow buffer table covers every FlowBuffers field, each with its own li
 }
 
 test "a fresh state starts at the root with nothing pending" {
-    // Goal: reset matches ink's initial state. Method: inspect after init.
+    // Reset matches ink's initial state: inspect after init.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
     defer program.deinit(gpa);
@@ -846,7 +846,7 @@ test "a fresh state starts at the root with nothing pending" {
 }
 
 test "check catches a dangling heap string" {
-    // Goal: P4.11 negative space; a reference past the heap's used part. Method: put one in
+    // Negative space; a reference past the heap's used part: put one in
     // the evaluation stack.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
@@ -859,7 +859,7 @@ test "check catches a dangling heap string" {
 }
 
 test "errors and warnings are bounded and reset together" {
-    // Goal: P4.10; ink's AddError, hasError and ResetErrors, within errors_max. Method: add
+    // Ink's AddError, hasError and ResetErrors, within errors_max: add
     // more errors than fit, then a warning, then reset.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
@@ -884,8 +884,8 @@ test "errors and warnings are bounded and reset together" {
 }
 
 test "a full heap compacts once and keeps the caller's operands" {
-    // Goal: P4.3's trigger; an allocation that fails compacts, then retries, and a value only
-    // the caller holds survives. Method: fill a small heap with garbage and one kept string.
+    // Trigger; an allocation that fails compacts, then retries, and a value only
+    // the caller holds survives. Fill a small heap with garbage and one kept string.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
     defer program.deinit(gpa);

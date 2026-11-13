@@ -71,8 +71,8 @@ fn has_invisible_default(story: *Story) bool {
 }
 
 test "a save and load at every turn doesn't change the play" {
-    // Goal: P6.2; save, load, continue gives the uninterrupted run, at every turn of every
-    // ground-truth case. Method: play each case twice, once with a round trip per turn.
+    // Save, load, continue gives the uninterrupted run, at every turn of every
+    // ground-truth case. Play each case twice, once with a round trip per turn.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -100,7 +100,7 @@ test "a save and load at every turn doesn't change the play" {
 }
 
 test "every C# save in the ground truth loads and saves back to the same JSON" {
-    // Goal: P6.1 and P6.2 interop (D15). Method: load each recorded `save:` into a fresh
+    // Interop: load each recorded `save:` into a fresh
     // story of its case and save again; ink and this runtime write keys in the same order,
     // so the text must match exactly.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
@@ -147,7 +147,7 @@ test "every C# save in the ground truth loads and saves back to the same JSON" {
 }
 
 test "a corrupted save leaves the story unchanged" {
-    // Goal: P6.2 validate-then-commit. Method: break a real save in several ways; each load
+    // Validate-then-commit: break a real save in several ways; each load
     // fails and the state hash doesn't move.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -185,8 +185,8 @@ test "a corrupted save leaves the story unchanged" {
 }
 
 test "a cont that fails in the newline lookahead leaves a state that saves" {
-    // Goal: found by the save fuzz target (P11.9): a limit error inside the lookahead after a
-    // newline left the snapshot active, and saving then asserted. Method: a function that
+    // Found by the save fuzz target: a limit error inside the lookahead after a
+    // newline left the snapshot active, and saving then asserted. A function that
     // recurses past frames_max right after the first line; cont fails, then the story saves,
     // and the save loads into a fresh story.
     const gpa = std.testing.allocator;
@@ -222,8 +222,8 @@ test "a cont that fails in the newline lookahead leaves a state that saves" {
 }
 
 test "a cont that fails in the middle of a step fails closed until reset or load" {
-    // Goal: found by the host API fuzz target (P11.10): after a limit error in the middle of a
-    // step, the next cont ran on from the half-done state and asserted. Method: a function
+    // Found by the host API fuzz target: after a limit error in the middle of a
+    // step, the next cont ran on from the half-done state and asserted. A function
     // recursing past frames_max inside a string evaluation, before any newline; then every
     // continuing call returns StoryFailed until reset_state, and a save made before loads.
     const gpa = std.testing.allocator;
@@ -262,7 +262,7 @@ test "a cont that fails in the middle of a step fails closed until reset or load
 }
 
 test "a step budget that runs out in the newline lookahead leaves a state that saves" {
-    // Goal: StepLimit takes the same way out as the other limit errors (P11.9). Method: a
+    // StepLimit takes the same way out as the other limit errors: a
     // divert loop right after the first line, with a small steps_per_continue_max.
     const gpa = std.testing.allocator;
     const compile = @import("../compiler/compile.zig");

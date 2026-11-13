@@ -6,7 +6,7 @@ const bench_io = @import("../bench_io.zig");
 const profile = @import("../core/profile.zig");
 
 test "records are the zones by exclusive time, then the time outside zones" {
-    // Goal: the per-iteration figures and the outside time. Method: made-up totals for two
+    // The per-iteration figures and the outside time: made-up totals for two
     // zones over 4 iterations and 10 µs of wall time.
     var totals: profile.Totals = .{};
     const parse = @backingInt(profile.Zone.compile_parse);

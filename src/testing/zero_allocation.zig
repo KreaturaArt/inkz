@@ -58,7 +58,7 @@ fn exercise(story: *Story) !void {
 }
 
 test "the runtime allocates nothing after init, on every ground-truth case" {
-    // Goal: P5.11. Method: init each case's story through a counting allocator, then play
+    // Init each case's story through a counting allocator, then play
     // it with cont, choices, set_variable and flow switches; growths must not change.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -91,7 +91,7 @@ test "the runtime allocates nothing after init, on every ground-truth case" {
 }
 
 test "evaluate_function allocates nothing" {
-    // Goal: P5.11 for evaluate_function. Method: the side-effects case's `add`, twice.
+    // For evaluate_function: the side-effects case's `add`, twice.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -114,7 +114,7 @@ test "evaluate_function allocates nothing" {
 }
 
 test "load_json allocates nothing" {
-    // Goal: plan §9 for load_json. Method: crime_scene played a few turns and saved to a
+    // For load_json: crime_scene played a few turns and saved to a
     // fixed buffer; loading that save into the story, twice, leaves the growths unchanged.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();

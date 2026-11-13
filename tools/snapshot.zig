@@ -1,4 +1,4 @@
-//! Snapshot files (plan P7.9): a test renders a value as text and checks it against
+//! Snapshot files: a test renders a value as text and checks it against
 //! `<name>.snap` in a directory. With `SNAP_UPDATE=1` (the build's `-Dsnap-update`) the file
 //! is written instead, so reviewing a snapshot change is reading a diff.
 
@@ -103,7 +103,7 @@ pub fn first_different_line(expected: []const u8, actual: []const u8) Difference
 }
 
 test "first_different_line finds the line" {
-    // Goal: P7.9 self-test of the diff report. Method: a change on line 2, and an extra line.
+    // Self-test of the diff report: a change on line 2, and an extra line.
     const changed = first_different_line("a\nb\nc", "a\nx\nc");
     try std.testing.expectEqual(@as(u32, 2), changed.number);
     try std.testing.expectEqualStrings("b", changed.expected);
@@ -114,7 +114,7 @@ test "first_different_line finds the line" {
 }
 
 test "check matches, reports, and writes in update mode" {
-    // Goal: P7.9 self-test of the harness. Method: in a temporary directory, a missing
+    // Self-test of the harness: in a temporary directory, a missing
     // snapshot, then writing it in update mode, matching it, and a mismatch.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();

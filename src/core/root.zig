@@ -1,4 +1,4 @@
-//! Shared core for the data-oriented runtime and compiler (plan §4.1).
+//! Shared core for the data-oriented runtime and compiler.
 
 pub const fault = @import("fault.zig");
 pub const index = @import("index.zig");

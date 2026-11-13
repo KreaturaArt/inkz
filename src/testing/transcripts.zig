@@ -48,7 +48,7 @@ pub fn write_all(arena: std.mem.Allocator, io: std.Io) !u32 {
 }
 
 test "transcripts are up to date" {
-    // Goal: regenerating the transcripts gives an empty diff. Method: render every
+    // Regenerating the transcripts gives an empty diff: render every
     // fixture again and compare with the checked-in file.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
@@ -69,7 +69,7 @@ test "transcripts are up to date" {
 }
 
 test "a looping story stops at the turn cap with a marker" {
-    // Goal: transcripts always end. Method: a fixture whose choices loop back forever.
+    // Transcripts always end: a fixture whose choices loop back forever.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

@@ -1,4 +1,4 @@
-//! Fitted limits (P10.2): a story's measured usage, fitted with a margin, plays the story the
+//! Fitted limits: a story's measured usage, fitted with a margin, plays the story the
 //! same in a fraction of the default budget.
 
 const std = @import("std");
@@ -34,7 +34,7 @@ fn play(gpa: std.mem.Allocator, story: *Story, seeds: u32) ![]u8 {
 }
 
 test "fitted limits play crime_scene the same in under 64 KiB" {
-    // Goal: P10.2. Method: play 50 seeds with the default limits and read the usage; fit
+    // Play 50 seeds with the default limits and read the usage; fit
     // it with margin 2; the same seeds within the fitted limits give the same text.
     const gpa = std.testing.allocator;
     const path = cases.cases_directory ++ "/crime_scene.ink.json";

@@ -1,4 +1,4 @@
-//! The semantics behind the VM's instructions (plan §4.8), each ported from ink's Story.cs,
+//! The semantics behind the VM's instructions, each ported from ink's Story.cs,
 //! StoryState.cs and VariablesState.cs: variables, native calls, strings and tags, choices,
 //! randomness and the ends of flow. `vm.zig` dispatches; these do the work.
 //!
@@ -213,7 +213,7 @@ fn value_text(story: *Story, value: Value) Error![]const u8 {
     return writer.buffered();
 }
 
-/// Records how much of the line buffer scratch was used (P10.2).
+/// Records how much of the line buffer scratch was used.
 fn note_line_bytes(state: *state_module.State, used: usize) void {
     assert(used <= state.line_bytes.len);
     assert(state.line_bytes.len > 0);

@@ -1,4 +1,4 @@
-//! The cleaned text of the current line, kept between calls (plan P10.1). ink cleans the
+//! The cleaned text of the current line, kept between calls. ink cleans the
 //! whole output stream every time it needs the current text: after every step that output
 //! something, for the newline lookahead, and for the line itself. Cleaning was about half of
 //! play time, and most calls only add items to a stream that is already clean.
@@ -193,7 +193,7 @@ const Fixture = struct {
 };
 
 test "appended items are cleaned once, and the result equals a full clean" {
-    // Goal: the incremental path. Method: text, whitespace and a newline added one item at a
+    // The incremental path: text, whitespace and a newline added one item at a
     // time, the line read after each; the cleaned prefix is kept in between.
     var fixture: Fixture = .{ .strings = .{ .table = &.{ "Hello", "  ", "world", "\n" } } };
     fixture.setup();
@@ -209,7 +209,7 @@ test "appended items are cleaned once, and the result equals a full clean" {
 }
 
 test "removed or rewritten items clean from the start" {
-    // Goal: invalidation by the items. Method: glue trims the newline (items removed), then
+    // Invalidation by the items: glue trims the newline (items removed), then
     // a truncation like `/str` and a restore that rewrites an item in place.
     var fixture: Fixture = .{ .strings = .{ .table = &.{ "One", "\n", "Two", "Three" } } };
     fixture.setup();
@@ -227,7 +227,7 @@ test "removed or rewritten items clean from the start" {
 }
 
 test "a new heap generation cleans from the start" {
-    // Goal: invalidation by the heap (truncation, compaction, reset). Method: the same items
+    // Invalidation by the heap (truncation, compaction, reset): the same items
     // whose string table changed, read with and without a new generation.
     var table = [_][]const u8{ "before", "\n" };
     var fixture: Fixture = .{ .strings = .{ .table = &table } };
@@ -240,8 +240,8 @@ test "a new heap generation cleans from the start" {
 }
 
 test "tags are left out across updates, and overflow is a named error" {
-    // Goal: the tag state survives between updates; a full text buffer fails cleanly.
-    // Method: text inside a tag added after the tag began; then a tiny text buffer.
+    // The tag state survives between updates; a full text buffer fails cleanly.
+    // Text inside a tag added after the tag began; then a tiny text buffer.
     var fixture: Fixture = .{ .strings = .{ .table = &.{ "Line", "tagged", "more" } } };
     fixture.setup();
     try fixture.text(0);

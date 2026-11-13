@@ -84,7 +84,7 @@ pub fn build(b: *std.Build) void {
     test_all.dependOn(test_profile);
     test_all.dependOn(add_doctests(b, inkz_module, test_options));
 
-    // Fuzz targets (P0.9): each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
+    // Fuzz targets: each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
     // Zig's fuzzer writes its log to <cache>/tmp and fails if that directory is missing.
     std.Io.Dir.cwd().createDirPath(b.graph.io, ".zig-cache/tmp") catch {};
     const fuzz_corpus = add_test_suite(b, .{
@@ -103,7 +103,7 @@ pub fn build(b: *std.Build) void {
     transcripts_step.dependOn(&run_transcripts.step);
 
     // Benchmarks. Each run is a new measurement, so they always run.
-    const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast (P0.6)");
+    const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast");
     add_release_benches(b, bench_step, "bench", "src/bench.zig", target);
     // Program load and store, as ink's JSON and as the binary image; results are appended to
     // bench/load_store.jsonl.
@@ -120,13 +120,13 @@ pub fn build(b: *std.Build) void {
     const run_simulate = b.addRunArtifact(simulate);
     run_simulate.setCwd(b.path("."));
     run_simulate.addPassthruArgs();
-    b.step("simulate", "Play every case with seeded random choices (P0.9)").dependOn(&run_simulate.step);
+    b.step("simulate", "Play every case with seeded random choices").dependOn(&run_simulate.step);
 
     const lint = add_executable(b, "lint", "tools/lint.zig", target, optimize);
     const run_lint = b.addRunArtifact(lint);
     run_lint.setCwd(b.path("."));
     run_lint.addArgs(&.{ "src", "tools" });
-    b.step("lint", "Check TigerStyle rules (plan §3)").dependOn(&run_lint.step);
+    b.step("lint", "Check TigerStyle rules").dependOn(&run_lint.step);
 
     const code_size = add_executable(b, "code_size", "tools/code_size.zig", target, optimize);
     const run_code_size = b.addRunArtifact(code_size);
@@ -207,7 +207,7 @@ const doctest_docs = [_][]const u8{
     "docs/Architecture.md",
 };
 
-/// `zig build doctest` (plan P9.3): extracts the docs' Zig samples into a generated test
+/// `zig build doctest`: extracts the docs' Zig samples into a generated test
 /// root and compiles it against the library module.
 fn add_doctests(
     b: *std.Build,
@@ -241,7 +241,7 @@ fn add_doctests(
 
 const death_cases = @import("src/death_cases.zig");
 
-/// `zig build test-death` (plan D20): runs each case in `src/death_cases.zig` as its own
+/// `zig build test-death`: runs each case in `src/death_cases.zig` as its own
 /// child process and checks how it ends. Always built in Debug, so assertions are on.
 fn add_death_tests(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step {
     const runner = add_executable(b, "death", "tools/death.zig", target, .debug);
