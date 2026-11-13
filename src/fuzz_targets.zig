@@ -29,10 +29,9 @@ fn fuzz_input(smith: *std.testing.Smith, buffer: *[input_bytes_max + 1]u8) [:0]c
     const length = smith.slice(buffer[0..input_bytes_max]);
     assert(length <= input_bytes_max);
     buffer[length] = 0;
-    // The tokenizer treats an embedded zero as the end; cut there so lengths agree.
-    const end = std.mem.indexOfScalar(u8, buffer[0..length], 0) orelse length;
-    assert(end <= length);
-    return buffer[0..end :0];
+    // Embedded zeros stay: the tokenizer reads them as text (P11.3).
+    assert(buffer[length] == 0);
+    return buffer[0..length :0];
 }
 
 /// The new loader (P3.1): any bytes either load into a program that passes its check, or
@@ -228,4 +227,5 @@ test "fuzz: a mutated program image loads or is rejected" {
 // One target per pipeline stage (plan P11), each in its own file.
 test {
     _ = @import("fuzz/source.zig");
+    _ = @import("fuzz/tokenizer.zig");
 }
