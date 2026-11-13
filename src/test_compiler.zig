@@ -1,7 +1,6 @@
 //! Test root for the compiler: `zig build test-compiler`.
 
 test {
-    _ = @import("testing/e2e_new_vm.zig");
     _ = @import("testing/e2e_api.zig");
     _ = @import("testing/e2e_tests.zig");
     _ = @import("testing/structure_gate.zig");

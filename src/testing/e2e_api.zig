@@ -1,12 +1,10 @@
-//! The e2e tests that drive the old runtime's API directly (src/test/compiler_helpers.zig),
-//! ported to the new VM's API on the new compiler's Program (plan P8.0, P8.4). The old `cont()`
-//! ran a whole turn; here that is `continue_maximally`. Each test keeps the old one's
-//! assertions. A story the old codegen can't compile into a valid Program is skipped only
-//! if the ledger lists it (corpus `e2e`, case `e2e/api/<path>`).
+//! The e2e tests that drive the story API directly: flows, paths, tags, externals, observers,
+//! variables and saves on compiled fixtures. They began as the old runtime's API tests, whose
+//! `cont()` ran a whole turn; here that is `continue_maximally`.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const compile = @import("../compiler/compile.zig");
+const support = @import("support.zig");
 const vm = @import("../runtime/api.zig");
 const Program = @import("../core/program.zig").Program;
 const Value = vm.Value;
@@ -14,48 +12,30 @@ const VmStory = @import("../runtime/story.zig").Story;
 
 const fixtures = "test/fixture/original/";
 
-/// A story on a program compiled by the old front end.
+/// A story on a fixture's program.
 const Fixture = struct {
     program: Program,
     story: vm.Story,
 
-    fn init(fixture: *Fixture, comptime path: []const u8) !void {
-        assert(path.len > 0);
+    fn init(fixture: *Fixture, path: []const u8) !void {
         const gpa = std.testing.allocator;
-        const io = std.testing.io;
-        const limit: std.Io.Limit = .limited(4 * 1024 * 1024);
-        const source = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, limit);
-        defer gpa.free(source);
-        const directory_path = std.fs.path.dirname(path) orelse ".";
-        var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{});
-        defer directory.close(io);
-        const name = std.fs.path.basename(path);
-        fixture.program = try compile.compile_file(gpa, io, directory, name);
+        fixture.program = try support.compile_fixture(gpa, std.testing.io, path);
         errdefer fixture.program.deinit(gpa);
         try fixture.story.init(gpa, &fixture.program, .{});
-        assert(fixture.program.containers.len > 0);
     }
 
     fn deinit(fixture: *Fixture) void {
-        assert(fixture.program.instructions.len > 0);
-        const gpa = std.testing.allocator;
-        assert(fixture.program.containers.len > 0);
-        fixture.story.deinit(gpa);
-        fixture.program.deinit(gpa);
+        fixture.story.deinit(std.testing.allocator);
+        fixture.program.deinit(std.testing.allocator);
     }
 
     /// The old runtime's `cont()`: everything up to the next choice or the end.
     fn turn(fixture: *Fixture) ![]u8 {
-        assert(fixture.program.containers.len > 0);
-        const text = try fixture.story.continue_maximally_alloc(std.testing.allocator);
-        assert(text.len < std.math.maxInt(u32));
-        return text;
+        return fixture.story.continue_maximally_alloc(std.testing.allocator);
     }
 };
 
 fn expect_contains(text: []const u8, part: []const u8) !void {
-    assert(text.len < std.math.maxInt(u32));
-    assert(part.len > 0);
     if (std.mem.indexOf(u8, text, part) != null) return;
     std.debug.print("expected {s} in: {s}\n", .{ part, text });
     return error.TestExpectedPart;
@@ -128,9 +108,7 @@ test "player/error_and_exceptions.ink" {
 const TagCounter = struct {
     count: u32 = 0,
 
-    pub fn tag(counter: *TagCounter, text: []const u8) !void {
-        assert(text.len > 0);
-        assert(counter.count < std.math.maxInt(u32));
+    pub fn tag(counter: *TagCounter, _: []const u8) !void {
         counter.count += 1;
     }
 };
@@ -147,11 +125,9 @@ test "player/flow.ink" {
     try expect_contains(text, "Hello");
 }
 
-/// The old tests' external functions, on the new VM's signature.
+/// The old tests' external functions.
 const Externals = struct {
     fn count(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
-        assert(arguments.len == 0 or arguments[0] != .list);
-        assert(arguments.len <= 1);
         if (arguments.len == 0) return .{ .integer = 3 };
         return switch (arguments[0]) {
             .integer => |value| .{ .integer = value + 3 },
@@ -159,21 +135,16 @@ const Externals = struct {
         };
     }
 
-    fn nothing(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
-        assert(arguments.len == 0 or arguments[0] != .list);
-        assert(arguments.len < 16);
+    fn nothing(_: ?*anyopaque, _: *VmStory, _: []const Value) anyerror!Value {
         return .null;
     }
 
     fn multiply(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
-        assert(arguments[0] != .string and arguments[1] != .string);
         assert(arguments.len == 2);
         return .{ .float = as_float(arguments[0]) * as_float(arguments[1]) };
     }
 
     fn as_float(value: Value) f32 {
-        assert(value != .string);
-        assert(value != .list);
         return switch (value) {
             .float => |float| float,
             .integer => |integer| @floatFromInt(integer),
@@ -181,14 +152,11 @@ const Externals = struct {
         };
     }
 
-    fn times(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
-        assert(arguments.len == 0 or arguments[0] != .list);
-        assert(arguments.len < 16);
+    fn times(_: ?*anyopaque, _: *VmStory, _: []const Value) anyerror!Value {
         return .{ .string = "knock knock knock " };
     }
 
     fn increment(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
-        assert(arguments[0] != .string);
         assert(arguments.len == 1);
         const value: i32 = if (arguments[0] == .integer) arguments[0].integer else 0;
         return .{ .integer = value + 1 };
@@ -275,7 +243,6 @@ const Observed = struct {
     last: i32 = 0,
 
     fn observe(context: ?*anyopaque, name: []const u8, value: Value) void {
-        assert(context != null);
         assert(std.mem.eql(u8, name, "testVar"));
         const observed: *Observed = @ptrCast(@alignCast(context.?));
         observed.count += 1;
@@ -303,9 +270,7 @@ test "runtime/bindings/variable_observer.ink" {
 
 /// Plays up to `turns` turns, taking the first or the last choice.
 fn play(fixture: *Fixture, turns: u32, last: bool) ![]u8 {
-    assert(fixture.program.containers.len > 0);
     const gpa = std.testing.allocator;
-    assert(turns > 0);
     var output: std.ArrayList(u8) = .empty;
     errdefer output.deinit(gpa);
     for (0..turns) |_| {

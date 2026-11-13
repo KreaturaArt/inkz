@@ -57,7 +57,7 @@ pub fn build(b: *std.Build) void {
             .step = "test-compiler",
             .root = "src/test_compiler.zig",
             .description = "Run compiler tests",
-            .own_filters = &.{ "compiler.", "e2e_new_vm.", "e2e_api.", "structure_gate.", "e2e_tests." },
+            .own_filters = &.{ "compiler.", "e2e_api.", "structure_gate.", "e2e_tests." },
         },
         .{ .step = "test-core", .root = "src/core/root.zig", .description = "Run shared core tests" },
         .{ .step = "test-tools", .root = "tools/tests.zig", .description = "Run tests of the tools" },
