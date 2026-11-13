@@ -9,6 +9,10 @@
 //! carry their indentation depth; weaves are built later from the depths, as ink's Weave
 //! class does.
 
+// lint: allow assertion_density: StringParser's one-line primitives (at, rest, at_end,
+// push_none, newline_direct, ...) have no precondition of their own; the parser machine
+// asserts the input position and the stacks once per step (core.zig).
+
 const std = @import("std");
 const assert = std.debug.assert;
 const profile = @import("../core/profile.zig");
@@ -68,8 +72,7 @@ pub const Grammar = struct {
         assert(frame.phase < 64);
         const result = switch (frame.rule) {
             inline else => |rule| rule_function(rule)(machine, frame),
-        };
-        return result catch |err| switch (err) {
+        } catch |err| switch (err) {
             // The workspace is too small: fail everything; the caller retries larger.
             error.WorkspaceFull => {
                 machine.abandoned = true;
@@ -77,6 +80,13 @@ pub const Grammar = struct {
                 return .fail;
             },
         };
+        // A rule that calls resumes in a later phase: phase 0 is its entry, and returning
+        // to it would run the rule again from the start.
+        switch (result) {
+            .call, .peek => assert(frame.phase > 0),
+            .succeed, .fail, .again => {},
+        }
+        return result;
     }
 
     /// The one function named `rule` in the grammar modules.
@@ -183,43 +193,36 @@ pub fn call(machine: *Machine, frame: *Frame, phase: u8, rule: Rule, argument: u
 }
 
 pub fn report_expected(machine: *Machine, expectation: Expectation) void {
-    assert(machine.at <= machine.source.len);
     machine.report(.expected, machine.at, @backingInt(expectation));
 }
 
 /// Expect(String(literal)): consumes it, or reports what was expected.
 pub fn expect_string(machine: *Machine, literal: []const u8, expectation: Expectation) void {
-    assert(machine.at <= machine.source.len);
     assert(literal.len > 0);
     if (parse_string(machine, literal)) return;
     report_expected(machine, expectation);
 }
 
 pub fn report_message(machine: *Machine, message: Message) void {
-    assert(machine.at <= machine.source.len);
     machine.report(.message, machine.at, @backingInt(message));
 }
 
 // StringParser's character-level primitives.
 
 pub fn at(machine: *const Machine) u32 {
-    assert(machine.at <= machine.source.len);
     return machine.at;
 }
 
 pub fn rest(machine: *const Machine) []const u8 {
-    assert(machine.at <= machine.source.len);
     return machine.source[machine.at..];
 }
 
 pub fn at_end(machine: *const Machine) bool {
-    assert(machine.at <= machine.source.len);
     return machine.at == machine.source.len;
 }
 
 /// ParseString: consumes `literal` if the input starts with it.
 pub fn parse_string(machine: *Machine, literal: []const u8) bool {
-    assert(machine.at <= machine.source.len);
     assert(literal.len > 0);
     if (!std.mem.startsWith(u8, rest(machine), literal)) return false;
     machine.at += @intCast(literal.len);
@@ -228,7 +231,6 @@ pub fn parse_string(machine: *Machine, literal: []const u8) bool {
 
 /// Whitespace: one or more spaces and tabs.
 pub fn whitespace(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     const start = at(machine);
     while (!at_end(machine) and (rest(machine)[0] == ' ' or rest(machine)[0] == '\t')) {
         machine.at += 1;
@@ -238,24 +240,24 @@ pub fn whitespace(machine: *Machine) bool {
 
 /// ParseNewline: an optional `\r` and a `\n`; nothing is consumed if there is no `\n`.
 pub fn parse_newline(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     const start = at(machine);
     _ = parse_string(machine, "\r");
-    if (parse_string(machine, "\n")) return true;
+    if (parse_string(machine, "\n")) {
+        assert(at(machine) > start);
+        return true;
+    }
     machine.at = start;
     return false;
 }
 
 /// Newline called directly: whitespace is consumed even when no newline follows.
 pub fn newline_direct(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     _ = whitespace(machine);
     return parse_newline(machine);
 }
 
 /// Newline through Parse or OneOf: on failure, nothing is consumed.
 pub fn newline(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     const start = at(machine);
     if (newline_direct(machine)) return true;
     machine.at = start;
@@ -264,7 +266,6 @@ pub fn newline(machine: *Machine) bool {
 
 /// EndOfFile through OneOf.
 pub fn end_of_file(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     const start = at(machine);
     _ = whitespace(machine);
     if (at_end(machine)) return true;
@@ -274,21 +275,21 @@ pub fn end_of_file(machine: *Machine) bool {
 
 /// EndOfLine: OneOf(Newline, EndOfFile).
 pub fn end_of_line(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
-    return newline(machine) or end_of_file(machine);
+    const found = newline(machine) or end_of_file(machine);
+    if (found) assert(at_end(machine) or machine.source[machine.at - 1] == '\n');
+    return found;
 }
 
 /// MultilineWhitespace: one or more newlines.
 pub fn multiline_whitespace(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     var count: u32 = 0;
     while (newline(machine)) count += 1;
+    if (count > 0) assert(machine.source[machine.at - 1] == '\n');
     return count > 0;
 }
 
 /// AnyWhitespace: any mix of whitespace and newlines.
 pub fn any_whitespace(machine: *Machine) bool {
-    assert(machine.at <= machine.source.len);
     var any = false;
     while (whitespace(machine) or multiline_whitespace(machine)) any = true;
     return any;
@@ -296,11 +297,12 @@ pub fn any_whitespace(machine: *Machine) bool {
 
 /// ParseUntilCharactersFromString("\n\r"): the rest of the line (maybe empty).
 pub fn until_line_end(machine: *Machine) struct { start: u32, end: u32 } {
-    assert(machine.at <= machine.source.len);
     const start = at(machine);
     const end = std.mem.indexOfAnyPos(u8, machine.source, start, "\n\r") orelse machine.source.len;
     machine.at = @intCast(end);
     assert(end >= start);
+    assert(end == machine.source.len or machine.source[end] == '\n' or
+        machine.source[end] == '\r');
     return .{ .start = start, .end = @intCast(end) };
 }
 
@@ -308,12 +310,13 @@ pub fn until_line_end(machine: *Machine) struct { start: u32, end: u32 } {
 pub fn skip_to_next_line(machine: *Machine) void {
     _ = until_line_end(machine);
     _ = parse_newline(machine);
-    assert(machine.at <= machine.source.len);
+    // Past the line break, or stopped at a lone `\r` that is no newline.
+    assert(at_end(machine) or machine.source[machine.at - 1] == '\n' or
+        machine.source[machine.at] == '\r');
 }
 
 /// Expect(EndOfLine, ..., recoveryRule: SkipToNextLine).
 pub fn expect_end_of_line(machine: *Machine) void {
-    assert(machine.at <= machine.source.len);
     if (end_of_line(machine)) return;
     report_expected(machine, .end_of_line);
     skip_to_next_line(machine);
@@ -321,9 +324,9 @@ pub fn expect_end_of_line(machine: *Machine) void {
 
 /// Identifier: a run of identifier characters that isn't only digits; its token.
 pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
-    assert(machine.at <= machine.source.len);
     const start = at(machine);
     const length = lexical.identifier_length(rest(machine)) orelse return null;
+    assert(length > 0);
     const text = rest(machine)[0..length];
     for (text) |character| {
         if (!std.ascii.isDigit(character)) break;
@@ -334,19 +337,20 @@ pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
 
 /// The text of a word token (or of any token).
 pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
-    assert(machine.at <= machine.source.len);
     const workspace = machine.workspace;
     assert(token.to_int() < machine.tokens_count);
     const start = workspace.token_starts[token.to_int()];
+    assert(start <= workspace.token_ends[token.to_int()]);
     return machine.source[start..workspace.token_ends[token.to_int()]];
 }
 
 /// Parse(Identifier) == word: consumes the identifier only if it is `word`.
 pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
-    assert(machine.at <= machine.source.len);
+    assert(word.len > 0);
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
     const token = try identifier(machine) orelse return false;
+    assert(token.to_int() == saved_tokens);
     if (std.mem.eql(u8, token_text(machine, token), word)) return true;
     machine.at = start;
     machine.tokens_count = saved_tokens;
@@ -355,7 +359,6 @@ pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
 
 /// Pushes an identifier leaf, or returns false if there is no identifier.
 pub fn push_identifier(machine: *Machine) Error!bool {
-    assert(machine.at <= machine.source.len);
     const token = try identifier(machine) orelse return false;
     try machine.push_node(.identifier, token.to_int());
     return true;
@@ -370,20 +373,15 @@ pub fn expect_identifier(machine: *Machine, expectation: Expectation) Error!void
 }
 
 pub fn push_none(machine: *Machine) Error!void {
-    assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     try machine.push_node(.none, 0);
 }
 
 pub fn push_missing(machine: *Machine) Error!void {
-    assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     try machine.push_node(.missing, at(machine));
 }
 
 /// The tag of the top scratch value, if any above `marker`.
 pub fn top_tag(machine: *const Machine, marker: u32) ?ast.Tag {
-    assert(machine.at <= machine.source.len);
     assert(marker <= machine.scratch_count);
     if (machine.scratch_count == marker) return null;
     return machine.workspace.scratch_tags[machine.scratch_count - 1];
@@ -392,7 +390,6 @@ pub fn top_tag(machine: *const Machine, marker: u32) ?ast.Tag {
 /// Reserved words that can't be variable names (ink's Story.IsReservedKeyword).
 pub fn is_reserved_keyword(name: []const u8) bool {
     assert(name.len > 0);
-    assert(name.len < std.math.maxInt(u32));
     const words = [_][]const u8{
         "true", "false", "not", "return", "else", "VAR", "CONST", "temp", "LIST", "function",
     };
@@ -406,7 +403,6 @@ pub fn is_reserved_keyword(name: []const u8) bool {
 
 /// Inserts a value at scratch `position`, moving the values above it up.
 pub fn insert_node(machine: *Machine, position: u32, tag: ast.Tag, data: u32) Error!void {
-    assert(machine.at <= machine.source.len);
     assert(position <= machine.scratch_count);
     try machine.push_node(.none, 0);
     const workspace = machine.workspace;
@@ -421,7 +417,6 @@ pub fn insert_node(machine: *Machine, position: u32, tag: ast.Tag, data: u32) Er
 
 /// Swaps the top two scratch values.
 pub fn swap_top(machine: *Machine) void {
-    assert(machine.at <= machine.source.len);
     assert(machine.scratch_count >= 2);
     const workspace = machine.workspace;
     const top = machine.scratch_count - 1;
@@ -432,8 +427,6 @@ pub fn swap_top(machine: *Machine) void {
 /// EndTagIfNecessary: ends an active tag, adding its end marker to the content being built
 /// (if there is a list to add it to).
 pub fn end_tag_if_necessary(machine: *Machine, into_list: bool) Error!void {
-    assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     if (machine.flags & tag_active == 0) return;
     if (into_list) try machine.push_node(.tag_end, 0);
     machine.flags &= ~tag_active;
@@ -506,6 +499,7 @@ pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.Compiler
     const comments_zone = profile.begin(.compile_comments);
     const length: u32 = @intCast(lexical.eliminate_comments(source, buffer).len);
     comments_zone.end();
+    assert(length <= source.len);
     const clean = gpa.realloc(buffer, length) catch |err| {
         gpa.free(buffer);
         return err;
@@ -539,6 +533,7 @@ pub fn parse_space(
         if (try parse_regions(&machine, buffer, regions, roots)) {
             var tree = machine.finish_regions(roots[0]);
             try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
+            assert(workspace.node_tags.len == machine.nodes_count);
             tree.tags = workspace.node_tags;
             tree.data = workspace.node_data;
             return .{
@@ -578,6 +573,7 @@ fn parse_regions(
             machine.workspace_full = true;
             return false;
         };
+        assert(!root.is_none());
     }
     return true;
 }
