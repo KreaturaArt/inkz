@@ -26,13 +26,19 @@ pub fn check_nested(
     assert(lowering.tree.kind(weave) == .weave);
     assert(loose_ends.len < lowering.tree.count());
     if (loose_ends.len == 0) return;
-    const tree = lowering.tree;
-    var ancestor = tree.parent(weave);
+    if (enclosing_branching(lowering.tree, weave).is_none()) return;
+    try validate(lowering, weave, loose_ends, .nested);
+}
+
+/// The nearest conditional or sequence above `object`, or none.
+fn enclosing_branching(tree: *const Tree, object: ObjectIndex) ObjectIndex {
+    assert(object.to_int() < tree.count());
+    var ancestor = tree.parent(object);
     while (!ancestor.is_none()) : (ancestor = tree.parent(ancestor)) {
         const kind = tree.kind(ancestor);
-        if (kind == .sequence or kind == .conditional) break;
-    } else return;
-    try validate(lowering, weave, loose_ends, .nested);
+        if (kind == .sequence or kind == .conditional) return ancestor;
+    }
+    return .none;
 }
 
 /// FlowBase.GenerateRuntimeObject's check of a knot's or stitch's root weave.
@@ -186,11 +192,7 @@ fn validate_flow(
 fn report_nested(lowering: *Lowering, terminating: ObjectIndex) !void {
     assert(terminating.to_int() < lowering.tree.count());
     const tree = lowering.tree;
-    var ancestor = tree.parent(terminating);
-    while (!ancestor.is_none()) : (ancestor = tree.parent(ancestor)) {
-        const kind = tree.kind(ancestor);
-        if (kind == .sequence or kind == .conditional) break;
-    }
+    const ancestor = enclosing_branching(tree, terminating);
     assert(!ancestor.is_none());
     if (tree.kind(ancestor) == .conditional) {
         var choices: std.ArrayList(ObjectIndex) = .empty;
