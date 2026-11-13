@@ -5,7 +5,6 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const index = @import("index.zig");
-const fault = @import("fault.zig");
 const ContainerIndex = index.ContainerIndex;
 const InstructionIndex = index.InstructionIndex;
 const StringId = index.StringId;
@@ -167,11 +166,6 @@ pub const ContainerTable = struct {
         assert(table.named.len < std.math.maxInt(u32));
         return .ok;
     }
-
-    pub fn verify(table: *const ContainerTable, instructions_count: u32) void {
-        assert(table.containers.len > 0);
-        fault.verify(table.check(instructions_count));
-    }
 };
 
 /// A root with two children: `knot` (named only) containing `stitch` (named only), and an
@@ -220,7 +214,7 @@ test "named lookup and tree navigation" {
     var containers = try build_test_table(gpa);
     defer containers.deinit(gpa);
     const table: ContainerTable = .{ .containers = containers.slice(), .named = &test_named };
-    table.verify(8);
+    try std.testing.expectEqual(ContainerTable.Fault.ok, table.check(8));
     const root: ContainerIndex = .from_int(0);
     const knot = table.named_child(root, .from_int(1)).?;
     try std.testing.expectEqual(ContainerIndex.from_int(1), knot);
