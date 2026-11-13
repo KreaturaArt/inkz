@@ -5,7 +5,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const transcript = @import("transcript.zig");
-const NewEngine = @import("new_engine.zig").NewEngine;
+const Harness = @import("harness.zig").Harness;
 
 pub const cases_directory = "test/ground_truth";
 const file_bytes_max = 16 * 1024 * 1024;
@@ -93,7 +93,7 @@ fn replay_story(
 fn replay_new(arena: std.mem.Allocator, json: []const u8, actions: []const u8) ![]const u8 {
     assert(json.len > 0);
     var output: std.Io.Writer.Allocating = .init(arena);
-    var new = NewEngine.open(arena, json) catch |err| {
+    var new = Harness.open(arena, json) catch |err| {
         try output.writer.print("exception: \"{t}\"\n", .{err});
         return output.written();
     };
