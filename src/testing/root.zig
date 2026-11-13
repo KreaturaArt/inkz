@@ -1,41 +1,21 @@
 //! The test harnesses and gates over the runtime: `zig build test-runtime` includes them.
 
-pub const transcript = @import("transcript.zig");
-pub const ground_truth = @import("ground_truth_test.zig");
-pub const harness = @import("harness.zig");
-pub const isolated = @import("isolated.zig");
-pub const cases = @import("cases.zig");
-pub const oracle = @import("oracle.zig");
-pub const known_bugs = @import("known_bugs.zig");
-pub const simulation = @import("simulation.zig");
-pub const transcripts = @import("transcripts.zig");
-pub const weave_reproductions = @import("weave_reproductions.zig");
-pub const new_engine_cases = @import("new_engine_cases.zig");
-pub const zero_allocation = @import("zero_allocation.zig");
-pub const save_load_test = @import("save_load_test.zig");
-pub const text_cache_test = @import("text_cache_test.zig");
-pub const fitted_limits_test = @import("fitted_limits_test.zig");
-pub const program_image_test = @import("program_image_test.zig");
-pub const fuzz_ink = @import("fuzz_ink.zig");
-pub const bench_io_test = @import("bench_io_test.zig");
-pub const bench_profile_test = @import("bench_profile_test.zig");
-
 test {
-    _ = transcript;
-    _ = harness;
-    _ = ground_truth;
-    _ = transcripts;
-    _ = oracle;
-    _ = known_bugs;
-    _ = simulation;
-    _ = weave_reproductions;
-    _ = new_engine_cases;
-    _ = zero_allocation;
-    _ = save_load_test;
-    _ = text_cache_test;
-    _ = fitted_limits_test;
-    _ = program_image_test;
-    _ = fuzz_ink;
-    _ = bench_io_test;
-    _ = bench_profile_test;
+    _ = @import("transcript.zig");
+    _ = @import("harness.zig");
+    _ = @import("cases.zig");
+    _ = @import("isolated.zig");
+    _ = @import("ground_truth_test.zig");
+    _ = @import("transcripts.zig");
+    _ = @import("oracle.zig");
+    _ = @import("known_bugs.zig");
+    _ = @import("simulation.zig");
+    _ = @import("zero_allocation.zig");
+    _ = @import("save_load_test.zig");
+    _ = @import("text_cache_test.zig");
+    _ = @import("fitted_limits_test.zig");
+    _ = @import("program_image_test.zig");
+    _ = @import("fuzz_ink.zig");
+    _ = @import("bench_io_test.zig");
+    _ = @import("bench_profile_test.zig");
 }
