@@ -189,10 +189,10 @@ pub const Tree = struct {
         tree: *const Tree,
         gpa: Allocator,
         root_object: ObjectIndex,
-        order: Walk.Order,
-    ) Walk {
+        comptime order: Order,
+    ) Walk(order) {
         assert(root_object.to_int() < tree.count());
-        return .{ .tree = tree, .gpa = gpa, .order = order, .start = root_object };
+        return .{ .tree = tree, .gpa = gpa, .start = root_object };
     }
 
     /// ink's Object.FindAll: every object of `root`'s subtree (itself included) that `query`
@@ -241,55 +241,84 @@ pub const Tree = struct {
     }
 };
 
+pub const Order = enum { pre, post };
+
 /// A walk of a subtree without recursion, in pre-order (an object, then its children) or
 /// post-order (the children, then the object). The stack holds one frame per level, not the
-/// pending siblings, so it grows to the subtree's depth once and nothing is allocated per
-/// object.
-pub const Walk = struct {
-    tree: *const Tree,
-    gpa: Allocator,
-    order: Order,
-    /// The subtree's root, until the first `next`.
-    start: ?ObjectIndex,
-    frames: std.ArrayList(Frame) = .empty,
+/// pending siblings. The first `inline_depth` levels live in the walk itself; only deeper
+/// trees allocate.
+pub fn Walk(comptime order: Order) type {
+    return struct {
+        const Self = @This();
+        tree: *const Tree,
+        gpa: Allocator,
+        /// The subtree's root, until the first `next`.
+        start: ?ObjectIndex,
+        frames_count: u32 = 0,
+        inline_frames: [inline_depth]Frame = undefined,
+        deeper_frames: std.ArrayList(Frame) = .empty,
 
-    pub const Order = enum { pre, post };
-    const Frame = struct { object: ObjectIndex, next_child: u32 = 0 };
+        const Frame = struct { object: ObjectIndex, next_child: u32 = 0 };
+        const inline_depth = 64;
 
-    pub fn deinit(walk: *Walk) void {
-        assert(walk.frames.items.len <= walk.tree.count());
-        walk.frames.deinit(walk.gpa);
-    }
-
-    pub fn next(walk: *Walk) Allocator.Error!?ObjectIndex {
-        if (walk.start) |root| {
-            walk.start = null;
-            try walk.frames.append(walk.gpa, .{ .object = root });
-            if (walk.order == .pre) return root;
+        pub fn deinit(walk: *Self) void {
+            assert(walk.deeper_frames.items.len + inline_depth >= walk.frames_count);
+            walk.deeper_frames.deinit(walk.gpa);
         }
-        while (walk.frames.items.len > 0) {
-            const top = &walk.frames.items[walk.frames.items.len - 1];
-            const children = walk.tree.children_of(top.object);
-            if (top.next_child == children.len) {
-                const done = walk.frames.pop().?;
-                if (walk.order == .post) return done.object;
-                continue;
+
+        pub inline fn next(walk: *Self) Allocator.Error!?ObjectIndex {
+            if (walk.start) |root| {
+                walk.start = null;
+                try walk.push(root);
+                if (order == .pre) return root;
             }
-            const child = children[top.next_child];
-            top.next_child += 1;
-            try walk.frames.append(walk.gpa, .{ .object = child });
-            if (walk.order == .pre) return child;
+            while (walk.frames_count > 0) {
+                const frame = walk.top();
+                const children = walk.tree.children_of(frame.object);
+                if (frame.next_child == children.len) {
+                    const done = frame.object;
+                    walk.pop();
+                    if (order == .post) return done;
+                    continue;
+                }
+                const child = children[frame.next_child];
+                frame.next_child += 1;
+                try walk.push(child);
+                if (order == .pre) return child;
+            }
+            return null;
         }
-        return null;
-    }
 
-    /// The depth below the subtree's root of the object `next` returned last (pre-order).
-    pub fn depth(walk: *const Walk) u32 {
-        assert(walk.order == .pre);
-        assert(walk.frames.items.len > 0);
-        return @intCast(walk.frames.items.len - 1);
-    }
-};
+        /// The depth below the subtree's root of the object `next` returned last (pre-order).
+        pub fn depth(walk: *const Self) u32 {
+            comptime assert(order == .pre);
+            assert(walk.frames_count > 0);
+            return walk.frames_count - 1;
+        }
+
+        fn top(walk: *Self) *Frame {
+            assert(walk.frames_count > 0);
+            const level = walk.frames_count - 1;
+            if (level < inline_depth) return &walk.inline_frames[level];
+            return &walk.deeper_frames.items[level - inline_depth];
+        }
+
+        fn push(walk: *Self, object: ObjectIndex) Allocator.Error!void {
+            if (walk.frames_count < inline_depth) {
+                walk.inline_frames[walk.frames_count] = .{ .object = object };
+            } else {
+                try walk.deeper_frames.append(walk.gpa, .{ .object = object });
+            }
+            walk.frames_count += 1;
+        }
+
+        fn pop(walk: *Self) void {
+            assert(walk.frames_count > 0);
+            walk.frames_count -= 1;
+            if (walk.frames_count >= inline_depth) _ = walk.deeper_frames.pop();
+        }
+    };
+}
 
 /// Where an object starts in the source: its syntax node's first token, or as ink's
 /// debugMetadata, its parent's (for objects ink synthesizes, or with no text of their own).
