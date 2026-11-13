@@ -185,7 +185,7 @@ Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 | `zig build test-death` | Cases that must panic, one child process each. |
 | `zig build doctest` | Compiles the ```zig blocks of the docs against the library. |
 | `zig build lint` | The TigerStyle checks (see `docs/Guidelines.md`). |
-| `zig build fuzz` | The fuzz targets on their corpus; add `--fuzz` to fuzz. |
+| `zig build fuzz` | One fuzz target per pipeline stage, on its corpus; add `--fuzz` (and `-Doptimize=ReleaseSafe`) to fuzz. See `docs/fuzzing.md`. |
 | `zig build simulate` | Plays every ground-truth case with seeded random choices, saves, loads and flow switches. |
 | `zig build transcripts` | Regenerates `test/transcripts/`. |
 | `zig build replay` | Installs `replay_case`, which replays one case and prints its transcript. |
