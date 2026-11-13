@@ -1,7 +1,6 @@
-//! Tests of the profile benchmark's records (`zig build bench-profile`, TASK-153).
+//! Tests of the profile benchmark's records (`zig build bench-profile`).
 
 const std = @import("std");
-const assert = std.debug.assert;
 const bench_profile = @import("../bench_profile.zig");
 const bench_io = @import("../bench_io.zig");
 const profile = @import("../core/profile.zig");

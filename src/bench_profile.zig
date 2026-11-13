@@ -1,4 +1,4 @@
-//! `zig build bench-profile` (TASK-153): where the pipeline spends its time. Each workload
+//! `zig build bench-profile`: where the pipeline spends its time. Each workload
 //! (compile, JSON load and store, image load and store, story init, play, save, load a save)
 //! runs on crime_scene and on the generated 1000-knot story, with the profile zones of
 //! src/core/profile.zig compiled in. For each workload it prints every zone's exclusive and
@@ -7,7 +7,6 @@
 //! `bench/profile.jsonl`, one JSON object per line and zone.
 
 const std = @import("std");
-const builtin = @import("builtin");
 const assert = std.debug.assert;
 const profile = @import("core/profile.zig");
 const compile = @import("compiler/compile.zig");
@@ -17,19 +16,19 @@ const Program = @import("core/program.zig").Program;
 const Story = @import("runtime/story.zig").Story;
 const save = @import("runtime/save.zig");
 const load = @import("runtime/load.zig");
-const Severity = @import("runtime/state.zig").Diagnostic.Severity;
-const DotnetRandom = @import("core/dotnet_random.zig").DotnetRandom;
 const bench_io = @import("bench_io.zig");
+const common = @import("bench_common.zig");
 
 /// Compiles the profile zones in (src/core/profile.zig).
 pub const inkz_profile = true;
 
 const Allocator = std.mem.Allocator;
 const results_path = "bench/profile.jsonl";
-const iterations_min = 3;
-const iterations_max = 10_000;
-const budget_nanoseconds = 1_000_000_000;
-const turns_max = 200;
+const sampling: common.Sampling = .{
+    .samples_min = 3,
+    .samples_max = 10_000,
+    .budget_nanoseconds = 1_000_000_000,
+};
 const contenders_shown = 12;
 
 const Subject = struct {
@@ -96,11 +95,6 @@ pub const Record = struct {
     share: f64,
 };
 
-fn ignore_message(context: ?*anyopaque, message: []const u8, severity: Severity) void {
-    assert(context == null);
-    assert(message.len > 0 or severity == .warning);
-}
-
 /// What the workloads run on, made once per story.
 const Inputs = struct {
     gpa: Allocator,
@@ -115,8 +109,6 @@ const Inputs = struct {
     save_json: []u8,
 
     fn prepare(inputs: *Inputs, gpa: Allocator, source: []const u8, json: []const u8) !void {
-        assert(source.len > 0);
-        assert(json.len > 0);
         inputs.* = .{
             .gpa = gpa,
             .source = source,
@@ -131,18 +123,16 @@ const Inputs = struct {
         try program_image.write(&inputs.program, &inputs.out.writer);
         inputs.image = try gpa.dupe(u8, inputs.out.written());
         try inputs.played.init(gpa, &inputs.program, .{});
-        inputs.played.on_error = ignore_message;
-        try play_once(&inputs.played, 1);
+        inputs.played.on_error = common.ignore_errors;
+        _ = try common.play(&inputs.played, 1);
         inputs.out.clearRetainingCapacity();
         try save.to_json(&inputs.played, &inputs.out.writer);
         inputs.save_json = try gpa.dupe(u8, inputs.out.written());
         try inputs.loader.init(gpa, &inputs.program, .{});
-        inputs.loader.on_error = ignore_message;
+        inputs.loader.on_error = common.ignore_errors;
     }
 
     fn deinit(inputs: *Inputs) void {
-        assert(inputs.image.len > 0);
-        assert(inputs.save_json.len > 0);
         const gpa = inputs.gpa;
         inputs.loader.deinit(gpa);
         inputs.played.deinit(gpa);
@@ -154,24 +144,7 @@ const Inputs = struct {
     }
 };
 
-/// One play from the start: seeded choices, as `zig build bench` plays.
-fn play_once(story: *Story, seed: u32) !void {
-    assert(seed > 0);
-    try story.reset_state();
-    var random = DotnetRandom.init(@intCast(seed));
-    var turn: u32 = 0;
-    while (turn < turns_max) : (turn += 1) {
-        while (story.can_continue()) _ = try story.cont();
-        const count = story.visible_choices_count();
-        if (count == 0) break;
-        try story.choose_choice_index(@intCast(@mod(random.next(), @as(i32, @intCast(count)))));
-    }
-    assert(turn <= turns_max);
-}
-
 fn run_once(inputs: *Inputs, workload: Workload, iteration: u32) !void {
-    assert(inputs.image.len > 0);
-    assert(iteration < iterations_max);
     const gpa = inputs.gpa;
     inputs.out.clearRetainingCapacity();
     switch (workload) {
@@ -194,37 +167,35 @@ fn run_once(inputs: *Inputs, workload: Workload, iteration: u32) !void {
             try story.init(gpa, &inputs.program, .{});
             story.deinit(gpa);
         },
-        .play => try play_once(&inputs.played, iteration + 1),
+        .play => _ = try common.play(&inputs.played, iteration + 1),
         .save => try save.to_json(&inputs.played, &inputs.out.writer),
         .load_save => try load.load_json(&inputs.loader, inputs.save_json),
     }
-    assert(inputs.out.written().len <= std.math.maxInt(u32));
 }
 
-fn now_ns(io: std.Io) u64 {
-    const nanoseconds = std.Io.Timestamp.now(io, .awake).toNanoseconds();
-    assert(nanoseconds >= 0);
-    assert(nanoseconds < std.math.maxInt(u64));
-    return @intCast(nanoseconds);
-}
+/// One workload, timed by `sample`.
+const Timed = struct {
+    io: std.Io,
+    inputs: *Inputs,
+    workload: Workload,
+
+    fn once(timed: *const Timed, iteration: u32) !u64 {
+        const timer: common.Timer = .begin(timed.io);
+        try run_once(timed.inputs, timed.workload, iteration);
+        return timer.nanoseconds(timed.io);
+    }
+};
 
 /// Runs `workload` for the time budget; returns the iterations and the wall time.
 fn time_workload(io: std.Io, inputs: *Inputs, workload: Workload) !struct { u32, u64 } {
-    assert(inputs.image.len > 0);
     // `save` measures the played story; play it to its end again first.
-    if (workload == .save) try play_once(&inputs.played, 1);
+    if (workload == .save) _ = try common.play(&inputs.played, 1);
     try run_once(inputs, workload, 0);
     profile.reset();
-    const start = now_ns(io);
-    var iterations: u32 = 0;
-    while (iterations < iterations_max and
-        (iterations < iterations_min or now_ns(io) - start < budget_nanoseconds))
-    {
-        try run_once(inputs, workload, iterations);
-        iterations += 1;
-    }
-    assert(iterations >= iterations_min);
-    return .{ iterations, now_ns(io) - start };
+    const timed: Timed = .{ .io = io, .inputs = inputs, .workload = workload };
+    var buffer: [sampling.samples_max]u64 = undefined;
+    const stats = common.stats_of(try common.sample(&timed, Timed.once, sampling, &buffer));
+    return .{ stats.samples, stats.total };
 }
 
 fn measure(io: std.Io, inputs: *Inputs, workload: Workload) !Measurement {
@@ -234,15 +205,13 @@ fn measure(io: std.Io, inputs: *Inputs, workload: Workload) !Measurement {
     const iterations, const wall_ns = try time_workload(io, inputs, workload);
     profile.active = false;
     const plain: f64 = @floatFromInt(plain_ns);
-    const measurement: Measurement = .{
+    return .{
         .workload = workload,
         .iterations = iterations,
         .wall_ns = wall_ns,
         .totals = profile.totals(),
         .plain_ns_per_iteration = plain / @as(f64, @floatFromInt(plain_iterations)),
     };
-    assert(measurement.wall_ns > 0);
-    return measurement;
 }
 
 /// The records of a measurement: each zone it entered, then the time outside zones.
@@ -302,8 +271,6 @@ pub fn records_of(
 }
 
 fn by_exclusive_time(_: void, a: Record, b: Record) bool {
-    assert(a.iterations > 0);
-    assert(b.iterations > 0);
     return a.exclusive_ns_per_iteration > b.exclusive_ns_per_iteration;
 }
 
@@ -312,8 +279,6 @@ fn print_measurement(
     measurement: *const Measurement,
     records: []const Record,
 ) void {
-    assert(records.len > 0);
-    assert(measurement.iterations > 0);
     const wall = @as(f64, @floatFromInt(measurement.wall_ns)) /
         @as(f64, @floatFromInt(measurement.iterations)) / 1e3;
     const plain = measurement.plain_ns_per_iteration / 1e3;
@@ -344,8 +309,6 @@ fn print_measurement(
 /// One pass through the pipeline: a compile, a JSON load, a story init, one play, a save
 /// and a load of it. The zones ranked by exclusive time over that pass.
 fn print_contenders(arena: Allocator, story: []const u8, records: []const Record) !void {
-    assert(records.len > 0);
-    assert(story.len > 0);
     const pass = [_]Workload{ .compile, .json_load, .story_init, .play, .save, .load_save };
     var ranked: std.ArrayList(Record) = .empty;
     var total: f64 = 0;
@@ -376,7 +339,6 @@ fn profile_story(
     subject: Subject,
     lines: *std.Io.Writer,
 ) !void {
-    assert(subject.name.len > 0);
     const cwd = std.Io.Dir.cwd();
     const limit: std.Io.Limit = .limited(1 << 26);
     const source = try cwd.readFileAlloc(io, subject.source_path, arena, limit);
@@ -410,5 +372,4 @@ pub fn main(init: std.process.Init) !void {
     var lines: std.Io.Writer.Allocating = .init(arena);
     for (subjects) |subject| try profile_story(gpa, arena, io, run, subject, &lines.writer);
     try bench_io.append_results(arena, io, results_path, lines.written());
-    assert(builtin.mode != .debug);
 }
