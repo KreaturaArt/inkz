@@ -1,314 +1,384 @@
-//! The passes of resolve.zig, and ink's lookups: Path.ResolveFromContext,
-//! FlowBase.ContentWithNameAtLevel (with its deep search), FlowBase.ResolveVariableWithName
-//! and Story.ResolveListItem, all without recursion.
+//! resolve.zig's two passes over the object tree, in ink's order: the generation pass
+//! (pre-order, as ink generates runtime objects) and the references pass (ResolveReferences:
+//! children first, then the object).
 
 const std = @import("std");
 const assert = std.debug.assert;
 const resolve = @import("resolve.zig");
+const lookups = @import("resolve_lookups.zig");
+const collisions = @import("resolve_collisions.zig");
 const sema = @import("sema.zig");
 const ast_module = @import("ast.zig");
 const Context = resolve.Context;
 const Path = resolve.Path;
-const FlowLevel = resolve.FlowLevel;
 const Reference = resolve.Reference;
 const Tree = sema.Tree;
 const ObjectIndex = sema.ObjectIndex;
 const Flags = sema.Flags;
 const NodeIndex = ast_module.NodeIndex;
-const values = @import("values.zig");
 
-// Preparation: ink's ExportRuntime prelude and ResolveWeavePointNaming.
-
-pub fn prepare(context: *Context) !void {
-    assert(context.tree.count() > 0);
-    const gpa = context.gpa;
-    const count = context.tree.count();
-    context.targets = try gpa.alloc(ObjectIndex, count);
-    @memset(context.targets, .none);
-    context.references = try gpa.alloc(Reference, count);
-    @memset(context.references, .none);
-    context.item_values = try gpa.alloc(i32, count);
-    @memset(context.item_values, 0);
-    context.root_weaves = try gpa.alloc(ObjectIndex, count);
-    @memset(context.root_weaves, .none);
-    context.variable_diverts = try .initEmpty(gpa, count);
-    context.skipped = try .initEmpty(gpa, count);
-    context.had_error = try .initEmpty(gpa, count);
-    // ink's FindAll order: pre-order (objects are numbered in creation order).
-    var objects = context.tree.walk(gpa, Tree.root, .pre);
-    defer objects.deinit();
-    while (try objects.next()) |object| try prepare_object(context, object);
-    assert(context.targets.len == count);
+/// FunctionCall.IsBuiltIn: ink's native functions and its other built-ins.
+pub fn is_builtin(name: []const u8) bool {
+    assert(name.len == 0 or name[0] != ' ');
+    assert(name.len < std.math.maxInt(u32));
+    const names = [_][]const u8{
+        "+",           "-",            "/",           "*",        "%",          "_",
+        "==",          ">",            "<",           ">=",       "<=",         "!=",
+        "!",           "&&",           "||",          "MIN",      "MAX",        "POW",
+        "FLOOR",       "CEILING",      "INT",         "FLOAT",    "?",          "!?",
+        "^",           "LIST_MIN",     "LIST_MAX",    "LIST_ALL", "LIST_COUNT", "LIST_VALUE",
+        "LIST_INVERT", "CHOICE_COUNT", "TURNS_SINCE", "TURNS",    "RANDOM",     "SEED_RANDOM",
+        "LIST_RANDOM", "READ_COUNT",   "LIST_RANGE",
+    };
+    for (names) |builtin| {
+        if (std.mem.eql(u8, name, builtin)) return true;
+    }
+    return false;
 }
 
-fn prepare_object(context: *Context, object: ObjectIndex) !void {
+/// The name a variable assignment or declaration assigns.
+fn assigned_name(context: *const Context, object: ObjectIndex) []const u8 {
+    assert(context.tree.count() > 0);
+    assert(context.tree.kind(object) == .variable_assignment);
+    return context.child_name(object, 0);
+}
+
+/// A divert's target path: the `path` child, or a call's name.
+fn divert_path(context: *const Context, divert: ObjectIndex) ?Path {
     assert(context.tree.count() > 0);
     const tree = context.tree;
+    assert(tree.kind(divert) == .divert);
+    const node = tree.node(divert);
+    if (node.is_none() or tree.has(divert, Flags.empty)) return null;
+    const ast = context.ast();
+    if (ast.tag(node) == .function_call) {
+        var path: Path = .{ .count = 1 };
+        path.components[0] = context.parsed.child_text(node, 0);
+        return path;
+    }
+    const path_node = ast.child(node, 0);
+    if (ast.tag(path_node) != .path) return null;
+    return context.path_of(path_node);
+}
+
+fn is_end_or_done(path: *const Path) bool {
+    assert(path.count == 0 or path.components[0].len < std.math.maxInt(u32));
+    assert(path.count <= resolve.path_components_max);
+    return path.is_single("END") or path.is_single("DONE");
+}
+
+// The generation pass.
+
+pub fn generation_pass(context: *Context) !void {
+    assert(context.tree.count() > 0);
+    var objects = context.tree.walk(context.gpa, Tree.root, .pre);
+    defer objects.deinit();
+    while (try objects.next()) |object| try generate(context, object);
+}
+
+fn generate(context: *Context, object: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    const tree = context.tree;
     switch (tree.kind(object)) {
-        .story, .knot, .stitch => {
-            for (tree.children_of(object)) |child| {
-                if (tree.kind(child) == .weave) {
-                    context.root_weaves[object.to_int()] = child;
-                    try name_weave_points(context, child);
-                } else if (tree.is_flow(child)) {
-                    const name = context.flow_name(child);
-                    try context.subflows.put(
-                        context.gpa,
-                        .{ .scope = object, .name = name },
-                        child,
-                    );
-                }
-            }
+        .variable_assignment => {
+            const scope = if (tree.has(object, Flags.global))
+                Tree.root
+            else if (tree.has(object, Flags.new_temporary))
+                tree.closest_flow(object)
+            else
+                return;
+            try declare(
+                context,
+                &context.declarations,
+                scope,
+                assigned_name(context, object),
+                object,
+            );
         },
-        .constant_declaration => try prepare_constant(context, object),
+        .external_declaration => {
+            const name = context.child_name(object, 0);
+            const entry = try context.externals.getOrPut(context.gpa, .{
+                .scope = Tree.root,
+                .name = name,
+            });
+            if (entry.found_existing) return context.report(.duplicate_external, object);
+            entry.value_ptr.* = object;
+        },
+        .function_call => {
+            const name = context.child_name(object, 0);
+            const is_list = context.lookup(&context.lists, Tree.root, name) != null;
+            // A built-in's proxy divert is never generated, so never resolved.
+            const proxy = tree.children_of(object)[0];
+            if (is_builtin(name) or is_list) context.skipped.set(proxy.to_int());
+        },
+        .divert => try generate_divert(context, object),
+        .knot, .stitch => try check_flow(context, object),
+        else => {},
+    }
+}
+
+/// FlowBase.GenerateRuntimeObject's checks: a function's CheckForDisallowedFunctionFlowControl
+/// (no stitches, diverts or choices), and a knot's or stitch's first `return` otherwise.
+fn check_flow(context: *Context, flow: ObjectIndex) !void {
+    assert(context.tree.is_flow(flow));
+    assert(context.tree.kind(flow) != .story);
+    const tree = context.tree;
+    if (!tree.has(flow, Flags.function)) {
+        const found = try tree.find(context.gpa, flow, Tree.is_return) orelse return;
+        return context.report(.return_outside_function, found);
+    }
+    if (tree.kind(flow) == .stitch) try context.report(.function_is_stitch, flow);
+    const children = tree.children_of(flow);
+    for (children) |child| {
+        if (tree.is_flow(child)) try context.report(.function_has_stitch, child);
+    }
+    // A flow's root weave is its first child; a function without one has nothing more.
+    if (children.len == 0 or tree.kind(children[0]) != .weave) return;
+    var found: std.ArrayList(ObjectIndex) = .empty;
+    defer found.deinit(context.gpa);
+    try tree.find_all(context.gpa, children[0], is_disallowed_divert, &found);
+    for (found.items) |divert| try context.report(.function_has_divert, divert);
+    found.clearRetainingCapacity();
+    try tree.find_all(context.gpa, children[0], Tree.is_choice, &found);
+    for (found.items) |choice| try context.report(.function_has_choice, choice);
+}
+
+/// A divert a function may not contain: not a function call's, not a divert target's.
+fn is_disallowed_divert(tree: *const Tree, object: ObjectIndex) bool {
+    assert(object.to_int() < tree.count());
+    assert(tree.count() > 0);
+    if (tree.kind(object) != .divert or tree.has(object, Flags.function_call)) return false;
+    return tree.kind(tree.parent(object)) != .divert_target;
+}
+
+/// FlowBase.TryAddNewVariableDeclaration.
+fn declare(
+    context: *Context,
+    table: *resolve.Table,
+    scope: ObjectIndex,
+    name: []const u8,
+    object: ObjectIndex,
+) !void {
+    assert(context.tree.count() > 0);
+    assert(name.len < std.math.maxInt(u32));
+    const entry = try table.getOrPut(context.gpa, .{ .scope = scope, .name = name });
+    if (entry.found_existing) return context.report(.duplicate_declaration, object);
+    entry.value_ptr.* = object;
+}
+
+/// Divert.ResolveTargetContent: a variable target, or ink's path lookup.
+fn generate_divert(context: *Context, divert: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    if (context.skipped.isSet(divert.to_int())) return;
+    const path = divert_path(context, divert) orelse return;
+    if (is_end_or_done(&path)) return;
+    if (lookups.resolve_variable(context, path.first(), divert) != null) {
+        context.variable_diverts.set(divert.to_int());
+        return;
+    }
+    const target = try lookups.resolve_path(context, &path, divert);
+    context.targets[divert.to_int()] = target orelse .none;
+}
+
+// The references pass.
+
+pub fn references_pass(context: *Context) !void {
+    assert(context.tree.count() > 0);
+    var objects = context.tree.walk(context.gpa, Tree.root, .post);
+    defer objects.deinit();
+    while (try objects.next()) |object| try check(context, object);
+}
+
+fn check(context: *Context, object: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    switch (context.tree.kind(object)) {
+        .divert => try check_divert(context, object),
+        .variable_reference => try check_variable_reference(context, object),
+        .list_literal => try check_list_literal(context, object),
+        .function_call => {
+            // A list's name called as a function makes a list (ink's ResolveList).
+            const name = context.child_name(object, 0);
+            const list = context.lookup(&context.lists, Tree.root, name);
+            context.targets[object.to_int()] = list orelse .none;
+        },
+        .variable_assignment => try check_assignment(context, object),
+        .increment => try check_increment(context, object),
+        .story, .knot, .stitch => try collisions.check_flow(context, object),
+        .weave => try collisions.check_weave(context, object),
+        .choice, .gather => {
+            try collisions.check(context, object, context.label(object), .sub_flow_and_weave);
+        },
+        .constant_declaration, .list_element => {
+            const name = context.child_name(object, 0);
+            const kind = context.tree.kind(object);
+            try collisions.check(
+                context,
+                object,
+                name,
+                if (kind == .list_element) .list_item else .variable,
+            );
+        },
         .list_definition => {
-            // The name is the LIST declaration's.
-            const declaration = tree.node(tree.parent(object));
-            const name = context.parsed.child_text(declaration, 0);
-            try context.lists.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
-            try context.list_order.append(context.gpa, object);
-            values.number_list(context.parsed, tree, object, context.item_values);
-            try check_duplicate_items(context, object);
+            const declaration = context.tree.node(context.tree.parent(object));
+            try collisions.check(
+                context,
+                object,
+                context.parsed.child_text(declaration, 0),
+                .list,
+            );
         },
         else => {},
     }
-    assert(object.to_int() < tree.count());
+    assert(object.to_int() < context.tree.count());
 }
 
-/// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
-fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    const name = context.child_name(constant, 0);
-    const entry = try context.constants.getOrPut(context.gpa, .{
-        .scope = Tree.root,
-        .name = name,
-    });
-    defer entry.value_ptr.* = constant;
-    if (!entry.found_existing) return;
-    const earlier = constant_literal(context, entry.value_ptr.*) catch null;
-    const later = constant_literal(context, constant) catch {
-        return context.report(.unsupported_fold, constant);
-    };
-    if (earlier == null or later == null or !values.equal(earlier.?, later.?)) {
-        try context.report(.constant_redefined, constant);
-    }
-}
-
-fn constant_literal(context: *const Context, constant: ObjectIndex) values.Error!?values.Literal {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    const children = context.tree.children_of(constant);
-    if (children.len == 0) return null;
-    return values.literal(context.parsed, context.tree, children[0]);
-}
-
-/// ListDefinition.runtimeListDefinition: duplicate item names are an error on the list.
-fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    const elements = context.tree.children_of(definition);
-    for (elements, 0..) |element, position| {
-        const name = context.child_name(element, 0);
-        for (elements[position + 1 ..]) |later| {
-            const other = context.child_name(later, 0);
-            if (std.mem.eql(u8, name, other)) return context.report(
-                .duplicate_list_item,
-                definition,
-            );
-        }
-    }
-}
-
-/// Weave.ResolveWeavePointNaming: every labelled choice and gather under a root weave.
-fn name_weave_points(context: *Context, weave: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    const gpa = context.gpa;
-    var objects = context.tree.walk(gpa, weave, .pre);
-    defer objects.deinit();
-    while (try objects.next()) |object| {
-        const kind = context.tree.kind(object);
-        if (kind == .choice or kind == .gather) {
-            const name = context.label(object);
-            if (name.len > 0) {
-                const entry = try context.labels.getOrPut(gpa, .{ .scope = weave, .name = name });
-                if (entry.found_existing) try context.report(.duplicate_label, object);
-                entry.value_ptr.* = object;
-            }
-        }
-    }
-}
-
-// ink's lookups.
-
-/// FlowBase.ContentWithNameAtLevel.
-pub fn content_with_name_at_level(
-    context: *Context,
-    flow: ObjectIndex,
-    name: []const u8,
-    level: ?FlowLevel,
-    deep: bool,
-) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    const own = context.level(flow);
-    if ((level == null or level.? == own) and own != .story) {
-        if (std.mem.eql(u8, name, context.flow_name(flow))) return flow;
-    }
-    if (level == null or level.? == .weave_point) {
-        if (weave_point_named(context, flow, name)) |point| return point;
-        if (level != null) return if (deep) try deep_search(context, flow, name) else null;
-    }
-    if (level != null and @backingInt(level.?) < @backingInt(own)) return null;
-    if (context.lookup(&context.subflows, flow, name)) |sub_flow| {
-        if (level == null or level.? == context.level(sub_flow)) return sub_flow;
-    }
-    return if (deep) try deep_search(context, flow, name) else null;
-}
-
-fn weave_point_named(context: *const Context, flow: ObjectIndex, name: []const u8) ?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.tree.is_flow(flow));
-    const weave = context.root_weaves[flow.to_int()];
-    if (weave.is_none()) return null;
-    return context.lookup(&context.labels, weave, name);
-}
-
-/// DeepSearchForAnyLevelContent: the flow's labels, then each sub-flow (its name, labels and
-/// sub-flows, then deeper), depth first.
-fn deep_search(context: *Context, flow: ObjectIndex, name: []const u8) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    if (weave_point_named(context, flow, name)) |point| return point;
-    const gpa = context.gpa;
-    var stack: std.ArrayList(ObjectIndex) = .empty;
-    defer stack.deinit(gpa);
-    try push_sub_flows(context, &stack, flow);
-    while (stack.pop()) |sub_flow| {
-        if (std.mem.eql(u8, name, context.flow_name(sub_flow))) return sub_flow;
-        if (weave_point_named(context, sub_flow, name)) |point| return point;
-        if (context.lookup(&context.subflows, sub_flow, name)) |found| return found;
-        try push_sub_flows(context, &stack, sub_flow);
-    }
-    return null;
-}
-
-fn push_sub_flows(context: *Context, stack: *std.ArrayList(ObjectIndex), flow: ObjectIndex) !void {
-    assert(context.tree.count() > 0);
-    const children = context.tree.children_of(flow);
-    var position = children.len;
-    while (position > 0) {
-        position -= 1;
-        const child = children[position];
-        if (context.tree.is_flow(child)) try stack.append(context.gpa, child);
-    }
-    assert(context.tree.is_flow(flow));
-}
-
-/// Path.TryGetChildFromContext.
-fn child_from_context(
-    context: *Context,
-    scope: ObjectIndex,
-    name: []const u8,
-    minimum: ?FlowLevel,
-    force_deep: bool,
-) !?ObjectIndex {
+/// Divert.ResolveReferences.
+fn check_divert(context: *Context, divert: ObjectIndex) !void {
     assert(context.tree.count() > 0);
     assert(context.targets.len == 0 or context.targets.len == context.tree.count());
     const tree = context.tree;
-    if (tree.kind(scope) == .weave and (minimum == null or minimum.? == .weave_point)) {
-        // Only a flow's root weave has its labels named.
-        const owner = tree.parent(scope);
-        if (!tree.is_flow(owner) or context.root_weaves[owner.to_int()] != scope) return null;
-        return context.lookup(&context.labels, scope, name);
+    if (context.skipped.isSet(divert.to_int())) return;
+    const path = divert_path(context, divert) orelse return;
+    if (is_end_or_done(&path)) return;
+    const is_call = tree.has(divert, Flags.function_call);
+    const target = context.targets[divert.to_int()];
+    if (!target.is_none() and tree.is_flow(target)) {
+        const is_function = tree.has(target, Flags.function);
+        const in_divert_target = tree.kind(tree.parent(divert)) == .divert_target;
+        if (!is_function and is_call) try context.report(.not_a_function, divert);
+        if (is_function and !is_call and !in_divert_target) try context.report(
+            .function_diverted_to,
+            divert,
+        );
     }
-    if (tree.is_flow(scope)) {
-        const deep = force_deep or context.level(scope) == .knot;
-        return content_with_name_at_level(context, scope, name, minimum, deep);
-    }
-    return null;
-}
-
-/// Path.ResolveFromContext.
-pub fn resolve_path(context: *Context, path: *const Path, from: ObjectIndex) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    if (path.count == 0) return null;
-    var ancestor = from;
-    var base: ?ObjectIndex = null;
-    var steps: u32 = 0;
-    while (!ancestor.is_none()) : (steps += 1) {
-        assert(steps < context.tree.count());
-        base = try child_from_context(context, ancestor, path.first(), null, ancestor == from);
-        if (base != null) break;
-        ancestor = context.tree.parent(ancestor);
-    }
-    var found = base orelse return null;
-    for (path.components[1..path.count]) |component| {
-        const minimum: FlowLevel = if (context.tree.is_flow(found))
-            @fromBackingInt(@intCast(@backingInt(context.level(found)) + 1))
-        else
-            .weave_point;
-        const next = try child_from_context(context, found, component, minimum, false);
-        found = next orelse return null;
-    }
-    return found;
-}
-
-/// FlowBase.ResolveVariableWithName, with the declarations registered so far.
-pub fn resolve_variable(context: *const Context, name: []const u8, from: ObjectIndex) ?Reference {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    const owner = context.tree.closest_flow(from);
-    const parameters = context.parameters(owner);
-    for (0..parameters.len) |position| {
-        const parameter = context.parameter_name(owner, @intCast(position));
-        if (std.mem.eql(u8, name, parameter)) return .argument;
-    }
-    if (owner != Tree.root and context.lookup(&context.declarations, owner, name) != null) {
-        return .temporary;
-    }
-    if (context.lookup(&context.declarations, Tree.root, name) != null) return .global;
-    return null;
-}
-
-/// Story.ResolveListItem: `list.item`, or an item of any list (ambiguity is an error).
-pub fn resolve_list_item(
-    context: *Context,
-    list_name: ?[]const u8,
-    item: []const u8,
-    from: ObjectIndex,
-) !?ObjectIndex {
-    assert(context.tree.count() > 0);
-    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
-    if (list_name) |name| {
-        const definition = context.lookup(&context.lists, Tree.root, name) orelse return null;
-        return list_item_named(context, definition, item);
-    }
-    var found: ?ObjectIndex = null;
-    for (context.list_order.items) |definition| {
-        if (list_item_named(context, definition, item)) |element| {
-            if (found != null) {
-                try context.report(.ambiguous_list_item, from);
-            } else found = element;
+    if (path.count == 1) {
+        const name = path.first();
+        const is_external = context.lookup(&context.externals, Tree.root, name) != null;
+        if (is_builtin(name) or is_external) {
+            if (!is_call) try context.report(.builtin_not_called, divert);
+            return;
         }
     }
-    return found;
+    if (context.variable_diverts.isSet(divert.to_int())) return;
+    if (target.is_none()) try context.report(.target_not_found, divert);
 }
 
-fn list_item_named(
-    context: *const Context,
-    definition: ObjectIndex,
-    item: []const u8,
-) ?ObjectIndex {
+/// VariableReference: a constant, a list item, a read count, or a variable.
+fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
     assert(context.tree.count() > 0);
-    assert(context.tree.kind(definition) == .list_definition);
-    for (context.tree.children_of(definition)) |element| {
-        const name = context.child_name(element, 0);
-        if (std.mem.eql(u8, name, item)) return element;
+    const node = context.tree.node(reference);
+    const path = context.path_of(context.ast().child(node, 0));
+    assert(path.count > 0);
+    const references = context.references;
+    if (path.count == 1) {
+        if (context.lookup(&context.constants, Tree.root, path.first())) |constant| {
+            references[reference.to_int()] = .constant;
+            context.targets[reference.to_int()] = constant;
+            return;
+        }
     }
-    return null;
+    if (path.count <= 2) {
+        const list_name: ?[]const u8 = if (path.count == 2) path.components[0] else null;
+        const item = path.components[path.count - 1];
+        if (try lookups.resolve_list_item(context, list_name, item, reference)) |element| {
+            references[reference.to_int()] = .list_item;
+            context.targets[reference.to_int()] = element;
+            return;
+        }
+    }
+    if (try lookups.resolve_path(context, &path, reference)) |target| {
+        references[reference.to_int()] = .read_count;
+        context.targets[reference.to_int()] = target;
+        return;
+    }
+    if (path.count > 1) {
+        references[reference.to_int()] = .unresolved;
+        return context.report(.read_count_target_not_found, reference);
+    }
+    const found = lookups.resolve_variable(context, path.first(), reference);
+    references[reference.to_int()] = found orelse .unresolved;
+    if (found == null) try context.report(.unresolved_variable, reference);
 }
 
-// The two passes are in resolve_order.zig, which uses these lookups.
-pub const generation_pass = @import("resolve_order.zig").generation_pass;
-pub const references_pass = @import("resolve_order.zig").references_pass;
+/// List.GenerateIntoContainer's lookups: each item of a list literal must exist.
+fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    const ast = context.ast();
+    const node = context.tree.node(literal);
+    for (0..ast.list(node).count) |position| {
+        const text = context.parsed.leaf_text(ast.item(node, position));
+        const dot = std.mem.indexOfScalar(u8, text, '.');
+        const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
+        const item = if (dot) |at| text[at + 1 ..] else text;
+        if (try lookups.resolve_list_item(context, list_name, item, literal) == null) {
+            try context.report(.list_item_not_found, literal);
+        }
+    }
+    assert(context.tree.kind(literal) == .list_literal);
+}
+
+/// VariableAssignment.ResolveReferences.
+fn check_assignment(context: *Context, assignment: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    const tree = context.tree;
+    const references = context.references;
+    const is_global = tree.has(assignment, Flags.global);
+    const declares = is_global or tree.has(assignment, Flags.new_temporary);
+    if (declares and !tree.has(assignment, Flags.list)) {
+        const symbol: collisions.Symbol = if (is_global) .variable else .temporary;
+        try collisions.check(context, assignment, assigned_name(context, assignment), symbol);
+    }
+    if (is_global) {
+        references[assignment.to_int()] = .global;
+        const children = tree.children_of(assignment);
+        if (children.len == 1 and tree.kind(children[0]) == .variable_reference) {
+            const value = references[children[0].to_int()];
+            if (value != .constant and value != .list_item) {
+                try context.report(.global_refers_to_variable, assignment);
+            }
+        }
+        return;
+    }
+    if (tree.has(assignment, Flags.new_temporary)) {
+        references[assignment.to_int()] = .temporary;
+        return;
+    }
+    const name = assigned_name(context, assignment);
+    const found = lookups.resolve_variable(context, name, assignment);
+    references[assignment.to_int()] = found orelse .unresolved;
+    if (found != null) return;
+    const constant = context.lookup(&context.constants, Tree.root, name) != null;
+    try context.report(
+        if (constant) .assignment_to_constant else .assignment_target_not_found,
+        assignment,
+    );
+}
+
+/// IncDecExpression.ResolveReferences.
+fn check_increment(context: *Context, increment: ObjectIndex) !void {
+    assert(context.tree.count() > 0);
+    assert(context.targets.len == 0 or context.targets.len == context.tree.count());
+    const tree = context.tree;
+    const ast = context.ast();
+    const node = tree.node(increment);
+    const name = if (tree.has(increment, Flags.by_expression))
+        context.parsed.child_text(node, 0)
+    else
+        joined_first(context, ast.child(ast.child(node, 0), 0));
+    const found = lookups.resolve_variable(context, name, increment);
+    context.references[increment.to_int()] = found orelse .unresolved;
+    if (found == null) try context.report(.increment_target_not_found, increment);
+}
+
+/// A variable reference's name: ink joins the path with dots; only a one-component path
+/// can name a variable.
+fn joined_first(context: *const Context, path_node: NodeIndex) []const u8 {
+    assert(context.tree.count() > 0);
+    const path = context.path_of(path_node);
+    assert(path.count > 0);
+    if (path.count > 1) return "";
+    return path.first();
+}

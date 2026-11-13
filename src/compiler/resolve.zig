@@ -19,6 +19,7 @@ const Allocator = std.mem.Allocator;
 const sema = @import("sema.zig");
 const grammar = @import("grammar.zig");
 const ast_module = @import("ast.zig");
+const lookups = @import("resolve_lookups.zig");
 const passes = @import("resolve_passes.zig");
 const Tree = sema.Tree;
 const ObjectIndex = sema.ObjectIndex;
@@ -308,7 +309,7 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     assert(tree.kind(Tree.root) == .story);
     var context: Context = .{ .gpa = gpa, .parsed = parsed, .tree = tree };
     defer context.deinit();
-    try passes.prepare(&context);
+    try lookups.prepare(&context);
     try passes.generation_pass(&context);
     try passes.references_pass(&context);
     const resolution: Resolution = .{
