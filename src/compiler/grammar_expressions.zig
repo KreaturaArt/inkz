@@ -113,7 +113,6 @@ pub fn expression_unary(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             frame.phase = 1;
             return .{ .call = .expression_divert_target };
         },
@@ -162,7 +161,7 @@ fn prefix_operator(machine: *Machine) Error!u32 {
 
 fn postfix(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_unary);
-    const marker = frame.locals[0];
+    const marker = frame.checkpoint.scratch;
     assert(machine.scratch_count == marker + 1);
     if (frame.locals[1] != 0) {
         const prefix: ast.Tag = @fromBackingInt(@intCast(frame.locals[1] - 1));
@@ -183,15 +182,14 @@ pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_divert_target);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         _ = grammar.whitespace(machine);
         frame.phase = 1;
         return .{ .call = .single_divert };
     }
     if (machine.outcome == .failed) return .fail;
-    if (grammar.top_tag(machine, frame.locals[0]) == .thread) return .fail;
+    if (grammar.top_tag(machine, frame.checkpoint.scratch) == .thread) return .fail;
     _ = grammar.whitespace(machine);
-    try machine.wrap(.divert_target, frame.locals[0]);
+    try machine.wrap(.divert_target, frame.checkpoint.scratch);
     return .succeed;
 }
 
@@ -216,14 +214,13 @@ pub fn expression_function_call(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.rule == .expression_function_call);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
-        frame.locals[0] = machine.scratch_count;
         if (!try grammar.push_identifier(machine)) return .fail;
         _ = grammar.whitespace(machine);
         frame.phase = 1;
         return .{ .call = .function_call_arguments };
     }
     if (machine.outcome == .failed) return .fail;
-    try machine.wrap(.function_call, frame.locals[0]);
+    try machine.wrap(.function_call, frame.checkpoint.scratch);
     machine.flags |= grammar.saw_function_call;
     return .succeed;
 }
@@ -234,7 +231,6 @@ pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "(")) return .fail;
-        frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
         machine.argument = 0;
         return .{ .call = .expression };
@@ -247,7 +243,7 @@ pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
     }
     _ = grammar.whitespace(machine);
     grammar.expect_string(machine, ")", .closing_parenthesis);
-    try machine.wrap(.arguments, frame.locals[0]);
+    try machine.wrap(.arguments, frame.checkpoint.scratch);
     return .succeed;
 }
 
@@ -258,13 +254,12 @@ pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
     if (frame.phase == 0) {
         if (!grammar.parse_string(machine, "\"")) return .fail;
         machine.flags |= grammar.parsing_string;
-        frame.locals[0] = machine.scratch_count;
         frame.phase = 1;
         return .{ .call = .mixed_text_and_logic };
     }
     if (!grammar.parse_string(machine, "\"")) grammar.report_expected(machine, .closing_quote);
     machine.flags &= ~grammar.parsing_string;
-    const marker = frame.locals[0];
+    const marker = frame.checkpoint.scratch;
     if (machine.outcome == .failed) {
         const empty = try machine.add_token(grammar.at(machine), grammar.at(machine));
         try machine.push_node(.text, empty.to_int());

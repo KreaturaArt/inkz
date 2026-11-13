@@ -20,15 +20,14 @@ pub fn story(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             frame.phase = 1;
             machine.argument = @backingInt(Level.top);
             return .{ .call = .statements };
         },
         else => {
             // An empty story still has a (empty) statement list.
-            if (machine.outcome == .failed) try machine.wrap(.statements, frame.locals[0]);
-            try machine.wrap(.story, frame.locals[0]);
+            if (machine.outcome == .failed) try machine.wrap(.statements, frame.checkpoint.scratch);
+            try machine.wrap(.story, frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -209,7 +208,6 @@ pub fn knot_definition(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             frame.phase = 1;
             return .{ .call = .knot_declaration };
         },
@@ -224,7 +222,7 @@ pub fn knot_definition(machine: *Machine, frame: *Frame) Error!Action {
         else => {
             if (machine.outcome == .failed) try recover_flow_content(machine, .knot_content);
             const tag: ast.Tag = if (frame.locals[1] == 1) .function else .knot;
-            try machine.wrap(tag, frame.locals[0]);
+            try machine.wrap(tag, frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -307,7 +305,6 @@ pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             frame.phase = 1;
             return .{ .call = .stitch_declaration };
         },
@@ -322,7 +319,7 @@ pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
         else => {
             if (machine.outcome == .failed) try recover_flow_content(machine, .stitch_content);
             const tag: ast.Tag = if (frame.locals[1] == 1) .function_stitch else .stitch;
-            try machine.wrap(tag, frame.locals[0]);
+            try machine.wrap(tag, frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -631,7 +628,6 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             _ = grammar.whitespace(machine);
             if (!grammar.parse_string(machine, "~")) return .fail;
             _ = grammar.whitespace(machine);
@@ -654,7 +650,7 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
             grammar.report_expected(machine, .expression);
             grammar.skip_to_next_line(machine);
-            try machine.wrap(.content_list, frame.locals[0]);
+            try machine.wrap(.content_list, frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -663,7 +659,7 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
 fn finish_logic_line(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
-    const marker = frame.locals[0];
+    const marker = frame.checkpoint.scratch;
     const result = grammar.top_tag(machine, marker).?;
     const is_statement = switch (result) {
         .@"return", .temp_declaration, .assignment, .add_assignment, .subtract_assignment => true,
@@ -686,7 +682,6 @@ pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             _ = grammar.whitespace(machine);
             if (!try grammar.keyword(machine, "return")) return .fail;
             _ = grammar.whitespace(machine);
@@ -696,7 +691,7 @@ pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
         },
         else => {
             if (machine.outcome == .failed) try grammar.push_none(machine);
-            try machine.wrap(.@"return", frame.locals[0]);
+            try machine.wrap(.@"return", frame.checkpoint.scratch);
             return .succeed;
         },
     }
@@ -708,7 +703,6 @@ pub fn temp_declaration_or_assignment(machine: *Machine, frame: *Frame) Error!Ac
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
-            frame.locals[0] = machine.scratch_count;
             _ = grammar.whitespace(machine);
             const is_new = try grammar.keyword(machine, "temp");
             _ = grammar.whitespace(machine);
@@ -737,7 +731,7 @@ pub fn temp_declaration_or_assignment(machine: *Machine, frame: *Frame) Error!Ac
             const tags = [_]ast.Tag{
                 .assignment, .add_assignment, .subtract_assignment, .temp_declaration,
             };
-            try machine.wrap(tags[frame.locals[1]], frame.locals[0]);
+            try machine.wrap(tags[frame.locals[1]], frame.checkpoint.scratch);
             return .succeed;
         },
     }
