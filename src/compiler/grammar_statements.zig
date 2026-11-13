@@ -16,7 +16,6 @@ const Level = grammar.Level;
 
 /// Parse: the top-level statements make the story.
 pub fn story(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .story);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -36,7 +35,6 @@ pub fn story(machine: *Machine, frame: *Frame) Error!Action {
 /// StatementsAtLevel: Interleave(Optional(MultilineWhitespace), StatementAtLevel,
 /// untilTerminator: StatementsBreakForLevel).
 pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .statements);
     assert(machine.at <= machine.source.len);
     const level: Level = @fromBackingInt(@intCast(frame.locals[0]));
     switch (frame.phase) {
@@ -95,33 +93,36 @@ const Alternative = enum(u32) {
     include_statement,
     logic_line,
     line_of_mixed_text_and_logic,
-
-    fn applies(alternative: Alternative, level: Level) bool {
-        assert(@backingInt(level) <= @backingInt(Level.top));
-        assert(@backingInt(alternative) < 16);
-        return switch (alternative) {
-            .knot_definition => level == .top,
-            .gather => level != .inner_block,
-            .stitch_definition => level == .knot or level == .top,
-            else => true,
-        };
-    }
-
-    /// Whether ink wraps it in Line(...): end of line expected after it.
-    fn is_line(alternative: Alternative) bool {
-        assert(@backingInt(alternative) < 16);
-        return switch (alternative) {
-            .multi_divert, .choice, .author_warning, .list_declaration => true,
-            .variable_declaration, .const_declaration, .external_declaration => true,
-            .include_statement => true,
-            else => false,
-        };
-    }
 };
+
+/// An alternative's rule, whether ink wraps it in Line(...) (an end of line is expected
+/// after it), and the lowest level it applies at.
+const AlternativeRule = struct {
+    rule: grammar.Rule,
+    line: bool = false,
+    level_min: Level = .inner_block,
+};
+
+const declaration: AlternativeRule = .{ .rule = .declaration_line, .line = true };
+
+const alternative_rules: std.enums.EnumArray(Alternative, AlternativeRule) = .init(.{
+    .multi_divert = .{ .rule = .multi_divert, .line = true },
+    .knot_definition = .{ .rule = .knot_definition, .level_min = .top },
+    .choice = .{ .rule = .choice, .line = true },
+    .author_warning = declaration,
+    .gather = .{ .rule = .gather, .level_min = .stitch },
+    .stitch_definition = .{ .rule = .stitch_definition, .level_min = .knot },
+    .list_declaration = declaration,
+    .variable_declaration = declaration,
+    .const_declaration = declaration,
+    .external_declaration = declaration,
+    .include_statement = declaration,
+    .logic_line = .{ .rule = .logic_line },
+    .line_of_mixed_text_and_logic = .{ .rule = .line_of_mixed_text_and_logic },
+});
 
 /// StatementAtLevel: OneOf the level's rules.
 pub fn statement(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .statement);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.argument;
@@ -130,7 +131,7 @@ pub fn statement(machine: *Machine, frame: *Frame) Error!Action {
     } else {
         const tried: Alternative = @fromBackingInt(@intCast(frame.locals[1]));
         if (machine.outcome == .succeeded) {
-            if (tried.is_line()) grammar.expect_end_of_line(machine);
+            if (alternative_rules.get(tried).line) grammar.expect_end_of_line(machine);
             const is_return = grammar.top_tag(machine, frame.checkpoint.scratch) == .@"return";
             if (frame.locals[0] == @backingInt(Level.top) and is_return) {
                 grammar.report_message(machine, .return_at_top_level);
@@ -143,34 +144,17 @@ pub fn statement(machine: *Machine, frame: *Frame) Error!Action {
     const count = @typeInfo(Alternative).@"enum".field_names.len;
     while (frame.locals[1] < count) : (frame.locals[1] += 1) {
         const alternative: Alternative = @fromBackingInt(@intCast(frame.locals[1]));
-        if (!alternative.applies(level)) continue;
+        const rule = alternative_rules.get(alternative);
+        if (@backingInt(level) < @backingInt(rule.level_min)) continue;
         machine.argument = @backingInt(alternative);
-        return .{ .call = rule_of(alternative) };
+        return .{ .call = rule.rule };
     }
     return .fail;
-}
-
-fn rule_of(alternative: Alternative) grammar.Rule {
-    assert(@backingInt(alternative) < 16);
-    const rule: grammar.Rule = switch (alternative) {
-        .multi_divert => .multi_divert,
-        .knot_definition => .knot_definition,
-        .choice => .choice,
-        .gather => .gather,
-        .stitch_definition => .stitch_definition,
-        .logic_line => .logic_line,
-        .line_of_mixed_text_and_logic => .line_of_mixed_text_and_logic,
-        .author_warning, .list_declaration, .variable_declaration => .declaration_line,
-        .const_declaration, .external_declaration, .include_statement => .declaration_line,
-    };
-    assert(@backingInt(rule) < @typeInfo(grammar.Rule).@"enum".field_names.len);
-    return rule;
 }
 
 /// StatementsBreakForLevel: Whitespace, then a knot or stitch declaration, or (in an inner
 /// block) a dash that isn't an arrow, or `}`.
 pub fn statements_break(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .statements_break);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -204,24 +188,40 @@ fn break_inner(machine: *Machine, frame: *Frame) Error!Action {
 
 /// KnotDefinition: a declaration, its line end, then the knot's statements.
 pub fn knot_definition(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .knot_definition);
+    return flow_definition(machine, frame, .knot);
+}
+
+/// StitchDefinition: a declaration, its line end, then the stitch's statements.
+pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
+    return flow_definition(machine, frame, .stitch);
+}
+
+fn flow_definition(machine: *Machine, frame: *Frame, comptime level: Level) Error!Action {
+    comptime assert(level == .knot or level == .stitch);
     assert(machine.at <= machine.source.len);
+    const knot = level == .knot;
     switch (frame.phase) {
         0 => {
             frame.phase = 1;
-            return .{ .call = .knot_declaration };
+            return .{ .call = if (knot) .knot_declaration else .stitch_declaration };
         },
         1 => {
             if (machine.outcome == .failed) return .fail;
             frame.locals[1] = machine.result;
             grammar.expect_end_of_line(machine);
             frame.phase = 2;
-            machine.argument = @backingInt(Level.knot);
+            machine.argument = @backingInt(level);
             return .{ .call = .statements };
         },
         else => {
-            if (machine.outcome == .failed) try recover_flow_content(machine, .knot_content);
-            const tag: ast.Tag = if (frame.locals[1] == 1) .function else .knot;
+            if (machine.outcome == .failed) {
+                try recover_flow_content(machine, if (knot) .knot_content else .stitch_content);
+            }
+            const is_function = frame.locals[1] == 1;
+            const tag: ast.Tag = if (knot)
+                (if (is_function) .function else .knot)
+            else
+                (if (is_function) .function_stitch else .stitch);
             try machine.wrap(tag, frame.checkpoint.scratch);
             return .succeed;
         },
@@ -254,7 +254,6 @@ fn knot_title_equals_ahead(machine: *const Machine) bool {
 /// KnotDeclaration: `==`, an optional `function`, the name and parameters; `result` is 1 for
 /// a function.
 pub fn knot_declaration(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .knot_declaration);
     assert(frame.phase == 0);
     _ = grammar.whitespace(machine);
     if (knot_title_equals(machine) == 0) return .fail;
@@ -286,9 +285,7 @@ pub fn knot_declaration(machine: *Machine, frame: *Frame) Error!Action {
 
 /// KnotTitleEquals: two or more `=`; their count (0 if fewer).
 fn knot_title_equals(machine: *Machine) u32 {
-    assert(machine.source.len >= machine.at);
     assert(machine.at <= machine.source.len);
-    assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
     const start = grammar.at(machine);
     while (!grammar.at_end(machine) and grammar.rest(machine)[0] == '=') machine.at += 1;
     const count = grammar.at(machine) - start;
@@ -299,35 +296,8 @@ fn knot_title_equals(machine: *Machine) u32 {
     return count;
 }
 
-/// StitchDefinition: a declaration, its line end, then the stitch's statements.
-pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .stitch_definition);
-    assert(machine.at <= machine.source.len);
-    switch (frame.phase) {
-        0 => {
-            frame.phase = 1;
-            return .{ .call = .stitch_declaration };
-        },
-        1 => {
-            if (machine.outcome == .failed) return .fail;
-            frame.locals[1] = machine.result;
-            grammar.expect_end_of_line(machine);
-            frame.phase = 2;
-            machine.argument = @backingInt(Level.stitch);
-            return .{ .call = .statements };
-        },
-        else => {
-            if (machine.outcome == .failed) try recover_flow_content(machine, .stitch_content);
-            const tag: ast.Tag = if (frame.locals[1] == 1) .function_stitch else .stitch;
-            try machine.wrap(tag, frame.checkpoint.scratch);
-            return .succeed;
-        },
-    }
-}
-
 /// StitchDeclaration: a single `=`, an optional `function`, the name and parameters.
 pub fn stitch_declaration(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .stitch_declaration);
     assert(frame.phase == 0);
     _ = grammar.whitespace(machine);
     if (!grammar.parse_string(machine, "=")) return .fail;
@@ -391,7 +361,6 @@ fn push_parameter(machine: *Machine, tag: ast.Tag, name: ?ast.TokenIndex) Error!
 /// The declaration lines: ink's AuthorWarning, ListDeclaration, VariableDeclaration,
 /// ConstDeclaration, ExternalDeclaration and IncludeStatement. The argument says which.
 pub fn declaration_line(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .declaration_line);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.locals[0] = machine.argument;
@@ -449,10 +418,7 @@ fn external_declaration(machine: *Machine) Error!Action {
     if (!try grammar.keyword(machine, "EXTERNAL")) return .fail;
     const marker = machine.scratch_count;
     _ = grammar.whitespace(machine);
-    if (!try grammar.push_identifier(machine)) {
-        grammar.report_expected(machine, .external_name);
-        try grammar.push_missing(machine);
-    }
+    try grammar.expect_identifier(machine, .external_name);
     _ = grammar.whitespace(machine);
     if (!try bracketed_parameters(machine)) {
         grammar.report_expected(machine, .external_parameters);
@@ -470,10 +436,7 @@ fn list_declaration(machine: *Machine) Error!Action {
     if (!try grammar.keyword(machine, "LIST")) return .fail;
     const marker = machine.scratch_count;
     _ = grammar.whitespace(machine);
-    if (!try grammar.push_identifier(machine)) {
-        grammar.report_expected(machine, .variable_name);
-        try grammar.push_missing(machine);
-    }
+    try grammar.expect_identifier(machine, .variable_name);
     _ = grammar.whitespace(machine);
     grammar.expect_string(machine, "=", .equals);
     _ = grammar.whitespace(machine);
@@ -556,10 +519,7 @@ fn value_declaration(machine: *Machine, frame: *Frame, kind: Alternative) Error!
             _ = grammar.whitespace(machine);
             if (!try grammar.keyword(machine, if (is_variable) "VAR" else "CONST")) return .fail;
             _ = grammar.whitespace(machine);
-            if (!try grammar.push_identifier(machine)) {
-                grammar.report_expected(machine, .variable_name);
-                try grammar.push_missing(machine);
-            }
+            try grammar.expect_identifier(machine, .variable_name);
             _ = grammar.whitespace(machine);
             grammar.expect_string(machine, "=", .equals);
             _ = grammar.whitespace(machine);
@@ -624,7 +584,6 @@ fn list_separator(machine: *Machine) bool {
 
 /// LogicLine: `~` and a return, an assignment or an expression.
 pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .logic_line);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -678,7 +637,6 @@ fn finish_logic_line(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ReturnStatement: `return` and an optional expression.
 pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .return_statement);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -699,7 +657,6 @@ pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
 
 /// TempDeclarationOrAssignment: `temp name = e`, `name = e`, `name += e`, `name -= e`.
 pub fn temp_declaration_or_assignment(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .temp_declaration_or_assignment);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {

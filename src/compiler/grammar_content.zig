@@ -115,7 +115,6 @@ fn is_divert(tag: ast.Tag) bool {
 /// LineOfMixedTextAndLogic: a line's content, trimmed, with its "\n" (unless it is only a
 /// tag), spliced flat into the statement list.
 pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .line_of_mixed_text_and_logic);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -147,7 +146,6 @@ pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Acti
 
 /// MixedTextAndLogic: text and inline logic interleaved, then (outside choices) diverts.
 pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .mixed_text_and_logic);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -205,7 +203,6 @@ fn finish_mixed(machine: *Machine, frame: *Frame) Action {
 
 /// InlineLogicOrGlueOrStartTag: OneOf(InlineLogic, Glue, StartTag).
 pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inline_logic_or_glue_or_start_tag);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.phase = 1;
@@ -240,7 +237,6 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
 
 /// InlineLogic: `{` inner logic `}`, as a content list.
 pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inline_logic);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -270,7 +266,6 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
 /// InnerLogic: an annotated sequence, a conditional with a query, or else the first of a
 /// conditional, a sequence and an expression that covers everything up to the `}`.
 pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inner_logic);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -344,7 +339,6 @@ fn closing_brace_ahead(machine: *Machine) bool {
 
 /// InnerExpression: an expression output when complete.
 pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inner_expression);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.phase = 1;
@@ -370,7 +364,6 @@ pub fn disallow_increment(machine: *Machine, marker: u32) void {
 
 /// ConditionExpression: an expression and `:`.
 pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .condition_expression);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         frame.phase = 1;
@@ -389,7 +382,6 @@ pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
 /// InnerConditionalContent(initialQueryExpression): the argument says whether the query is
 /// on the scratch stack. Inline branches split by `|`, or multiline `- condition:` branches.
 pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inner_conditional_content);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -528,7 +520,6 @@ fn finish_multiline(machine: *Machine, frame: *Frame) Error!Action {
 
 /// SingleMultilineCondition: `- condition: content`, `- else: content` or `- content`.
 pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .single_multiline_condition);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -656,7 +647,6 @@ fn word_annotation(machine: *Machine) Error!?u32 {
 
 /// InnerSequence: an optional annotation and at least two elements.
 pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inner_sequence);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         _ = grammar.whitespace(machine);
@@ -675,7 +665,6 @@ pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
 /// InnerSequenceObjects: multiline `- element` lines, or inline elements split by `|`; a
 /// branches list of content lists.
 pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inner_sequence_objects);
     assert(machine.at <= machine.source.len);
     switch (frame.phase) {
         0 => {
@@ -714,7 +703,6 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
 
 /// SingleMultilineSequenceElement: `- content`; the content starts with a "\n".
 pub fn single_multiline_sequence_element(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .single_multiline_sequence_element);
     assert(machine.at <= machine.source.len);
     if (frame.phase == 0) {
         _ = grammar.whitespace(machine);
