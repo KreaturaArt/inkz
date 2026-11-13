@@ -109,8 +109,12 @@ Code](https://spinroot.com/gerard/pdf/P10.pdf) will change the way you code fore
   - **Assert all function arguments and return values, pre/postconditions and invariants.** A
     function must not operate blindly on data it has not checked. The purpose of a function is to
     increase the probability that a program is correct. Assertions within a function are part of how
-    functions serve this purpose. The assertion density of the code must average a minimum of two
-    assertions per function.
+    functions serve this purpose. In inkz, library code (src/core, src/runtime, src/compiler)
+    averages at least one assertion per function; tests, harnesses, benchmarks and tools have no
+    density rule. An assertion states something the code relies on and that could be false: a
+    precondition on an argument, a postcondition on a result, an invariant between fields. It never
+    restates the type, a value assigned on the line before, or the same fact in every function of a
+    file. Write no assertion only to meet the count.
 
   - **[Pair assertions](https://tigerbeetle.com/blog/2023-12-27-it-takes-two-to-contract).** For
     every property you want to enforce, try to find at least two different code paths where an
