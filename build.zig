@@ -20,6 +20,12 @@ pub fn build(b: *std.Build) void {
         "snap-update",
         "Rewrite snapshot files instead of checking them (or set SNAP_UPDATE=1)",
     ) orelse false;
+    const bench_record = b.option(
+        bool,
+        "bench-record",
+        "bench-io and bench-profile append to bench/*.jsonl (default: zig-out/bench/)",
+    ) orelse false;
+    const bench_arguments: []const []const u8 = if (bench_record) &.{"--record"} else &.{};
     const build_options = b.addOptions();
     build_options.addOption(bool, "ledger_update", ledger_update);
     build_options.addOption(bool, "snap_update", snap_update);
@@ -107,15 +113,16 @@ pub fn build(b: *std.Build) void {
 
     // Benchmarks. Each run is a new measurement, so they always run.
     const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast");
-    add_release_benches(b, bench_step, "bench", "src/bench.zig", target);
+    add_release_benches(b, bench_step, "bench", "src/bench.zig", target, &.{});
     // Program load and store, as ink's JSON and as the binary image; results are appended to
-    // bench/load_store.jsonl.
+    // zig-out/bench/load_store.jsonl, or with -Dbench-record to bench/load_store.jsonl.
     const bench_io_step = b.step("bench-io", "Benchmark JSON and binary image load/store");
-    add_release_benches(b, bench_io_step, "bench_io", "src/bench_io.zig", target);
+    add_release_benches(b, bench_io_step, "bench_io", "src/bench_io.zig", target, bench_arguments);
     // Profile zones per pipeline stage (src/core/profile.zig), in ReleaseFast; results are
-    // appended to bench/profile.jsonl.
+    // appended to zig-out/bench/profile.jsonl, or with -Dbench-record to bench/profile.jsonl.
     const bench_profile_step = b.step("bench-profile", "Profile each pipeline stage");
     const bench_profile = add_bench(b, "bench_profile", "src/bench_profile.zig", target, .fast);
+    bench_profile.addArgs(bench_arguments);
     bench_profile_step.dependOn(&bench_profile.step);
 
     const simulate = add_executable(b, "simulate", "src/simulate.zig", target, optimize);
@@ -198,10 +205,12 @@ fn add_release_benches(
     name: []const u8,
     root: []const u8,
     target: std.Build.ResolvedTarget,
+    arguments: []const []const u8,
 ) void {
     var previous: ?*std.Build.Step = null;
     for ([_]std.builtin.OptimizeMode{ .safe, .fast }) |mode| {
         const run = add_bench(b, b.fmt("{s}_{t}", .{ name, mode }), root, target, mode);
+        run.addArgs(arguments);
         if (previous) |before| run.step.dependOn(before);
         previous = &run.step;
         step.dependOn(&run.step);

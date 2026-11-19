@@ -321,9 +321,11 @@ per sample: 3 warm-up runs, then samples until at least 10 have been taken and e
 passed or 500 have been taken. A load includes `Program.check` but not freeing the program. A
 store writes into a buffer that already has room.
 
-Every run prints a table and appends one JSON object per measurement to
-`bench/load_store.jsonl` (JSON Lines). Commit the file to keep the history; compare runs by
-`commit`, `mode` and `cpu`.
+Every run prints a table and appends one JSON object per measurement (JSON Lines) to
+`zig-out/bench/load_store.jsonl`, which is not committed. To add a run to the history, run
+`zig build bench-io -Dbench-record`: it appends to `bench/load_store.jsonl` instead. Commit
+that file to keep the history; compare runs by `commit`, `mode` and `cpu`. The same option
+sends `zig build bench-profile`'s records to `bench/profile.jsonl`.
 
 | Field | Meaning |
 |---|---|
@@ -378,8 +380,8 @@ the bench prints and records:
 - the time no zone covers, as `(outside zones)`.
 
 It ends with the worst zones of one pass through the pipeline: compile, JSON load, init,
-play, save and load the save. Records go to `bench/profile.jsonl`, one per story, workload
-and zone. They carry the fields of `bench/load_store.jsonl` plus `workload`, `zone`,
+play, save and load the save. Records go to `zig-out/bench/profile.jsonl` (with
+`-Dbench-record`, to the committed `bench/profile.jsonl`), one per story, workload and zone. They carry the fields of `bench/load_store.jsonl` plus `workload`, `zone`,
 `wall_ns_per_iteration`, `plain_wall_ns_per_iteration`, `calls_per_iteration`,
 `exclusive_ns_per_iteration`, `inclusive_ns_per_iteration` and `share`.
 

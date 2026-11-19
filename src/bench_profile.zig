@@ -4,7 +4,8 @@
 //! src/core/profile.zig compiled in. For each workload it prints every zone's exclusive and
 //! inclusive time per iteration and its share of the workload's wall time, then the worst
 //! zones of one pass through the whole pipeline. The records are appended to
-//! `bench/profile.jsonl`, one JSON object per line and zone.
+//! `zig-out/bench/profile.jsonl`, one JSON object per line and zone; with `--record`
+//! (`zig build bench-profile -Dbench-record`) to the committed `bench/profile.jsonl`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -24,7 +25,7 @@ const support = @import("testing/support.zig");
 pub const inkz_profile = true;
 
 const Allocator = std.mem.Allocator;
-const results_path = "bench/profile.jsonl";
+const results_file = "profile.jsonl";
 const sampling: common.Sampling = .{
     .samples_min = 3,
     .samples_max = 10_000,
@@ -366,11 +367,13 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
+    const destination = try common.destination_from_args(arena, init.minimal.args);
     profile.start(io, 50_000_000);
     const run = try bench_io.run_info(arena, io);
     const dirty = if (run.dirty) " (dirty)" else "";
     std.debug.print("{s} {s}{s}, {s}\n", .{ run.mode, run.commit, dirty, run.cpu });
     var lines: std.Io.Writer.Allocating = .init(arena);
     for (subjects) |subject| try profile_story(gpa, arena, io, run, subject, &lines.writer);
-    try bench_io.append_results(arena, io, results_path, lines.written());
+    const path = try destination.path(arena, results_file);
+    try bench_io.append_results(arena, io, path, lines.written());
 }

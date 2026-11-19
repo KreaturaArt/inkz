@@ -5,8 +5,9 @@
 //!
 //! Each measurement times one operation per sample, after warm-up, until `sampling` says
 //! there are enough samples (bench_common.zig). The results are printed and appended to
-//! `bench/load_store.jsonl`, one JSON object per line and measurement, with the commit, the
-//! mode and the machine, so the file keeps the history of every run that was committed.
+//! `zig-out/bench/load_store.jsonl`, one JSON object per line and measurement, with the
+//! commit, the mode and the machine. With `--record` (`zig build bench-io -Dbench-record`)
+//! they go to `bench/load_store.jsonl` instead, the committed history of recorded runs.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -17,7 +18,7 @@ const program_image = @import("core/program_image.zig");
 const Program = @import("core/program.zig").Program;
 
 const Allocator = std.mem.Allocator;
-const results_path = "bench/load_store.jsonl";
+const results_file = "load_store.jsonl";
 const sampling: common.Sampling = .{
     .warmup = 3,
     .samples_min = 10,
@@ -253,6 +254,7 @@ pub fn main(init: std.process.Init) !void {
     const gpa = init.gpa;
     const io = init.io;
     const arena = init.arena.allocator();
+    const destination = try common.destination_from_args(arena, init.minimal.args);
     const run = try run_info(arena, io);
     var lines: std.Io.Writer.Allocating = .init(arena);
     const dirty = if (run.dirty) " (dirty)" else "";
@@ -278,7 +280,7 @@ pub fn main(init: std.process.Init) !void {
             }
         }
     }
-    try append_results(arena, io, results_path, lines.written());
+    try append_results(arena, io, try destination.path(arena, results_file), lines.written());
 }
 
 fn print_record(record: *const Record) void {

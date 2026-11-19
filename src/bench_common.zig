@@ -94,3 +94,48 @@ pub fn play(story: *Story, seed: u32) !Played {
     }
     return played;
 }
+
+/// Where `bench-io` and `bench-profile` append their JSON Lines records. A run writes to
+/// `zig-out/bench/` unless it is started with `--record` (`zig build bench-io
+/// -Dbench-record`): then it appends to `bench/`, the committed history that
+/// docs/benchmarks.md cites.
+pub const Destination = enum {
+    scratch,
+    record,
+
+    pub const scratch_directory = "zig-out/bench";
+    pub const record_directory = "bench";
+    pub const record_flag = "--record";
+
+    /// The destination the command line asks for: no arguments, or `--record`.
+    pub fn parse(arguments: []const []const u8) error{BadArguments}!Destination {
+        if (arguments.len == 0) return .scratch;
+        if (arguments.len == 1 and std.mem.eql(u8, arguments[0], record_flag)) return .record;
+        return error.BadArguments;
+    }
+
+    /// The path of the results file `file_name` (`profile.jsonl`, `load_store.jsonl`).
+    pub fn path(
+        destination: Destination,
+        arena: std.mem.Allocator,
+        file_name: []const u8,
+    ) ![]const u8 {
+        assert(file_name.len > 0);
+        assert(std.mem.indexOfScalar(u8, file_name, '/') == null);
+        const directory = switch (destination) {
+            .scratch => scratch_directory,
+            .record => record_directory,
+        };
+        return std.fmt.allocPrint(arena, "{s}/{s}", .{ directory, file_name });
+    }
+};
+
+/// The destination of this process's records, from its command line.
+pub fn destination_from_args(arena: std.mem.Allocator, args: std.process.Args) !Destination {
+    const arguments = try args.toSlice(arena);
+    assert(arguments.len >= 1);
+    return Destination.parse(arguments[1..]) catch |err| {
+        std.debug.print("usage: {s} [{s}]\n", .{ arguments[0], Destination.record_flag });
+        return err;
+    };
+}
