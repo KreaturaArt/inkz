@@ -16,6 +16,8 @@ const Value = @import("value.zig").Value;
 const Story = story_module.Story;
 const HostValue = story_module.HostValue;
 const Item = output_module.Item;
+const call_stack_module = @import("call_stack.zig");
+const ContainerIndex = @import("../core/index.zig").ContainerIndex;
 
 pub const Error = story_module.Error || error{
     /// ink's "Function doesn't exist".
@@ -28,7 +30,11 @@ pub const Error = story_module.Error || error{
 };
 
 /// Calls the ink function `name` with `arguments`, writing its text to `text_writer`, and
-/// returns its result (a divert target comes back as its path, as in ink).
+/// returns its result (a divert target comes back as its path, as in ink). It fails
+/// closed: a failure before the function runs or a full `text_writer` leave the state as
+/// it was before the call (with side effects so far kept); a story error ends the flow, as
+/// in `cont`; a limit or host error in the middle of a step fails the story
+/// (`Story.failed`).
 pub fn evaluate_function(
     story: *Story,
     name: []const u8,
@@ -37,7 +43,10 @@ pub fn evaluate_function(
 ) Error!HostValue {
     assert(name.len > 0);
     story.invalidate_views();
+    if (!story.may_evaluate()) return error.Reentrant;
     if (story.failed) return error.StoryFailed;
+    // Kept errors stop the story from continuing, so the function couldn't run.
+    if (story.state.has_error()) return error.StoryError;
     if (story.events.on_evaluate_function) |event| {
         story.callback_depth += 1;
         defer story.callback_depth -= 1;
@@ -50,34 +59,13 @@ pub fn evaluate_function(
     const depth_max = story.state.limits.evaluate_depth_max;
     if (story.evaluate_depth == depth_max) return error.EvaluateDepthLimit;
     assert(story.evaluate_depth < depth_max);
-    try stash_output(story);
-    var stashed = true;
-    errdefer if (stashed) unstash_output(story);
-    story.state.output.clear();
-    const state = &story.state;
-    // ink's StartFunctionEvaluationFromGame.
-    state.call_stack.push(.function_evaluation_from_game, state.evaluation.count, 0) catch
-        return error.FrameLimit;
-    state.call_stack.current_frame().pointer = .start_of(container);
-    for (arguments) |argument| try vm.push_evaluation(
-        story,
-        try ops.value_of_host(story, argument),
-    );
-    const callback_depth = story.callback_depth;
-    story.callback_depth = 0;
-    story.evaluate_depth += 1;
-    defer {
-        story.evaluate_depth -= 1;
-        story.callback_depth = callback_depth;
-    }
+    const before = try begin_evaluation(story, container, arguments);
     const text_start = text_writer.end;
-    while (story.can_continue()) {
-        const line = try story.next_line();
-        text_writer.writeAll(line) catch return error.OutputLimit;
-    }
-    stashed = false;
-    unstash_output(story);
-    const result = try complete_function_evaluation(story);
+    var stepping = false;
+    const result = run_evaluation(story, text_writer, &stepping) catch |err| {
+        abandon_evaluation(story, before, err != error.StoryError and stepping);
+        return err;
+    };
     if (story.events.on_complete_evaluate_function) |event| {
         // The text is what the writer still buffers (all of it for a fixed or allocating
         // writer).
@@ -88,6 +76,95 @@ pub fn evaluate_function(
         event(story.events.context, name, arguments, text, result);
     }
     return result;
+}
+
+/// The state before an evaluation, to go back to if it fails.
+const Before = struct {
+    call_stack: call_stack_module.CallStack.Mark,
+    evaluation_height: u32,
+};
+
+/// ink's StartFunctionEvaluationFromGame: the output set aside, the frame and the
+/// arguments pushed. On failure the state is as before (but for heap garbage).
+fn begin_evaluation(
+    story: *Story,
+    container: ContainerIndex,
+    arguments: []const HostValue,
+) Error!Before {
+    var values: [story_module.external_arguments_max]Value = undefined;
+    if (arguments.len > values.len) return error.EvaluationLimit;
+    // First, since storing strings may compact the heap; nothing after this allocates.
+    try ops.values_of_host(story, arguments, values[0..arguments.len]);
+    const state = &story.state;
+    const before: Before = .{
+        .call_stack = state.call_stack.mark(),
+        .evaluation_height = state.evaluation.count,
+    };
+    if (arguments.len > state.evaluation.capacity() - before.evaluation_height) {
+        return error.EvaluationLimit;
+    }
+    try stash_output(story);
+    errdefer unstash_output(story);
+    state.output.clear();
+    state.call_stack.push(.function_evaluation_from_game, before.evaluation_height, 0) catch
+        return error.FrameLimit;
+    state.call_stack.current_frame().pointer = .start_of(container);
+    state.evaluation.push_slice(values[0..arguments.len]) catch unreachable;
+    assert(state.call_stack.frames.count == before.call_stack.frames + 1);
+    return before;
+}
+
+/// The Continue loop until the function ends, then its result. `stepping` is true while a
+/// line runs.
+fn run_evaluation(story: *Story, text_writer: *std.Io.Writer, stepping: *bool) Error!HostValue {
+    assert(story.state.call_stack.depth() > 1);
+    const callback_depth = story.callback_depth;
+    const external_callback_depth = story.external_callback_depth;
+    story.callback_depth = 0;
+    story.external_callback_depth = 0;
+    story.evaluate_depth += 1;
+    defer {
+        story.evaluate_depth -= 1;
+        story.callback_depth = callback_depth;
+        story.external_callback_depth = external_callback_depth;
+    }
+    while (story.can_continue()) {
+        stepping.* = true;
+        const line = try story.next_line();
+        stepping.* = false;
+        text_writer.writeAll(line) catch return error.OutputLimit;
+    }
+    const result = try complete_function_evaluation(story);
+    unstash_output(story);
+    return result;
+}
+
+/// After a failed run: the output set aside comes back. A story error has already ended
+/// the flow (`ops.fail` force-ends it, as after any story error), so nothing of the
+/// evaluation is left on the call stack. Otherwise, between steps (a full writer, an
+/// unfinished evaluation) the evaluation's frames, threads and values are dropped and the
+/// story goes on from before the call. A step left half done fails the story closed, as
+/// `Story.fail_step` does.
+fn abandon_evaluation(story: *Story, before: Before, half_done: bool) void {
+    assert(story.state.output_stashes_count > 0);
+    unstash_output(story);
+    const state = &story.state;
+    if (half_done) {
+        story.failed = true;
+        return;
+    }
+    const ended = state.call_stack.depth() == 1 and vm.current_pointer(story).is_null();
+    if (state.evaluation.count < before.evaluation_height) {
+        if (!ended) story.failed = true;
+        return;
+    }
+    state.evaluation.count = before.evaluation_height;
+    if (ended) return;
+    if (!state.call_stack.unwind(before.call_stack, .function_evaluation_from_game)) {
+        story.failed = true;
+        return;
+    }
+    assert(state.call_stack.frames.count == before.call_stack.frames);
 }
 
 /// ink's CompleteFunctionEvaluationFromGame: the first value above the frame's height is

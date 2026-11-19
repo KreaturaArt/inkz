@@ -13,6 +13,7 @@ test {
     _ = @import("zero_allocation.zig");
     _ = @import("save_load_test.zig");
     _ = @import("text_cache_test.zig");
+    _ = @import("host_api_test.zig");
     _ = @import("fitted_limits_test.zig");
     _ = @import("program_image_test.zig");
     _ = @import("fuzz_ink.zig");

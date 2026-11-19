@@ -136,7 +136,8 @@ The story is played in two repeating stages.
 1. **Present content.** While `can_continue()` is true, `cont()` returns the next line,
    as ink's `Continue()` does. A line ends at a newline, but `cont()` looks ahead past it:
    if glue (`<>`) later joins the next text onto this line, the joined text is one line.
-   Call `cont()` only while `can_continue()` is true.
+   Call `cont()` only while `can_continue()` is true; otherwise it returns
+   `error.CannotContinue`.
 2. **Make a choice.** When the story can't continue, show its choices and pass the player's
    pick to `choose_choice_index`. Then go back to step 1. If there are no choices, the story
    has ended.
@@ -242,9 +243,12 @@ A choice's tags are read by position:
 const choice = story.current_choice(0).get();
 var tag: u32 = 0;
 while (tag < choice.tags_count) : (tag += 1) {
-    std.debug.print("choice tag: {s}\n", .{story.current_choice_tag(0, tag).get()});
+    std.debug.print("choice tag: {s}\n", .{(try story.current_choice_tag(0, tag)).get()});
 }
 ```
+
+A position past the choices returns `error.ChoiceLimit` (as in `choose_choice_index`), and a
+tag past `tags_count` returns `error.TagLimit`.
 
 ## Jumping to a knot or stitch
 
@@ -286,9 +290,11 @@ type-checks as ink does. It notifies observers at once, since it happens outside
 ```zig
 var position: u32 = 0;
 while (position < story.global_variable_count()) : (position += 1) {
-    std.debug.print("{s}\n", .{story.global_variable_name(position)});
+    std.debug.print("{s}\n", .{story.global_variable_name(position).?});
 }
 ```
+
+`global_variable_name` returns `null` for a position past `global_variable_count()`.
 
 ## Visit counts
 
@@ -335,7 +341,17 @@ const result = try story.evaluate_function("multiply", &.{ .{ .integer = 6 }, .{
 std.debug.print("{d}, printed: {s}\n", .{ result.get().integer, text.written() });
 ```
 
-An unknown function returns `error.FunctionNotFound`.
+An unknown function returns `error.FunctionNotFound`. While errors are kept (no error
+handler, see [Errors](#errors)), the story can't run, so `evaluate_function` returns
+`error.StoryError` until `reset_errors()`.
+
+The call fails closed. When it fails before the function runs (an argument that doesn't
+fit the heap or the evaluation stack) or because `text_writer` is full, the story is as it
+was before the call, apart from side effects the function already had. A story error in the
+function ends the flow, as it does in `cont()`. A limit or host error in the middle of a
+step fails the story (`error.StoryFailed`, see [Errors](#errors)). Strings you got from the
+story (from `get_variable`, say) can be passed back as arguments or to `set_variable`: they
+are copied before the story's heap can move them.
 
 ## External functions
 
@@ -372,9 +388,14 @@ try story.bind_external_function("play_sound", .{ .lookahead_safe = false }, &au
 
 - Argument strings are valid only during the call. A returned string is copied into the
   story before it continues.
-- Calling a mutating story method from inside a callback returns `error.Reentrant`. The one
-  exception is `inkz.runtime.evaluate.evaluate_function(runtime_story, ...)`, which may nest
-  up to `Limits.evaluate_depth_max` deep, as in ink.
+- Calling a mutating story method from inside a callback returns `error.Reentrant`; so do
+  `reset_errors` and `to_json`. The one exception is
+  `inkz.runtime.evaluate.evaluate_function(runtime_story, ...)` called directly in an
+  external function, which may nest up to `Limits.evaluate_depth_max` deep, as in ink.
+  From a variable observer, the error handler or a host event it returns
+  `error.Reentrant` too: those run in the middle of a call (an observer after `cont()` has
+  written its line) whose result it would overwrite. Record what you need there and call
+  `evaluate_function` after the call returns.
 - If any external function the story declares has no binding (and no usable fallback), the
   first `cont()` returns `error.MissingExternalBinding`, as ink's binding validation does.
   Binding a name the story doesn't declare does nothing.
@@ -467,7 +488,7 @@ if (story.cont()) |line| {
             try story.write_error(position, &message.writer);
         }
         std.debug.print("{s}\n", .{message.written()});
-        story.reset_errors();
+        try story.reset_errors();
     },
     else => return err,
 }

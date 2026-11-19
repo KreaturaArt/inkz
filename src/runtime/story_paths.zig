@@ -13,6 +13,7 @@ const call_stack_module = @import("call_stack.zig");
 const Story = story_module.Story;
 const ContainerIndex = index.ContainerIndex;
 const Pointer = call_stack_module.Pointer;
+const Value = @import("value.zig").Value;
 
 pub const PathError = error{
     /// ink's "Failed to find content at path".
@@ -54,17 +55,22 @@ pub fn choose_path_string(
         event(story.events.context, text, arguments);
     }
     const target = try pointer_at_path(story, text);
-    if (reset_callstack) {
-        ops.force_end(story);
-    } else if (story.state.call_stack.current_frame().kind == .function) {
-        return error.ChoosePathInFunction;
-    }
-    // ink's PassArgumentsToEvaluationStack, for a knot with parameters.
-    for (arguments) |argument| {
-        const value = try ops.value_of_host(story, argument);
-        story.state.evaluation.push(value) catch return error.EvaluationLimit;
-    }
-    try story.choose_pointer(target, true);
+    const kind = story.state.call_stack.current_frame().kind;
+    if (!reset_callstack and kind == .function) return error.ChoosePathInFunction;
+    // ink's PassArgumentsToEvaluationStack, for a knot with parameters. Every check that
+    // can fail comes before the state changes, and the values are stored first, since
+    // storing strings may compact the heap; nothing after this allocates.
+    var values: [story_module.external_arguments_max]Value = undefined;
+    if (arguments.len > values.len) return error.EvaluationLimit;
+    try ops.values_of_host(story, arguments, values[0..arguments.len]);
+    const evaluation = &story.state.evaluation;
+    if (arguments.len > evaluation.capacity() - evaluation.count) return error.EvaluationLimit;
+    if (reset_callstack) ops.force_end(story);
+    evaluation.push_slice(values[0..arguments.len]) catch unreachable;
+    story.choose_pointer(target, true) catch |err| {
+        story.failed = true;
+        return err;
+    };
     assert(story.state.choices.count() == 0);
 }
 

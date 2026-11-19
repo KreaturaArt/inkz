@@ -228,6 +228,37 @@ pub const CallStack = struct {
         assert(call_stack.temps.count == frame.temps_first);
     }
 
+    /// The stacks' heights, for `unwind`.
+    pub const Mark = struct { frames: u32, threads: u32, temps: u32, frame_count: u32 };
+
+    pub fn mark(call_stack: *CallStack) Mark {
+        assert(call_stack.threads.count > 0);
+        return .{
+            .frames = call_stack.frames.count,
+            .threads = call_stack.threads.count,
+            .temps = call_stack.temps.count,
+            .frame_count = call_stack.current_thread().frame_count,
+        };
+    }
+
+    /// Drops every frame, thread and temp pushed since `at`, which was taken right before
+    /// `kind` was pushed. Returns false, changing nothing, when something below the mark
+    /// was popped since (the stack can't be brought back).
+    pub fn unwind(call_stack: *CallStack, at: Mark, kind: FrameKind) bool {
+        assert(at.threads > 0);
+        assert(at.frame_count > 0);
+        if (call_stack.threads.count < at.threads) return false;
+        if (call_stack.frames.count <= at.frames) return false;
+        if (call_stack.temps.count < at.temps) return false;
+        if (call_stack.frames.buffer[at.frames].kind != kind) return false;
+        call_stack.threads.truncate(at.threads);
+        call_stack.frames.truncate(at.frames);
+        call_stack.temps.truncate(at.temps);
+        call_stack.current_thread().frame_count = at.frame_count;
+        call_stack.verify();
+        return true;
+    }
+
     /// A copy of the current thread becomes the current thread (ink's PushThread).
     pub fn push_thread(call_stack: *CallStack) Error!void {
         if (call_stack.threads.is_full()) return error.ThreadLimit;

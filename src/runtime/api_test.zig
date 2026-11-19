@@ -129,7 +129,7 @@ test "the public API, method by method" {
     const left = story.current_choice(0).get();
     try std.testing.expectEqualStrings("Left", left.text);
     try std.testing.expectEqual(@as(u32, 1), left.tags_count);
-    try std.testing.expectEqualStrings("choice tag", story.current_choice_tag(0, 0).get());
+    try std.testing.expectEqualStrings("choice tag", (try story.current_choice_tag(0, 0)).get());
     try std.testing.expectError(error.ChoiceLimit, story.choose_choice_index(2));
     try story.choose_choice_index(0);
     const rest = try story.continue_maximally_alloc(gpa);
@@ -147,7 +147,7 @@ test "the public API, method by method" {
         story.get_variable("name").?.get().string,
     );
     try std.testing.expectEqual(@as(u32, 3), story.global_variable_count());
-    try std.testing.expectEqualStrings("score", story.global_variable_name(0));
+    try std.testing.expectEqualStrings("score", story.global_variable_name(0).?);
     // Choice targets count visits (for once-only choices); the label isn't counted.
     try std.testing.expectEqual(@as(u32, 1), story.visit_count_at_path_string("0.c-0"));
     try std.testing.expectEqual(@as(u32, 0), story.visit_count_at_path_string("0.end"));
@@ -196,7 +196,7 @@ fn exercise_flows_and_saves(story: *Story, recorder: *Recorder, gpa: std.mem.All
     }));
     try std.testing.expect(!story.has_error() and !story.has_warning());
     try std.testing.expectEqual(@as(u32, 0), story.error_count() + story.warning_count());
-    story.reset_errors();
+    try story.reset_errors();
 }
 
 test "errors without a handler are kept for the host" {
@@ -219,7 +219,7 @@ test "errors without a handler are kept for the host" {
     try story.write_error(0, &writer);
     const message = writer.buffered();
     try std.testing.expect(std.mem.startsWith(u8, message, "RUNTIME ERROR: ran out of content"));
-    story.reset_errors();
+    try story.reset_errors();
     try std.testing.expect(!story.has_error());
     var recorder: Recorder = .{};
     var handled: Story = undefined;
