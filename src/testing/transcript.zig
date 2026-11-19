@@ -10,6 +10,9 @@ const HostValue = @import("../runtime/story.zig").HostValue;
 
 /// `play` stops after this many turns, like the harness, so looping stories end.
 pub const turns_max = 200;
+/// `continue_maximally` stops after this many lines with `exception: "ContinueLimit"`, so a
+/// turn that never ends still ends; `lines_max <n>` lowers it for one replay.
+pub const lines_max_default = 100_000;
 
 pub const Kind = enum {
     seed,
@@ -43,6 +46,10 @@ pub const Kind = enum {
     global_tags,
     /// Records the host events as `event:` lines.
     events,
+    /// Caps the lines of each `continue_maximally` (default `lines_max_default`). Only the
+    /// runtime's harness knows it: the C# harness has no cap, so ground-truth cases don't
+    /// use it; the transcript corpus does, for stories whose turn never ends.
+    lines_max,
 };
 
 /// One action: its kind and the rest of the line, trimmed.
@@ -61,7 +68,7 @@ pub fn parse_action(line_raw: []const u8) !?Action {
     const kind = std.meta.stringToEnum(Kind, name) orelse return error.UnknownAction;
     const needs_argument = switch (kind) {
         .seed, .choose, .choose_path, .evaluate, .get, .set, .observe, .bind, .unbind => true,
-        .play_seeded => true,
+        .play_seeded, .lines_max => true,
         .fallbacks, .switch_flow, .remove_flow, .visit_count, .tags_at => true,
         else => false,
     };
@@ -69,6 +76,10 @@ pub fn parse_action(line_raw: []const u8) !?Action {
     if (kind == .seed) _ = try std.fmt.parseInt(i32, argument, 10);
     if (kind == .choose) _ = try std.fmt.parseInt(u32, argument, 10);
     if (kind == .play_seeded) _ = try std.fmt.parseInt(i32, argument, 10);
+    if (kind == .lines_max) {
+        const lines_max = try std.fmt.parseInt(u32, argument, 10);
+        if (lines_max == 0 or lines_max > lines_max_default) return error.BadActionArgument;
+    }
     return .{ .kind = kind, .argument = argument };
 }
 
