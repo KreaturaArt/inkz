@@ -25,7 +25,7 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
     const source = fuzz_ink.Generator.generate(choices, buffer, .{});
     assert(source.len <= buffer.len);
     return compile.compile_source(gpa, source) catch |err| switch (err) {
-        error.CompileFailed, error.ParseFailed, error.WorkspaceFull => null,
+        error.CompileFailed => null,
         else => err,
     };
 }

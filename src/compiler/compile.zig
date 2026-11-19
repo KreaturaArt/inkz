@@ -19,7 +19,9 @@ const limits = @import("../core/limits.zig");
 const Program = @import("../core/program.zig").Program;
 
 pub const Error = error{
-    /// The story has errors (see the diagnostics).
+    /// The story has errors (see the diagnostics), or the parser gave up on it: the source
+    /// is longer than `source_bytes_max`, nests deeper than `parse_depth_max`, or needs more
+    /// workspace than `compile_retries_max` doublings give.
     CompileFailed,
 };
 
@@ -105,7 +107,13 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
         defer profile_zone.end();
-        break :parsed try grammar.parse(gpa, source, .{});
+        break :parsed grammar.parse(gpa, source, .{}) catch |err| switch (err) {
+            // The parser gave up on the story.
+            error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
+                return error.CompileFailed;
+            },
+            else => |other| return other,
+        };
     };
     defer parsed.deinit(gpa);
     return compile_parsed(gpa, &parsed, null, .{});
@@ -113,7 +121,6 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
 
 /// Compiles `path` (in `directory`) and the files it includes.
 pub fn compile_file(gpa: Allocator, io: std.Io, directory: std.Io.Dir, path: []const u8) !Program {
-    assert(path.len > 0);
     assert(path.len > 0);
     return compile_file_with(gpa, io, directory, path, .{});
 }
@@ -127,7 +134,13 @@ pub fn compile_file_with(
 ) !Program {
     assert(std.fs.path.basename(path).len > 0);
     assert(path.len > 0);
-    var space = try source_space.load(gpa, io, directory, path, .{});
+    var space = source_space.load(gpa, io, directory, path, .{}) catch |err| switch (err) {
+        // The parser gave up on a file or on the space.
+        error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
+            return error.CompileFailed;
+        },
+        else => |other| return other,
+    };
     defer space.deinit(gpa);
     if (space.problems.len > 0) return error.CompileFailed;
     return compile_parsed(gpa, &space.parsed, &space, options);
@@ -200,4 +213,44 @@ test "the parse workspace is sized from the source and retries at most compile_r
     var parsed = try grammar.parse(gpa, text.items, .{ .compile_retries_max = 2 });
     defer parsed.deinit(gpa);
     try std.testing.expect(parsed.workspace.node_tags.len == parsed.tree.tags.len);
+}
+
+test "input the parser gives up on fails to compile, freeing everything once" {
+    // 200 nested parentheses, 500 unary minuses and 300 nested braces nest deeper than
+    // parse_depth_max: the parse is abandoned, and its workspace was once freed twice.
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.append(gpa, '{');
+    try text.appendNTimes(gpa, '(', 200);
+    try text.append(gpa, '1');
+    try text.appendNTimes(gpa, ')', 200);
+    try text.appendSlice(gpa, "}\n");
+    try std.testing.expectError(error.CompileFailed, compile_source(gpa, text.items));
+    text.clearRetainingCapacity();
+    try text.appendSlice(gpa, "VAR x=1\n{");
+    try text.appendNTimes(gpa, '-', 500);
+    try text.appendSlice(gpa, "x}\n");
+    try std.testing.expectError(error.CompileFailed, compile_source(gpa, text.items));
+    text.clearRetainingCapacity();
+    try text.appendNTimes(gpa, '{', 300);
+    try text.append(gpa, 'x');
+    try text.appendNTimes(gpa, '}', 300);
+    try text.append(gpa, '\n');
+    try std.testing.expectError(error.CompileFailed, compile_source(gpa, text.items));
+}
+
+test "a source longer than source_bytes_max is an error, not an assertion" {
+    // A synthetic buffer one byte over the default bound fails before any parsing; a
+    // smaller bound is checked the same way by the parser.
+    const gpa = std.testing.allocator;
+    const bounds: limits.CompilerLimits = .{};
+    const text = try gpa.alloc(u8, bounds.source_bytes_max + 1);
+    defer gpa.free(text);
+    @memset(text, 'a');
+    try std.testing.expectError(error.CompileFailed, compile_source(gpa, text));
+    try std.testing.expectError(
+        error.SourceTooLarge,
+        grammar.parse(gpa, "Hello.\n", .{ .source_bytes_max = 4 }),
+    );
 }

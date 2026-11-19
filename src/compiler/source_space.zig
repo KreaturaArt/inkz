@@ -262,6 +262,9 @@ const Discovery = struct {
         const gpa = discovery.gpa;
         var total: usize = 0;
         for (discovery.discovered.items) |file| total += file.text.len;
+        // Each file is within the bound, but together they may not be: the space's offsets
+        // are u32.
+        if (total > discovery.bounds.source_bytes_max) return error.SourceTooLarge;
         const buffer = try gpa.alloc(u8, total);
         const regions = try discovery.arena.alloc(grammar.Region, discovery.files.items.len);
         var at: u32 = 0;
@@ -424,4 +427,37 @@ test "a missing include and the include limits are diagnostics" {
     try std.testing.expectEqual(Problem.Code.include_not_found, space.problems[0].code);
     try std.testing.expectEqual(Problem.Code.include_too_deep, space.problems[1].code);
     try std.testing.expectEqualStrings("b.ink", space.location(space.problems[1].offset).path);
+}
+
+test "files that fit the source bound one by one but not together are an error" {
+    // With source_bytes_max 16, each 12-byte file parses on its own; the space of both
+    // (24 bytes) is too large, before any u32 offset is computed.
+    const gpa = std.testing.allocator;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    try temporary.dir.writeFile(io, .{ .sub_path = "a.ink", .data = "INCLUDE b.k\n" });
+    try temporary.dir.writeFile(io, .{ .sub_path = "b.k", .data = "Twelve bytes" });
+    try std.testing.expectError(
+        error.SourceTooLarge,
+        load(gpa, io, temporary.dir, "a.ink", .{ .source_bytes_max = 16 }),
+    );
+}
+
+test "compile_file: a story nested too deep is CompileFailed" {
+    // The public entry turns the parser's failures on a file into CompileFailed.
+    const compile = @import("compile.zig");
+    const gpa = std.testing.allocator;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    var text: [601]u8 = undefined;
+    @memset(text[0..300], '{');
+    text[300] = 'x';
+    @memset(text[301..], '}');
+    try temporary.dir.writeFile(io, .{ .sub_path = "deep.ink", .data = &text });
+    try std.testing.expectError(
+        error.CompileFailed,
+        compile.compile_file(gpa, io, temporary.dir, "deep.ink"),
+    );
 }

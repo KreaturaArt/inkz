@@ -491,10 +491,25 @@ pub const Parsed = struct {
     }
 };
 
+pub const ParseError = error{
+    /// The source is longer than `source_bytes_max`.
+    SourceTooLarge,
+    /// The input nests deeper than `parse_depth_max` (or stopped progressing): the parse
+    /// was abandoned, so there is no tree.
+    ParseFailed,
+    /// The workspace was still too small after `compile_retries_max` doublings.
+    WorkspaceFull,
+} || std.mem.Allocator.Error;
+
 /// Parses one ink file (ink's InkParser.Parse): comments are removed first, then the file is
 /// one region of `parse_space`.
-pub fn parse(gpa: std.mem.Allocator, source: []const u8, bounds: limits.CompilerLimits) !Parsed {
-    assert(source.len <= bounds.source_bytes_max);
+pub fn parse(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    bounds: limits.CompilerLimits,
+) ParseError!Parsed {
+    assert(bounds.source_bytes_max > 0);
+    if (source.len > bounds.source_bytes_max) return error.SourceTooLarge;
     const buffer = try gpa.alloc(u8, source.len);
     const comments_zone = profile.begin(.compile_comments);
     const length: u32 = @intCast(lexical.eliminate_comments(source, buffer).len);
@@ -517,9 +532,10 @@ pub fn parse_space(
     buffer: []u8,
     regions: []const Region,
     bounds: limits.CompilerLimits,
-) !Parsed {
+) ParseError!Parsed {
     assert(regions.len > 0);
     errdefer gpa.free(buffer);
+    if (buffer.len > bounds.source_bytes_max) return error.SourceTooLarge;
     const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
     defer gpa.free(frames);
     const roots = try gpa.alloc(ast.NodeIndex, regions.len);
@@ -528,28 +544,30 @@ pub fn parse_space(
     for (0..bounds.compile_retries_max + 1, 1..) |_, attempt| {
         const length: u32 = @intCast(buffer.len);
         var workspace = try core.Workspace.init(gpa, length, bounds.diagnostics_max, scale);
-        errdefer workspace.deinit(gpa);
         var machine: Machine = .init(buffer, &workspace, frames);
-        if (try parse_regions(&machine, buffer, regions, roots)) {
-            var tree = machine.finish_regions(roots[0]);
-            try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
-            assert(workspace.node_tags.len == machine.nodes_count);
-            tree.tags = workspace.node_tags;
-            tree.data = workspace.node_data;
-            return .{
-                .source = buffer,
-                .tree = tree,
-                .workspace = workspace,
-                .tokens_count = machine.tokens_count,
-                .diagnostics_count = machine.diagnostics_count,
-                .buffer = buffer,
-                .roots = roots,
-                .attempts = @intCast(attempt),
-            };
+        if (!parse_regions(&machine, buffer, regions, roots)) {
+            // Freed here, before the errdefer below is armed, so it is freed once.
+            workspace.deinit(gpa);
+            if (!machine.workspace_full) return error.ParseFailed;
+            scale *= 2;
+            continue;
         }
-        workspace.deinit(gpa);
-        if (!machine.workspace_full) return error.ParseFailed;
-        scale *= 2;
+        errdefer workspace.deinit(gpa);
+        var tree = machine.finish_regions(roots[0]);
+        try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
+        assert(workspace.node_tags.len == machine.nodes_count);
+        tree.tags = workspace.node_tags;
+        tree.data = workspace.node_data;
+        return .{
+            .source = buffer,
+            .tree = tree,
+            .workspace = workspace,
+            .tokens_count = machine.tokens_count,
+            .diagnostics_count = machine.diagnostics_count,
+            .buffer = buffer,
+            .roots = roots,
+            .attempts = @intCast(attempt),
+        };
     }
     return error.WorkspaceFull;
 }
@@ -560,7 +578,7 @@ fn parse_regions(
     buffer: []const u8,
     regions: []const Region,
     roots: []ast.NodeIndex,
-) !bool {
+) bool {
     assert(roots.len == regions.len);
     for (regions, roots) |region, *root| {
         assert(region.start <= region.end and region.end <= buffer.len);
