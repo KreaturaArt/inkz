@@ -331,7 +331,8 @@ test "a save's flows must include the default flow, each name once" {
     var both: std.Io.Writer.Allocating = .init(gpa);
     defer both.deinit();
     try save.to_json(&story, &both.writer);
-    const twice = try std.mem.replaceOwned(u8, gpa, both.written(), "\"side\":{", "\"DEFAULT_FLOW\":{");
+    const renamed = "\"DEFAULT_FLOW\":{";
+    const twice = try std.mem.replaceOwned(u8, gpa, both.written(), "\"side\":{", renamed);
     defer gpa.free(twice);
     try expect_load_error(&story, twice, error.InvalidSave);
     try load.load_json(&story, both.written());
