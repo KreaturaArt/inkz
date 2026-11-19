@@ -41,6 +41,8 @@ pub const Harness = struct {
     errors: std.ArrayList(u8) = .empty,
     warnings: std.ArrayList(u8) = .empty,
     bindings: std.ArrayList(*Bound) = .empty,
+    /// The line cap of `continue_maximally`, set by the `lines_max` action.
+    lines_max: u32 = transcript.lines_max_default,
 
     pub fn init(harness: *Harness, gpa: std.mem.Allocator, json: []const u8) !void {
         harness.* = .{ .gpa = gpa, .program = try ink_json.load(gpa, json), .story = undefined };
@@ -140,6 +142,7 @@ pub const Harness = struct {
             }),
             .tags_at => try harness.write_path_tags(argument, writer),
             .global_tags => try harness.write_path_tags(null, writer),
+            .lines_max => harness.lines_max = try std.fmt.parseInt(u32, argument, 10),
             .events => story.events = .{
                 .context = harness,
                 .on_did_continue = did_continue,
@@ -173,8 +176,9 @@ pub const Harness = struct {
     }
 
     fn continue_maximally(harness: *Harness, writer: *std.Io.Writer) !void {
-        const lines_max = 100_000;
-        for (0..lines_max) |_| {
+        assert(harness.lines_max > 0);
+        assert(harness.lines_max <= transcript.lines_max_default);
+        for (0..harness.lines_max) |_| {
             if (!harness.story.can_continue()) return;
             try harness.continue_once(writer);
         }
