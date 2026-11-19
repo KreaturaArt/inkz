@@ -218,14 +218,20 @@ fn note_line_bytes(state: *state_module.State, used: usize) void {
     state.peaks.line_bytes = @max(state.peaks.line_bytes, @as(u32, @intCast(used)));
 }
 
+/// Whether `text` lies in the string heap, where an allocation may move it.
+fn in_heap(story: *const Story, text: []const u8) bool {
+    const heap_bytes = story.state.strings.bytes;
+    assert(heap_bytes.len > 0);
+    const start = @intFromPtr(heap_bytes.ptr);
+    return @intFromPtr(text.ptr) >= start and @intFromPtr(text.ptr) < start + heap_bytes.len;
+}
+
 /// Copies `text` into a new heap string. Text inside the heap is copied out first, since
 /// the allocation may compact.
-fn store_string(story: *Story, text_raw: []const u8, keep: []Value) Error!StringReference {
+pub fn store_string(story: *Story, text_raw: []const u8, keep: []Value) Error!StringReference {
     assert(text_raw.len < 1 << 31);
     var text = text_raw;
-    const heap_bytes = story.state.strings.bytes;
-    const start = @intFromPtr(heap_bytes.ptr);
-    if (@intFromPtr(text.ptr) >= start and @intFromPtr(text.ptr) < start + heap_bytes.len) {
+    if (in_heap(story, text)) {
         if (text.len > story.state.line_bytes.len) return error.OutputLimit;
         @memcpy(story.state.line_bytes[0..text.len], text);
         text = story.state.line_bytes[0..text.len];
@@ -930,7 +936,7 @@ pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {
                 .{ .name = story.program.externals[external].name },
             );
         }
-        if (lookahead.active(&story.state)) {
+        if (story.owns_lookahead()) {
             // The line ends at the snapshot; the call runs on the next `cont`.
             story.saw_lookahead_unsafe_function_after_newline = true;
             return .output;
@@ -978,6 +984,10 @@ fn call_bound(
     }
     story.callback_depth += 1;
     defer story.callback_depth -= 1;
+    // Only an external function may call evaluate_function (`Story.may_evaluate`).
+    const external_callback_depth = story.external_callback_depth;
+    story.external_callback_depth = story.callback_depth;
+    defer story.external_callback_depth = external_callback_depth;
     const result = function(context, story, arguments[0..count]) catch
         return error.ExternalFunctionFailed;
     assert(state.evaluation.count >= first + count);
@@ -996,6 +1006,40 @@ pub fn host_value(story: *Story, value: Value) story_module.HostValue {
         .list => |list| .{ .list = list },
         .divert_target => |target| .{ .divert_target = target },
     };
+}
+
+/// Host values as ink values, with strings copied into the heap. Each allocation may
+/// compact the heap, which would move a later argument's text if it is in the heap (a
+/// string from `get_variable`, say), so all such texts are copied out into the line buffer
+/// before the first allocation; the values already stored are kept through compaction.
+pub fn values_of_host(
+    story: *Story,
+    hosts: []const story_module.HostValue,
+    values: []Value,
+) Error!void {
+    assert(hosts.len == values.len);
+    var copies: [story_module.external_arguments_max]story_module.HostValue = undefined;
+    assert(hosts.len <= copies.len);
+    const line_bytes = story.state.line_bytes;
+    var used: u32 = 0;
+    for (hosts, 0..) |host, position| {
+        copies[position] = host;
+        if (host != .string or !in_heap(story, host.string)) continue;
+        const text = host.string;
+        if (text.len > line_bytes.len - used) return error.OutputLimit;
+        const copy = line_bytes[used..][0..text.len];
+        @memcpy(copy, text);
+        copies[position] = .{ .string = copy };
+        used += @intCast(text.len);
+    }
+    note_line_bytes(&story.state, used);
+    for (copies[0..hosts.len], 0..) |host, position| {
+        assert(host != .string or !in_heap(story, host.string));
+        values[position] = switch (host) {
+            .string => |text| .{ .string = try store_string(story, text, values[0..position]) },
+            else => try value_of_host(story, host),
+        };
+    }
 }
 
 /// A host value as an ink value; strings are copied into the heap.

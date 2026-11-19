@@ -46,8 +46,11 @@ pub const Error = error{
     MissingExternalBinding,
     /// More globals changed in one `cont` than `observer_events_max`.
     ObserverQueueLimit,
-    /// A mutating call from inside a callback (only evaluate_function may nest).
+    /// A mutating call from inside a callback (only evaluate_function may nest, and only in
+    /// an external function).
     Reentrant,
+    /// `cont` while `can_continue()` is false.
+    CannotContinue,
     /// A bound external function returned an error.
     ExternalFunctionFailed,
     /// An earlier call failed in the middle of a step (a limit or host error), so the state
@@ -172,6 +175,11 @@ pub const Story = struct {
     batching_observers: bool = false,
     /// Callbacks running now (externals, observers, the error handler).
     callback_depth: u32 = 0,
+    /// `callback_depth` while the innermost callback running is an external function, else 0.
+    external_callback_depth: u32 = 0,
+    /// The `continue_depth` that took the lookahead snapshot: only that level compares
+    /// with it, restores it or discards it.
+    lookahead_depth: u32 = 0,
     /// evaluate_function calls running now.
     evaluate_depth: u32 = 0,
     /// A limit or host error stopped a step half done: the story fails closed until
@@ -226,9 +234,11 @@ pub const Story = struct {
     }
 
     /// ink's ResetErrors: drops the kept errors and warnings, so the story can continue.
-    pub fn reset_errors(story: *Story) void {
+    pub fn reset_errors(story: *Story) error{Reentrant}!void {
         story.invalidate_views();
+        if (story.callback_depth > 0) return error.Reentrant;
         story.state.reset_errors();
+        assert(!story.state.has_error());
     }
 
     /// Seeds RANDOM and shuffles (`Options.random_seed`): ink's storySeed, with
@@ -355,6 +365,7 @@ pub const Story = struct {
         story.invalidate_views();
         if (story.callback_depth > 0) return error.Reentrant;
         if (story.failed) return error.StoryFailed;
+        if (!story.can_continue()) return error.CannotContinue;
         return story.next_line();
     }
 
@@ -435,6 +446,8 @@ pub const Story = struct {
                 error.StoryError => break,
                 else => |other| return story.fail_step(other),
             };
+            // A nested evaluate_function failed closed, and its external went on.
+            if (story.failed) return story.fail_step(error.StoryFailed);
             if (result == .budget_exhausted) return story.fail_step(error.StepLimit);
             ends_in_newline = story.after_steps() catch |err| switch (err) {
                 error.StoryError => break,
@@ -443,7 +456,7 @@ pub const Story = struct {
             if (ends_in_newline or !story.can_continue()) break;
         }
         if (ends_in_newline or !story.can_continue()) {
-            if (lookahead.active(&story.state)) lookahead.restore(&story.state);
+            if (story.owns_lookahead()) lookahead.restore(&story.state);
             if (!story.can_continue()) story.check_end_of_content();
             story.state.did_safe_exit = false;
             story.saw_lookahead_unsafe_function_after_newline = false;
@@ -455,6 +468,7 @@ pub const Story = struct {
             }
         }
         story.steps_total += steps;
+        if (story.continue_depth > 1) assert(!story.owns_lookahead());
         const length = try story.write_current_text();
         try story.report_diagnostics();
         // Last, since observers may run more ink.
@@ -469,7 +483,10 @@ pub const Story = struct {
     fn fail_step(story: *Story, err: Error) Error {
         assert(err != error.StoryError);
         assert(story.continue_depth > 0);
-        if (story.continue_depth > 1) return err;
+        if (story.continue_depth > 1) {
+            if (story.owns_lookahead()) lookahead.discard(&story.state);
+            return err;
+        }
         if (story.evaluate_depth == 0 and lookahead.active(&story.state)) {
             lookahead.restore(&story.state);
             return err;
@@ -545,6 +562,9 @@ pub const Story = struct {
             _ = try story.try_follow_default_invisible_choice();
         }
         if (state.output.in_string_evaluation()) return false;
+        // A function evaluated from an external during an outer level's lookahead: that
+        // snapshot isn't this level's, so this level runs to the function's end as one line.
+        if (lookahead.active(state) and !story.owns_lookahead()) return false;
         if (lookahead.active(state)) {
             const change = try story.newline_change();
             if (change == .extended or story.saw_lookahead_unsafe_function_after_newline) {
@@ -568,7 +588,22 @@ pub const Story = struct {
         story.snapshot_text_length = try story.write_current_text();
         story.snapshot_tags_count = try story.current_tags_count();
         lookahead.take(&story.state);
-        assert(lookahead.active(&story.state));
+        story.lookahead_depth = story.continue_depth;
+        assert(story.owns_lookahead());
+    }
+
+    /// Whether the lookahead snapshot is active and this Continue level took it.
+    pub fn owns_lookahead(story: *const Story) bool {
+        if (lookahead.active(&story.state)) assert(story.lookahead_depth > 0);
+        return lookahead.active(&story.state) and story.lookahead_depth == story.continue_depth;
+    }
+
+    /// Whether evaluate_function may run now: outside callbacks, or directly in an external
+    /// function. An observer, the error handler or an event runs in the middle of a `cont`
+    /// (or of another call) whose result evaluate_function would overwrite.
+    pub fn may_evaluate(story: *const Story) bool {
+        assert(story.external_callback_depth <= story.callback_depth);
+        return story.callback_depth == 0 or story.callback_depth == story.external_callback_depth;
     }
 
     const Change = enum { none, extended, newline_removed };
@@ -773,13 +808,14 @@ pub const Story = struct {
     }
 
     /// `set_variable` with a string value, copied into the heap.
+    /// `text` may be in the heap (a string from `get_variable`): `store_string` copies it out
+    /// before the allocation can compact the heap.
     pub fn set_variable_text(story: *Story, name: []const u8, text: []const u8) SetError!void {
         assert(name.len > 0);
         story.invalidate_views();
         if (story.program.global_by_name(name) == null) return error.VariableNotDeclared;
-        const reference = story.state.allocate_string(@intCast(text.len), &.{}) catch
-            return error.HeapLimit;
-        @memcpy(story.state.strings.get(reference), text);
+        if (story.callback_depth > 0) return error.Reentrant;
+        const reference = try ops.store_string(story, text, &.{});
         assert(reference.is_heap());
         try story.set_variable(name, .{ .string = reference });
     }

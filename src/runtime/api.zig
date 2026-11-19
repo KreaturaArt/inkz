@@ -171,9 +171,16 @@ pub const Story = struct {
         });
     }
 
-    pub fn current_choice_tag(story: *Story, position: u32, tag: u32) Borrowed([]const u8) {
+    /// Tag `tag` of choice `position`: `error.ChoiceLimit` past the choices (as in
+    /// `choose_choice_index`), `error.TagLimit` past the choice's `tags_count`.
+    pub fn current_choice_tag(
+        story: *Story,
+        position: u32,
+        tag: u32,
+    ) error{ ChoiceLimit, TagLimit }!Borrowed([]const u8) {
+        if (position >= story.core.visible_choices_count()) return error.ChoiceLimit;
         const record = story.core.visible_choice(position);
-        assert(tag < record.tags_count);
+        if (tag >= record.tags_count) return error.TagLimit;
         const reference = story.core.state.choices.tags.slice()[record.tags_first + tag];
         return story.core.borrow([]const u8, story.core.text_of(reference));
     }
@@ -216,9 +223,11 @@ pub const Story = struct {
         return @intCast(story.core.program.globals.len);
     }
 
-    /// The name of global `position`; owned by the program.
-    pub fn global_variable_name(story: *const Story, position: u32) []const u8 {
+    /// The name of global `position` (null past `global_variable_count`); owned by the
+    /// program.
+    pub fn global_variable_name(story: *const Story, position: u32) ?[]const u8 {
         const program = story.core.program;
+        if (position >= program.globals.len) return null;
         return program.strings.get(program.globals[position].name);
     }
 
@@ -293,8 +302,8 @@ pub const Story = struct {
     /// ink's state.ToJson, streamed. A failed story (`error.StoryFailed`) is half done and
     /// doesn't save.
     pub fn to_json(story: *Story, writer: *std.Io.Writer) !void {
+        if (story.core.callback_depth > 0) return error.Reentrant;
         if (story.core.failed) return error.StoryFailed;
-        assert(story.core.callback_depth == 0);
         try save.to_json(&story.core, writer);
     }
 
@@ -351,7 +360,7 @@ pub const Story = struct {
     }
 
     /// ink's ResetErrors: drops the kept errors and warnings, so the story can continue.
-    pub fn reset_errors(story: *Story) void {
-        story.core.reset_errors();
+    pub fn reset_errors(story: *Story) error{Reentrant}!void {
+        try story.core.reset_errors();
     }
 };
