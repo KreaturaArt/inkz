@@ -234,7 +234,13 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
     const tree = context.tree;
     if (context.skipped.isSet(divert.to_int())) return;
     const path = divert_path(context, divert) orelse return;
-    if (is_end_or_done(&path)) return;
+    if (is_end_or_done(&path)) {
+        // DONE and END are instructions, not content a divert-target value can point at.
+        if (tree.kind(tree.parent(divert)) == .divert_target) {
+            try context.report(.done_or_end_as_value, divert);
+        }
+        return;
+    }
     const is_call = tree.has(divert, Flags.function_call);
     const target = context.targets[divert.to_int()];
     // The generation pass gave the divert a variable target or a path target, not both.

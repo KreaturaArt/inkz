@@ -134,3 +134,24 @@ test "returns are errors outside functions, and functions can't be stitches" {
         .{ .code = .function_is_stitch, .line = 5 },
     });
 }
+
+test "-> DONE and -> END can't be divert-target values" {
+    // ERROR: line 1: Can't use -> DONE or -> END as variable divert targets
+    // (each once reached an unreachable in emission).
+    const gpa = std.testing.allocator;
+    const cases = [_]struct { source: []const u8, line: u32 }{
+        .{ .source = "{-> END}\n", .line = 1 },
+        .{ .source = "VAR v = -> DONE\n", .line = 1 },
+        .{ .source = "~ temp x = -> DONE\n{x}\n", .line = 1 },
+        .{ .source = "== function f\n~ return -> DONE\n", .line = 2 },
+    };
+    for (cases) |case| {
+        try expect_diagnostics(case.source, &.{
+            .{ .code = .done_or_end_as_value, .line = case.line },
+        });
+        try std.testing.expectError(error.CompileFailed, compile.compile_source(gpa, case.source));
+    }
+    // A plain divert to them is fine.
+    var program = try compile.compile_source(gpa, "-> DONE\n");
+    program.deinit(gpa);
+}

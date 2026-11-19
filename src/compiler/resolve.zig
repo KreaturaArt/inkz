@@ -58,6 +58,9 @@ pub const Code = enum(u8) {
     not_a_function,
     function_diverted_to,
     builtin_not_called,
+    /// DivertTarget.ResolveReferences: "Can't use -> DONE or -> END as variable divert
+    /// targets".
+    done_or_end_as_value,
     ambiguous_list_item,
     global_refers_to_variable,
     duplicate_list_item,
