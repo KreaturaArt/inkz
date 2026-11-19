@@ -282,3 +282,100 @@ test "a step budget that runs out in the newline lookahead leaves a state that s
     try std.testing.expectError(error.StepLimit, story.cont());
     try std.testing.expect(story.state.check() == .ok);
 }
+
+/// A tunnel with a reference parameter, waiting at a choice: its frame holds `r`, a
+/// variable pointer to the caller's temp `x`.
+const pointer_source =
+    \\-> start
+    \\== start ==
+    \\~ temp x = 1
+    \\-> tun(x) ->
+    \\Done {x}.
+    \\-> END
+    \\== tun(ref r) ==
+    \\* [Go]
+    \\~ r = 2
+    \\->->
+    \\
+;
+
+/// Expects `json` to fail to load with `expected`, leaving `story` unchanged.
+fn expect_load_error(story: *Story, json: []const u8, expected: load.Error) !void {
+    const before = story.state.hash();
+    try std.testing.expectError(expected, load.load_json(story, json));
+    try std.testing.expectEqual(before, story.state.hash());
+}
+
+test "a save's flows must include the default flow, each name once" {
+    // Found in review: a lone non-default flow loaded and then to_json asserted on the
+    // default flow's empty parking, and a repeated flow name parked one record twice. ink
+    // writes the default flow in every save, so both are InvalidSave; the story is
+    // unchanged and the real save (two flows) still loads and saves back the same.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    var program = try compile.compile_source(gpa, pointer_source);
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    prepare(&story);
+    var single: std.Io.Writer.Allocating = .init(gpa);
+    defer single.deinit();
+    try save.to_json(&story, &single.writer);
+    const lone = try std.mem.replaceOwned(u8, gpa, single.written(), "DEFAULT_FLOW", "a");
+    defer gpa.free(lone);
+    try expect_load_error(&story, lone, error.InvalidSave);
+    try story.switch_flow("side");
+    while (story.can_continue()) _ = try story.cont();
+    try story.switch_to_default_flow();
+    var both: std.Io.Writer.Allocating = .init(gpa);
+    defer both.deinit();
+    try save.to_json(&story, &both.writer);
+    const twice = try std.mem.replaceOwned(u8, gpa, both.written(), "\"side\":{", "\"DEFAULT_FLOW\":{");
+    defer gpa.free(twice);
+    try expect_load_error(&story, twice, error.InvalidSave);
+    try load.load_json(&story, both.written());
+    var again: std.Io.Writer.Allocating = .init(gpa);
+    defer again.deinit();
+    try save.to_json(&story, &again.writer);
+    try std.testing.expectEqualStrings(both.written(), again.written());
+}
+
+test "a saved variable pointer's context is checked on load and when followed" {
+    // Found in review: a pointer's "ci" from a save reached the VM unchecked. Below -1 is
+    // InvalidSave; a frame deeper than the call stack loads (ink only finds out when it
+    // follows it) and assigning through it is a story error, not an assertion.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    var program = try compile.compile_source(gpa, pointer_source);
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    prepare(&story);
+    while (story.can_continue()) _ = try story.cont();
+    try std.testing.expectEqual(@as(u32, 1), story.visible_choices_count());
+    var saved: std.Io.Writer.Allocating = .init(gpa);
+    defer saved.deinit();
+    try save.to_json(&story, &saved.writer);
+    const good = saved.written();
+    try std.testing.expect(std.mem.indexOf(u8, good, "\"ci\":1") != null);
+    const below = try std.mem.replaceOwned(u8, gpa, good, "\"ci\":1", "\"ci\":-2");
+    defer gpa.free(below);
+    try expect_load_error(&story, below, error.InvalidSave);
+    const deep = try std.mem.replaceOwned(u8, gpa, good, "\"ci\":1", "\"ci\":7");
+    defer gpa.free(deep);
+    try load.load_json(&story, deep);
+    try story.choose_choice_index(0);
+    story.on_error = null; // Without a handler, cont returns the story error.
+    try std.testing.expectError(error.StoryError, story.cont());
+    try std.testing.expect(story.state.check() == .ok);
+    story.state.reset_errors(); // Unhandled errors stay until reset, as in ink.
+    prepare(&story);
+    try load.load_json(&story, good);
+    try story.choose_choice_index(0);
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    defer text.deinit();
+    while (story.can_continue()) try text.writer.writeAll(try story.cont());
+    try std.testing.expectEqualStrings("Done 2.\n", text.written());
+}
