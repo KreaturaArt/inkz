@@ -338,6 +338,10 @@ const Loader = struct {
         value: ?[]const u8 = null,
         key: []const u8 = "",
         list_items: std.ArrayList([]const u8) = .empty,
+        /// Whether "list" and "origins" were read: later keys overwrite `key`, and either
+        /// may be empty, so neither `key` nor a count tells a repeat.
+        saw_list: bool = false,
+        saw_origins: bool = false,
         list_origins: std.ArrayList([]const u8) = .empty,
     };
 
@@ -413,8 +417,9 @@ const Loader = struct {
 
     /// `"list": {"origin.item": value, ...}`
     fn list_items(loader: *Loader, fields: *Fields) Error!void {
-        // A second "list" key in one object.
-        if (std.mem.eql(u8, fields.key, "list")) return error.InvalidInkJson;
+        // A second "list" key in one object, however many keys came between.
+        if (fields.saw_list) return error.InvalidInkJson;
+        fields.saw_list = true;
         assert(fields.list_items.items.len == 0);
         try loader.expect(.object_begin);
         fields.key = "list";
@@ -433,7 +438,9 @@ const Loader = struct {
 
     /// `"origins": ["origin", ...]`
     fn list_origins(loader: *Loader, fields: *Fields) Error!void {
-        if (fields.list_origins.items.len != 0) return error.InvalidInkJson;
+        if (fields.saw_origins) return error.InvalidInkJson;
+        fields.saw_origins = true;
+        assert(fields.list_origins.items.len == 0);
         try loader.expect(.array_begin);
         while (true) {
             const name = switch (try loader.next_token()) {
@@ -766,6 +773,24 @@ test "duplicate keys and a context below -1 are InvalidInkJson" {
         try std.testing.expectError(error.InvalidInkJson, load(gpa, case[0]));
         var program = try load(gpa, case[1]);
         program.deinit(gpa);
+    }
+    // Found in review: a key between the two (which overwrites the last key) or an empty
+    // first value hid the repeat from a guard that looked at the last key or the count.
+    const interleaved = [_][]const u8{
+        \\{"inkVersion":21,"root":[{"list":{"l.a":1},"^var":"x","list":{"l.a":1}},"done",null],
+        \\"listDefs":{"l":{"a":1}}}
+        ,
+        \\{"inkVersion":21,"root":[{"list":{},"->":"0","list":{"l.a":1}},"done",null],
+        \\"listDefs":{"l":{"a":1}}}
+        ,
+        \\{"inkVersion":21,"root":[{"list":{},"origins":[],"origins":["l"]},"done",null],
+        \\"listDefs":{"l":{"a":1}}}
+        ,
+        \\{"inkVersion":21,"root":[{"list":{},"origins":["l"],"^var":"x","origins":["l"]},
+        \\"done",null],"listDefs":{"l":{"a":1}}}
+    };
+    for (interleaved) |json| {
+        try std.testing.expectError(error.InvalidInkJson, load(gpa, json));
     }
 }
 
