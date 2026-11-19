@@ -31,6 +31,9 @@ const strings_source =
     \\== function shout ==
     \\Loud
     \\~ return 1
+    \\== function rename(x, y) ==
+    \\~ a = "renamed"
+    \\~ return y + "!"
     \\
 ;
 
@@ -103,6 +106,67 @@ test "evaluate_function and choose_path_string keep every heap string argument" 
     };
     try story.choose_path_string("knot", .{ .arguments = &again });
     try std.testing.expectEqualStrings("first string other string\n", (try story.cont()).get());
+}
+
+/// Copies the arguments on_complete_evaluate_function gets.
+const Completion = struct {
+    texts: [2][32]u8 = undefined,
+    lengths: [2]u32 = .{ 0, 0 },
+    calls: u32 = 0,
+
+    fn on_complete(
+        context: ?*anyopaque,
+        name: []const u8,
+        arguments: []const Value,
+        text: []const u8,
+        result: Value,
+    ) void {
+        assert(name.len > 0 and text.len == 0 and result == .string);
+        const completion: *Completion = @ptrCast(@alignCast(context.?));
+        assert(arguments.len == 2);
+        completion.calls += 1;
+        for (arguments, 0..) |argument, position| {
+            const length = @min(argument.string.len, 32);
+            @memcpy(completion.texts[position][0..length], argument.string[0..length]);
+            completion.lengths[position] = @intCast(length);
+        }
+    }
+};
+
+test "on_complete_evaluate_function gets its arguments after the run compacts the heap" {
+    // The event got the host's own slices, which may be heap strings from
+    // get_variable that the run moved. The function makes `a` garbage below `b`, then
+    // concatenates, compacting on every allocation in a small heap.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa, strings_source);
+    defer program.deinit(gpa);
+    var completion: Completion = .{};
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{
+        .limits = .{ .heap_bytes_max = 256 },
+        .events = .{
+            .context = &completion,
+            .on_complete_evaluate_function = Completion.on_complete,
+        },
+    });
+    defer story.deinit(gpa);
+    story.core.state.compact_always = true;
+    try story.set_variable("a", .{ .string = "first string" });
+    try story.set_variable("b", .{ .string = "other string" });
+    const arguments = [_]Value{
+        story.get_variable("a").?.get(),
+        story.get_variable("b").?.get(),
+    };
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    defer text.deinit();
+    const result = try story.evaluate_function("rename", &arguments, &text.writer);
+    try std.testing.expectEqualStrings("other string!", result.get().string);
+    try std.testing.expectEqual(@as(u32, 1), completion.calls);
+    const lengths = completion.lengths;
+    try std.testing.expectEqualStrings("first string", completion.texts[0][0..lengths[0]]);
+    try std.testing.expectEqualStrings("other string", completion.texts[1][0..lengths[1]]);
+    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 0), story.core.state.evaluation.count);
 }
 
 test "evaluate_function fails closed and refuses to run while errors are kept" {
