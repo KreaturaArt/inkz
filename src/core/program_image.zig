@@ -408,7 +408,9 @@ fn check_references(program: *const Program) Error!void {
     assert(strings > 0);
     assert(program.containers.len > 0);
     const containers = program.containers;
+    // Newline output items are one-byte slices of this string.
     if (!is_string(program.newline, strings)) return error.InvalidImage;
+    if (!std.mem.eql(u8, program.strings.get(program.newline), "\n")) return error.InvalidImage;
     if (!program.global_declaration.is_none() and
         @backingInt(program.global_declaration) >= containers.len) return error.InvalidImage;
     for (0..containers.len) |position| {
