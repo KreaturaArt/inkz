@@ -34,7 +34,7 @@ fn check_source(source: []const u8) !bool {
     assert(source.len <= fuzz_ink.source_bytes_max);
     const gpa = std.testing.allocator;
     var program = compile.compile_source(gpa, source) catch |err| switch (err) {
-        error.CompileFailed, error.ParseFailed, error.WorkspaceFull => return false,
+        error.CompileFailed => return false,
         else => return err,
     };
     defer program.deinit(gpa);
