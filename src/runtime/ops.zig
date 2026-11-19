@@ -1043,7 +1043,11 @@ pub fn values_of_host(
     for (copies[0..hosts.len], values) |host, *value| {
         if (host != .string) continue;
         assert(!in_heap(story, host.string));
-        value.* = .{ .string = try store_string(story, host.string, values) };
+        // Into a local first: assigning the call's result straight into `value.*` may set
+        // its tag to `.string` before the call, and the call keeps `values`, so a
+        // compaction would visit a garbage reference.
+        const reference = try store_string(story, host.string, values);
+        value.* = .{ .string = reference };
     }
 }
 
