@@ -86,7 +86,10 @@ pub fn build(b: *std.Build) void {
 
     // Fuzz targets: each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
     // Zig's fuzzer writes its log to <cache>/tmp and fails if that directory is missing.
-    std.Io.Dir.cwd().createDirPath(b.graph.io, ".zig-cache/tmp") catch {};
+    const fuzz_tmp = ".zig-cache/tmp";
+    std.Io.Dir.cwd().createDirPath(b.graph.io, fuzz_tmp) catch |err| {
+        std.process.fatal("cannot create {s} for the fuzzer: {t}", .{ fuzz_tmp, err });
+    };
     const fuzz_corpus = add_test_suite(b, .{
         .step = "fuzz",
         .root = "src/fuzz_targets.zig",
@@ -136,7 +139,13 @@ pub fn build(b: *std.Build) void {
     b.step("code-size", "Count lines of Zig per module").dependOn(&run_code_size.step);
 
     const fmt = b.addFmt(.{
-        .paths = &.{ b.path("build.zig"), b.path("build.zig.zon"), b.path("src"), b.path("tools") },
+        .paths = &.{
+            b.path("build.zig"),
+            b.path("build.zig.zon"),
+            b.path("src"),
+            b.path("tools"),
+            b.path("test"),
+        },
         .check = true,
     });
     b.step("fmt", "Check that the Zig sources are formatted").dependOn(&fmt.step);
