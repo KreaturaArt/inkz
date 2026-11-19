@@ -54,4 +54,4 @@ saves, flows, errors). The stable API is listed in `src/root.zig`.
 
 ## License
 
-See [LICENSE](LICENSE).
+MIT, see [LICENSE](LICENSE).
