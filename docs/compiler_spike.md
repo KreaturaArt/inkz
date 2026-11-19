@@ -1,8 +1,12 @@
 # P7.0 parser spike: go/no-go
 
+> Historical record (Phase 7). The spike was deleted in commit 97529fd once the parser core
+> replaced it; its machine lives on in `src/compiler/core.zig` and the grammar in
+> `src/compiler/grammar*.zig`. Paths below are as they were then.
+
 **Decision: go.** An explicit-stack parser handles ink's hardest nesting with the planned
-node layout, without recursion. The spike is `src/compiler_next/spike.zig` (throwaway; it is
-deleted once P7.3's parser core replaces it). Its five tests parse hand-picked hard inputs:
+node layout, without recursion. The spike was `src/compiler_next/spike.zig` (throwaway,
+since deleted). Its five tests parse hand-picked hard inputs:
 
 1. A multi-line conditional `{ x > 1: … - else: … }` whose branch holds a weave with a choice
    whose `[...]` holds an inline `{y}`, a nested `**` choice, and a gather.

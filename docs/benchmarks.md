@@ -31,7 +31,8 @@ higher; its last measurement, before P9.2 deleted it:
 ## Memory budget sizing (P4.12)
 
 A story's runtime state is one allocation of exactly `Limits.bytes_total(shape)` bytes, made by
-`Story.init` (tested with a counting allocator in `src/vm/state.zig`). Nothing allocates after
+`Story.init` (tested with a counting allocator in `src/runtime/state.zig`, "init allocates exactly the byte
+budget, once"). Nothing allocates after
 that. The total has three parts:
 
 - **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
