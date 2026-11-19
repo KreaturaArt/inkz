@@ -111,6 +111,7 @@ const Loader = struct {
         assert(loader.builder.containers.len == 0);
         try loader.expect(.object_begin);
         var saw_root = false;
+        var saw_list_definitions = false;
         while (true) {
             const key = switch (try loader.next_token()) {
                 .object_end => break,
@@ -124,10 +125,14 @@ const Loader = struct {
                 }
                 loader.builder.ink_version = @intCast(version);
             } else if (std.mem.eql(u8, key, "root")) {
+                // A second root or listDefs would add to the first: not ink's JSON.
+                if (saw_root) return error.InvalidInkJson;
                 try loader.load_containers();
                 saw_root = true;
             } else if (std.mem.eql(u8, key, "listDefs")) {
+                if (saw_list_definitions) return error.InvalidInkJson;
                 try loader.load_list_definitions();
+                saw_list_definitions = true;
             } else {
                 try loader.scanner.skipValue();
             }
@@ -340,6 +345,9 @@ const Loader = struct {
     fn content_object(loader: *Loader, first: []const u8) Error!void {
         assert(loader.builder.frames.items.len > 0);
         var fields: Fields = .{};
+        // The list names are per object: free them, so many literals don't fill scratch.
+        defer fields.list_items.deinit(loader.builder.gpa);
+        defer fields.list_origins.deinit(loader.builder.gpa);
         var key = first;
         while (true) {
             // No ink key is empty (found by fuzzing).
@@ -381,6 +389,8 @@ const Loader = struct {
         }
         if (std.mem.eql(u8, key, "ci")) {
             fields.context = try loader.integer_as(i32);
+            // -1 unknown, 0 global, n > 0 a call-stack frame.
+            if (fields.context < -1) return error.InvalidInkJson;
             return;
         }
         if (std.mem.eql(u8, key, "list")) return loader.list_items(fields);
@@ -403,6 +413,8 @@ const Loader = struct {
 
     /// `"list": {"origin.item": value, ...}`
     fn list_items(loader: *Loader, fields: *Fields) Error!void {
+        // A second "list" key in one object.
+        if (std.mem.eql(u8, fields.key, "list")) return error.InvalidInkJson;
         assert(fields.list_items.items.len == 0);
         try loader.expect(.object_begin);
         fields.key = "list";
@@ -414,14 +426,14 @@ const Loader = struct {
             };
             if (name.len == 0) return error.InvalidInkJson;
             _ = try loader.integer_as(i32);
-            try fields.list_items.append(loader.scratch, name);
+            try fields.list_items.append(loader.builder.gpa, name);
             assert(fields.list_items.items.len > 0);
         }
     }
 
     /// `"origins": ["origin", ...]`
     fn list_origins(loader: *Loader, fields: *Fields) Error!void {
-        assert(fields.list_origins.items.len == 0);
+        if (fields.list_origins.items.len != 0) return error.InvalidInkJson;
         try loader.expect(.array_begin);
         while (true) {
             const name = switch (try loader.next_token()) {
@@ -430,7 +442,7 @@ const Loader = struct {
                 else => return error.InvalidInkJson,
             };
             if (name.len == 0) return error.InvalidInkJson;
-            try fields.list_origins.append(loader.scratch, name);
+            try fields.list_origins.append(loader.builder.gpa, name);
             assert(fields.list_origins.items.len > 0);
         }
     }
@@ -495,6 +507,7 @@ const Loader = struct {
         assert(loader.builder.list_origins.items.len == 0);
         try loader.expect(.object_begin);
         var items: std.ArrayList(ProgramBuilder.ListItemDeclaration) = .empty;
+        defer items.deinit(loader.builder.gpa);
         while (true) {
             const origin = switch (try loader.next_token()) {
                 .object_end => break,
@@ -512,7 +525,7 @@ const Loader = struct {
                 };
                 if (item.len == 0) return error.InvalidInkJson;
                 const value = try loader.integer_as(i32);
-                try items.append(loader.scratch, .{ .name = item, .value = value });
+                try items.append(loader.builder.gpa, .{ .name = item, .value = value });
             }
             _ = try loader.builder.list_origin(origin, items.items);
         }
@@ -710,6 +723,49 @@ test "malformed input returns an error instead of crashing" {
             loaded.deinit(gpa);
             return error.TestUnexpectedSuccess;
         } else |_| {}
+    }
+}
+
+test "duplicate keys and a context below -1 are InvalidInkJson" {
+    // Found in review: a second "root", "listDefs", "list" or "origins" key reached an
+    // assertion, and a variable pointer's "ci" below -1 reached the VM. Each malformed
+    // document is rejected by name; the same document with the key once (or -1) loads.
+    const gpa = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{
+            \\{"inkVersion":21,"root":["done",null],"root":["done",null]}
+            ,
+            \\{"inkVersion":21,"root":["done",null]}
+        },
+        .{
+            \\{"inkVersion":21,"root":["done",null],"listDefs":{"l":{"a":1}},"listDefs":{}}
+            ,
+            \\{"inkVersion":21,"root":["done",null],"listDefs":{"l":{"a":1}}}
+        },
+        .{
+            \\{"inkVersion":21,"root":[{"list":{"l.a":1},"list":{}},"done",null],
+            \\"listDefs":{"l":{"a":1}}}
+            ,
+            \\{"inkVersion":21,"root":[{"list":{"l.a":1}},"done",null],
+            \\"listDefs":{"l":{"a":1}}}
+        },
+        .{
+            \\{"inkVersion":21,"root":[{"list":{},"origins":["l"],"origins":["l"]},"done",null],
+            \\"listDefs":{"l":{"a":1}}}
+            ,
+            \\{"inkVersion":21,"root":[{"list":{},"origins":["l"]},"done",null],
+            \\"listDefs":{"l":{"a":1}}}
+        },
+        .{
+            \\{"inkVersion":21,"root":[{"^var":"x","ci":-2},"done",null]}
+            ,
+            \\{"inkVersion":21,"root":[{"^var":"x","ci":-1},"done",null]}
+        },
+    };
+    for (cases) |case| {
+        try std.testing.expectError(error.InvalidInkJson, load(gpa, case[0]));
+        var program = try load(gpa, case[1]);
+        program.deinit(gpa);
     }
 }
 
