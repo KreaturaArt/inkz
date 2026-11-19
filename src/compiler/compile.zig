@@ -142,14 +142,19 @@ pub fn compile_file_with(
     return compile_parsed(gpa, &space.parsed, &space, options);
 }
 
-/// A story compiled and serialized as ink's JSON (for comparing with inklecate's).
+/// A story compiled and serialized as ink's JSON (for comparing with inklecate's). A story
+/// whose paths are longer than the JSON writer's 64 components (about 60 nested weave
+/// levels) is CompileFailed.
 pub fn compile_to_json(gpa: Allocator, source: []const u8) ![]u8 {
     assert(@TypeOf(gpa) == Allocator);
     var program = try compile_source(gpa, source);
     defer program.deinit(gpa);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
-    try ink_json.serialize(gpa, &program, &out.writer);
+    ink_json.serialize(gpa, &program, &out.writer) catch |err| switch (err) {
+        error.PathTooDeep => return error.CompileFailed,
+        else => |other| return other,
+    };
     return out.toOwnedSlice();
 }
 
@@ -268,4 +273,23 @@ test "a source longer than source_bytes_max is an error, not an assertion" {
         error.SourceTooLarge,
         grammar.parse(gpa, "Hello.\n", .{ .source_bytes_max = 4 }),
     );
+}
+
+test "compile_to_json: weaves nested deeper than the JSON paths allow are CompileFailed" {
+    // 70 levels of nested choices compile, but their paths have more components than the
+    // JSON writer keeps; 10 levels serialize.
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    for (1..71) |depth| {
+        try text.appendNTimes(gpa, '*', depth);
+        try text.appendSlice(gpa, " c\n");
+        if (depth == 10) {
+            const json = try compile_to_json(gpa, text.items);
+            gpa.free(json);
+        }
+    }
+    var program = try compile_source(gpa, text.items);
+    program.deinit(gpa);
+    try std.testing.expectError(error.CompileFailed, compile_to_json(gpa, text.items));
 }

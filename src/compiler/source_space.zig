@@ -265,8 +265,9 @@ const Discovery = struct {
         // Each file is within the bound, but together they may not be: the space's offsets
         // are u32.
         if (total > discovery.bounds.source_bytes_max) return error.SourceTooLarge;
-        const buffer = try gpa.alloc(u8, total);
+        // The regions first: the buffer is owned by parse_space from its allocation on.
         const regions = try discovery.arena.alloc(grammar.Region, discovery.files.items.len);
+        const buffer = try gpa.alloc(u8, total);
         var at: u32 = 0;
         for (discovery.discovered.items, discovery.files.items, regions) |file, *entry, *region| {
             @memcpy(buffer[at..][0..file.text.len], file.text);
@@ -459,5 +460,25 @@ test "compile_file: a story nested too deep is CompileFailed" {
     try std.testing.expectError(
         error.CompileFailed,
         compile.compile_file(gpa, io, temporary.dir, "deep.ink"),
+    );
+}
+
+fn load_and_free(gpa: Allocator, directory: std.Io.Dir) !void {
+    var space = try load(gpa, std.testing.io, directory, "a.ink", .{});
+    space.deinit(gpa);
+}
+
+test "loading a space frees everything whichever allocation fails" {
+    // A failed shrink in the workspace's settle once left its arrays of different lengths
+    // for deinit to trip on; every other failure frees what was allocated.
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const io = std.testing.io;
+    try temporary.dir.writeFile(io, .{ .sub_path = "a.ink", .data = "INCLUDE b.ink\nA\n" });
+    try temporary.dir.writeFile(io, .{ .sub_path = "b.ink", .data = "B\n" });
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        load_and_free,
+        .{temporary.dir},
     );
 }

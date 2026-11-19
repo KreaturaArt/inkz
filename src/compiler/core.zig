@@ -82,7 +82,8 @@ pub const Workspace = struct {
     }
 
     /// After a parse: drops the scratch stack (only the parse uses it)
-    /// and shrinks the node and token arrays to what was used.
+    /// and shrinks the node and token arrays to what was used. If a shrink fails, the
+    /// syntax is freed (the arrays would differ in length) and only the diagnostics are left.
     pub fn settle(workspace: *Workspace, gpa: Allocator, nodes: u32, tokens: u32) !void {
         assert(nodes <= workspace.node_tags.len);
         assert(tokens <= workspace.token_starts.len);
@@ -90,6 +91,7 @@ pub const Workspace = struct {
         gpa.free(workspace.scratch_data);
         workspace.scratch_tags = &.{};
         workspace.scratch_data = &.{};
+        errdefer workspace.free_syntax(gpa);
         workspace.node_tags = try gpa.realloc(workspace.node_tags, nodes);
         workspace.node_data = try gpa.realloc(workspace.node_data, nodes);
         workspace.token_starts = try gpa.realloc(workspace.token_starts, tokens);
@@ -100,6 +102,12 @@ pub const Workspace = struct {
     pub fn release_syntax(workspace: *Workspace, gpa: Allocator) void {
         assert(workspace.node_tags.len == workspace.node_data.len);
         assert(workspace.token_starts.len == workspace.token_ends.len);
+        workspace.free_syntax(gpa);
+    }
+
+    /// release_syntax without its checks, for a settle that failed halfway.
+    fn free_syntax(workspace: *Workspace, gpa: Allocator) void {
+        assert(workspace.diagnostics.len > 0);
         gpa.free(workspace.node_tags);
         gpa.free(workspace.node_data);
         gpa.free(workspace.token_starts);
