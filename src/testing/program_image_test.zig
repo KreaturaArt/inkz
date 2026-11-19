@@ -116,3 +116,119 @@ test "corrupted images are rejected without crashing" {
     copy[8] = 99;
     try std.testing.expectError(error.UnsupportedFormatVersion, program_image.load(gpa, copy));
 }
+
+const ProgramBuilder = @import("../core/program_builder.zig").ProgramBuilder;
+const ListOrigin = @import("../core/program.zig").ListOrigin;
+const Opcode = @import("../core/instruction.zig").Opcode;
+
+/// A root with a list literal of two items, a variable pointer `x` (context 0), a plain
+/// divert to the knot `k` and a text, over the lists `letters = a, b` and an empty `none`.
+fn build_records(gpa: std.mem.Allocator) !Program {
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add_list_literal(&.{ "letters.a", "letters.b" }, &.{});
+    try ink_json.add_variable_pointer_to(&builder, "x", 0);
+    try builder.add_divert("k", .{ .kind = .plain, .conditional = false, .variable = false });
+    try builder.add(.text, try builder.intern("A"));
+    _ = try builder.list_origin("letters", &.{
+        .{ .name = "a", .value = 1 },
+        .{ .name = "b", .value = 2 },
+    });
+    _ = try builder.list_origin("none", &.{});
+    _ = try builder.begin_container(.{ .name = "k", .named_only = true });
+    try builder.add(.done, {});
+    try builder.end_container();
+    try builder.end_container();
+    return builder.finish();
+}
+
+/// The extra index of the record behind the first instruction with `opcode`.
+fn record_at(program: *const Program, opcode: Opcode) u32 {
+    const opcodes = program.instructions.items(.opcode);
+    const position = std.mem.indexOfScalar(Opcode, opcodes, opcode).?;
+    return program.instructions.items(.operand)[position];
+}
+
+/// Expects `program` to fail its check with `fault` and its image to be rejected on load.
+fn expect_rejected(program: *const Program, fault: Program.Fault) !void {
+    const gpa = std.testing.allocator;
+    if (fault != .ok) try std.testing.expectEqual(fault, program.check());
+    var image: std.Io.Writer.Allocating = .init(gpa);
+    defer image.deinit();
+    try program_image.write(program, &image.writer);
+    try std.testing.expectError(error.InvalidImage, program_image.load(gpa, image.written()));
+}
+
+test "an image's list literals are checked word by word" {
+    // The VM slices a list literal's tail and stores its indices unchecked, so loading
+    // checks the header's counts and every item and origin index. Corrupt one or two words
+    // at a time, expect the named fault and a rejected image, then restore them.
+    const gpa = std.testing.allocator;
+    var program = try build_records(gpa);
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
+    const extra: []u32 = @constCast(program.extra);
+    const list = record_at(&program, .list);
+    const saved: [4]u32 = extra[list..][0..4].*;
+    extra[list] = std.math.maxInt(u32);
+    try expect_rejected(&program, .extra_out_of_range);
+    extra[list] = saved[0];
+    extra[list + 1] = std.math.maxInt(u32);
+    try expect_rejected(&program, .extra_out_of_range);
+    extra[list + 1] = saved[1];
+    extra[list + 3] = 2;
+    try expect_rejected(&program, .list_item_out_of_range);
+    extra[list + 3] = saved[3];
+    // One item and one origin: the second word is read as origin 7, which doesn't exist.
+    extra[list] = 1;
+    extra[list + 1] = 1;
+    extra[list + 3] = 7;
+    try expect_rejected(&program, .list_origin_out_of_range);
+    @memcpy(extra[list..][0..4], &saved);
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
+}
+
+test "an image's variable pointers, divert kinds and newline are checked" {
+    // A variable pointer's name must be a string and its context at least -1; a divert's
+    // kind must be one of three in its two bits; the newline string must be "\n". Corrupt
+    // each, expect a rejected image, restore it; the untouched image loads.
+    const gpa = std.testing.allocator;
+    var program = try build_records(gpa);
+    defer program.deinit(gpa);
+    const extra: []u32 = @constCast(program.extra);
+    const pointer = record_at(&program, .variable_pointer);
+    const name = extra[pointer];
+    extra[pointer] = 9999;
+    try expect_rejected(&program, .string_out_of_range);
+    extra[pointer] = name;
+    extra[pointer + 1] = @bitCast(@as(i32, -2));
+    try expect_rejected(&program, .variable_pointer_context_out_of_range);
+    extra[pointer + 1] = @bitCast(@as(i32, -1));
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
+    const flags_at = record_at(&program, .divert) + 3;
+    const flags = extra[flags_at];
+    extra[flags_at] = flags | 0b11;
+    try expect_rejected(&program, .extra_out_of_range);
+    extra[flags_at] = flags;
+    const newline = program.newline;
+    program.newline = program.strings.find("A").?;
+    try expect_rejected(&program, .ok);
+    program.newline = newline;
+    var image: std.Io.Writer.Allocating = .init(gpa);
+    defer image.deinit();
+    try program_image.write(&program, &image.writer);
+    var loaded = try program_image.load(gpa, image.written());
+    loaded.deinit(gpa);
+}
+
+test "list origin item counts that overflow u32 are rejected" {
+    // check_tables sums the origins' item counts: an empty second origin claiming the
+    // largest u32 count sums past u32, which must be a fault and a rejected image.
+    const gpa = std.testing.allocator;
+    var program = try build_records(gpa);
+    defer program.deinit(gpa);
+    const origins: []ListOrigin = @constCast(program.list_origins);
+    origins[1].items_count = std.math.maxInt(u32);
+    try expect_rejected(&program, .list_items_not_partitioned);
+}

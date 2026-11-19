@@ -84,6 +84,9 @@ pub const Program = struct {
         list_items_not_partitioned,
         list_item_origin_mismatch,
         fallback_out_of_range,
+        list_item_out_of_range,
+        list_origin_out_of_range,
+        variable_pointer_context_out_of_range,
     };
 
     pub fn deinit(program: *Program, gpa: std.mem.Allocator) void {
@@ -271,7 +274,8 @@ pub const Program = struct {
                 .divert => program.check_divert(operand),
                 .choice_point => program.check_choice_point(operand),
                 .external_call => program.check_external_call(operand),
-                .variable_pointer, .list => program.check_extra(operand, 2),
+                .variable_pointer => program.check_variable_pointer(operand),
+                .list => program.check_list_literal(operand),
                 .global => if (operand >= program.globals.len) .global_out_of_range else .ok,
                 .none, .integer, .float, .boolean => .ok,
             };
@@ -283,6 +287,41 @@ pub const Program = struct {
             }
         }
         assert(strings_count > 0);
+        return .ok;
+    }
+
+    fn check_variable_pointer(program: *const Program, at: u32) Fault {
+        const Data = instruction_module.VariablePointer;
+        const words = @typeInfo(Data).@"struct".field_names.len;
+        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
+        const pointer = extra_module.get(Data, program.extra, at).data;
+        if (pointer.name.is_none() or pointer.name.to_int() >= program.strings.count()) {
+            return .string_out_of_range;
+        }
+        // ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
+        if (pointer.context < -1) return .variable_pointer_context_out_of_range;
+        assert(words == 2);
+        return .ok;
+    }
+
+    /// A list literal's header and its tail of item and then origin indices, each of which
+    /// the VM slices and stores without further checks.
+    fn check_list_literal(program: *const Program, at: u32) Fault {
+        const Data = instruction_module.ListLiteral;
+        const words = @typeInfo(Data).@"struct".field_names.len;
+        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
+        const decoded = extra_module.get(Data, program.extra, at);
+        const record = decoded.data;
+        const tail_words = @as(u64, record.items_count) + record.origins_count;
+        if (tail_words > program.extra.len - decoded.end) return .extra_out_of_range;
+        const tail = program.extra[decoded.end..][0..@intCast(tail_words)];
+        for (tail[0..record.items_count]) |item| {
+            if (item >= program.list_items.len) return .list_item_out_of_range;
+        }
+        for (tail[record.items_count..]) |origin| {
+            if (origin >= program.list_origins.len) return .list_origin_out_of_range;
+        }
+        assert(decoded.end <= program.extra.len);
         return .ok;
     }
 
@@ -302,7 +341,8 @@ pub const Program = struct {
     /// Lists: each origin's items are one range, in origin order, and point back at it.
     /// Externals: fallbacks exist.
     fn check_tables(program: *const Program) Fault {
-        var next: u32 = 0;
+        // 64 bits: untrusted counts may sum past u32.
+        var next: u64 = 0;
         for (program.list_origins, 0..) |origin, origin_index| {
             if (origin.items_first.to_int() != next) return .list_items_not_partitioned;
             next += origin.items_count;
