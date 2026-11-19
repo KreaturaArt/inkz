@@ -936,6 +936,8 @@ pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {
                 .{ .name = story.program.externals[external].name },
             );
         }
+        // Under an outer level's snapshot (a function evaluated from a lookahead-safe
+        // external), the call runs now; RunningYourInk.md says why that can repeat.
         if (story.owns_lookahead()) {
             // The line ends at the snapshot; the call runs on the next `cont`.
             story.saw_lookahead_unsafe_function_after_newline = true;
@@ -1011,7 +1013,7 @@ pub fn host_value(story: *Story, value: Value) story_module.HostValue {
 /// Host values as ink values, with strings copied into the heap. Each allocation may
 /// compact the heap, which would move a later argument's text if it is in the heap (a
 /// string from `get_variable`, say), so all such texts are copied out into the line buffer
-/// before the first allocation; the values already stored are kept through compaction.
+/// before the first allocation; the other values are kept through compaction.
 pub fn values_of_host(
     story: *Story,
     hosts: []const story_module.HostValue,
@@ -1033,12 +1035,15 @@ pub fn values_of_host(
         used += @intCast(text.len);
     }
     note_line_bytes(&story.state, used);
-    for (copies[0..hosts.len], 0..) |host, position| {
-        assert(host != .string or !in_heap(story, host.string));
-        values[position] = switch (host) {
-            .string => |text| .{ .string = try store_string(story, text, values[0..position]) },
-            else => try value_of_host(story, host),
-        };
+    // Every other value first (a list reference moves with the heap too), then each
+    // string, keeping all of them through the compaction it may cause.
+    for (copies[0..hosts.len], values) |host, *value| {
+        value.* = if (host == .string) .null else try value_of_host(story, host);
+    }
+    for (copies[0..hosts.len], values) |host, *value| {
+        if (host != .string) continue;
+        assert(!in_heap(story, host.string));
+        value.* = .{ .string = try store_string(story, host.string, values) };
     }
 }
 

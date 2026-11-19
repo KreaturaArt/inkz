@@ -46,7 +46,7 @@ test "a story compiled from source, played to the end" {
     try std.testing.expectEqualStrings("Hello, world!\n", (try story.cont()).get());
     try std.testing.expect(!story.can_continue());
     try std.testing.expectEqual(@as(u32, 1), story.current_choices_count());
-    try std.testing.expectEqualStrings("Hello back", story.current_choice(0).get().text);
+    try std.testing.expectEqualStrings("Hello back", (try story.current_choice(0)).get().text);
 
     try story.choose_choice_index(0);
     const rest = try story.continue_maximally_alloc(gpa);
@@ -156,7 +156,7 @@ while (true) {
     if (count == 0) break;
     var position: u32 = 0;
     while (position < count) : (position += 1) {
-        const choice = story.current_choice(position).get();
+        const choice = (try story.current_choice(position)).get();
         try out.print("{d}: {s}\n", .{ position + 1, choice.text });
     }
     try out.flush();
@@ -240,15 +240,16 @@ carries the knot's tags, as in ink. Tags are dynamic: they may contain inline in
 A choice's tags are read by position:
 
 ```zig
-const choice = story.current_choice(0).get();
+const choice = (try story.current_choice(0)).get();
 var tag: u32 = 0;
 while (tag < choice.tags_count) : (tag += 1) {
     std.debug.print("choice tag: {s}\n", .{(try story.current_choice_tag(0, tag)).get()});
 }
 ```
 
-A position past the choices returns `error.ChoiceLimit` (as in `choose_choice_index`), and a
-tag past `tags_count` returns `error.TagLimit`.
+A position past the choices returns `error.ChoiceLimit` from `current_choice` and
+`current_choice_tag` (as in `choose_choice_index`), and a tag past `tags_count` returns
+`error.TagLimit`.
 
 ## Jumping to a knot or stitch
 
@@ -349,7 +350,8 @@ The call fails closed. When it fails before the function runs (an argument that 
 fit the heap or the evaluation stack) or because `text_writer` is full, the story is as it
 was before the call, apart from side effects the function already had. A story error in the
 function ends the flow, as it does in `cont()`. A limit or host error in the middle of a
-step fails the story (`error.StoryFailed`, see [Errors](#errors)). Strings you got from the
+step is returned (`error.HeapLimit`, say) and leaves the story failed: later calls return
+`error.StoryFailed` (see [Errors](#errors)). Strings and lists you got from the
 story (from `get_variable`, say) can be passed back as arguments or to `set_variable`: they
 are copied before the story's heap can move them.
 
@@ -419,6 +421,13 @@ The square root of 9
 ~ temp x = sqrt(9)
 <> is {x}.
 ```
+
+`lookahead_safe = false` holds for the calls the story makes itself. An external that calls
+`evaluate_function` is an action as far as the lookahead goes. If it is bound with
+`.lookahead_safe = true`, it may run during the lookahead and again on the next `cont()`,
+and so may every external the evaluated function calls, unsafe ones included: inside that
+evaluation they run at once, since the outer lookahead isn't theirs to end. Bind such an
+external with `.lookahead_safe = false` when what it runs must not happen twice.
 
 ### Fallbacks
 
@@ -494,7 +503,8 @@ if (story.cont()) |line| {
 }
 ```
 
-`has_error()`, `has_warning()`, `warning_count()` and `write_warning()` complete the set.
+`has_error()`, `has_warning()`, `warning_count()` and `write_warning()` complete the set;
+`write_error` and `write_warning` return `error.OutOfRange` past the count.
 Running out of a limit returns its own error, such as `error.FrameLimit`, `error.HeapLimit`
 or `error.StepLimit`; see `inkz.Error`. ink throws in these cases. Here, when it happens in
 the lookahead past a line's newline, the story goes back to the end of that line: it saves,
@@ -640,7 +650,7 @@ The runtime was rewritten (plan `docs/DODMigrationPlan.md`). Three decisions cha
 | `story.cont() ![]const u8` (a turn, allocated) | `story.cont()` returns `Borrowed([]const u8)` (one line); `.get()` reads it |
 | `story.continueMaximally()` | `story.continue_maximally(writer)` or `story.continue_maximally_alloc(gpa)` |
 | `story.canContinue()` | `story.can_continue()` |
-| `story.currentChoices()` | `story.current_choices_count()` and `story.current_choice(position).get()` |
+| `story.currentChoices()` | `story.current_choices_count()` and `(try story.current_choice(position)).get()` |
 | `choice.tags` | `choice.tags_count` and `story.current_choice_tag(position, tag)` |
 | `story.chooseChoiceIndex(i)` | `story.choose_choice_index(i)` |
 | `story.choosePathString(path)` | `story.choose_path_string(path, .{})` |

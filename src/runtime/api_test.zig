@@ -126,7 +126,7 @@ test "the public API, method by method" {
     try std.testing.expectEqual(@as(u32, 1), recorder.greeted);
     try std.testing.expectEqual(@as(i32, 5), recorder.last_score);
     try std.testing.expectEqual(@as(u32, 2), story.current_choices_count());
-    const left = story.current_choice(0).get();
+    const left = (try story.current_choice(0)).get();
     try std.testing.expectEqualStrings("Left", left.text);
     try std.testing.expectEqual(@as(u32, 1), left.tags_count);
     try std.testing.expectEqualStrings("choice tag", (try story.current_choice_tag(0, 0)).get());
