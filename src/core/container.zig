@@ -131,7 +131,8 @@ pub const ContainerTable = struct {
             }
             // Parents come first, so one forward pass can check depths.
             if (container_parent.to_int() >= position) return .parent_after_child;
-            if (depths[position] != depths[container_parent.to_int()] + 1) {
+            // Widened: a parent at the u16 maximum must be a fault, not an overflow.
+            if (depths[position] != @as(u32, depths[container_parent.to_int()]) + 1) {
                 return .depth_not_parent_plus_one;
             }
         }
@@ -145,12 +146,15 @@ pub const ContainerTable = struct {
         assert(slice.len > 0);
         for (0..slice.len) |position| {
             const first = slice.items(.instruction_first)[position].to_int();
-            if (first + slice.items(.instruction_count)[position] > instructions_count) {
+            const count_instructions = slice.items(.instruction_count)[position];
+            if (@as(u64, first) + count_instructions > instructions_count) {
                 return .instructions_out_of_bounds;
             }
             const named_first = slice.items(.named_first)[position];
             const named_count = slice.items(.named_count)[position];
-            if (named_first + named_count > table.named.len) return .named_range_out_of_bounds;
+            if (@as(u64, named_first) + named_count > table.named.len) {
+                return .named_range_out_of_bounds;
+            }
             for (table.named[named_first..][0..named_count]) |entry| {
                 if (entry.child.is_none() or entry.child.to_int() >= slice.len) {
                     return .named_child_out_of_range;
@@ -241,4 +245,21 @@ test "check reports broken tree invariants" {
     const bad_named = [_]NamedEntry{ test_named[0], stray };
     const wrong: ContainerTable = .{ .containers = containers.slice(), .named = &bad_named };
     try std.testing.expectEqual(Fault.named_child_has_other_parent, wrong.check(8));
+}
+
+test "a depth at the u16 maximum is a fault, not an overflow" {
+    // Untrusted tables (program images) may hold any depth: give the knot the largest u16
+    // and its stitch depth 0, which a parent-plus-one computed in u16 would overflow on.
+    const gpa = std.testing.allocator;
+    var containers = try build_test_table(gpa);
+    defer containers.deinit(gpa);
+    const table: ContainerTable = .{ .containers = containers.slice(), .named = &test_named };
+    containers.items(.depth)[1] = std.math.maxInt(u16);
+    containers.items(.depth)[2] = 0;
+    const Fault = ContainerTable.Fault;
+    try std.testing.expectEqual(Fault.depth_not_parent_plus_one, table.check(8));
+    containers.items(.depth)[1] = 1;
+    containers.items(.depth)[2] = 2;
+    containers.items(.instruction_count)[3] = std.math.maxInt(u32);
+    try std.testing.expectEqual(Fault.instructions_out_of_bounds, table.check(8));
 }
