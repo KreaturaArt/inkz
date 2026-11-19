@@ -100,6 +100,15 @@ pub const Grammar = struct {
         }
         return found orelse @compileError("no grammar module defines rule " ++ name);
     }
+
+    /// Whether a diagnostic is one of ink's warnings (it doesn't stop compilation).
+    pub fn is_warning(diagnostic: core.Diagnostic) bool {
+        assert(@backingInt(diagnostic.code) < 8);
+        if (diagnostic.code != .message) return false;
+        const message: Message = @fromBackingInt(@intCast(diagnostic.extra));
+        return message == .return_without_tilde or message == .choice_empty or
+            message == .choice_blank;
+    }
 };
 
 pub const Machine = core.Machine(Grammar);
@@ -441,6 +450,8 @@ pub const Parsed = struct {
     workspace: core.Workspace,
     tokens_count: u32,
     diagnostics_count: u32,
+    /// Set when an error came after the diagnostics were full: the story still fails.
+    errors_dropped: bool = false,
     buffer: []u8,
     /// With parse_space: each region's story root (the first is `tree.root`).
     roots: []const ast.NodeIndex = &.{},
@@ -564,6 +575,7 @@ pub fn parse_space(
             .workspace = workspace,
             .tokens_count = machine.tokens_count,
             .diagnostics_count = machine.diagnostics_count,
+            .errors_dropped = machine.errors_dropped,
             .buffer = buffer,
             .roots = roots,
             .attempts = @intCast(attempt),

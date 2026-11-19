@@ -145,8 +145,9 @@ pub fn Action(comptime Rule: type) type {
 
 pub const Outcome = enum { none, succeeded, failed };
 
-/// The machine for a grammar, which provides `Rule` (an enum) and
-/// `step(machine: *Machine(Grammar), frame: *Frame(Rule)) Action(Rule)`.
+/// The machine for a grammar, which provides `Rule` (an enum),
+/// `step(machine: *Machine(Grammar), frame: *Frame(Rule)) Action(Rule)` and
+/// `is_warning(diagnostic: Diagnostic) bool`.
 pub fn Machine(comptime Grammar: type) type {
     return struct {
         const Self = @This();
@@ -181,6 +182,9 @@ pub fn Machine(comptime Grammar: type) type {
         scratch_count: u32 = 0,
         tokens_count: u32 = 0,
         diagnostics_count: u32 = 0,
+        /// Set when an error (not a warning) came after the diagnostics were full, so a
+        /// story with more warnings than room still fails on its error.
+        errors_dropped: bool = false,
         /// The outcome of the frame that just returned.
         outcome: Outcome = .none,
         /// Set when the input is too deep or stopped progressing: every frame fails.
@@ -301,8 +305,11 @@ pub fn Machine(comptime Grammar: type) type {
         pub fn report(machine: *Self, code: Diagnostic.Code, offset: u32, extra: u32) void {
             assert(machine.diagnostics_count <= machine.workspace.diagnostics.len);
             assert(offset <= machine.source.len);
-            if (machine.diagnostics_count == machine.workspace.diagnostics.len) return;
             const diagnostic: Diagnostic = .{ .code = code, .offset = offset, .extra = extra };
+            if (machine.diagnostics_count == machine.workspace.diagnostics.len) {
+                if (!Grammar.is_warning(diagnostic)) machine.errors_dropped = true;
+                return;
+            }
             machine.workspace.diagnostics[machine.diagnostics_count] = diagnostic;
             machine.diagnostics_count += 1;
         }
@@ -407,6 +414,12 @@ pub fn Machine(comptime Grammar: type) type {
 const Toy = struct {
     pub const Rule = enum { expression, term, stall };
     const M = Machine(Toy);
+
+    /// The toy has no warnings.
+    pub fn is_warning(diagnostic: Diagnostic) bool {
+        assert(diagnostic.code != .message);
+        return false;
+    }
 
     pub fn step(machine: *M, frame: *M.Frame) Action(Rule) {
         assert(machine.frames_count > 0);
