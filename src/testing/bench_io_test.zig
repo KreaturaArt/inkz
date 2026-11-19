@@ -82,3 +82,25 @@ test "sampling warms up, then samples to the budget, within the minimum and maxi
     sampling.budget_nanoseconds = 1_000_000;
     try std.testing.expectEqual(8, (try sample(&counter, Counter.once, sampling, &buffer)).len);
 }
+
+test "bench records go to zig-out unless the run asks to record them in bench/" {
+    // The committed history in bench/ only grows when a run is started with --record.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const Destination = common.Destination;
+    const scratch = try Destination.parse(&.{});
+    try std.testing.expectEqual(Destination.scratch, scratch);
+    try std.testing.expectEqualStrings(
+        "zig-out/bench/profile.jsonl",
+        try scratch.path(arena, "profile.jsonl"),
+    );
+    const record = try Destination.parse(&.{"--record"});
+    try std.testing.expectEqual(Destination.record, record);
+    try std.testing.expectEqualStrings(
+        "bench/load_store.jsonl",
+        try record.path(arena, "load_store.jsonl"),
+    );
+    try std.testing.expectError(error.BadArguments, Destination.parse(&.{"--recrod"}));
+    try std.testing.expectError(error.BadArguments, Destination.parse(&.{ "--record", "x" }));
+}
