@@ -508,7 +508,10 @@ story fails closed: `can_continue()` is false, there are no choices, and `cont`,
 `Options.events` holds ink's host events, each optional and each called with
 `events.context`: `on_did_continue` (after each `cont`), `on_make_choice` (before a choice is
 taken), `on_evaluate_function` and `on_complete_evaluate_function` (around
-`evaluate_function`) and `on_choose_path_string`.
+`evaluate_function`) and `on_choose_path_string`. `on_complete_evaluate_function` gets the
+story's own copies of the arguments, valid during the call even if the arguments you passed
+were strings from the story that the evaluation moved; they take room on the evaluation
+stack for the duration of the call.
 
 ```zig
 const Counter = struct {

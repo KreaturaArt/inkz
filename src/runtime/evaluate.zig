@@ -71,10 +71,19 @@ pub fn evaluate_function(
         // writer).
         const buffered = text_writer.buffered();
         const text = if (text_start <= buffered.len) buffered[text_start..] else "";
+        // The host's arguments may be heap strings the run has moved; the pinned copies
+        // below the frame were roots all along.
+        var pinned: [story_module.external_arguments_max]HostValue = undefined;
+        const state = &story.state;
+        assert(state.evaluation.count == before.evaluation_height + arguments.len);
+        const values = state.evaluation.slice()[before.evaluation_height..];
+        for (values, pinned[0..arguments.len]) |value, *host| host.* = ops.host_value(story, value);
+        state.evaluation.count = before.evaluation_height;
         story.callback_depth += 1;
         defer story.callback_depth -= 1;
-        event(story.events.context, name, arguments, text, result);
+        event(story.events.context, name, pinned[0..arguments.len], text, result);
     }
+    assert(story.state.evaluation.count == before.evaluation_height);
     return result;
 }
 
@@ -100,15 +109,23 @@ fn begin_evaluation(
         .call_stack = state.call_stack.mark(),
         .evaluation_height = state.evaluation.count,
     };
-    if (arguments.len > state.evaluation.capacity() - before.evaluation_height) {
+    // With on_complete_evaluate_function, a second copy of the arguments is pinned below
+    // the frame, so the event gets them valid however the heap moved.
+    const pins_count: u32 = if (story.events.on_complete_evaluate_function != null)
+        @intCast(arguments.len)
+    else
+        0;
+    if (arguments.len + pins_count > state.evaluation.capacity() - before.evaluation_height) {
         return error.EvaluationLimit;
     }
     try stash_output(story);
     errdefer unstash_output(story);
     state.output.clear();
-    state.call_stack.push(.function_evaluation_from_game, before.evaluation_height, 0) catch
+    const frame_height = before.evaluation_height + pins_count;
+    state.call_stack.push(.function_evaluation_from_game, frame_height, 0) catch
         return error.FrameLimit;
     state.call_stack.current_frame().pointer = .start_of(container);
+    state.evaluation.push_slice(values[0..pins_count]) catch unreachable;
     state.evaluation.push_slice(values[0..arguments.len]) catch unreachable;
     assert(state.call_stack.frames.count == before.call_stack.frames + 1);
     return before;
