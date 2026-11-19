@@ -115,15 +115,38 @@ pub fn decodable(comptime T: type, words: []const u32, index: u32) bool {
 fn word_decodes(comptime Field: type, word: u32) bool {
     comptime assert(fits_a_word(Field));
     switch (@typeInfo(Field)) {
-        .int, .float, .@"struct" => return true,
+        .int, .float => return true,
+        .@"struct" => return packed_decodes(Field, word),
         .bool => return word <= 1,
-        .@"enum" => |enumeration| {
-            const tag = std.math.cast(enumeration.tag_type, word) orelse return false;
-            if (enumeration.mode == .nonexhaustive) return true;
-            return std.enums.fromInt(Field, tag) != null;
-        },
+        .@"enum" => return enum_decodes(Field, word),
         else => comptime unreachable,
     }
+}
+
+fn enum_decodes(comptime Field: type, word: u32) bool {
+    const enumeration = @typeInfo(Field).@"enum";
+    const tag = std.math.cast(enumeration.tag_type, word) orelse return false;
+    if (enumeration.mode == .nonexhaustive) return true;
+    return std.enums.fromInt(Field, tag) != null;
+}
+
+/// A packed struct's bit fields: an enum field must name a value (a closed `enum(u2)` with
+/// three values has a fourth bit pattern), the rest are any bits.
+fn packed_decodes(comptime Field: type, word: u32) bool {
+    const structure = @typeInfo(Field).@"struct";
+    comptime assert(structure.layout == .@"packed");
+    inline for (structure.field_names, structure.field_types) |name, Bits| {
+        if (@typeInfo(Bits) == .@"enum") {
+            const width = @bitSizeOf(Bits);
+            comptime assert(width < 32);
+            const mask: u32 = (@as(u32, 1) << width) - 1;
+            const bits = (word >> @bitOffsetOf(Field, name)) & mask;
+            if (!enum_decodes(Bits, bits)) return false;
+        } else {
+            comptime assert(@typeInfo(Bits) != .@"struct");
+        }
+    }
+    return true;
 }
 
 fn fields_count(comptime T: type) u32 {
@@ -228,4 +251,22 @@ test "reserve then set fills a forward reference" {
     const decoded = get(Jump, builder.words.items, index);
     try std.testing.expectEqual(Jump{ .target = 5, .condition = true }, decoded.data);
     try std.testing.expectEqual(@as(u32, 5), builder.count());
+}
+
+test "decodable rejects an enum bit pattern that names no value, inside a packed struct too" {
+    // Program images are untrusted: a closed enum(u2) with three values has a fourth
+    // pattern, which `get` would turn into illegal behaviour. Check a plain enum word and the
+    // same enum as a packed field, with the bad pattern and with every good one.
+    const Kind = enum(u2) { plain, function, tunnel };
+    const Flags = packed struct(u32) { kind: Kind, conditional: bool, padding: u29 = 0 };
+    const Record = struct { flags: Flags };
+    const Plain = struct { kind: Kind };
+    for (0..4) |pattern| {
+        const good = pattern < 3;
+        const flag_word: u32 = @as(u32, @intCast(pattern)) | (1 << 2);
+        try std.testing.expectEqual(good, decodable(Record, &.{flag_word}, 0));
+        try std.testing.expectEqual(good, decodable(Plain, &.{@intCast(pattern)}, 0));
+    }
+    try std.testing.expect(!decodable(Plain, &.{1 << 8}, 0));
+    try std.testing.expect(!decodable(Record, &.{0}, 1));
 }
