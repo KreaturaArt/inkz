@@ -624,6 +624,12 @@ pub const ProgramBuilder = struct {
     ) !Program {
         assert(instructions.len == builder.finished.len);
         const gpa = builder.gpa;
+        // The VM's newline output items point at this string.
+        const newline = try builder.intern("\n");
+        // Everything that can fail comes before anything moves out of the builder for good,
+        // so a failure leaves the builder whole for `deinit`.
+        var fresh_strings = try string_pool.StringPool.init(gpa);
+        errdefer fresh_strings.deinit(gpa);
         const extra = try builder.extra.words.toOwnedSlice(gpa);
         errdefer gpa.free(extra);
         const named_owned = try named.toOwnedSlice(gpa);
@@ -636,12 +642,12 @@ pub const ProgramBuilder = struct {
         errdefer gpa.free(list_items);
         const externals = try builder.externals.toOwnedSlice(gpa);
         errdefer gpa.free(externals);
-        // The VM's newline output items point at this string.
-        const newline = try builder.intern("\n");
+        const strings = try builder.strings.freeze(gpa);
+        builder.strings = fresh_strings;
         var containers = builder.containers;
         builder.containers = .empty;
         const program: Program = .{
-            .strings = try builder.strings.freeze(gpa),
+            .strings = strings,
             .instructions = instructions.toOwnedSlice(),
             .extra = extra,
             .containers = containers.toOwnedSlice(),
@@ -655,7 +661,6 @@ pub const ProgramBuilder = struct {
             .ink_version = builder.ink_version,
             .newline = newline,
         };
-        builder.strings = try string_pool.StringPool.init(gpa);
         assert(program.containers.len == builder.staged.items.len);
         return program;
     }
@@ -889,6 +894,26 @@ fn build_sample(builder: *ProgramBuilder) !void {
     try builder.end_container();
     try builder.end_container();
     assert(builder.containers.len == 4);
+}
+
+fn build_and_finish_sample(gpa: Allocator) !void {
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    try build_sample(&builder);
+    var program = try builder.finish();
+    program.deinit(gpa);
+}
+
+test "finish frees everything and leaves the builder whole when an allocation fails" {
+    // Found in review: a failed strings freeze leaked the moved containers, and a failed
+    // pool init after it left `builder.strings` undefined for `deinit`. Fail every
+    // allocation of building and finishing the sample in turn; the testing allocator
+    // reports any leak and `deinit` any broken builder.
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        build_and_finish_sample,
+        .{},
+    );
 }
 
 test "nested containers come out contiguous with ink paths" {

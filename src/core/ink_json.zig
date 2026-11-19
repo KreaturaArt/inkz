@@ -769,6 +769,22 @@ test "duplicate keys and a context below -1 are InvalidInkJson" {
     }
 }
 
+fn load_and_free(gpa: Allocator, json: []const u8) !void {
+    var program = try load(gpa, json);
+    program.deinit(gpa);
+}
+
+test "loading frees everything when an allocation fails" {
+    // List names now come from the builder's allocator, per object: fail every allocation
+    // of loading a story with list definitions and list literals in turn; the testing
+    // allocator reports any leak.
+    const json =
+        \\{"inkVersion":21,"root":[{"list":{"l.a":1,"l.b":2}},{"list":{},"origins":["l"]},
+        \\{"^var":"x","ci":0},"done",null],"listDefs":{"l":{"a":1,"b":2}}}
+    ;
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, load_and_free, .{json});
+}
+
 /// Counts the resolved targets in `program`, failing on any divert or choice that has none.
 fn count_resolved_targets(program: *const Program) !u32 {
     assert(program.instructions.len > 0);

@@ -82,8 +82,9 @@ pub const StringPool = struct {
 
     pub fn init(gpa: Allocator) Allocator.Error!StringPool {
         var pool: StringPool = .{ .bytes = .empty, .ends = .empty, .table = .empty };
-        errdefer pool.deinit(gpa);
+        // Not `pool.deinit`, which asserts the empty string is already there.
         try pool.ends.append(gpa, 0);
+        errdefer pool.ends.deinit(gpa);
         try pool.table.putNoClobberContext(gpa, 0, {}, pool.id_context());
         assert(pool.count() == 1);
         assert(pool.get(empty_id).len == 0);
