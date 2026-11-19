@@ -162,7 +162,9 @@ pub const Story = struct {
         return story.core.visible_choices_count();
     }
 
-    pub fn current_choice(story: *Story, position: u32) Borrowed(Choice) {
+    /// Choice `position`: `error.ChoiceLimit` past the choices (as in `choose_choice_index`).
+    pub fn current_choice(story: *Story, position: u32) error{ChoiceLimit}!Borrowed(Choice) {
+        if (position >= story.core.visible_choices_count()) return error.ChoiceLimit;
         const record = story.core.visible_choice(position);
         return story.core.borrow(Choice, .{
             .index = position,
@@ -349,13 +351,15 @@ pub const Story = struct {
         return story.core.state.warnings.count;
     }
 
+    /// Error `position`'s message: `error.OutOfRange` past `error_count`.
     pub fn write_error(story: *const Story, position: u32, writer: *std.Io.Writer) !void {
-        assert(position < story.core.state.errors.count);
+        if (position >= story.core.state.errors.count) return error.OutOfRange;
         try messages.write(&story.core, story.core.state.errors.slice()[position], writer);
     }
 
+    /// Warning `position`'s message: `error.OutOfRange` past `warning_count`.
     pub fn write_warning(story: *const Story, position: u32, writer: *std.Io.Writer) !void {
-        assert(position < story.core.state.warnings.count);
+        if (position >= story.core.state.warnings.count) return error.OutOfRange;
         try messages.write(&story.core, story.core.state.warnings.slice()[position], writer);
     }
 

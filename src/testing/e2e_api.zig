@@ -87,7 +87,8 @@ test "choices/choice_thread_forking.ink" {
     const first = try fixture.turn();
     defer std.testing.allocator.free(first);
     try std.testing.expectEqual(@as(u32, 1), fixture.story.current_choices_count());
-    try std.testing.expectEqualStrings("A choice", fixture.story.current_choice(0).get().text);
+    const choice = (try fixture.story.current_choice(0)).get();
+    try std.testing.expectEqualStrings("A choice", choice.text);
     try fixture.story.choose_choice_index(0);
     const second = try fixture.turn();
     defer std.testing.allocator.free(second);

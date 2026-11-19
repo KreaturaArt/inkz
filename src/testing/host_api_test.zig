@@ -108,6 +108,47 @@ test "evaluate_function and choose_path_string keep every heap string argument" 
     try std.testing.expectEqualStrings("first string other string\n", (try story.cont()).get());
 }
 
+const lists_source =
+    \\LIST l = a, b, c
+    \\VAR x = (a)
+    \\VAR y = (c)
+    \\~ x = (b)
+    \\~ y = (b, c)
+    \\~ y = (a, c)
+    \\Hello
+    \\-> DONE
+    \\== function second(s, v) ==
+    \\~ return v
+    \\
+;
+
+test "a list argument after a string argument survives the string's compaction" {
+    // Compaction slides lists too, and only the arguments before a string were
+    // kept while it was stored. `y`'s earlier values are garbage below it; storing the
+    // string first compacts and moves `y`'s list, which the function must still see.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa, lists_source);
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    _ = try story.cont();
+    story.core.state.compact_always = true;
+    const arguments = [_]Value{
+        .{ .string = "a fairly long string argument" },
+        story.get_variable("y").?.get(),
+    };
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    defer text.deinit();
+    const result = (try story.evaluate_function("second", &arguments, &text.writer)).get();
+    try std.testing.expectEqual(story.get_variable("y").?.get().list, result.list);
+    try story.set_variable("x", result);
+    var written: std.Io.Writer.Allocating = .init(gpa);
+    defer written.deinit();
+    try story.core.write_list(story.get_variable("x").?.get().list, &written.writer);
+    try std.testing.expectEqualStrings("a, c", written.written());
+}
+
 /// Copies the arguments on_complete_evaluate_function gets.
 const Completion = struct {
     texts: [2][32]u8 = undefined,
@@ -364,6 +405,11 @@ test "host misuse returns errors" {
     try failing.init(gpa, &failing_program, .{});
     defer failing.deinit(gpa);
     try std.testing.expectError(error.StoryError, failing.cont());
+    var buffer: [256]u8 = undefined;
+    var message: std.Io.Writer = .fixed(&buffer);
+    try failing.write_error(0, &message);
+    try std.testing.expectError(error.OutOfRange, failing.write_error(1, &message));
+    try std.testing.expectError(error.OutOfRange, failing.write_warning(0, &message));
     try std.testing.expectError(error.CannotContinue, failing.cont());
     var program = try compile.compile_source(gpa, choices_source);
     defer program.deinit(gpa);
@@ -376,6 +422,8 @@ test "host misuse returns errors" {
     try std.testing.expectEqualStrings("t1", (try story.current_choice_tag(0, 0)).get());
     try std.testing.expectError(error.TagLimit, story.current_choice_tag(0, 1));
     try std.testing.expectError(error.ChoiceLimit, story.current_choice_tag(1, 0));
+    try std.testing.expectEqualStrings("Pick", (try story.current_choice(0)).get().text);
+    try std.testing.expectError(error.ChoiceLimit, story.current_choice(1));
     try std.testing.expectEqualStrings("score", story.global_variable_name(0).?);
     try std.testing.expect(story.global_variable_name(1) == null);
     try story.choose_choice_index(0);

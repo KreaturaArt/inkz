@@ -30,7 +30,7 @@ fn play_scripted(story: *play.Story, script: []const u8, transcript: *std.Io.Wri
         const count = story.current_choices_count();
         if (count == 0 or at == script.len) return;
         for (0..count) |position| {
-            const choice = story.current_choice(@intCast(position)).get();
+            const choice = (story.current_choice(@intCast(position)) catch return).get();
             transcript.print("* {s}\n", .{choice.text}) catch return;
         }
         story.choose_choice_index(script[at] % count) catch return;
