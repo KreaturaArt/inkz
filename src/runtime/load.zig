@@ -177,6 +177,12 @@ const Loader = struct {
     }
 
     /// The flows: the current one last, so it ends up in the live buffers.
+    ///
+    /// The default flow must be there, as every save ink writes from a story has it: ink
+    /// writes one flow only while it has no named flows, and that one is the default. A lone
+    /// flow with another name (ink would load it as its current flow and treat it as the
+    /// default on the next switch) is refused, since here the default flow is always record
+    /// 0 by its own name. Each flow name appears once.
     fn flows_of(loader: *Loader, all: u32) Error!void {
         assert(all < loader.tree.nodes.len);
         assert(loader.state().flows.len > 0);
@@ -196,6 +202,11 @@ const Loader = struct {
             while (members.next()) |name_node| {
                 var buffer: [state_module.flow_name_bytes_max]u8 = undefined;
                 const name = try loader.flow_name(name_node, &buffer);
+                if (!want_current and !loader.commit) {
+                    if (try loader.flow_name_repeated(all, name_node, name)) {
+                        return error.InvalidSave;
+                    }
+                }
                 const is_current = current == null or std.mem.eql(u8, name, current.?);
                 if (std.mem.eql(u8, name, flows.default_name)) has_default = true;
                 if (is_current == want_current) {
@@ -205,7 +216,21 @@ const Loader = struct {
                 members.skip_value(name_node + 1);
             }
         }
-        if (!found_current or (!has_default and count > 1)) return error.InvalidSave;
+        if (!found_current or !has_default) return error.InvalidSave;
+    }
+
+    /// Whether a flow before `name_node` in the flows object `all` is also named `name`.
+    fn flow_name_repeated(loader: *Loader, all: u32, name_node: u32, name: []const u8) Error!bool {
+        assert(name.len > 0);
+        assert(name_node > all);
+        var members = loader.tree.children(all);
+        while (members.next()) |earlier| {
+            if (earlier == name_node) return false;
+            var buffer: [state_module.flow_name_bytes_max]u8 = undefined;
+            if (std.mem.eql(u8, try loader.flow_name(earlier, &buffer), name)) return true;
+            members.skip_value(earlier + 1);
+        }
+        unreachable; // `name_node` is a member of `all`.
     }
 
     fn flow_name(
@@ -651,6 +676,9 @@ const Loader = struct {
             const name = loader.story.program.strings.find(writer.buffered()) orelse
                 return error.SaveDoesNotMatchStory;
             const context = try loader.integer(try loader.member(node, "ci"));
+            // -1 unknown, 0 global, n > 0 a call-stack frame; a frame deeper than the stack
+            // is checked where the pointer is followed.
+            if (context < -1) return error.InvalidSave;
             return .{ .variable_pointer = .{ .name = name, .context = context } };
         }
         if (tree.get(node, "#")) |text| return .{ .tag = try loader.string(text, 0) };

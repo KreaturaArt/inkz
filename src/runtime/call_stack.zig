@@ -289,6 +289,10 @@ pub const CallStack = struct {
         context: i32,
     ) (Error || error{TempNotFound})!void {
         assert(!name.is_none());
+        // A variable pointer (from a save, or one that outlived its frame) may name a context
+        // deeper than this thread's stack: nothing there to set, as ink's lookup would find.
+        const frames_count = call_stack.current_frames().len;
+        if (context != -1 and (context < 1 or context > frames_count)) return error.TempNotFound;
         const frame = call_stack.frame_for_context(context);
         const temps = call_stack.temps.slice()[frame.temps_first..][0..frame.temps_count];
         for (temps) |*temp| {
@@ -382,6 +386,9 @@ test "frames push and pop, and temps belong to their frame" {
     // A reference parameter assigns the caller's existing temp.
     try stack.temp_set(x, .{ .integer = 9 }, false, 1);
     try std.testing.expectError(error.TempNotFound, stack.temp_set(y, .null, false, 1));
+    // A context past the stack (a stale or loaded pointer) is not found, not an assertion.
+    try std.testing.expectError(error.TempNotFound, stack.temp_set(x, .null, false, 3));
+    try std.testing.expectError(error.TempNotFound, stack.temp_set(x, .null, false, 0));
     try std.testing.expectError(error.MismatchedPop, stack.pop(.tunnel));
     try stack.pop(.function);
     try std.testing.expectEqual(Value{ .integer = 9 }, stack.temp_get(x, -1).?);
