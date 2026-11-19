@@ -7,7 +7,6 @@ const assert = std.debug.assert;
 const profile = @import("../core/profile.zig");
 const Allocator = std.mem.Allocator;
 const grammar = @import("grammar.zig");
-const core = @import("core.zig");
 const sema = @import("sema.zig");
 const resolve = @import("resolve.zig");
 const source_space = @import("source_space.zig");
@@ -26,12 +25,7 @@ pub const Error = error{
 };
 
 /// Whether a parse diagnostic is one of ink's warnings (it doesn't stop compilation).
-pub fn is_warning(diagnostic: core.Diagnostic) bool {
-    assert(@backingInt(diagnostic.code) < 8);
-    if (diagnostic.code != .message) return false;
-    const message: grammar.Message = @fromBackingInt(@intCast(diagnostic.extra));
-    return message == .return_without_tilde or message == .choice_empty or message == .choice_blank;
-}
+pub const is_warning = grammar.Grammar.is_warning;
 
 pub const Options = struct {
     /// ink's countAllVisits: count the visits of every knot, stitch, gather and choice.
@@ -48,6 +42,8 @@ fn compile_parsed(
 ) !Program {
     assert(parsed.tree.tags.len > 0);
     assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
+    // An error past the full diagnostics wasn't recorded, but still fails the story.
+    if (parsed.errors_dropped) return error.CompileFailed;
     for (parsed.diagnostics()) |diagnostic| {
         if (!is_warning(diagnostic)) return error.CompileFailed;
     }
@@ -237,6 +233,25 @@ test "input the parser gives up on fails to compile, freeing everything once" {
     try text.append(gpa, 'x');
     try text.appendNTimes(gpa, '}', 300);
     try text.append(gpa, '\n');
+    try std.testing.expectError(error.CompileFailed, compile_source(gpa, text.items));
+}
+
+test "an error after more warnings than diagnostics_max still fails the compilation" {
+    // 300 empty choices are 300 warnings, more than the 256 diagnostics kept; the
+    // unfinished conditional after them is an error, and was once dropped silently.
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendSlice(gpa, "== k\n");
+    for (0..300) |_| try text.appendSlice(gpa, "*\n");
+    try text.appendSlice(gpa, "- -> DONE\n");
+    var warned = try compile_source(gpa, text.items);
+    warned.deinit(gpa);
+    try text.appendSlice(gpa, "== j\n{x:\n");
+    var parsed = try grammar.parse(gpa, text.items, .{});
+    defer parsed.deinit(gpa);
+    try std.testing.expectEqual(parsed.workspace.diagnostics.len, parsed.diagnostics_count);
+    try std.testing.expect(parsed.errors_dropped);
     try std.testing.expectError(error.CompileFailed, compile_source(gpa, text.items));
 }
 
