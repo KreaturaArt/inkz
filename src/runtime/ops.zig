@@ -814,7 +814,8 @@ pub fn seed_random(story: *Story) Error!void {
 
 pub const shuffle_elements_max = 1024;
 
-/// ink's NextSequenceShuffleIndex.
+/// ink's NextSequenceShuffleIndex. A shuffle of more than `shuffle_elements_max` elements
+/// returns ShuffleLimit.
 pub fn sequence_shuffle_index(story: *Story) Error!void {
     assert(shuffle_elements_max > 0);
     assert(!vm.current_pointer(story).is_null());
@@ -823,7 +824,9 @@ pub fn sequence_shuffle_index(story: *Story) Error!void {
     const sequence_count_value = try vm.pop_evaluation(story);
     if (sequence_count_value != .integer) return fail(story, .shuffle_invalid, .{});
     const elements = elements_value.integer;
-    if (elements <= 0 or elements > shuffle_elements_max) return fail(story, .shuffle_invalid, .{});
+    if (elements <= 0) return fail(story, .shuffle_invalid, .{});
+    // ink has no bound; the unpicked indices live in a fixed buffer here.
+    if (elements > shuffle_elements_max) return error.ShuffleLimit;
     const count = sequence_count_value.integer;
     const loop_index = @divTrunc(count, elements);
     const iteration_index = @rem(count, elements);
