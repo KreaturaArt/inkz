@@ -415,7 +415,18 @@ fn divert(story: *Story, instruction: Instruction) Error!Signal {
         const target = try ops.variable_value(story, record.name, -1) orelse
             return ops.fail(story, .divert_variable_not_found, .{ .name = record.name });
         if (target != .divert_target) {
-            return ops.fail(story, .divert_variable_not_target, .{ .name = record.name });
+            // ink's message says what the variable held (`numbers`: its tag and payload).
+            const payload: i32 = switch (target) {
+                .integer => |number| number,
+                .float => |number| @bitCast(number),
+                .bool => |flag| @intFromBool(flag),
+                else => 0,
+            };
+            const tag: i32 = @backingInt(std.meta.activeTag(target));
+            return ops.fail(story, .divert_variable_not_target, .{
+                .name = record.name,
+                .numbers = .{ tag, payload },
+            });
         }
         story.diverted_pointer = .start_of(target.divert_target);
     } else {

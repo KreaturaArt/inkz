@@ -45,9 +45,7 @@ fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Write
             "doesn't exist in the save state.", .{argument}),
         .divert_variable_not_found => return writer.print("Tried to divert using a target from " ++
             "a variable that could not be found ({s})", .{argument}),
-        .divert_variable_not_target => return writer.print("Tried to divert to a target from a " ++
-            "variable, but the variable ({s}) didn't contain a divert target, it was " ++
-            "empty/null (the value 0).", .{argument}),
+        .divert_variable_not_target => return write_not_target(diagnostic, argument, writer),
         .random_range_empty => return writer.print("RANDOM was called with minimum as {d} and " ++
             "maximum as {d}. The maximum must be larger", .{
             diagnostic.number,
@@ -108,6 +106,30 @@ fn rank_name(rank: i32) []const u8 {
         "Int", "Float", "List", "String", "DivertTarget", "VariablePointer",
     };
     return names[@intCast(rank)];
+}
+
+/// ink's "didn't contain a divert target": `was empty/null (the value 0).` for an integer
+/// 0, else `contained '<value>'.` with the value as ink prints it (`numbers`: the Value tag
+/// and payload; strings and lists keep the generic wording).
+fn write_not_target(diagnostic: Diagnostic, name: []const u8, writer: *std.Io.Writer) !void {
+    assert(diagnostic.code == .divert_variable_not_target);
+    try writer.print("Tried to divert to a target from a variable, but the variable ({s}) " ++
+        "didn't contain a divert target, it ", .{name});
+    const tag: std.meta.Tag(Value) = @fromBackingInt(@as(u8, @intCast(diagnostic.number)));
+    const payload = diagnostic.other_number;
+    switch (tag) {
+        .integer => if (payload == 0)
+            try writer.writeAll("was empty/null (the value 0).")
+        else
+            try writer.print("contained '{d}'.", .{payload}),
+        .float => {
+            var buffer: [value_module.float_text_bytes_max]u8 = undefined;
+            const text = value_module.format_float(@bitCast(payload), &buffer);
+            try writer.print("contained '{s}'.", .{text});
+        },
+        .bool => try writer.print("contained '{s}'.", .{if (payload != 0) "True" else "False"}),
+        else => try writer.writeAll("was empty/null (the value 0)."),
+    }
 }
 
 /// The native function's name as ink spells it (its JSON word), from an opcode number.
