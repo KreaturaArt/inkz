@@ -75,6 +75,13 @@ pub const ListSlab = struct {
         return @fromBackingInt(@intCast(at));
     }
 
+    /// Records that `words` more must fit now (a reservation before an operation), as
+    /// `StringHeap.note_need` does.
+    pub fn note_need(slab: *ListSlab, words: u32) void {
+        assert(slab.used <= slab.words.len);
+        slab.peak = @max(slab.peak, slab.used +| words);
+    }
+
     /// Drops every list from `top` on; `top` must be an object boundary.
     pub fn truncate(slab: *ListSlab, top: u32) void {
         assert(top <= slab.used);

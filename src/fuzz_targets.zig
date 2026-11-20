@@ -210,4 +210,5 @@ test {
     _ = @import("fuzz/vm.zig");
     _ = @import("fuzz/save.zig");
     _ = @import("fuzz/host.zig");
+    _ = @import("fuzz/limits.zig");
 }
