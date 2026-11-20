@@ -277,8 +277,13 @@ pub const Context = struct {
     }
 
     /// The name in an object's syntax node child `position` (an identifier leaf).
-    pub fn child_name(context: *const Context, object: ObjectIndex, position: u32) []const u8 {
-        return context.parsed.child_text(context.tree.node(object), position);
+    /// The text of slot `which` of the object's node (its name, mostly).
+    pub fn slot_name(
+        context: *const Context,
+        object: ObjectIndex,
+        comptime which: ast_module.Slot,
+    ) []const u8 {
+        return context.parsed.slot_text(context.tree.node(object), which);
     }
 
     /// Records an error on `object`; as in ink, an object gets at most one.
@@ -302,7 +307,7 @@ pub const Context = struct {
     pub fn flow_name(context: *const Context, flow: ObjectIndex) []const u8 {
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return "";
-        return context.child_name(flow, 0);
+        return context.slot_name(flow, .name);
     }
 
     /// A choice's or gather's label (empty if it has none).
@@ -311,14 +316,14 @@ pub const Context = struct {
         assert(kind == .choice or kind == .gather);
         const node = context.tree.node(point);
         if (node.is_none()) return "";
-        return context.parsed.child_text(node, 1);
+        return context.parsed.slot_text(node, .label);
     }
 
     /// The flow's parameters, as their identifier leaves.
     pub fn parameters(context: *const Context, flow: ObjectIndex) []const ast_module.Tag {
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return &.{};
-        const list_node = context.ast().child(context.tree.node(flow), 1);
+        const list_node = context.ast().slot(context.tree.node(flow), .parameters);
         if (context.ast().tag(list_node) == .none) return &.{};
         const listed = context.ast().list(list_node);
         return context.ast().tags[listed.first.to_int()..][0..listed.count];
@@ -326,7 +331,7 @@ pub const Context = struct {
 
     /// The name of parameter `position` of `flow`.
     pub fn parameter_name(context: *const Context, flow: ObjectIndex, position: u32) []const u8 {
-        const list_node = context.ast().child(context.tree.node(flow), 1);
+        const list_node = context.ast().slot(context.tree.node(flow), .parameters);
         const listed = context.ast().list(list_node);
         assert(position < listed.count);
         return context.parsed.leaf_text(.from_int(listed.first.to_int() + position));

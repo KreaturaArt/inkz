@@ -70,7 +70,7 @@ fn check_lists(context: *Context, object: ObjectIndex, name: []const u8) !void {
         const declaration = tree.parent(definition);
         // The list's name is in its LIST declaration's syntax, child 0.
         assert(tree.kind(declaration) == .variable_assignment);
-        const list_name = context.child_name(declaration, 0);
+        const list_name = context.slot_name(declaration, .name);
         const is_own = object == definition or object == declaration;
         if (std.mem.eql(u8, name, list_name) and !is_own) try context.report(
             .name_conflict,
@@ -78,7 +78,7 @@ fn check_lists(context: *Context, object: ObjectIndex, name: []const u8) !void {
         );
         if (tree.kind(object) == .list_element) continue;
         for (tree.children_of(definition)) |element| {
-            const item = context.child_name(element, 0);
+            const item = context.slot_name(element, .name);
             if (std.mem.eql(u8, name, item)) try context.report(.name_conflict, object);
         }
     }

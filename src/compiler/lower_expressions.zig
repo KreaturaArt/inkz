@@ -180,7 +180,7 @@ fn leaf(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void 
 pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const u8 {
     const ast = lowering.ast();
     assert(ast.tag(lowering.tree.node(reference)) == .variable_reference);
-    const path = ast.child(lowering.tree.node(reference), 0);
+    const path = ast.slot(lowering.tree.node(reference), .path);
     const first = lowering.parsed.leaf_text(ast.item(path, 0));
     const last = lowering.parsed.leaf_text(ast.item(path, ast.list(path).count - 1));
     // The components are one run of the source (`a.b`), so the name is that range.
@@ -228,9 +228,9 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
     assert(tree.kind(object) == .increment);
     const node = tree.node(object);
     const name = if (tree.has(object, Flags.by_expression))
-        lowering.parsed.child_text(node, 0)
+        lowering.parsed.slot_text(node, .name)
     else
-        reference_name_of_node(lowering, lowering.ast().child(node, 0));
+        reference_name_of_node(lowering, lowering.ast().slot(node, .name));
     const children = tree.children_of(object);
     if (frame.stage == 0) {
         _ = try ir.add(container, .{ .variable_reference = name });
@@ -248,7 +248,7 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
 fn reference_name_of_node(lowering: *const Lowering, reference: ast_module.NodeIndex) []const u8 {
     const ast = lowering.ast();
     assert(ast.tag(reference) == .variable_reference);
-    return lowering.parsed.leaf_text(ast.item(ast.child(reference, 0), 0));
+    return lowering.parsed.leaf_text(ast.item(ast.slot(reference, .path), 0));
 }
 
 /// FunctionCall.GenerateIntoContainer: a built-in's arguments then its command or native
@@ -258,7 +258,7 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
     const tree = lowering.tree;
     const ir = &lowering.ir;
     const call = frame.object;
-    const name = lowering.child_name(call, 0);
+    const name = lowering.slot_name(call, .name);
     const proxy = tree.children_of(call)[0];
     // A call's first child is the proxy divert that holds its arguments.
     assert(tree.kind(proxy) == .divert);
@@ -333,7 +333,7 @@ fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
         const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
         const item_name = if (dot) |at| text[at + 1 ..] else text;
         const found = find_list_item(lowering, list_name, item_name) orelse continue;
-        const origin = lowering.child_name(lowering.tree.parent(found.definition), 0);
+        const origin = lowering.slot_name(lowering.tree.parent(found.definition), .name);
         // ink warns about a duplicate item and keeps the first.
         if (contains_item(items.items, origin, item_name)) continue;
         const value = lowering.resolution.item_values[found.element.to_int()];
@@ -357,11 +357,11 @@ fn find_list_item(lowering: *const Lowering, list_name: ?[]const u8, item: []con
     assert(item.len > 0);
     for (lowering.resolution.lists) |definition| {
         if (list_name) |name| {
-            const own = lowering.child_name(lowering.tree.parent(definition), 0);
+            const own = lowering.slot_name(lowering.tree.parent(definition), .name);
             if (!std.mem.eql(u8, name, own)) continue;
         }
         for (lowering.tree.children_of(definition)) |element| {
-            if (!std.mem.eql(u8, item, lowering.child_name(element, 0))) continue;
+            if (!std.mem.eql(u8, item, lowering.slot_name(element, .name))) continue;
             return .{ .definition = definition, .element = element };
         }
     }
@@ -381,7 +381,7 @@ pub fn list_definition_value(
     var items: std.ArrayList(ir_module.ListItem) = .empty;
     for (lowering.tree.children_of(definition)) |element| {
         if (ast.tag(lowering.tree.node(element)) != .selected_list_item) continue;
-        const name = lowering.child_name(element, 0);
+        const name = lowering.slot_name(element, .name);
         try items.append(arena, .{
             .origin = origin,
             .name = name,

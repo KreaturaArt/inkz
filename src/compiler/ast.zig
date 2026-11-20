@@ -204,6 +204,81 @@ pub fn shape(tag: Tag) Shape {
     };
 }
 
+/// The names of a fixed-shape node's children (finding F7): readers ask for a child by
+/// name (`Ast.slot(node, .label)`), and `slots` says where each name is for each tag, so a
+/// layout change is one edit here, checked at compile time against `shape`.
+pub const Slot = enum {
+    name,
+    parameters,
+    statements,
+    header,
+    label,
+    condition,
+    start,
+    choice_only,
+    inner,
+    initial,
+    branches,
+    content,
+    kind,
+    elements,
+    path,
+    arguments,
+    value,
+    items,
+    left,
+    right,
+};
+
+/// A fixed-shape tag's children, in order; empty for leaves and lists.
+pub fn slots(comptime tag: Tag) []const Slot {
+    return comptime switch (tag) {
+        .knot, .function, .stitch, .function_stitch => &.{ .name, .parameters, .statements },
+        .choice, .sticky_choice => &.{ .header, .label, .condition, .start, .choice_only, .inner },
+        .gather => &.{ .header, .label },
+        .conditional, .inline_conditional => &.{ .initial, .branches },
+        .conditional_branch => &.{ .condition, .content },
+        .sequence => &.{ .kind, .elements },
+        .divert, .tunnel, .thread => &.{ .path, .arguments },
+        .function_call => &.{ .name, .arguments },
+        .temp_declaration, .assignment => &.{ .name, .value },
+        .add_assignment, .subtract_assignment => &.{ .name, .value },
+        .variable_declaration, .const_declaration => &.{ .name, .value },
+        .list_declaration => &.{ .name, .items },
+        .list_item, .selected_list_item => &.{ .name, .value },
+        .external_declaration => &.{ .name, .parameters },
+        .add, .subtract, .multiply, .divide, .modulo, .equal, .not_equal => &.{ .left, .right },
+        .less, .greater, .less_equal, .greater_equal, .@"and", .@"or" => &.{ .left, .right },
+        .has, .hasnt, .intersect => &.{ .left, .right },
+        .inline_value, .tunnel_onwards, .@"return", .call_statement => &.{.inner},
+        .divert_target, .negate, .not => &.{.inner},
+        .else_branch => &.{.content},
+        .variable_reference => &.{.path},
+        .increment, .decrement => &.{.name},
+        else => &.{},
+    };
+}
+
+/// Where `which` is among `tag`'s children, or null when it has no such child.
+fn slot_position(comptime tag: Tag, comptime which: Slot) ?u32 {
+    for (slots(tag), 0..) |candidate, position| {
+        if (candidate == which) return position;
+    }
+    return null;
+}
+
+comptime {
+    // Every fixed-shape tag names exactly its children; no other tag names any.
+    @setEvalBranchQuota(100_000);
+    for (std.enums.values(Tag)) |tag| {
+        const expected: usize = switch (shape(tag)) {
+            .fixed => |count| count,
+            .leaf, .list => 0,
+        };
+        if (slots(tag).len != expected) @compileError("slots of " ++ @tagName(tag));
+    }
+}
+
 pub const Ast = struct {
     tags: []const Tag,
     data: []const u32,
@@ -229,6 +304,18 @@ pub const Ast = struct {
         const result: NodeIndex = .from_int(ast.data[node.to_int()] + position);
         assert(result.to_int() < ast.tags.len);
         return result;
+    }
+
+    /// The child named `which` of a fixed-shape node, whose tag must have it.
+    pub fn slot(ast: *const Ast, node: NodeIndex, comptime which: Slot) NodeIndex {
+        const position: u32 = switch (ast.tag(node)) {
+            inline else => |node_tag| position: {
+                const position = comptime slot_position(node_tag, which);
+                if (position) |found| break :position found;
+                unreachable_slot(node_tag, which);
+            },
+        };
+        return ast.child(node, position);
     }
 
     /// How many items a list node has, and its first item.
@@ -275,4 +362,9 @@ test "accessors follow each tag's shape" {
     const line = ast.list(.from_int(3));
     try std.testing.expectEqual(@as(u32, 2), line.count);
     try std.testing.expectEqual(@as(u32, 1), ast.token(ast.item(.from_int(3), 1)).to_int());
+}
+
+/// A node asked for a child its tag doesn't have.
+fn unreachable_slot(tag: Tag, which: Slot) noreturn {
+    std.debug.panic("a {t} node has no {t} child", .{ tag, which });
 }

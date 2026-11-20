@@ -455,9 +455,9 @@ fn render_label(
     if (node.is_none()) return;
     const ast = &parsed.tree;
     const token_node: ?NodeIndex = switch (ast.tag(node)) {
-        .knot, .function, .stitch, .function_stitch => ast.child(node, 0),
+        .knot, .function, .stitch, .function_stitch => ast.slot(node, .name),
         .text, .text_space, .glue => node,
-        .choice, .sticky_choice, .gather => ast.child(node, 1),
+        .choice, .sticky_choice, .gather => ast.slot(node, .label),
         else => null,
     };
     const leaf = token_node orelse return;
