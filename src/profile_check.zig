@@ -61,19 +61,25 @@ fn check_inactive() !void {
     assert(!profile.active);
 }
 
-/// The counter's rate matches the system clock: a 20 ms busy wait measures 20 ms.
+/// The counter's rate matches the system clock: a 20 ms busy wait measures 20 ms, and no
+/// more than the system clock saw around the zone (a shared CI machine may preempt the
+/// thread inside it, which lengthens both).
 fn check_rate(io: std.Io) !void {
     assert(!profile.active);
     profile.active = true;
     defer profile.active = false;
     profile.reset();
+    const before = std.Io.Timestamp.now(io, .awake);
     const zone = profile.begin(.cont);
     const start = std.Io.Timestamp.now(io, .awake);
     while (start.durationTo(std.Io.Timestamp.now(io, .awake)).toNanoseconds() < 20_000_000) {}
     zone.end();
+    const after = std.Io.Timestamp.now(io, .awake);
+    const around: u64 = @intCast(before.durationTo(after).toNanoseconds());
     const measured = profile.totals().inclusive_ns[@backingInt(profile.Zone.cont)];
-    try std.testing.expect(measured > 19_000_000 and measured < 22_000_000);
-    assert(measured > 0);
+    try std.testing.expect(measured > 19_000_000);
+    try std.testing.expect(measured < around + around / 10);
+    assert(around >= 20_000_000);
 }
 
 pub fn main(init: std.process.Init) !void {
