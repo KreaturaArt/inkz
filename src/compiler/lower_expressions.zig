@@ -65,7 +65,14 @@ fn step(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectInde
         },
         .unary => {
             if (frame.stage == 0) {
-                if (try values.literal(lowering.parsed, tree, object)) |value| {
+                const folded = values.literal(lowering.parsed, tree, object) catch |err| {
+                    // A fold ink throws on (`- true`) is an error on the expression.
+                    assert(err == error.UnsupportedFold);
+                    try lowering.report(.unsupported_fold, object);
+                    frame.stage = done;
+                    return null;
+                };
+                if (folded) |value| {
                     _ = try lowering.ir.add(container, literal_item(value));
                     frame.stage = done;
                     return null;
