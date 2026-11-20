@@ -191,3 +191,22 @@ test "a negated left operand of '?' is an error, as in ink" {
         .{ .code = .negated_has_operand, .line = 6 },
     });
 }
+
+test "a divert target of a variable is an error, as in ink" {
+    // ERROR: line 3: Since 'k0' is a variable, it shouldn't be preceded by '->' here.
+    // ERROR: line 3: When getting the TURNS_SINCE() of a variable target, remove the '->' -
+    // i.e. it should just be TURNS_SINCE(k0)
+    // ERROR: line 4: Since 'k0' is a variable, it shouldn't be preceded by '->' here.
+    // Found by the limits swarm fuzz target, where lowering reached `unreachable` (P16.4).
+    const source = "=== function f(y) ===\n~ temp k0 = 1\n~ temp t = TURNS_SINCE(-> k0)\n" ++
+        "~ temp u = -> k0\n~ return t\n";
+    try expect_diagnostics(source, &.{
+        .{ .code = .variable_divert_target, .line = 3 },
+        .{ .code = .turns_since_variable_target, .line = 3 },
+        .{ .code = .variable_divert_target, .line = 4 },
+    });
+    try std.testing.expectError(error.CompileFailed, compile.compile_source(
+        std.testing.allocator,
+        source,
+    ));
+}

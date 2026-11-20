@@ -118,6 +118,13 @@ pub const Code = enum(u8) {
     /// 'not' or '!' here negates 'A' rather than the result of the '?' or 'has' operator. You
     /// need to add parentheses around the (A ? B) expression."
     negated_has_operand,
+    /// DivertTarget.ResolveReferences, on `-> x` for a variable `x`: "Since 'x' is a
+    /// variable, it shouldn't be preceded by '->' here."
+    variable_divert_target,
+    /// FunctionCall.ResolveReferences, on the call `TURNS_SINCE(-> x)` for a variable `x`: "When
+    /// getting the TURNS_SINCE() of a variable target, remove the '->' - i.e. it should just
+    /// be TURNS_SINCE(x)".
+    turns_since_variable_target,
     /// UnaryExpression.WithInner on a literal it can't fold, `- true` (inklecate throws
     /// "Unexpected operation or number type").
     unsupported_fold,
