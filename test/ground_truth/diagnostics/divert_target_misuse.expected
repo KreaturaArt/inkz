@@ -1,0 +1,1 @@
+ERROR: 'divert_target_misuse.ink' line 2: Can't use a divert target like that. Did you intend to call '-> k' as a function: likeThis(), or check the read count: likeThis, with no arrows?

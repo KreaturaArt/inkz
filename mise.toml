@@ -23,6 +23,10 @@ run = "tools/ink_harness/reference.sh paths"
 description = "Run ink on generated swarm cases (zig build swarm-gen) for zig build swarm-check"
 run = "tools/ink_harness/reference.sh swarm"
 
+[tasks."reference:diagnostics"]
+description = "inklecate's errors and warnings for test/ground_truth/diagnostics"
+run = "tools/ink_harness/reference.sh diagnostics"
+
 [tasks."reference:floats"]
 description = "Regenerate .NET float formatting ground truth (P4.1)"
 run = "tools/ink_harness/reference.sh floats"

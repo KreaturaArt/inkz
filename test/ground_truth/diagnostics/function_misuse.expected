@@ -1,0 +1,1 @@
+ERROR: 'function_misuse.ink' line 4: should not have return statement outside of a knot

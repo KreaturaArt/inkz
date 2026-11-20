@@ -132,7 +132,9 @@ fn name_weave_points(context: *Context, weave: ObjectIndex) !void {
             const name = context.label(object);
             if (name.len > 0) {
                 const entry = try context.labels.getOrPut(gpa, .{ .scope = weave, .name = name });
-                if (entry.found_existing) try context.report(.duplicate_label, object);
+                if (entry.found_existing) {
+                    try context.report_with(.duplicate_label, object, entry.value_ptr.*);
+                }
                 entry.value_ptr.* = object;
             }
         }

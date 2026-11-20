@@ -164,7 +164,9 @@ fn declare(
 ) !void {
     assert(context.tree.is_flow(scope));
     const entry = try table.getOrPut(context.gpa, .{ .scope = scope, .name = name });
-    if (entry.found_existing) return context.report(.duplicate_declaration, object);
+    if (entry.found_existing) {
+        return context.report_with(.duplicate_declaration, object, entry.value_ptr.*);
+    }
     entry.value_ptr.* = object;
 }
 
@@ -200,6 +202,7 @@ fn check(context: *Context, object: ObjectIndex) !void {
         .divert => try check_divert(context, object),
         .variable_reference => try check_variable_reference(context, object),
         .list_literal => try check_list_literal(context, object),
+        .divert_target => try check_divert_target_usage(context, object),
         .binary => {
             // ink's `not A ? B` check: a negated left operand of `?` (or `has`).
             const ast = context.ast();
@@ -243,6 +246,61 @@ fn check(context: *Context, object: ObjectIndex) !void {
         else => {},
     }
     assert(object.to_int() < context.tree.count());
+}
+
+/// Whether an object is one of ink's Expressions (the usage walk climbs through those).
+fn is_expression(kind: sema.Kind) bool {
+    return switch (kind) {
+        .binary, .unary, .number, .string_expression, .variable_reference => true,
+        .function_call, .divert_target, .list_literal, .multiple_condition, .increment => true,
+        else => false,
+    };
+}
+
+/// DivertTarget.ResolveReferences' usage check: from the value up through the expressions
+/// around it, the first user decides. `==` and `!=` between divert targets or variables,
+/// TURNS_SINCE and READ_COUNT are fine; any other expression, a choice's condition or a
+/// conditional is ink's "Can't use a divert target like that".
+fn check_divert_target_usage(context: *Context, target: ObjectIndex) !void {
+    const tree = context.tree;
+    const ast = context.ast();
+    var usage = target;
+    while (is_expression(tree.kind(usage))) {
+        // A call's arguments are its proxy divert's, as in ink: the walk stops there.
+        const parent = tree.parent(usage);
+        if (parent.is_none()) return;
+        const kind = tree.kind(parent);
+        const verdict: enum { fine, bad, climb } = switch (kind) {
+            .binary => binary: {
+                const tag = ast.tag(tree.node(parent));
+                if (tag != .equal and tag != .not_equal) break :binary .bad;
+                for (tree.children_of(parent)) |operand| {
+                    const operand_kind = tree.kind(operand);
+                    if (operand_kind != .divert_target and operand_kind != .variable_reference) {
+                        break :binary .bad;
+                    }
+                }
+                break :binary .fine;
+            },
+            .function_call => call: {
+                const name = context.slot_name(parent, .name);
+                const counts = std.mem.eql(u8, name, "TURNS_SINCE") or
+                    std.mem.eql(u8, name, "READ_COUNT");
+                break :call if (counts) .fine else .bad;
+            },
+            .choice => choice: {
+                const condition = ast.slot(tree.node(parent), .condition);
+                break :choice if (tree.node(usage) == condition) .bad else .climb;
+            },
+            .conditional, .conditional_branch => .bad,
+            else => if (is_expression(kind)) .bad else .climb,
+        };
+        switch (verdict) {
+            .fine => return,
+            .bad => return context.report(.divert_target_misused, target),
+            .climb => usage = parent,
+        }
+    }
 }
 
 /// Divert.ResolveReferences.

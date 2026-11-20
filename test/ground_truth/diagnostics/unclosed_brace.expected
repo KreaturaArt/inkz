@@ -1,0 +1,2 @@
+ERROR: 'unclosed_brace.ink' line 1: Expected some kind of logic, conditional or sequence within braces: { ... } but saw 'x'
+ERROR: 'unclosed_brace.ink' line 1: Expected end of line but saw '{x'

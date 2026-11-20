@@ -5,6 +5,7 @@
 #   random              regenerate test/ground_truth/dotnet_random.expected
 #   floats              regenerate test/ground_truth/dotnet_floats.expected
 #   paths [case...]     regenerate test/ground_truth/<case>.paths (container paths and hashes)
+#   diagnostics         inklecate's errors and warnings for test/ground_truth/diagnostics/*.ink
 #   swarm <dir>...      ink's results for generated swarm cases (`zig build swarm-gen`):
 #                       <n>.ink.json and <n>.expected, <n>.compile_errors or <n>.timeout
 set -euo pipefail
@@ -117,6 +118,15 @@ swarm() {
     done
 }
 
+# Each story's messages exactly as inklecate prints them (`warnings`), for the compiler's
+# diagnostics test (P16.12).
+diagnostics() {
+    for source in "$cases"/diagnostics/*.ink; do
+        harness warnings "$source" > "${source%.ink}.expected"
+        echo "diagnostics: $(basename "$source" .ink)"
+    done
+}
+
 command="${1:-}"
 shift || true
 case "$command" in
@@ -126,5 +136,6 @@ case "$command" in
     paths) setup; paths "$@" ;;
     floats) setup; floats ;;
     swarm) setup; swarm "$@" ;;
+    diagnostics) setup; diagnostics ;;
     *) echo "usage: reference.sh setup|expected [case...]|random|paths [case...]" >&2; exit 2 ;;
 esac
