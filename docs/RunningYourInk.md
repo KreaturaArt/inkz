@@ -628,13 +628,15 @@ measured it: a story that later needs more gets a named limit error, so keep the
 
 `inkz.compiler` compiles ink source to a `Program`, as inklecate does:
 
-- `compile_source(gpa, source)` compiles one file's text (no `INCLUDE`).
+- `compile_source(gpa, source)` compiles one file's text. It reads no files, so a story
+  with an `INCLUDE` is `error.CompileFailed`, as inklecate fails to load a missing file.
 - `compile_file(gpa, io, directory, path)` compiles `path` in `directory` and the files it
   includes; `compile_file_with(gpa, io, directory, path, .{ .count_all_visits = true })`
   sets ink's `countAllVisits`.
 - `compile_to_json(gpa, source)` returns the story as inklecate's `.ink.json`.
 
-A story with errors returns `error.CompileFailed`. The compiler doesn't report its
+A leading UTF-8 byte order mark is ignored, in a source and in every file. A story with
+errors returns `error.CompileFailed`. The compiler doesn't report its
 diagnostics through this API yet.
 
 ```zig
