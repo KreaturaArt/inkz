@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const index = @import("../core/index.zig");
 const limits_module = @import("../core/limits.zig");
 const fault = @import("../core/fault.zig");
+const pointer_free = @import("../core/pointer_free.zig");
 const BoundedStack = @import("../core/bounded_stack.zig").BoundedStack;
 const Program = @import("../core/program.zig").Program;
 const value_module = @import("value.zig");
@@ -149,6 +150,17 @@ pub const OutputStash = struct {
 
 /// A turn index for a container that has never been visited.
 pub const never_visited: i32 = std.math.minInt(i32);
+
+comptime {
+    // What flows park, the lookahead snapshots and saves rebuild is copied by value: no
+    // pointers (F11, docs/Guidelines.md).
+    for (flow_buffers) |buffer| assert(pointer_free.has_no_pointers(FlowElement(buffer)));
+    assert(pointer_free.has_no_pointers(PatchEntry));
+    assert(pointer_free.has_no_pointers(Value));
+    assert(pointer_free.has_no_pointers(Diagnostic));
+    assert(pointer_free.has_no_pointers(FlowRecord));
+    assert(pointer_free.has_no_pointers(GlobalSlot));
+}
 
 comptime {
     assert(@sizeOf(Diagnostic) == element_bytes.diagnostic);

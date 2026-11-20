@@ -131,6 +131,11 @@ const Stored = union(enum) {
 };
 
 comptime {
+    // One IR item: a 16-byte payload (a slice at most) and its tag.
+    assert(@sizeOf(Stored) == 24);
+}
+
+comptime {
     assert(@sizeOf(Stored) <= 24);
 }
 

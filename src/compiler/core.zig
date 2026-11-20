@@ -36,7 +36,21 @@ pub const Diagnostic = struct {
         message,
         _,
     };
+
+    comptime {
+        assert(@sizeOf(Diagnostic) == 12);
+    }
 };
+
+/// What the workspace stores per token: its start and end (no tag; the grammar is
+/// scannerless and a leaf's node tag types it).
+pub const token_bytes = @sizeOf(u32) + @sizeOf(u32);
+
+comptime {
+    assert(@typeInfo(@FieldType(Workspace, "token_starts")).pointer.child == u32);
+    assert(@typeInfo(@FieldType(Workspace, "token_ends")).pointer.child == u32);
+    assert(token_bytes == 8);
+}
 
 pub const Error = error{
     /// The workspace is too small for this source: retry with more.
@@ -179,6 +193,12 @@ pub fn Machine(comptime Grammar: type) type {
             /// The flags restored on failure (ink keeps its custom flags in the parser state).
             flags: u32,
         };
+
+        comptime {
+            // A frame per rule on the explicit stack: 36 bytes (F10).
+            assert(@sizeOf(Checkpoint) == 20);
+            assert(@sizeOf(Frame) == 36);
+        }
 
         source: []const u8,
         /// The input position.

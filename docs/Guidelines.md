@@ -36,6 +36,13 @@ index" and is never a valid position; `to_int` asserts on it.
 Without pointers, a structure can be copied with `@memcpy` (lookahead snapshots, parked
 flows), relocated (heap compaction), saved and checked by `check()`.
 
+The rule is strict for data that is copied, parked, saved or snapshotted by value: every
+flow buffer's element, the lookahead's `PatchEntry`, `Value`, diagnostics and flow records.
+`state.zig` checks them at compile time with `pointer_free.has_no_pointers(T)`
+(`src/core/pointer_free.zig`), which rejects any pointer, slice or function pointer
+anywhere in a type. Control structures that are never copied by value (a `Story`'s
+bindings, the compiler's IR during one compile) may hold slices and pointers.
+
 ```zig
 const std = @import("std");
 const inkz = @import("inkz");
