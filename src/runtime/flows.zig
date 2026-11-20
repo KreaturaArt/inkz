@@ -103,9 +103,13 @@ pub fn switch_flow(state: *State, name: []const u8) Error!void {
     if (name.len > state_module.flow_name_bytes_max) return error.FlowNameTooLong;
     if (std.mem.eql(u8, name, current_name(state))) return;
     assert(!state.snapshot.active);
-    const target = find(state, name) orelse try create(state, name);
+    // A new flow's record is claimed only after the current flow is parked: when parking
+    // fails with FlowParkingLimit, no record is left that has neither live nor parked content.
+    const existing = find(state, name);
+    const target = existing orelse try free_record(state);
     assert(target != state.current_flow);
     try park_current(state);
+    if (existing == null) claim(state, target, name);
     state.current_flow = target;
     const record = &state.flows[target];
     if (record.parked_words == 0) {
@@ -119,25 +123,37 @@ pub fn switch_flow(state: *State, name: []const u8) Error!void {
 }
 
 fn create(state: *State, name: []const u8) Error!u32 {
-    assert(name.len <= state_module.flow_name_bytes_max);
+    const position = try free_record(state);
+    claim(state, position, name);
+    return position;
+}
+
+/// The first record not in use, without claiming it.
+fn free_record(state: *const State) Error!u32 {
+    assert(state.flows[0].in_use);
     for (state.flows, 0..) |*record, position| {
-        if (record.in_use) continue;
-        record.* = .{
-            .name = undefined,
-            .parked_first = 0,
-            .parked_words = 0,
-            .thread_counter = 0,
-            .name_length = @intCast(name.len),
-            .in_use = true,
-        };
-        @memcpy(record.name[0..name.len], name);
-        assert(position > 0);
-        var in_use: u32 = 0;
-        for (state.flows) |*flow| in_use += @intFromBool(flow.in_use);
-        state.peaks.flows = @max(state.peaks.flows, in_use);
-        return @intCast(position);
+        if (!record.in_use) return @intCast(position);
     }
     return error.FlowLimit;
+}
+
+fn claim(state: *State, position: u32, name: []const u8) void {
+    assert(name.len <= state_module.flow_name_bytes_max);
+    assert(position > 0);
+    const record = &state.flows[position];
+    assert(!record.in_use);
+    record.* = .{
+        .name = undefined,
+        .parked_first = 0,
+        .parked_words = 0,
+        .thread_counter = 0,
+        .name_length = @intCast(name.len),
+        .in_use = true,
+    };
+    @memcpy(record.name[0..name.len], name);
+    var in_use: u32 = 0;
+    for (state.flows) |*flow| in_use += @intFromBool(flow.in_use);
+    state.peaks.flows = @max(state.peaks.flows, in_use);
 }
 
 /// For loading a save: the record of flow `name`, created if needed (the default flow is
@@ -285,12 +301,30 @@ fn release(state: *State, target: u32) void {
 /// to the default first.
 pub fn remove_flow(state: *State, name: []const u8) Error!void {
     if (std.mem.eql(u8, name, default_name)) return error.CannotRemoveDefaultFlow;
-    if (std.mem.eql(u8, name, current_name(state))) try switch_flow(state, default_name);
+    if (std.mem.eql(u8, name, current_name(state))) {
+        remove_current(state);
+        return;
+    }
     const target = find(state, name) orelse return;
     assert(target != 0 and target != state.current_flow);
     if (state.flows[target].parked_words > 0) release(state, target);
     state.flows[target].in_use = false;
     assert(find(state, name) == null);
+}
+
+/// Drops the current flow's live content and makes the default flow current. The removed
+/// flow is never parked, so this needs no parking space (switching to the default first
+/// would, and could fail with FlowParkingLimit).
+fn remove_current(state: *State) void {
+    assert(!state.snapshot.active);
+    const removed = state.current_flow;
+    assert(removed != 0);
+    // The default flow isn't current, so it is parked: parking always writes a header.
+    assert(state.flows[0].parked_words >= header_words);
+    state.flows[removed].in_use = false;
+    state.current_flow = 0;
+    unpark(state, 0);
+    assert(state.flows[0].parked_words == 0);
 }
 
 /// Calls `sink.name(text)` for every flow except the default one (ink's aliveFlowNames).
@@ -443,4 +477,59 @@ test "removing flows frees their parking and switching stays bounded" {
     try std.testing.expectError(error.FlowLimit, switch_flow(&state, "c"));
     const long_name: [state_module.flow_name_bytes_max + 1]u8 = @splat('x');
     try std.testing.expectError(error.FlowNameTooLong, switch_flow(&state, &long_name));
+}
+
+fn tight_state(gpa: std.mem.Allocator, program: *Program, state: *State, parking_bytes: u32) !void {
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.done, {});
+    try builder.end_container();
+    program.* = try builder.finish();
+    try state.init(gpa, program, .{ .flows_max = 3, .flow_parking_bytes_max = parking_bytes });
+    assert(state.parking.len == parking_bytes / 4);
+}
+
+test "a switch that can't park the current flow leaves no ghost flow behind" {
+    // A parking region too small for one parked flow: the switch fails with
+    // FlowParkingLimit, and the new flow must not exist (it had neither live nor parked
+    // content, so saving it asserted).
+    const gpa = std.testing.allocator;
+    var program: Program = undefined;
+    var state: State = undefined;
+    try tight_state(gpa, &program, &state, 32);
+    defer program.deinit(gpa);
+    defer state.deinit(gpa);
+    try std.testing.expectError(error.FlowParkingLimit, switch_flow(&state, "other"));
+    try std.testing.expectEqualStrings(default_name, current_name(&state));
+    var sink: NameSink = .{};
+    try alive_flow_names(&state, &sink);
+    try std.testing.expectEqual(@as(u32, 0), sink.count);
+    try std.testing.expect(find(&state, "other") == null);
+    try std.testing.expectEqual(Fault.ok, check(&state));
+}
+
+test "removing the current flow needs no parking space" {
+    // Parking sized for exactly one parked flow: with "blue" current, the default flow
+    // fills it. Removing "blue" must not park it first.
+    const gpa = std.testing.allocator;
+    var program: Program = undefined;
+    var state: State = undefined;
+    try tight_state(gpa, &program, &state, 4096);
+    try switch_flow(&state, "blue");
+    const one_flow_bytes = parking_used(&state) * 4;
+    state.deinit(gpa);
+    program.deinit(gpa);
+
+    try tight_state(gpa, &program, &state, one_flow_bytes);
+    defer program.deinit(gpa);
+    defer state.deinit(gpa);
+    try switch_flow(&state, "blue");
+    try state.call_stack.push(.tunnel, 0, 0);
+    try remove_flow(&state, "blue");
+    try std.testing.expectEqualStrings(default_name, current_name(&state));
+    try std.testing.expectEqual(@as(u32, 1), state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 0), parking_used(&state));
+    try std.testing.expect(find(&state, "blue") == null);
+    try std.testing.expectEqual(Fault.ok, check(&state));
 }
