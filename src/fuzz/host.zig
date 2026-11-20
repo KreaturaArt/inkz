@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
+const Program = @import("../core/program.zig").Program;
 
 const Value = play.Value;
 const calls_max = 48;
@@ -38,9 +39,7 @@ pub const CallSet = std.EnumSet(Call);
 
 /// Every call with weight 1/8, else each one with probability ½, and `cont`.
 pub fn draw_calls(choices: fuzz_ink.Choices) CallSet {
-    if (choices.weighted(7, 1)) return .full;
-    const Mask = @FieldType(@FieldType(CallSet, "bits"), "mask");
-    var calls: CallSet = .{ .bits = .{ .mask = choices.choose(Mask) } };
+    var calls = fuzz_ink.draw_subset(choices, Call);
     calls.insert(.cont);
     assert(calls.contains(.cont));
     return calls;
@@ -174,11 +173,17 @@ fn check_calls(choices: fuzz_ink.Choices) !?Session {
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
     var program = try play.compile_story(gpa, choices, &buffer) orelse return null;
     defer program.deinit(gpa);
+    return try session_on(&program, choices);
+}
+
+/// A session of host calls on a story of `program`.
+fn session_on(program: *const Program, choices: fuzz_ink.Choices) !Session {
+    const gpa = std.testing.allocator;
     assert(program.check() == .ok);
     var story: play.Story = undefined;
-    try play.init_story(&story, gpa, &program, .pick(choices));
+    try play.init_story(&story, gpa, program, .pick(choices));
     defer story.deinit(gpa);
-    assert(story.core.program == &program);
+    assert(story.core.program == program);
     const calls = draw_calls(choices);
     var session: Session = .{ .calls = calls, .made = .empty };
     var kept: ?Value = null;
@@ -206,13 +211,28 @@ test "fuzz: host calls in any order keep the state consistent" {
 }
 
 test "fuzz: a session makes only the calls it drew" {
-    // 200 seeded sessions: every call made is in the session's set, `cont` is in every
-    // set, and some sessions leave out both suppressors (reset and save_and_load).
+    // 1,000 seeded sessions on 8 seeded stories: every call made is in the session's set,
+    // `cont` is in every set, and some sessions leave out both suppressors (reset and
+    // save_and_load).
+    const gpa = std.testing.allocator;
+    var programs: [8]Program = undefined;
+    var compiled: u32 = 0;
+    defer for (programs[0..compiled]) |*program| program.deinit(gpa);
+    var seed: u64 = 0;
+    while (compiled < programs.len) : (seed += 1) {
+        try std.testing.expect(seed < 256);
+        var prng: std.Random.DefaultPrng = .init(seed);
+        var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
+        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+        programs[compiled] = try play.compile_story(gpa, choices, &buffer) orelse continue;
+        compiled += 1;
+    }
     var without_suppressors: u32 = 0;
     var subsets: u32 = 0;
-    for (0..200) |seed| {
-        var prng: std.Random.DefaultPrng = .init(seed);
-        const session = try check_calls(.{ .random = prng.random() }) orelse continue;
+    for (0..1000) |session_seed| {
+        var prng: std.Random.DefaultPrng = .init(session_seed);
+        const program = &programs[session_seed % programs.len];
+        const session = try session_on(program, .{ .random = prng.random() });
         try std.testing.expect(session.calls.contains(.cont));
         try std.testing.expect(session.made.subsetOf(session.calls));
         if (!session.calls.eql(.full)) subsets += 1;
@@ -220,6 +240,6 @@ test "fuzz: a session makes only the calls it drew" {
             without_suppressors += 1;
         }
     }
-    try std.testing.expect(subsets > 50);
-    try std.testing.expect(without_suppressors > 10);
+    try std.testing.expect(subsets > 800);
+    try std.testing.expect(without_suppressors > 150);
 }

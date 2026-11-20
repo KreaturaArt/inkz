@@ -35,9 +35,14 @@ fn tight(choices: fuzz_ink.Choices, comptime name: []const u8) u32 {
 /// Each field its default or, with probability ½, tight; then the cross-field rules of
 /// `Limits.check` restored (the way `Limits.fitted` does).
 pub fn draw_limits(choices: fuzz_ink.Choices) Limits {
+    return draw_limits_with(choices, false);
+}
+
+/// `draw_limits`, or with `all_tight` every field tight.
+fn draw_limits_with(choices: fuzz_ink.Choices, all_tight: bool) Limits {
     var limits: Limits = .{ .steps_per_continue_max = 10_000 };
     inline for (@typeInfo(Limits).@"struct".field_names) |name| {
-        if (choices.choose(bool)) @field(limits, name) = tight(choices, name);
+        if (all_tight or choices.choose(bool)) @field(limits, name) = tight(choices, name);
     }
     limits.output_bytes_max = @max(limits.output_bytes_max, limits.output_items_max);
     limits.frames_max = @max(limits.frames_max, limits.threads_max, limits.evaluate_depth_max);
@@ -153,13 +158,31 @@ test "fuzz: limits drawn tight or default fail cleanly" {
 }
 
 test "fuzz: a run's fitted usage replays it without a limit error" {
-    // The budget property on 64 seeds: those that compile and hit no limit replay with the
-    // same errors under Limits.fitted(usage, 1).
+    // The budget property on 50 seeded stories (those that compile and hit no limit): each
+    // replays with the same errors under Limits.fitted(usage, 1).
     var checked: u32 = 0;
-    for (0..64) |seed| {
+    var seed: u64 = 0;
+    while (checked < 50) : (seed += 1) {
+        try std.testing.expect(seed < 400);
         if (try check_budget(seed)) checked += 1;
     }
-    try std.testing.expect(checked > 16);
+}
+
+test "fuzz: every limit tight still fails cleanly" {
+    // Seeded stories with every limit tight: the sessions that start return errors, the
+    // state checks after every call (in `session`), and some calls hit a named limit.
+    var limit_errors: u32 = 0;
+    var started: u32 = 0;
+    for (0..64) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+        const limits = draw_limits_with(choices, true);
+        const result = try session(choices, limits, choices.choose(bool)) orelse continue;
+        started += 1;
+        limit_errors += result.errors.limits;
+    }
+    try std.testing.expect(started > 0);
+    try std.testing.expect(limit_errors > 0);
 }
 
 test "fuzz: drawn limits are valid and some are tight" {

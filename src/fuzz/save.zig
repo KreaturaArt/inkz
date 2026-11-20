@@ -86,7 +86,9 @@ fn check_save_load(choices: fuzz_ink.Choices, smith: ?*Smith) !bool {
     var script: [script_max]u8 = undefined;
     for (&script) |*byte| byte.* = choices.choose(u8);
     if (clean and !invisible) try expect_same_play(&original, &loaded, &script);
-    if (smith) |fuzzer| try load_mutated(fuzzer, gpa, &program, setup, save);
+    if (smith) |fuzzer| {
+        _ = try load_mutated(.{ .smith = fuzzer }, gpa, &program, setup, save, null);
+    }
     return true;
 }
 
@@ -106,34 +108,32 @@ fn expect_same_play(original: *play.Story, loaded: *play.Story, script: []const 
     try std.testing.expectEqualStrings(first_writer.buffered(), second_writer.buffered());
 }
 
+/// A save edited with the JSON target's operators (drawn when `allowed` is null), loaded
+/// into a fresh story: it loads and checks, or fails and leaves the story unchanged.
+/// Returns the operators applied.
 fn load_mutated(
-    smith: *Smith,
+    choices: fuzz_ink.Choices,
     gpa: Allocator,
     program: *const @import("../core/program.zig").Program,
     setup: play.Setup,
     save: []const u8,
-) !void {
+    allowed: ?json_target.Mutations,
+) !json_target.Mutations {
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);
     try json.appendSlice(gpa, save);
-    var spans: std.ArrayList(json_target.Span) = .empty;
-    defer spans.deinit(gpa);
-    var count: u32 = 0;
-    while (count < 4 and !smith.eosWeightedSimple(1, 1)) : (count += 1) {
-        try json_target.token_spans(gpa, json.items, &spans);
-        if (spans.items.len == 0) break;
-        try json_target.mutate(smith, gpa, &json, spans.items);
-    }
+    const applied = try json_target.mutate_all(choices, gpa, &json, allowed, 4);
     var story: play.Story = undefined;
     try play.init_story(&story, gpa, program, setup);
     defer story.deinit(gpa);
     const before = story.core.state.hash();
     story.load_json(json.items) catch {
         assert(story.core.state.hash() == before);
-        return;
+        return applied;
     };
     assert(story.core.state.check() == .ok);
-    _ = play.play(&story, .{ .smith = smith }, 32);
+    _ = play.play(&story, choices, 32);
+    return applied;
 }
 
 test "fuzz: a loaded save plays as the story it was saved from" {
@@ -145,4 +145,46 @@ test "fuzz: a loaded save plays as the story it was saved from" {
     }
     try std.testing.expect(compared > 16);
     try std.testing.fuzz({}, save_load, .{ .corpus = &.{""} });
+}
+
+test "fuzz: an edited save applies only the operators it drew" {
+    // A seeded story's save, edited 1,000 times: the operators applied are in the drawn
+    // set; then each operator alone, on 8 seeds, loads cleanly or leaves the story as it was.
+    const gpa = std.testing.allocator;
+    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
+    // The first seed whose story compiles.
+    var prng: std.Random.DefaultPrng = undefined;
+    var choices: fuzz_ink.Choices = undefined;
+    var seed_first: u64 = 0;
+    var program = while (seed_first < 64) : (seed_first += 1) {
+        prng = .init(seed_first);
+        choices = .{ .random = prng.random() };
+        break (try play.compile_story(gpa, choices, &buffer)) orelse continue;
+    } else return error.NoStory;
+    defer program.deinit(gpa);
+    const setup: play.Setup = .pick(choices);
+    var story: play.Story = undefined;
+    try play.init_story(&story, gpa, &program, setup);
+    defer story.deinit(gpa);
+    _ = play.play(&story, choices, 16);
+    const save = try save_of(gpa, &story);
+    defer gpa.free(save);
+    for (0..1000) |seed| {
+        var seeded: std.Random.DefaultPrng = .init(seed);
+        var draw_prng = seeded;
+        const draw: fuzz_ink.Choices = .{ .random = draw_prng.random() };
+        const allowed = fuzz_ink.draw_subset(draw, json_target.Mutation);
+        const edits: fuzz_ink.Choices = .{ .random = seeded.random() };
+        const applied = try load_mutated(edits, gpa, &program, setup, save, null);
+        try std.testing.expect(applied.subsetOf(allowed));
+    }
+    for (std.enums.values(json_target.Mutation)) |mutation| {
+        for (0..8) |seed| {
+            var seeded: std.Random.DefaultPrng = .init(seed);
+            const only: json_target.Mutations = .initOne(mutation);
+            const edits: fuzz_ink.Choices = .{ .random = seeded.random() };
+            const applied = try load_mutated(edits, gpa, &program, setup, save, only);
+            try std.testing.expect(applied.subsetOf(only));
+        }
+    }
 }
