@@ -741,6 +741,9 @@ references. This is where each one stands in the code today.
 
 ## 19. Findings: what deserves changing in inkz
 
+Phase 16 (`docs/Phase16Plan.md`) addressed every finding; the last column of the summary
+says how. The sections below are the findings as they were found, at `9018c6d`.
+
 Every finding below was checked against the code at `9018c6d`. Severity rates the effect on
 inkz's own goals (bounded memory, hot-path cost, correctness of claims), not how much work the
 change is. Each finding comes with a success criterion that a unit test can check, as
@@ -748,26 +751,26 @@ change is. Each finding comes with a success criterion that a unit test can chec
 
 ### Summary
 
-| ID | Severity | Area | Finding | Proposed change |
-|---|---|---|---|---|
-| F1 | <span class="sev high">High</span> | Runtime perf | Every `temp_get` scans all globals, hashes the name and scans every list item before it reaches the temps | A per-`StringId` name-class table built with the Program |
-| F2 | <span class="sev high">High</span> | Runtime perf | `global_get`/`global_assign` with a resolved slot go slot → name → linear scan | Read and write `state.globals[slot]` directly |
-| F3 | <span class="sev high">High</span> | Lint / claims | The "no hashing in the hot path" gate covers `vm.zig` only, so F1 and F2 slip through and `benchmarks.md:247` is untrue | Extend `hot_path` to every file the step reaches, and ban `strings.find` and `*_by_name` |
-| F4 | <span class="sev med">Medium</span> | Runtime memory | `Story.init` makes two allocations; four docs say one | Carve `bindings` from the budget |
-| F5 | <span class="sev med">Medium</span> | Compiler API | Diagnostics never reach callers (`CompileFailed` is opaque) | A diagnostics result or a sink |
-| F6 | <span class="sev med">Medium</span> | Compiler | Line/column is O(offset) per lookup, and the file lookup is a linear scan | A line-start table per file |
-| F7 | <span class="sev med">Medium</span> | Compiler code | Sema reads AST children by magic position (T6 not built) | Named slot constants per `fixed(n)` tag, comptime-checked |
-| F8 | <span class="sev med">Medium</span> | Docs | Token layout documented as `{tag, start, end}` 9 B; real is `{start, end}` 8 B | Fix `Architecture.md:113`, `benchmarks.md:249` |
-| F9 | <span class="sev med">Medium</span> | Docs | Guidelines say scanners and VM dispatch are labeled switches; neither is | Rewrite `Guidelines.md:195-200` to match the code |
-| F10 | <span class="sev low">Low</span> | Safety | No size guards for parser `Frame`, `Checkpoint`, compiler `Diagnostic`, IR `Stored` | Comptime `@sizeOf` asserts + `sizes_test.zig` rows |
-| F11 | <span class="sev low">Low</span> | Safety / docs | "No pointers in persistent data" is enforced by convention only | Comptime `has_no_pointers` over flow, snapshot and parked element types; scope the rule in the docs |
-| F12 | <span class="sev low">Low</span> | Compiler perf | `StringPool.intern` hashes a new string twice | One adapted `getOrPut` |
-| F13 | <span class="sev low">Low</span> | Compiler perf | Resolve keys hash name slices (`{scope, []const u8}`) | Intern names at sema build, so keys are `{ObjectIndex, StringId}` |
-| F14 | <span class="sev low">Low</span> | Compiler perf | A workspace overflow re-parses the whole story at 2× | Keep it, but gate "no retry" on the test corpus |
-| F15 | <span class="sev low">Low</span> | Runtime perf | Native binary ops dispatch on opcode at run time | Measure comptime-opcode prongs (fino) before deciding |
-| F16 | <span class="sev low">Low</span> | Docs | The migration plan reads as the current design, but T2/T6/T7/T12, §4.4 and §4.11 were changed or not built | Add an "as built" column (§18 of this doc) |
-| F17 | <span class="sev low">Low</span> | Runtime perf | Images are always validated on load, including images just built in-process | Optional trusted path, behind an explicit API |
-| F18 | <span class="sev low">Low</span> | Runtime perf | Save load is two passes (validate, commit), ~45% each | Keep for atomicity; revisit only if save load shows up in a profile |
+| ID | Severity | Area | Finding | Proposed change | Status after Phase 16 |
+|---|---|---|---|---|---|
+| F1 | <span class="sev high">High</span> | Runtime perf | Every `temp_get` scans all globals, hashes the name and scans every list item before it reaches the temps | A per-`StringId` name-class table built with the Program | **Fixed** (P16.9): `Program.name_classes`; no name lookup by text while playing |
+| F2 | <span class="sev high">High</span> | Runtime perf | `global_get`/`global_assign` with a resolved slot go slot → name → linear scan | Read and write `state.globals[slot]` directly | **Fixed** (P16.8): globals read and written through their slot |
+| F3 | <span class="sev high">High</span> | Lint / claims | The "no hashing in the hot path" gate covers `vm.zig` only, so F1 and F2 slip through and `benchmarks.md:247` is untrue | Extend `hot_path` to every file the step reaches, and ban `strings.find` and `*_by_name` | **Fixed** (P16.7): the lint covers every file the step reaches |
+| F4 | <span class="sev med">Medium</span> | Runtime memory | `Story.init` makes two allocations; four docs say one | Carve `bindings` from the budget | **Fixed** (P16.10): the bindings are carved from the one block |
+| F5 | <span class="sev med">Medium</span> | Compiler API | Diagnostics never reach callers (`CompileFailed` is opaque) | A diagnostics result or a sink | **Fixed** (P16.12): `Options.diagnostics`, inklecate's messages, ground truth |
+| F6 | <span class="sev med">Medium</span> | Compiler | Line/column is O(offset) per lookup, and the file lookup is a linear scan | A line-start table per file | **Fixed** (P16.11): a newline table and a binary file search |
+| F7 | <span class="sev med">Medium</span> | Compiler code | Sema reads AST children by magic position (T6 not built) | Named slot constants per `fixed(n)` tag, comptime-checked | **Fixed** (P16.13): `ast.slot(node, .label)`, checked at compile time |
+| F8 | <span class="sev med">Medium</span> | Docs | Token layout documented as `{tag, start, end}` 9 B; real is `{start, end}` 8 B | Fix `Architecture.md:113`, `benchmarks.md:249` | **Fixed** (P16.20): docs say `{start, end}`, 8 B; a test pins it |
+| F9 | <span class="sev med">Medium</span> | Docs | Guidelines say scanners and VM dispatch are labeled switches; neither is | Rewrite `Guidelines.md:195-200` to match the code | **Fixed** (P16.20): Guidelines describe the scannerless grammar and the plain switch |
+| F10 | <span class="sev low">Low</span> | Safety | No size guards for parser `Frame`, `Checkpoint`, compiler `Diagnostic`, IR `Stored` | Comptime `@sizeOf` asserts + `sizes_test.zig` rows | **Fixed** (P16.14): size asserts and `src/compiler/sizes_test.zig` |
+| F11 | <span class="sev low">Low</span> | Safety / docs | "No pointers in persistent data" is enforced by convention only | Comptime `has_no_pointers` over flow, snapshot and parked element types; scope the rule in the docs | **Fixed** (P16.14): `pointer_free.has_no_pointers` on the copied types |
+| F12 | <span class="sev low">Low</span> | Compiler perf | `StringPool.intern` hashes a new string twice | One adapted `getOrPut` | **Fixed** (P16.15): one hash per `intern` |
+| F13 | <span class="sev low">Low</span> | Compiler perf | Resolve keys hash name slices (`{scope, []const u8}`) | Intern names at sema build, so keys are `{ObjectIndex, StringId}` | **Decided by measurement** (P16.16): under 1% of a compile; keys stay |
+| F14 | <span class="sev low">Low</span> | Compiler perf | A workspace overflow re-parses the whole story at 2× | Keep it, but gate "no retry" on the test corpus | **Fixed** (P16.17): retries counted, gated at 0 on the corpus, in the bench |
+| F15 | <span class="sev low">Low</span> | Runtime perf | Native binary ops dispatch on opcode at run time | Measure comptime-opcode prongs (fino) before deciding | **Decided by measurement** (P16.18): comptime prongs built and measured no faster |
+| F16 | <span class="sev low">Low</span> | Docs | The migration plan reads as the current design, but T2/T6/T7/T12, §4.4 and §4.11 were changed or not built | Add an "as built" column (§18 of this doc) | **Fixed** (P16.20): the plan has an As built column and a deviations list |
+| F17 | <span class="sev low">Low</span> | Runtime perf | Images are always validated on load, including images just built in-process | Optional trusted path, behind an explicit API | **Fixed** (P16.19): `program_image.load_trusted`, about 3× faster in ReleaseFast |
+| F18 | <span class="sev low">Low</span> | Runtime perf | Save load is two passes (validate, commit), ~45% each | Keep for atomicity; revisit only if save load shows up in a profile | **Decided** (P16.18): two passes kept; one pass can't stay atomic |
 
 ### F1: every temp read goes through globals and list items first
 
