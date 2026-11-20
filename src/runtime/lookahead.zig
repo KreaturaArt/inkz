@@ -134,6 +134,7 @@ pub fn restore(state: *State) void {
 
 fn undo(state: *State) void {
     assert(state.snapshot.patch_count <= state.patch.len);
+    clear_logged(state);
     var position = state.snapshot.patch_count;
     while (position > 0) {
         position -= 1;
@@ -152,19 +153,61 @@ fn undo(state: *State) void {
 /// ink's DiscardSnapshot: keeps every change made since `take`.
 pub fn discard(state: *State) void {
     assert(active(state));
+    clear_logged(state);
     state.snapshot = .{};
     assert(!active(state));
     assert(state.snapshot.patch_count == 0);
 }
 
+/// Logs a slot's value from before its first write since `take`. Later writes to the same
+/// slot log nothing: restore needs only the oldest value, so the log holds at most one entry
+/// per slot and a loop that writes one variable many times in a lookahead stays bounded.
 fn log(state: *State, kind: Kind, slot: u32, old: Value) Error!void {
     assert(active(state));
+    const bit = logged_bit(state, kind, slot);
+    const word = &state.patch_logged[bit / 32];
+    const mask = @as(u32, 1) << @intCast(bit % 32);
+    if (word.* & mask != 0) return;
     const count = state.snapshot.patch_count;
     if (count == state.patch.len) return error.LookaheadLogLimit;
     state.patch[count] = .{ .target = target_of(kind, slot), .old = old };
+    word.* |= mask;
     state.snapshot.patch_count = count + 1;
     state.peaks.patch_entries = @max(state.peaks.patch_entries, count + 1);
     assert(state.snapshot.patch_count <= state.patch.len);
+}
+
+/// A slot's bit in `patch_logged`: globals, then visit counts, then turn indices.
+fn logged_bit(state: *const State, kind: Kind, slot: u32) u32 {
+    const globals: u32 = @intCast(state.globals.len);
+    const counts: u32 = @intCast(state.visit_counts.len);
+    const bit = switch (kind) {
+        .global => slot,
+        .visit_count => globals + slot,
+        .turn_index => globals + counts + slot,
+    };
+    assert(bit < globals + 2 * counts);
+    assert(bit / 32 < state.patch_logged.len);
+    return bit;
+}
+
+/// Clears the logged bits of the entries in the log, leaving the bitset all zero.
+fn clear_logged(state: *State) void {
+    assert(state.snapshot.patch_count <= state.patch.len);
+    for (state.patch[0..state.snapshot.patch_count]) |entry| {
+        const kind = kind_of(entry.target);
+        const bit = logged_bit(state, kind, slot_of(entry.target));
+        const mask = @as(u32, 1) << @intCast(bit % 32);
+        assert(state.patch_logged[bit / 32] & mask != 0);
+        state.patch_logged[bit / 32] &= ~mask;
+    }
+}
+
+fn logged_count(state: *const State) u32 {
+    var count: u32 = 0;
+    for (state.patch_logged) |word| count += @popCount(word);
+    assert(count <= state.globals.len + 2 * state.visit_counts.len);
+    return count;
 }
 
 pub fn set_global(state: *State, slot: index.GlobalSlot, value: Value) Error!void {
@@ -191,12 +234,20 @@ pub fn set_turn_index(state: *State, slot: u32, turn: i32) Error!void {
     assert(state.visit_counts.len == state.turn_indices.len);
 }
 
-pub const Fault = enum { ok, inactive_with_log, count_exceeds_buffer, heap_top_past_used };
+pub const Fault = enum {
+    ok,
+    inactive_with_log,
+    count_exceeds_buffer,
+    heap_top_past_used,
+    logged_bits,
+};
 
-/// Checks the snapshot's lengths against its buffers and the heap.
+/// Checks the snapshot's lengths against its buffers and the heap, and that one logged bit
+/// is set per log entry.
 pub fn check(state: *const State) Fault {
     const snapshot = &state.snapshot;
     assert(state.patch.len > 0);
+    if (logged_count(state) != snapshot.patch_count) return .logged_bits;
     if (!snapshot.active) {
         return if (snapshot.patch_count == 0) .ok else .inactive_with_log;
     }
@@ -370,4 +421,33 @@ test "the undo log returns its error when full" {
     restore(&state);
     try std.testing.expectEqual(@as(i32, 3), state.globals[0].integer);
     try std.testing.expectEqual(@as(u32, 0), state.visit_counts[0]);
+}
+
+test "the undo log keeps one entry per slot" {
+    // A one-entry log and thousands of writes to one global during a lookahead (a story's
+    // `~ x++` loop before the line ends): only the first old value is logged, restore brings
+    // it back, and the logged bits are clear again after restore and after discard.
+    const gpa = std.testing.allocator;
+    var program: Program = undefined;
+    var state: State = undefined;
+    try test_state(gpa, &program, &state, .{ .patch_entries_max = 1 });
+    defer program.deinit(gpa);
+    defer state.deinit(gpa);
+    try set_global(&state, .from_int(0), .{ .integer = 7 });
+    take(&state);
+    for (0..5000) |round| {
+        try set_global(&state, .from_int(0), .{ .integer = @intCast(round) });
+    }
+    try std.testing.expectEqual(@as(u32, 1), state.snapshot.patch_count);
+    try std.testing.expectEqual(Fault.ok, check(&state));
+    restore(&state);
+    try std.testing.expectEqual(@as(i32, 7), state.globals[0].integer);
+    try std.testing.expectEqual(@as(u32, 0), logged_count(&state));
+    take(&state);
+    try set_global(&state, .from_int(0), .{ .integer = 8 });
+    try set_global(&state, .from_int(0), .{ .integer = 9 });
+    discard(&state);
+    try std.testing.expectEqual(@as(u32, 0), logged_count(&state));
+    try std.testing.expectEqual(@as(i32, 9), state.globals[0].integer);
+    state.verify();
 }

@@ -38,7 +38,8 @@ that. The total has three parts:
 - **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
   `str` marks, and the choices with their tags and thread snapshots.
 - **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6),
-  plus the undo log (`patch_entries_max` × 16 bytes).
+  plus the undo log (`patch_entries_max` × 16 bytes) and its bitset of logged slots (one bit
+  per global, visit count and turn index).
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
   (8 bytes per counted container), the line buffer (`output_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
@@ -67,12 +68,12 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 | Part | Main story | Side story |
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
-| Lookahead (copy + undo log) | 197,120 | 31,872 |
+| Lookahead (copy + undo log) | 197,896 | 31,952 |
 | Shared | 1,852,800 | 195,120 |
-| **Total per story** | **2,230,656** (2.13 MiB) | **254,768** (249 KiB) |
+| **Total per story** | **2,231,432** (2.13 MiB) | **254,848** (249 KiB) |
 
-The whole game, one main story and four side stories, needs 2,230,656 + 4 × 254,768 =
-3,249,728 bytes (3.10 MiB), fixed at load time. In the main story the 1 MiB string heap is
+The whole game, one main story and four side stories, needs 2,231,432 + 4 × 254,848 =
+3,250,824 bytes (3.10 MiB), fixed at load time. In the main story the 1 MiB string heap is
 about half of the total.
 
 ### Fitted limits (P10.2)

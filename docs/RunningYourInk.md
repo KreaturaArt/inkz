@@ -583,6 +583,17 @@ const options: inkz.Story.Options = .{ .limits = limits };
 _ = options;
 ```
 
+Some limits bound more than one buffer's length:
+
+- `patch_entries_max` (default 1024) bounds the newline lookahead's undo log. Once a line's
+  text ends in a newline, the story runs on to see whether glue or more text follows, and
+  records each global variable, visit count and turn index the first time that lookahead
+  changes it, so it can put them back. A slot is recorded once however often it changes, so
+  a loop that increments one variable thousands of times before the next line costs one
+  entry. The limit is reached only by changing more than 1024 different variables and
+  counted containers between one newline and the next text; `cont` then returns
+  `error.LookaheadLogLimit`.
+
 ### Fitting limits to a story
 
 Every buffer records its peak. Play the story as widely as you can with the default limits,
