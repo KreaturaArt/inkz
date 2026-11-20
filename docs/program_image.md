@@ -62,6 +62,13 @@ bytes and the element count. A reader rejects a size that differs from its own
 | 20 | list items: origin, name, full name, value | 16 B |
 | 21 | externals: name, fallback | 8 B |
 
+The record sections (17–21) are the Program's `extern struct` arrays written as bytes: each
+record is its u32 fields, little-endian, in the order listed, with no padding. `extern`
+fixes that order whatever the compiler or backend; an auto-layout struct would not, so
+`program_image.zig` rejects one at compile time and pins every record's size and field
+offsets (`record_layouts`). The other sections are arrays of integers, `enum(u32)` indices,
+the `u8` opcode enum and the `packed struct(u8)` container flags.
+
 The image must end exactly after the last section's padding.
 
 ## Loading untrusted images
