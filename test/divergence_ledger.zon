@@ -2,12 +2,4 @@
 // (plan §1.1), unsupported, exception, crash, tags, whitespace, other.
 // `zig build test -Dledger-update` adds new ones and drops fixed ones; reasons and
 // sources edited by hand are kept.
-.{
-    .{
-        .case = "swarm/thread_previous_pointer",
-        .kind = .other,
-        .reason = "After two threads in a row that print nothing, ink saves the first thread's divert as previousContentObject (0.1) and inkz the second's (0.3); found by the differential swarm run",
-        .source = "zig-out/swarm cases 00583 and 01848 of zig build swarm-gen -- --seed 1 --count 2000",
-        .fix = "P16.21 (b0dcdcf)",
-    },
-}
+.{}

@@ -18,6 +18,10 @@ const story_module = @import("story.zig");
 const Story = story_module.Story;
 const Value = value_module.Value;
 const Pointer = call_stack_module.Pointer;
+const Program = @import("../core/program.zig").Program;
+const instruction_module = @import("../core/instruction.zig");
+const Instruction = instruction_module.Instruction;
+const extra = @import("../core/extra.zig");
 const Frame = call_stack_module.Frame;
 const Temp = call_stack_module.Temp;
 const Item = output_module.Item;
@@ -220,11 +224,42 @@ fn write_object_path(story: *Story, writer: *Writer, pointer: Pointer) Writer.Er
             return write_json_string(writer, story.path_of(child));
         }
     }
+    const index = ink_content_index(program, pointer);
     const path = story.path_of(pointer.container);
-    if (path.len == 0) return writer.print("\"{d}\"", .{pointer.index});
+    if (path.len == 0) return writer.print("\"{d}\"", .{index});
     try writer.writeByte('"');
     try write_escaped(writer, path);
-    try writer.print(".{d}\"", .{pointer.index});
+    try writer.print(".{d}\"", .{index});
+}
+
+/// The content index ink's `Object.path` gives the object at `pointer`. ink finds an object's
+/// index with `content.IndexOf(this)`, which compares with `Equals`, and a Divert is equal to
+/// any divert with the same target (or the same variable): so a divert's path is the first
+/// equal divert's in its container (P16.21).
+fn ink_content_index(program: *const Program, pointer: Pointer) u32 {
+    assert(pointer.index < program.content_count(pointer.container));
+    const at = program.instruction_at(pointer.container, pointer.index);
+    if (at.opcode != .divert) return pointer.index;
+    const target = divert_of(program, at);
+    for (0..pointer.index) |position| {
+        const earlier = program.instruction_at(pointer.container, @intCast(position));
+        if (earlier.opcode != .divert) continue;
+        const other = divert_of(program, earlier);
+        if (other.flags.variable != target.flags.variable) continue;
+        const same = if (target.flags.variable)
+            other.name == target.name
+        else
+            other.target_container == target.target_container and
+                other.target_index == target.target_index;
+        if (same) return @intCast(position);
+    }
+    return pointer.index;
+}
+
+fn divert_of(program: *const Program, instruction: Instruction) instruction_module.Divert {
+    assert(instruction.opcode == .divert);
+    const at = @backingInt(instruction.get(.divert));
+    return extra.get(instruction_module.Divert, program.extra, at).data;
 }
 
 fn write_item(story: *Story, writer: *Writer, item: Item) Writer.Error!void {
