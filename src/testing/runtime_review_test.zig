@@ -67,3 +67,54 @@ test "a loop that writes one variable 1100 times before the line ends fits the u
     try std.testing.expectEqualStrings("Hello\n\nWorld\n", text);
     try std.testing.expectEqual(@as(i32, 1100), story.get_variable("x").?.get().integer);
 }
+
+/// Keeps a copy of each tag it is given.
+const TagRecorder = struct {
+    gpa: std.mem.Allocator,
+    tags: std.ArrayList([]u8) = .empty,
+
+    pub fn tag(recorder: *TagRecorder, text: []const u8) !void {
+        assert(recorder.tags.items.len < 16);
+        const copy = try recorder.gpa.dupe(u8, text);
+        errdefer recorder.gpa.free(copy);
+        try recorder.tags.append(recorder.gpa, copy);
+    }
+
+    fn deinit(recorder: *TagRecorder) void {
+        for (recorder.tags.items) |text| recorder.gpa.free(text);
+        recorder.tags.deinit(recorder.gpa);
+    }
+};
+
+/// "Hello #" and a tag of `length` letters, then "World", owned by the caller.
+fn long_tag_source(gpa: std.mem.Allocator, length: u32) ![]u8 {
+    assert(length > 0);
+    const letters = try gpa.alloc(u8, length);
+    defer gpa.free(letters);
+    for (letters, 0..) |*letter, position| letter.* = 'a' + @as(u8, @intCast(position % 26));
+    return std.fmt.allocPrint(gpa, "Hello #{s}\nWorld\n-> END\n", .{letters});
+}
+
+test "a tag longer than 1024 bytes reaches the sink whole, and the limit has its own error" {
+    // A 1100-letter tag: the tag buffers were fixed 1024-byte arrays, so this returned
+    // OutputLimit. With the default 4 KiB `tag_bytes_max` it comes through whole; with
+    // `tag_bytes_max = 1000` the same story returns TagBytesLimit.
+    const gpa = std.testing.allocator;
+    const source = try long_tag_source(gpa, 1100);
+    defer gpa.free(source);
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    try std.testing.expectEqualStrings("Hello\n", (try story.cont()).get());
+    var recorder: TagRecorder = .{ .gpa = gpa };
+    defer recorder.deinit();
+    try story.current_tags(&recorder);
+    try std.testing.expectEqual(@as(usize, 1), recorder.tags.items.len);
+    try std.testing.expectEqualStrings(source[7..][0..1100], recorder.tags.items[0]);
+    try std.testing.expectEqual(@as(u32, 1100), story.usage().tag_bytes);
+
+    const tight = try start(gpa, &program, .{ .tag_bytes_max = 1000 });
+    defer stop(gpa, tight);
+    try std.testing.expectError(error.TagBytesLimit, tight.cont());
+}

@@ -593,6 +593,10 @@ Some limits bound more than one buffer's length:
   entry. The limit is reached only by changing more than 1024 different variables and
   counted containers between one newline and the next text; `cont` then returns
   `error.LookaheadLogLimit`.
+- `tag_bytes_max` (default 4 KiB) is the longest text one tag of a line can have after
+  cleaning; the line's tags are assembled one at a time in a scratch buffer of that size
+  before each goes to the sink. A longer tag makes `cont` and `current_tags` return
+  `error.TagBytesLimit`.
 
 ### Fitting limits to a story
 

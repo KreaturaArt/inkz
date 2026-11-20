@@ -41,7 +41,8 @@ that. The total has three parts:
   plus the undo log (`patch_entries_max` × 16 bytes) and its bitset of logged slots (one bit
   per global, visit count and turn index).
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
-  (8 bytes per counted container), the line buffer (`output_bytes_max`), the cleaned-text
+  (8 bytes per counted container), the line buffer (`output_bytes_max`), the tag scratch
+  (`tag_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
   list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
   observer queue, errors and warnings, the ancestor scratch for visit counting, and the
@@ -69,11 +70,11 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copy + undo log) | 197,896 | 31,952 |
-| Shared | 1,852,800 | 195,120 |
-| **Total per story** | **2,231,432** (2.13 MiB) | **254,848** (249 KiB) |
+| Shared | 1,856,896 | 196,144 |
+| **Total per story** | **2,235,528** (2.13 MiB) | **255,872** (250 KiB) |
 
-The whole game, one main story and four side stories, needs 2,231,432 + 4 × 254,848 =
-3,250,824 bytes (3.10 MiB), fixed at load time. In the main story the 1 MiB string heap is
+The whole game, one main story and four side stories, needs 2,235,528 + 4 × 255,872 =
+3,259,016 bytes (3.11 MiB), fixed at load time. In the main story the 1 MiB string heap is
 about half of the total.
 
 ### Fitted limits (P10.2)

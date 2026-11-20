@@ -43,6 +43,8 @@ pub const Limits = struct {
     string_marks_max: u32 = 64,
     choices_max: u32 = 64,
     tags_max: u32 = 256,
+    /// The longest text of one of a line's tags, after cleaning: the size of the tag scratch.
+    tag_bytes_max: u32 = 4 * 1024,
     heap_bytes_max: u32 = 1024 * 1024,
     list_words_max: u32 = 16 * 1024,
     flows_max: u32 = 8,
@@ -155,6 +157,7 @@ pub const Limits = struct {
         total += @as(u64, shape.globals_count) * bytes.global;
         total += @as(u64, shape.count_slots) * bytes.count_slot;
         total += limits.output_bytes_max;
+        total += limits.tag_bytes_max; // the tag scratch
         // The cleaned-text cache: a copy of the cleaned items and their text.
         total += @as(u64, limits.output_items_max) * bytes.output_item + limits.output_bytes_max;
         total += limits.heap_bytes_max;
@@ -230,6 +233,7 @@ pub const Usage = struct {
     string_marks: u32 = 0,
     choices: u32 = 0,
     tags: u32 = 0,
+    tag_bytes: u32 = 0,
     heap_bytes: u32 = 0,
     list_words: u32 = 0,
     flows: u32 = 0,
@@ -344,7 +348,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 2_203_420), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 2_207_516), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -359,6 +363,7 @@ pub const small_story_limits: Limits = .{
     .string_marks_max = 16,
     .choices_max = 16,
     .tags_max = 64,
+    .tag_bytes_max = 1024,
     .heap_bytes_max = 64 * 1024,
     .list_words_max = 1024,
     .flows_max = 4,
@@ -381,13 +386,13 @@ test "the sizing example in docs/benchmarks.md" {
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 1_852_800), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 2_231_432), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 1_856_896), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_235_528), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 195_120), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 254_848), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 196_144), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 255_872), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {
