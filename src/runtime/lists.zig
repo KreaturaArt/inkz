@@ -319,39 +319,17 @@ pub const Lists = struct {
         return null;
     }
 
-    /// Coerces an int to a one-item list through the origin of `list`'s highest item, as
-    /// ink's CoerceValuesToSingleType does.
-    fn int_as_list(lists: Lists, list: View, number: i32) Error!View {
-        var origins: Builder = .{};
-        try lists.origin_names(list, &origins);
-        const max = lists.extreme_item(list, .highest);
-        const origin = if (max) |item| lists.item_origin(item) else if (origins.origins_count > 0)
-            origins.origins[0]
-        else
-            return error.IncompatibleTypes;
-        const item = lists.item_with_value(origin, number) orelse return error.IncompatibleTypes;
-        const reference = try lists.slab.store(&.{item}, &.{});
-        assert(!item.is_none());
-        return lists.slab.view(reference);
-    }
-
+    /// ink's CallBinaryListOperation (`&&` and `||` with a non-list are handled by the
+    /// caller): list + int and list - int move each item, two lists combine, and any other
+    /// mix (`list == 2`, `2 + list`, `list ? 1`) is ListOperandTypes, ink's "Can not call
+    /// use '…' operation on List and Int". ink never coerces an int to a list here.
     pub fn binary(lists: Lists, opcode: Opcode, a: Value, b: Value) Error!Value {
         assert(a == .list or b == .list);
         if (a == .list and b == .integer and (opcode == .add or opcode == .subtract)) {
             return lists.increment(lists.slab.view(a.list), opcode, b.integer);
         }
-        const left = try lists.as_list(a, b);
-        const right = try lists.as_list(b, a);
-        return lists.list_binary(opcode, left, right);
-    }
-
-    fn as_list(lists: Lists, value: Value, other: Value) Error!View {
-        if (value == .list) return lists.slab.view(value.list);
-        if (value == .integer and other == .list) {
-            return lists.int_as_list(lists.slab.view(other.list), value.integer);
-        }
-        assert(value != .list);
-        return error.IncompatibleTypes;
+        if (a != .list or b != .list) return error.ListOperandTypes;
+        return lists.list_binary(opcode, lists.slab.view(a.list), lists.slab.view(b.list));
     }
 
     fn list_binary(lists: Lists, opcode: Opcode, a: View, b: View) Error!Value {
@@ -592,8 +570,10 @@ test "comparisons, min, max and value" {
     try std.testing.expectEqual(Value{ .integer = 2 }, try lists.unary(.list_count, tied));
 }
 
-test "all, invert, increment and int coercion" {
+test "all, invert, increment, and no int coercion" {
     // Origin-based operations, including an empty list that keeps its declared origin.
+    // A list meets an int only in list + int and list - int, as in ink: `list == 2` and
+    // `2 + list` are ListOperandTypes, whether or not an item has that value.
     var program = try test_program(std.testing.allocator);
     defer program.deinit(std.testing.allocator);
     var words: [256]u32 = undefined;
@@ -605,12 +585,15 @@ test "all, invert, increment and int coercion" {
     try expect_items(lists, try lists.unary(.list_all, empty), &.{ red, green, blue });
     try expect_items(lists, try lists.binary(.add, just_green, .{ .integer = 1 }), &.{blue});
     try expect_items(lists, try lists.binary(.add, just_green, .{ .integer = 5 }), &.{});
-    try std.testing.expectEqual(Value{ .bool = true }, try lists.binary(.equal, just_green, .{
-        .integer = 2,
-    }));
-    try std.testing.expectError(error.IncompatibleTypes, lists.binary(.equal, just_green, .{
+    try expect_items(lists, try lists.binary(.subtract, just_green, .{ .integer = 1 }), &.{red});
+    const two: Value = .{ .integer = 2 };
+    try std.testing.expectError(error.ListOperandTypes, lists.binary(.equal, just_green, two));
+    try std.testing.expectError(error.ListOperandTypes, lists.binary(.equal, just_green, .{
         .integer = 9,
     }));
+    try std.testing.expectError(error.ListOperandTypes, lists.binary(.add, two, just_green));
+    try std.testing.expectError(error.ListOperandTypes, lists.binary(.has, just_green, two));
+    try std.testing.expectError(error.ListOperandTypes, lists.binary(.multiply, just_green, two));
     try std.testing.expectEqual(Value{ .integer = 1 }, try lists.unary(.not, empty));
 }
 

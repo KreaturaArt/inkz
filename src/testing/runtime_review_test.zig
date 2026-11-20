@@ -209,3 +209,48 @@ test "a shuffle past shuffle_elements_max returns ShuffleLimit" {
     const line = (try fitting.cont()).get();
     try std.testing.expect(line[0] == 'e');
 }
+
+/// Plays `source` until its story error and returns the first error's message.
+fn list_error_of(gpa: std.mem.Allocator, source: []const u8, buffer: []u8) ![]const u8 {
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    var lines: u32 = 0;
+    while (story.can_continue()) : (lines += 1) {
+        assert(lines < 10);
+        _ = story.cont() catch |err| {
+            try std.testing.expectEqual(error.StoryError, err);
+            return first_error(story, buffer);
+        };
+    }
+    return error.TestUnexpectedResult;
+}
+
+test "lists meet ints only through + and -, as in ink" {
+    // ink 1.2.1's CallBinaryListOperation: `x + 1` and `x - 1` move the list's items, but
+    // `x == 2` and `2 + x` are errors, which this runtime allowed by coercing the int to a
+    // list item. The messages are ink's, pointer prefix included.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\LIST l = a, b, c
+        \\VAR x = (b)
+        \\{x + 1} {x - 1}
+        \\-> END
+        \\
+    );
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    try std.testing.expectEqualStrings("c a\n", (try story.cont()).get());
+
+    var buffer: [256]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "RUNTIME ERROR: (0.3): Can not call use '==' operation on List and Int",
+        try list_error_of(gpa, "LIST l = a, b, c\nVAR x = (b)\n{x == 2}\n-> END\n", &buffer),
+    );
+    try std.testing.expectEqualStrings(
+        "RUNTIME ERROR: (0.3): Can not call use '+' operation on Int and List",
+        try list_error_of(gpa, "LIST l = a, b, c\nVAR x = (b)\n{2 + x}\n-> END\n", &buffer),
+    );
+}

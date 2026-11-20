@@ -10,6 +10,9 @@ const story_module = @import("story.zig");
 const ops = @import("ops.zig");
 const Story = story_module.Story;
 const Diagnostic = state_module.Diagnostic;
+const Value = value_module.Value;
+const Opcode = @import("../core/instruction.zig").Opcode;
+const ink_json = @import("../core/ink_json.zig");
 
 pub fn write(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Writer) !void {
     assert(writer.buffer.len > 0);
@@ -68,9 +71,48 @@ fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Write
         .temp_not_found => return writer.print("Could not find temporary variable to set: " ++
             "{s}", .{argument}),
         .list_not_found => return writer.print("Failed to find LIST called {s}", .{argument}),
+        .list_operand_types => return writer.print("Can not call use '{s}' operation on {s} " ++
+            "and {s}", .{
+            opcode_word(diagnostic.number),
+            type_name(diagnostic.other_number >> 8),
+            type_name(diagnostic.other_number & 0xff),
+        }),
         else => fixed_text(diagnostic.code),
     };
     try writer.writeAll(text);
+}
+
+/// The native function's name as ink spells it (its JSON word), from an opcode number.
+fn opcode_word(number: i32) []const u8 {
+    const words = comptime table: {
+        const fields = @typeInfo(Opcode).@"enum".field_names;
+        var table: [fields.len][]const u8 = @splat("?");
+        for (ink_json.words.keys(), ink_json.words.values()) |key, opcode| {
+            table[@backingInt(opcode)] = key;
+        }
+        break :table table;
+    };
+    assert(number >= 0);
+    const position: u32 = @intCast(number);
+    assert(position < words.len);
+    return words[position];
+}
+
+/// ink's ValueType name for a Value tag number, as its messages print it.
+fn type_name(tag_number: i32) []const u8 {
+    assert(tag_number >= 0);
+    assert(tag_number <= std.math.maxInt(u8));
+    const tag: std.meta.Tag(Value) = @fromBackingInt(@as(u8, @intCast(tag_number)));
+    return switch (tag) {
+        .null => "Void",
+        .integer => "Int",
+        .float => "Float",
+        .bool => "Bool",
+        .string, .tag => "String",
+        .divert_target => "DivertTarget",
+        .variable_pointer => "VariablePointer",
+        .list => "List",
+    };
 }
 
 fn fixed_text(code: Diagnostic.Code) []const u8 {
