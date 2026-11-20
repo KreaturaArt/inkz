@@ -100,6 +100,40 @@ Shared pieces:
 - It also gives runtime stories a budget of 10,000 steps per `cont`. Generated stories loop,
   and the default budget of 1,000,000 made each input slow.
 
+## Long seeded runs and triage
+
+`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save> --seed S --seeds N`
+(`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
+configuration and a generated story, and the target checks it. `compile` checks the program
+and that it compiles the same twice. `play` plays it with seeded choices and checks the
+state after every call. `save` plays, saves, loads the save into a fresh story and saves
+again. Every failure prints its configuration and the command that reproduces it. The run
+ends with the **triage** (`src/testing/swarm_triage.zig`, after the swarm paper's §5): the
+features on in every failing run are *triggers*, and those off in every failing run but
+used by passing ones are *suppressors*. `--target save --seeds 2000` takes 39 s and finds
+nothing.
+
+`-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
+drawn configuration, to measure swarm against it.
+
+### Swarm against the full mix (2026-11-20)
+
+Each target fuzzed from an empty corpus (`.zig-cache/f` and `.zig-cache/v` removed) for
+`--fuzz=100K`, ReleaseSafe, Apple M3, once with drawn configurations and once with
+`-Dfuzz-swarm=off`:
+
+| Target | Swarm: coverage | Full mix: coverage | Swarm: unique runs | Full mix: unique runs | Default |
+|---|---:|---:|---:|---:|---|
+| Parser | 2,123 / 11,120 | 1,959 (−7.7%) | 4,472 | 4,021 | swarm |
+| Sema and resolve | 3,175 / 13,315 | 3,002 (−5.4%) | 4,935 | 4,972 | swarm |
+| Lower and emit | 6,225 / 18,831 | 6,002 (−3.6%) | 4,948 | 3,532 | swarm |
+| VM | 7,583 / 21,316 | 7,246 (−4.4%) | 5,381 | 5,108 | swarm |
+| Save and load | 8,684 / 23,302 | 8,429 (−2.9%) | 7,182 | 6,663 | swarm |
+| Host API | 8,726 / 23,037 | 8,482 (−2.8%) | 6,445 | 4,938 | swarm |
+
+Swarm reaches more coverage on every target at the same budget, so it stays the default
+everywhere. (The full-mix host run stopped at 83,910 inputs; its inputs are slower.)
+
 ## Differential swarm run
 
 The targets above check invariants: no crash, `check()` holds, round trips match. The
