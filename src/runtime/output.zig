@@ -373,7 +373,12 @@ pub const Output = struct {
     /// A tag's text pieces are cleaned straight into `scratch` (the state's `tag_bytes`), so
     /// a tag longer than it, after cleaning, is `error.TagBytesLimit`. Returns the longest
     /// cleaned tag, for the usage peak.
-    pub fn collect_tags(output: *const Output, strings: anytype, scratch: []u8, sink: anytype) !u32 {
+    pub fn collect_tags(
+        output: *const Output,
+        strings: anytype,
+        scratch: []u8,
+        sink: anytype,
+    ) !u32 {
         assert(scratch.len > 0);
         var pending: Pending = .{ .cleaned = .fixed(scratch) };
         var in_tag = false;
