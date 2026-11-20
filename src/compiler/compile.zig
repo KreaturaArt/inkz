@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const profile = @import("../core/profile.zig");
 const Allocator = std.mem.Allocator;
 const grammar = @import("grammar.zig");
+const ast = @import("ast.zig");
 const sema = @import("sema.zig");
 const resolve = @import("resolve.zig");
 const source_space = @import("source_space.zig");
@@ -97,7 +98,8 @@ fn lower_parsed(
     return lowering.into_lowered();
 }
 
-/// Compiles one ink file's text (INCLUDE needs `compile_file`).
+/// Compiles one ink file's text. It reads no files: a story with an INCLUDE is CompileFailed
+/// (use `compile_file`).
 pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
     assert(@TypeOf(gpa) == Allocator);
     var parsed = parsed: {
@@ -113,6 +115,10 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
         };
     };
     defer parsed.deinit(gpa);
+    // There is no directory to INCLUDE from: inklecate's "Failed to load: 'name'" error.
+    if (std.mem.indexOfScalar(ast.Tag, parsed.tree.tags, .include) != null) {
+        return error.CompileFailed;
+    }
     return compile_parsed(gpa, &parsed, null, .{});
 }
 
@@ -219,6 +225,22 @@ test "a literal ink can't fold, such as - true, fails to compile instead of leak
     }
     // What ink folds compiles.
     var program = try compile_source(gpa, "{ - 1: x } {not true} {-1.5} {!0}\n");
+    program.deinit(gpa);
+}
+
+test "compile_source fails on an INCLUDE it can't load instead of dropping it" {
+    // ERROR: line 1: Failed to load: 'missing.ink' (inklecate). compile_source reads no
+    // files, so every INCLUDE fails; it was once dropped silently, compiling "Hello" alone.
+    const gpa = std.testing.allocator;
+    const sources = [_][]const u8{
+        "INCLUDE missing.ink\nHello\n",
+        "Hello\nINCLUDE other.ink\n== k\n-> DONE\n",
+    };
+    for (sources) |source| {
+        try std.testing.expectError(error.CompileFailed, compile_source(gpa, source));
+    }
+    // An INCLUDE in a comment is no INCLUDE.
+    var program = try compile_source(gpa, "// INCLUDE missing.ink\nHello\n");
     program.deinit(gpa);
 }
 
