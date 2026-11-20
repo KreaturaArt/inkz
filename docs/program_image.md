@@ -24,7 +24,7 @@ no `Story.init`), after Phase 12: the image loads 18–20× faster than the JSON
 when checking the opcodes was most of an image load, it was 6–7×. Images are larger than the
 JSON: arrays of 4-byte indices, against short decimal text with shared names.
 
-## Format, version 1
+## Format, version 2
 
 All integers are little-endian. A big-endian host gets `error.UnsupportedEndianness`.
 
@@ -33,7 +33,7 @@ All integers are little-endian. A big-endian host gets `error.UnsupportedEndiann
 | Offset | Field | Value |
 |---:|---|---|
 | 0 | magic | the 8 bytes `INKZPROG` |
-| 8 | format version | 1 |
+| 8 | format version | 2 |
 | 12 | endianness word | `0x01020304` |
 | 16 | ink version | `Program.ink_version` |
 | 20 | global declaration | a container index, or `0xFFFFFFFF` for none |
@@ -105,5 +105,8 @@ pass the header and reach the section, string, reference and `Program.check` val
 ## Changing the format
 
 Change the format only together with `format_version`. A reader accepts only its own version.
+Version 2 added the opcode `temp_assign_written_global`, a `{"VAR=": name, "re": true}`
+re-assignment of a name that isn't a global (a story-level temp), so the JSON writer gives
+it back as inklecate wrote it.
 An image is a cache of the JSON or the source, so a mismatch means rebuilding the image, not
 converting it.

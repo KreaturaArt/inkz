@@ -29,7 +29,8 @@ const ContainerInfo = container_module.ContainerInfo;
 const NamedEntry = container_module.NamedEntry;
 
 pub const magic = "INKZPROG";
-pub const format_version: u32 = 1;
+/// 2: the opcode `temp_assign_written_global` (a `VAR=` re-assignment of a non-global).
+pub const format_version: u32 = 2;
 const endianness_word: u32 = 0x0102_0304;
 const section_alignment = 8;
 

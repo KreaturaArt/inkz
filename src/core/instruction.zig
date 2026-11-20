@@ -106,6 +106,11 @@ pub const Opcode = enum(u8) {
     temp_assign,
     /// `{"CNT?": path}`: the visit count of a container.
     read_count,
+    /// `{"VAR=": name, "re": true}` for a name that is not a global (a story-level temp,
+    /// which ink resolves as global): it assigns the temp, as ink's VariablesState.Assign
+    /// decides a re-assignment by GlobalVariableExistsWithName, and is written back as
+    /// `VAR=`, as inklecate wrote it.
+    temp_assign_written_global,
 };
 
 comptime {
@@ -204,6 +209,7 @@ pub fn operand_kind(opcode: Opcode) OperandKind {
     assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
     const kind: OperandKind = switch (opcode) {
         .text, .tag, .temp_get, .temp_declare, .temp_assign => .string,
+        .temp_assign_written_global => .string,
         .divert_target, .enter_container, .read_count => .container,
         .integer => .integer,
         .float => .float,

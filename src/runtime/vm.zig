@@ -343,6 +343,7 @@ fn perform(story: *Story, instruction: Instruction, pointer: Pointer) Error!Sign
         .choice_point => choice_point(story, instruction, pointer),
         .global_get, .temp_get, .read_count => variable_get(story, instruction),
         .global_declare, .global_assign, .temp_declare, .temp_assign => assign(story, instruction),
+        .temp_assign_written_global => assign(story, instruction),
         else => control(story, opcode),
     };
 }
@@ -465,6 +466,11 @@ fn assign(story: *Story, instruction: Instruction) Error!Signal {
         .global_assign => try ops.assign_global(story, instruction.get(.global_assign), value),
         .temp_declare => try ops.declare_temp(story, instruction.get(.temp_declare), value),
         .temp_assign => try ops.assign_temp(story, instruction.get(.temp_assign), value),
+        .temp_assign_written_global => try ops.assign_temp(
+            story,
+            instruction.get(.temp_assign_written_global),
+            value,
+        ),
         else => unreachable,
     }
     return .none;

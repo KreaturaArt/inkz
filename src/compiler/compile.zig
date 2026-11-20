@@ -244,6 +244,52 @@ test "compile_source fails on an INCLUDE it can't load instead of dropping it" {
     program.deinit(gpa);
 }
 
+/// inklecate's JSON for `~ temp x = 1`, `~ x++`, `{x}` at story level: ink resolves a
+/// story-level temp as a global, so the re-assignment is `VAR=`.
+const story_temp_json = "{\"inkVersion\":21,\"root\":[[\"ev\",1,\"/ev\",{\"temp=\":\"x\"}," ++
+    "\"ev\",{\"VAR?\":\"x\"},1,\"+\",{\"VAR=\":\"x\",\"re\":true},\"/ev\",\"ev\"," ++
+    "{\"VAR?\":\"x\"},\"out\",\"/ev\",\"\\n\",[\"done\",{\"#n\":\"g-0\"}],null],\"done\"," ++
+    "{\"global decl\":[\"ev\",\"/ev\",\"end\",null]}],\"listDefs\":{}}";
+
+test "a story-level temp's re-assignment is VAR=, as inklecate writes it, and still a temp" {
+    // The compiler resolved it as global, but the Program kept only a temp assignment, so
+    // it was once written {"temp=":"x","re":true}. It runs as a temp, as ink's
+    // VariablesState.Assign treats a re-assignment of a name that is no global.
+    const gpa = std.testing.allocator;
+    const source = "~ temp x = 1\n~ x++\n{x}\n";
+    const text = try compile_to_json(gpa, source);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings(story_temp_json, text);
+    var program = try compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const support = @import("../testing/support.zig");
+    const played = try support.play(gpa, &program, &.{});
+    defer gpa.free(played.output);
+    try std.testing.expectEqualStrings("2\n", played.output);
+}
+
+test "VAR= and temp= re-assignments round-trip from ink JSON through a Program" {
+    // inklecate's JSON, loaded and written back, keeps each form: VAR= of a story temp,
+    // VAR= of a global and temp= of a knot's temp.
+    const gpa = std.testing.allocator;
+    const sources = [_][]const u8{
+        story_temp_json,
+        "{\"inkVersion\":21,\"root\":[[\"ev\",{\"VAR?\":\"g\"},1,\"+\",{\"VAR=\":\"g\"," ++
+            "\"re\":true},\"/ev\",{\"->\":\"k\"},[\"done\",{\"#n\":\"g-0\"}],null],\"done\"," ++
+            "{\"k\":[\"ev\",1,\"/ev\",{\"temp=\":\"t\"},\"ev\",2,\"/ev\",{\"temp=\":\"t\"," ++
+            "\"re\":true},\"done\",null],\"global decl\":[\"ev\",1,{\"VAR=\":\"g\"},\"/ev\"," ++
+            "\"end\",null]}],\"listDefs\":{}}",
+    };
+    for (sources) |json| {
+        var program = try ink_json.load(gpa, json);
+        defer program.deinit(gpa);
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        try ink_json.serialize(gpa, &program, &out.writer);
+        try std.testing.expectEqualStrings(json, out.written());
+    }
+}
+
 /// The old compiler's peak bytes compiling test/fixture/crime_scene.ink to JSON in a Debug
 /// build, the baseline of the memory criterion.
 const old_compiler_peak_bytes_crime_scene = 535_946;
