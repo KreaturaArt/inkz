@@ -88,6 +88,12 @@ pub const Binding = struct {
     lookahead_safe: bool = true,
 };
 
+comptime {
+    // The state carves the bindings as words (state.binding_words_each per binding).
+    assert(@sizeOf(Binding) == limits_module.element_bytes.binding);
+    assert(@alignOf(Binding) <= 8);
+}
+
 /// Receives each error and warning message at the end of `cont`, as ink's onError does.
 pub const ErrorHandler = *const fn (
     context: ?*anyopaque,
@@ -195,12 +201,14 @@ pub const Story = struct {
 
     pub fn init(story: *Story, gpa: Allocator, program: *const Program, limits: Limits) !void {
         assert(program.containers.len > 0);
-        const bindings = try gpa.alloc(Binding, program.externals.len);
-        errdefer gpa.free(bindings);
-        @memset(bindings, .{});
-        story.* = .{ .program = program, .state = undefined, .bindings = bindings };
+        story.* = .{ .program = program, .state = undefined, .bindings = &.{} };
+        // One allocation: the bindings are carved from the state's block.
         try story.state.init(gpa, program, limits);
         errdefer story.state.deinit(gpa);
+        const words = std.mem.sliceAsBytes(story.state.binding_words);
+        story.bindings = std.mem.bytesAsSlice(Binding, words);
+        assert(story.bindings.len == program.externals.len);
+        @memset(story.bindings, .{});
         try story.reset_globals();
         assert(story.state.call_stack.depth() == 1);
     }
@@ -325,7 +333,7 @@ pub const Story = struct {
     }
 
     pub fn deinit(story: *Story, gpa: Allocator) void {
-        gpa.free(story.bindings);
+        assert(story.bindings.len == story.program.externals.len);
         const shape = State.shape_of(story.program);
         assert(story.state.memory.len == story.state.limits.bytes_total(shape));
         story.state.deinit(gpa);

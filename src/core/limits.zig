@@ -29,6 +29,7 @@ pub const element_bytes = struct {
     pub const ancestor = 4; // ContainerIndex, for the visit-counting walk
     pub const snapshot = 24; // a choice's stored thread: frame and temp ranges, previous pointer
     pub const load_node = 16; // a token of a save being loaded (vm/json_tree.zig)
+    pub const binding = 24; // an external's function, context and lookahead flag
 };
 
 /// Bounds for one story instance. Every field is a maximum count unless its name says bytes.
@@ -78,6 +79,8 @@ pub const Limits = struct {
     pub const ProgramShape = struct {
         count_slots: u32,
         globals_count: u32,
+        /// The story's bindings, one per EXTERNAL, live in the same block.
+        externals_count: u32 = 0,
 
         /// The words of the lookahead's "logged" bitset: one bit per slot the undo log can
         /// target (each global, each visit count, each turn index), so a slot is logged at
@@ -156,6 +159,7 @@ pub const Limits = struct {
         var total: u64 = 0;
         total += @as(u64, shape.globals_count) * bytes.global;
         total += @as(u64, shape.count_slots) * bytes.count_slot;
+        total += @as(u64, shape.externals_count) * bytes.binding;
         total += limits.output_bytes_max;
         total += limits.tag_bytes_max; // the tag scratch
         // The cleaned-text cache: a copy of the cleaned items and their text.

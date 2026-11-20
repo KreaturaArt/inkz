@@ -31,9 +31,10 @@ higher; its last measurement, before P9.2 deleted it:
 ## Memory budget sizing (P4.12)
 
 A story's runtime state is one allocation of exactly `Limits.bytes_total(shape)` bytes, made by
-`Story.init` (tested with a counting allocator in `src/runtime/state.zig`, "init allocates exactly the byte
-budget, once"). Nothing allocates after
-that. The total has three parts:
+`Story.init`. It is tested with a counting allocator in `src/runtime/state.zig` ("init
+allocates exactly the byte budget, once") and, with externals, in
+`src/testing/zero_allocation.zig`. Until P16.10 the external bindings were a second
+allocation; they are now carved from the same block. Nothing allocates after that. The total has three parts:
 
 - **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
   `str` marks, and the choices with their tags and thread snapshots.
@@ -41,7 +42,7 @@ that. The total has three parts:
   plus the undo log (`patch_entries_max` × 16 bytes) and its bitset of logged slots (one bit
   per global, visit count and turn index).
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
-  (8 bytes per counted container), the line buffer (`output_bytes_max`), the tag scratch
+  (8 bytes per counted container), the external bindings (24 bytes per EXTERNAL), the line buffer (`output_bytes_max`), the tag scratch
   (`tag_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
   list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
