@@ -107,9 +107,50 @@ const sections_count = @typeInfo(Section).@"enum".field_names.len;
 comptime {
     assert(@sizeOf(Header) == 40);
     assert(@sizeOf(SectionEntry) == 8);
-    // Elements are copied as bytes, so they must have no padding.
+    // Elements are copied as bytes, so they must have no padding, and a record's field order
+    // must be fixed: auto-layout structs may be reordered by any build.
     for (std.enums.values(Section)) |section| {
-        assert(std.meta.hasUniqueRepresentation(section.Element()));
+        const Element = section.Element();
+        assert(std.meta.hasUniqueRepresentation(Element));
+        switch (@typeInfo(Element)) {
+            .int => {},
+            .@"enum" => |info| assert(@typeInfo(info.tag_type) == .int),
+            .@"struct" => |info| assert(info.layout == .@"extern" or info.layout == .@"packed"),
+            else => unreachable,
+        }
+    }
+}
+
+/// The image's record layouts, as docs/program_image.md gives them: each field's name and
+/// byte offset, in order. Changing one changes the format, and `format_version`.
+const record_layouts = .{
+    .{ NamedEntry, 8, .{ .{ "name", 0 }, .{ "child", 4 } } },
+    .{ program_module.GlobalInfo, 4, .{.{ "name", 0 }} },
+    .{ program_module.ListOrigin, 12, .{
+        .{ "name", 0 },
+        .{ "items_first", 4 },
+        .{ "items_count", 8 },
+    } },
+    .{ program_module.ListItem, 16, .{
+        .{ "origin", 0 },
+        .{ "name", 4 },
+        .{ "full_name", 8 },
+        .{ "value", 12 },
+    } },
+    .{ program_module.ExternalInfo, 8, .{ .{ "name", 0 }, .{ "fallback", 4 } } },
+};
+
+comptime {
+    for (record_layouts) |record| {
+        const Record = record[0];
+        assert(@typeInfo(Record).@"struct".layout == .@"extern");
+        assert(@sizeOf(Record) == record[1]);
+        assert(std.meta.fieldNames(Record).len == record[2].len);
+        for (record[2], std.meta.fieldNames(Record)) |field, name| {
+            assert(std.mem.eql(u8, field[0], name));
+            assert(@offsetOf(Record, field[0]) == field[1]);
+            assert(@sizeOf(@FieldType(Record, field[0])) == 4);
+        }
     }
 }
 
@@ -271,6 +312,33 @@ fn check_opcodes(bytes: []const u8) Error!void {
     assert(@sizeOf(Opcode) == 1);
     for (bytes) |byte| {
         if (!opcode_bytes[byte]) return error.InvalidImage;
+    }
+}
+
+test "records are written as their documented fields, in order" {
+    // A record's image bytes are its fields' little-endian words in declaration order, the
+    // layout `record_layouts` pins: give every field a distinct value and read the bytes.
+    const item: program_module.ListItem = .{
+        .origin = .from_int(1),
+        .name = .from_int(2),
+        .full_name = .from_int(3),
+        .value = -4,
+    };
+    const expected = [_]u8{ 1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 0xfc, 0xff, 0xff, 0xff };
+    try std.testing.expectEqualSlices(u8, &expected, std.mem.asBytes(&item));
+    inline for (record_layouts) |record| {
+        const Record = record[0];
+        var value: Record = undefined;
+        const bytes = std.mem.asBytes(&value);
+        inline for (record[2], 0..) |field, position| {
+            const word: u32 = 0x0101_0101 * (position + 1);
+            std.mem.writeInt(u32, std.mem.asBytes(&@field(value, field[0])), word, .little);
+        }
+        try std.testing.expectEqual(record[1], bytes.len);
+        inline for (record[2], 0..) |field, position| {
+            const word = std.mem.readInt(u32, bytes[field[1]..][0..4], .little);
+            try std.testing.expectEqual(0x0101_0101 * (position + 1), word);
+        }
     }
 }
 

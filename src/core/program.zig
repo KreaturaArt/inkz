@@ -22,18 +22,21 @@ const ListItemIndex = index.ListItemIndex;
 const ListOriginIndex = index.ListOriginIndex;
 const ExternalIndex = index.ExternalIndex;
 
-pub const GlobalInfo = struct {
+// The records below are `extern`: program images write them as raw bytes, so their field
+// order and offsets are fixed, whatever the compiler or backend (pinned in program_image.zig).
+
+pub const GlobalInfo = extern struct {
     name: StringId,
 };
 
-pub const ListOrigin = struct {
+pub const ListOrigin = extern struct {
     name: StringId,
     /// The origin's items are `list_items[items_first..][0..items_count]`, in declaration order.
     items_first: ListItemIndex,
     items_count: u32,
 };
 
-pub const ListItem = struct {
+pub const ListItem = extern struct {
     origin: ListOriginIndex,
     name: StringId,
     /// `origin.item`, as ink names items in saves and in `VAR?` lookups.
@@ -41,7 +44,7 @@ pub const ListItem = struct {
     value: i32,
 };
 
-pub const ExternalInfo = struct {
+pub const ExternalInfo = extern struct {
     name: StringId,
     /// The ink function with the same name, used when the host binds nothing and fallbacks
     /// are allowed; `.none` if the story has none.

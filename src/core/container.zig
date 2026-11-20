@@ -43,7 +43,8 @@ pub const ContainerInfo = struct {
 
 pub const no_count_slot = std.math.maxInt(u32);
 
-pub const NamedEntry = struct {
+/// `extern`: program images write it as raw bytes, so its field order is fixed.
+pub const NamedEntry = extern struct {
     name: StringId,
     child: ContainerIndex,
 };
