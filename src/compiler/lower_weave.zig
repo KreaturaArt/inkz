@@ -229,7 +229,7 @@ fn gather_depth(lowering: *const Lowering, point: ObjectIndex) u32 {
     assert(lowering.tree.is_weave_point(point));
     const node = lowering.tree.node(point);
     if (node.is_none()) return 1;
-    const header = lowering.ast().data[lowering.ast().child(node, 0).to_int()];
+    const header = lowering.ast().data[lowering.ast().slot(node, .header).to_int()];
     assert(header & 0xffff > 0);
     return header & 0xffff;
 }
@@ -276,7 +276,7 @@ pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
     const container = try ir.new_container();
     const node = lowering.tree.node(gather);
     if (!node.is_none()) {
-        const label = lowering.parsed.child_text(node, 1);
+        const label = lowering.parsed.slot_text(node, .label);
         if (label.len > 0) ir.container(container).name = label;
     }
     ir.container(container).flags |= ir_module.count_start_only;
@@ -321,7 +321,7 @@ pub fn generate_choice(lowering: *Lowering, choice: ObjectIndex) !Result {
         flags |= has_condition;
     }
     if (evaluates) _ = try ir.add_command(outer, .eval_end);
-    const header_leaf = lowering.ast().child(lowering.tree.node(choice), 0);
+    const header_leaf = lowering.ast().slot(lowering.tree.node(choice), .header);
     const header = lowering.ast().data[header_leaf.to_int()];
     if (header & (1 << 17) != 0) flags |= invisible_default;
     if (!lowering.tree.has(choice, Flags.sticky)) flags |= once_only;
@@ -354,11 +354,11 @@ fn choice_parts(lowering: *const Lowering, choice: ObjectIndex) Parts {
     const children = lowering.tree.children_of(choice);
     var parts: Parts = .{};
     var position: usize = 0;
-    if (ast.tag(ast.child(node, 3)) != .none) {
+    if (ast.tag(ast.slot(node, .start)) != .none) {
         parts.start = children[position];
         position += 1;
     }
-    if (ast.tag(ast.child(node, 4)) != .none) {
+    if (ast.tag(ast.slot(node, .choice_only)) != .none) {
         parts.choice_only = children[position];
         position += 1;
     }

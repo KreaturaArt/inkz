@@ -475,10 +475,14 @@ pub const Parsed = struct {
         return parsed.source[workspace.token_starts[token]..workspace.token_ends[token]];
     }
 
-    /// The text of the leaf that is child `position` of `node` (a name, mostly).
-    pub fn child_text(parsed: *const Parsed, node: ast.NodeIndex, position: u32) []const u8 {
+    /// The text of the leaf in slot `which` of `node` (a name, mostly).
+    pub fn slot_text(
+        parsed: *const Parsed,
+        node: ast.NodeIndex,
+        comptime which: ast.Slot,
+    ) []const u8 {
         assert(!node.is_none());
-        return parsed.leaf_text(parsed.tree.child(node, position));
+        return parsed.leaf_text(parsed.tree.slot(node, which));
     }
 
     /// Frees the syntax tree and the tokens once the IR is lowered, keeping the

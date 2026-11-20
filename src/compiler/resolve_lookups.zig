@@ -66,7 +66,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
             // The name is the LIST declaration's.
             assert(tree.kind(tree.parent(object)) == .variable_assignment);
             const declaration = tree.node(tree.parent(object));
-            const name = context.parsed.child_text(declaration, 0);
+            const name = context.parsed.slot_text(declaration, .name);
             try context.lists.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
             try context.list_order.append(context.gpa, object);
             values.number_list(context.parsed, tree, object, context.item_values);
@@ -80,7 +80,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
 /// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
 fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
     assert(context.tree.kind(constant) == .constant_declaration);
-    const name = context.child_name(constant, 0);
+    const name = context.slot_name(constant, .name);
     const entry = try context.constants.getOrPut(context.gpa, .{
         .scope = Tree.root,
         .name = name,
@@ -109,9 +109,9 @@ fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
     const elements = context.tree.children_of(definition);
     for (elements, 0..) |element, position| {
         assert(context.tree.kind(element) == .list_element);
-        const name = context.child_name(element, 0);
+        const name = context.slot_name(element, .name);
         for (elements[position + 1 ..]) |later| {
-            const other = context.child_name(later, 0);
+            const other = context.slot_name(later, .name);
             if (std.mem.eql(u8, name, other)) return context.report(
                 .duplicate_list_item,
                 definition,
@@ -296,7 +296,7 @@ fn list_item_named(
 ) ?ObjectIndex {
     assert(context.tree.kind(definition) == .list_definition);
     for (context.tree.children_of(definition)) |element| {
-        const name = context.child_name(element, 0);
+        const name = context.slot_name(element, .name);
         if (std.mem.eql(u8, name, item)) return element;
     }
     return null;

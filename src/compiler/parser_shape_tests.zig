@@ -491,3 +491,96 @@ test "dense logic stays within the step bound" {
     defer parsed.deinit(gpa);
     try std.testing.expectEqual(@as(u32, 0), parsed.diagnostics_count);
 }
+
+test "a named slot is the child at its position, for every fixed node of a story" {
+    // Every fixed-shape node of a sample with knots, functions, choices, gathers,
+    // conditionals, sequences, diverts, declarations and expressions: `slot` gives the node
+    // `child` gives at the slot's position in `ast.slots` (P16.13, F7).
+    const ast_module = @import("ast.zig");
+    const grammar = @import("grammar.zig");
+    const gpa = std.testing.allocator;
+    const source =
+        \\VAR x = 1
+        \\CONST c = 2
+        \\LIST l = a, (b)
+        \\EXTERNAL e(y)
+        \\~ temp t = x + c * 2
+        \\~ x += 1
+        \\~ t++
+        \\{x > 1: big|small} {&one|two} {f(1)} {not x} {-> k}
+        \\{
+        \\- x == 1: One
+        \\- else: Other
+        \\}
+        \\* (o) {x} Start [choice] inner -> k
+        \\- (g) Gathered
+        \\-> k ->
+        \\<- k
+        \\=== k ===
+        \\->->
+        \\=== function f(ref a) ===
+        \\~ return a
+        \\
+    ;
+    var parsed = try grammar.parse(gpa, source, .{});
+    defer parsed.deinit(gpa);
+    const ast = &parsed.tree;
+    var fixed: u32 = 0;
+    for (ast.tags, 0..) |tag, at| {
+        if (ast_module.shape(tag) != .fixed) continue;
+        fixed += 1;
+        const node: ast_module.NodeIndex = .from_int(@intCast(at));
+        switch (tag) {
+            inline else => |known| {
+                inline for (comptime ast_module.slots(known), 0..) |which, position| {
+                    try std.testing.expectEqual(ast.child(node, position), ast.slot(node, which));
+                }
+            },
+        }
+    }
+    try std.testing.expect(fixed > 30);
+}
+
+test "sema, resolve and lowering read fixed children by name only" {
+    // No positional child read with a literal position is left in the stages after parsing:
+    // `child(node, 0)`, `child_text(...)` and `child_name(...)` would silently shift with a
+    // layout change (P16.13, F7).
+    const io = std.testing.io;
+    var directory = try std.Io.Dir.cwd().openDir(io, "src/compiler", .{ .iterate = true });
+    defer directory.close(io);
+    var iterator = directory.iterate();
+    var scanned: u32 = 0;
+    var buffer: [256 * 1024]u8 = undefined;
+    while (try iterator.next(io)) |entry| {
+        const stage = std.mem.startsWith(u8, entry.name, "sema") or
+            std.mem.startsWith(u8, entry.name, "resolve") or
+            std.mem.startsWith(u8, entry.name, "lower");
+        if (entry.kind != .file or !stage or !std.mem.endsWith(u8, entry.name, ".zig")) continue;
+        const text = try directory.readFile(io, entry.name, &buffer);
+        scanned += 1;
+        var lines = std.mem.splitScalar(u8, text, '\n');
+        while (lines.next()) |line| {
+            const forbidden = std.mem.indexOf(u8, line, "child_text(") != null or
+                std.mem.indexOf(u8, line, "child_name(") != null or
+                literal_child_read(line);
+            if (forbidden) {
+                std.debug.print("{s}: {s}\n", .{ entry.name, line });
+                return error.PositionalChildRead;
+            }
+        }
+    }
+    try std.testing.expect(scanned >= 10);
+}
+
+/// Whether the line reads `.child(…, <digits>)`.
+fn literal_child_read(line: []const u8) bool {
+    var rest = line;
+    while (std.mem.indexOf(u8, rest, ".child(")) |at| {
+        rest = rest[at + ".child(".len ..];
+        const close = std.mem.indexOfScalar(u8, rest, ')') orelse return false;
+        const comma = std.mem.lastIndexOf(u8, rest[0..close], ", ") orelse continue;
+        const position = rest[comma + 2 .. close];
+        if (position.len > 0 and std.ascii.isDigit(position[0])) return true;
+    }
+    return false;
+}

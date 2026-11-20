@@ -39,7 +39,7 @@ pub fn is_builtin(name: []const u8) bool {
 /// The name a variable assignment or declaration assigns.
 fn assigned_name(context: *const Context, object: ObjectIndex) []const u8 {
     assert(context.tree.kind(object) == .variable_assignment);
-    return context.child_name(object, 0);
+    return context.slot_name(object, .name);
 }
 
 /// A divert's target path: the `path` child, or a call's name.
@@ -51,10 +51,10 @@ fn divert_path(context: *const Context, divert: ObjectIndex) ?Path {
     const ast = context.ast();
     if (ast.tag(node) == .function_call) {
         var path: Path = .{ .count = 1 };
-        path.components[0] = context.parsed.child_text(node, 0);
+        path.components[0] = context.parsed.slot_text(node, .name);
         return path;
     }
-    const path_node = ast.child(node, 0);
+    const path_node = ast.slot(node, .path);
     if (ast.tag(path_node) != .path) return null;
     return context.path_of(path_node);
 }
@@ -94,7 +94,7 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             );
         },
         .external_declaration => {
-            const name = context.child_name(object, 0);
+            const name = context.slot_name(object, .name);
             const entry = try context.externals.getOrPut(context.gpa, .{
                 .scope = Tree.root,
                 .name = name,
@@ -103,7 +103,7 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             entry.value_ptr.* = object;
         },
         .function_call => {
-            const name = context.child_name(object, 0);
+            const name = context.slot_name(object, .name);
             const is_list = context.lookup(&context.lists, Tree.root, name) != null;
             // A built-in's proxy divert is never generated, so never resolved.
             assert(tree.children_of(object).len > 0);
@@ -204,13 +204,13 @@ fn check(context: *Context, object: ObjectIndex) !void {
             // ink's `not A ? B` check: a negated left operand of `?` (or `has`).
             const ast = context.ast();
             const node = context.tree.node(object);
-            if (ast.tag(node) == .has and ast.tag(ast.child(node, 0)) == .not) {
+            if (ast.tag(node) == .has and ast.tag(ast.slot(node, .left)) == .not) {
                 try context.report(.negated_has_operand, object);
             }
         },
         .function_call => {
             // A list's name called as a function makes a list (ink's ResolveList).
-            const name = context.child_name(object, 0);
+            const name = context.slot_name(object, .name);
             const list = context.lookup(&context.lists, Tree.root, name);
             context.targets[object.to_int()] = list orelse .none;
         },
@@ -222,7 +222,7 @@ fn check(context: *Context, object: ObjectIndex) !void {
             try collisions.check(context, object, context.label(object), .sub_flow_and_weave);
         },
         .constant_declaration, .list_element => {
-            const name = context.child_name(object, 0);
+            const name = context.slot_name(object, .name);
             const kind = context.tree.kind(object);
             try collisions.check(
                 context,
@@ -236,7 +236,7 @@ fn check(context: *Context, object: ObjectIndex) !void {
             try collisions.check(
                 context,
                 object,
-                context.parsed.child_text(declaration, 0),
+                context.parsed.slot_text(declaration, .name),
                 .list,
             );
         },
@@ -308,7 +308,7 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
 fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
     assert(context.tree.kind(reference) == .variable_reference);
     const node = context.tree.node(reference);
-    const path = context.path_of(context.ast().child(node, 0));
+    const path = context.path_of(context.ast().slot(node, .path));
     assert(path.count > 0);
     const references = context.references;
     if (path.count == 1) {
@@ -401,9 +401,9 @@ fn check_increment(context: *Context, increment: ObjectIndex) !void {
     const ast = context.ast();
     const node = tree.node(increment);
     const name = if (tree.has(increment, Flags.by_expression))
-        context.parsed.child_text(node, 0)
+        context.parsed.slot_text(node, .name)
     else
-        joined_first(context, ast.child(ast.child(node, 0), 0));
+        joined_first(context, ast.slot(ast.slot(node, .name), .path));
     const found = lookups.resolve_variable(context, name, increment);
     context.references[increment.to_int()] = found orelse .unresolved;
     if (found == null) try context.report(.increment_target_not_found, increment);

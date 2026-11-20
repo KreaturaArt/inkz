@@ -21,7 +21,7 @@ fn has_parameter_list(context: *const Context, flow: ObjectIndex) bool {
     assert(context.tree.is_flow(flow));
     if (context.tree.kind(flow) == .story) return false;
     const ast = context.ast();
-    return ast.tag(ast.child(context.tree.node(flow), 1)) != .none;
+    return ast.tag(ast.slot(context.tree.node(flow), .parameters)) != .none;
 }
 
 /// Divert.CheckArgumentValidity and the by-reference checks, for a divert whose target the
@@ -63,7 +63,7 @@ fn check_divert_target(context: *Context, divert: ObjectIndex, argument: ObjectI
     switch (tree.kind(argument)) {
         .divert_target => {},
         .variable_reference => {
-            const path = context.path_of(context.ast().child(tree.node(argument), 0));
+            const path = context.path_of(context.ast().slot(tree.node(argument), .path));
             if (try lookups.resolve_path(context, &path, argument) != null) {
                 try context.report(.read_count_instead_of_divert_target, divert);
             }
@@ -82,7 +82,7 @@ fn check_reference(context: *Context, divert: ObjectIndex, argument: ObjectIndex
         try context.report(.reference_argument_not_variable, divert);
         return false;
     }
-    const path = context.path_of(context.ast().child(tree.node(argument), 0));
+    const path = context.path_of(context.ast().slot(tree.node(argument), .path));
     if (try lookups.resolve_path(context, &path, divert) != null) {
         try context.report(.read_count_by_reference, divert);
         return false;
@@ -111,7 +111,7 @@ pub fn check_external(context: *Context, divert: ObjectIndex, external: ObjectIn
     assert(tree.kind(divert) == .divert);
     assert(tree.kind(external) == .external_declaration);
     const ast = context.ast();
-    const declared = ast.list(ast.child(tree.node(external), 1)).count;
+    const declared = ast.list(ast.slot(tree.node(external), .parameters)).count;
     if (declared != tree.children_of(divert).len) {
         try context.report(.external_argument_count, divert);
     }
@@ -154,7 +154,7 @@ fn command_parameters(name: []const u8) ?u32 {
 pub fn check_call(context: *Context, call: ObjectIndex, is_list: bool) !void {
     const tree = context.tree;
     assert(tree.kind(call) == .function_call);
-    const name = context.child_name(call, 0);
+    const name = context.slot_name(call, .name);
     const arguments = tree.children_of(tree.children_of(call)[0]);
     const expected = command_parameters(name) orelse native_parameters(name) orelse {
         if (is_list and arguments.len > 1) {
