@@ -254,3 +254,44 @@ test "lists meet ints only through + and -, as in ink" {
         try list_error_of(gpa, "LIST l = a, b, c\nVAR x = (b)\n{2 + x}\n-> END\n", &buffer),
     );
 }
+
+test "global reads and writes go through the slot, without a scan by name" {
+    // 64 globals read and written by a story: `global_slot` never scans (P16.8, F2). A
+    // write in the newline lookahead is undone with it, and a ref parameter passed a global
+    // still assigns the global.
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    for (0..64) |index| try source.writer.print("VAR g{d} = {d}\n", .{ index, index });
+    for (0..63) |index| try source.writer.print("~ g{d} = g{d} + 1\n", .{ index, index + 1 });
+    try source.writer.writeAll("{g0} {g62}\n~ g1 = 100\nNext\n-> END\n");
+    var program = try compile.compile_source(gpa, source.written());
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    const ops = @import("../runtime/ops.zig");
+    const scans_before = ops.global_slot_calls;
+    try std.testing.expectEqualStrings("2 64\n", (try story.cont()).get());
+    // The lookahead ran `~ g1 = 100` and saw "Next": it restored g1.
+    try std.testing.expectEqual(@as(i32, 3), story.get_variable("g1").?.get().integer);
+    try std.testing.expectEqual(scans_before, ops.global_slot_calls);
+    try std.testing.expectEqualStrings("Next\n", (try story.cont()).get());
+    try std.testing.expectEqual(@as(i32, 100), story.get_variable("g1").?.get().integer);
+    try std.testing.expectEqual(scans_before, ops.global_slot_calls);
+
+    var ref_program = try compile.compile_source(gpa,
+        \\VAR g = 1
+        \\~ add(g)
+        \\~ add(g)
+        \\{g}
+        \\=== function add(ref x) ===
+        \\~ x = x + 10
+        \\
+    );
+    defer ref_program.deinit(gpa);
+    var ref_story: api.Story = undefined;
+    try ref_story.init(gpa, &ref_program, .{});
+    defer ref_story.deinit(gpa);
+    try std.testing.expectEqualStrings("21\n", (try ref_story.cont()).get());
+}

@@ -1,5 +1,6 @@
 //! The differential swarm run (src/testing/differential.zig), run from the repository root:
-//!   `swarm_differential gen --seed <s> --count <n> --out <dir>`: generated cases;
+//!   `swarm_differential gen --seed <s> --count <n> --out <dir> [--swarm <line>]`:
+//!   generated cases, each with its drawn configuration or the one given;
 //!   `swarm_differential check <dir>`: compares inkz with ink's results, which
 //!   `mise run reference:swarm -- <dir>` writes; exits 1 on a divergence;
 //!   `swarm_differential reduce <dir> <case> --harness <ink_harness.dll>`: drops swarm
@@ -14,7 +15,7 @@ const fuzz_ink = @import("testing/fuzz_ink.zig");
 const Swarm = fuzz_ink.Swarm;
 
 const usage =
-    \\usage: swarm_differential gen --seed <s> --count <n> --out <dir>
+    \\usage: swarm_differential gen --seed <s> --count <n> --out <dir> [--swarm <line>]
     \\       swarm_differential check <dir>
     \\       swarm_differential reduce <dir> <case> --harness <ink_harness.dll>
     \\
@@ -24,16 +25,18 @@ pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const arguments = try init.minimal.args.toSlice(arena);
-    if (arguments.len == 8 and std.mem.eql(u8, arguments[1], "gen") and
+    const gen = arguments.len >= 8 and std.mem.eql(u8, arguments[1], "gen") and
         std.mem.eql(u8, arguments[2], "--seed") and std.mem.eql(u8, arguments[4], "--count") and
-        std.mem.eql(u8, arguments[6], "--out"))
-    {
+        std.mem.eql(u8, arguments[6], "--out");
+    const swarm_given = arguments.len == 10 and std.mem.eql(u8, arguments[8], "--swarm");
+    if (gen and (arguments.len == 8 or swarm_given)) {
         const seed = try std.fmt.parseInt(u64, arguments[3], 10);
         const count = try std.fmt.parseInt(u32, arguments[5], 10);
+        const swarm: ?Swarm = if (swarm_given) try Swarm.parse(arguments[9]) else null;
         try std.Io.Dir.cwd().createDirPath(io, arguments[7]);
         var directory = try std.Io.Dir.cwd().openDir(io, arguments[7], .{});
         defer directory.close(io);
-        try differential.generate(io, directory, seed, count);
+        try differential.generate(io, directory, seed, count, swarm);
         std.debug.print("{d} cases in {s}\n", .{ count, arguments[7] });
         return;
     }
