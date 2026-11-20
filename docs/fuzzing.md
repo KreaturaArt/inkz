@@ -167,7 +167,7 @@ transcripts match up to the line where they start:
 | ink exception (not compared after it) | 12 |
 | inkz limit (not compared after it) | 10 |
 | divergences, before the fixes below | 38 (12 compile acceptance, 26 runtime) |
-| divergences, after them | 2, both the ledgered `swarm/thread_previous_pointer` (P16.21) |
+| divergences, after them | 0 (the last 2 fixed in P16.21) |
 
 `swarm-reduce` on one of the two, case 01848, took 34 ink runs (28 s). A removal that keeps the
 divergence is kept, so the reduction stops short when a removal changes the story so much
@@ -181,7 +181,7 @@ that the divergence goes, as it did for the 46 extra globals there.
 | A `->->` outside a tunnel gave inkz's own message. | ink's "Found tunnel onwards statement (->->), when expected end of flow (-> END or choice)". | `swarm/pop_unexpected` |
 | An operation a type lacks, such as `?` on numbers, gave inkz's own message. | ink's "Cannot perform operation '?' on Float", with the type ink coerces the operands to. | `swarm/operation_not_for_type`, `swarm/operation_not_for_int` |
 | inkz compiled `not v ? 1`, which ink rejects: "Using 'not' or '!' here negates 'v' rather than the result of the '?' or 'has' operator" (11 stories). | The check from `BinaryExpression.ResolveReferences`, code `negated_has_operand`. | unit test in `src/compiler/termination_tests.zig` |
-| After two threads in a row that print nothing, ink saves the first thread's divert as `previousContentObject`, inkz the second's (2 stories). | Not yet: P16.21. | `swarm/thread_previous_pointer`, ledgered |
+| After two threads in a row that print nothing, ink saves the first thread's divert as `previousContentObject`, inkz the second's (2 stories). ink's live pointer is the second divert, but `Object.path` finds an object's index with `content.IndexOf`, which uses `Equals`, and two diverts with the same target are equal. | A save writes the index of the first equal divert in the container (P16.21; found by tracing ink's `Step` through reflection). | `swarm/thread_previous_pointer` |
 
 ## Results (2026-11-13)
 
