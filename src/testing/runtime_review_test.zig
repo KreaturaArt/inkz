@@ -118,3 +118,27 @@ test "a tag longer than 1024 bytes reaches the sink whole, and the limit has its
     defer stop(gpa, tight);
     try std.testing.expectError(error.TagBytesLimit, tight.cont());
 }
+
+test "glue inside a choice tag is dropped, as ink does" {
+    // `* [A #x <>] out`: the tag's content ends in glue. ink 1.2.1 skips everything but
+    // text and control commands while it extracts the tag, giving choice "A" with tag "x"
+    // and "out" after choosing; this runtime reported a story error.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa, "Hi\n* [A #x <>] out\n-> END\n");
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    const before = try play(gpa, story);
+    defer gpa.free(before);
+    try std.testing.expectEqualStrings("Hi\n", before);
+    try std.testing.expectEqual(@as(u32, 0), story.error_count());
+    try std.testing.expectEqual(@as(u32, 1), story.current_choices_count());
+    const choice = (try story.current_choice(0)).get();
+    try std.testing.expectEqualStrings("A", choice.text);
+    try std.testing.expectEqual(@as(u32, 1), choice.tags_count);
+    try std.testing.expectEqualStrings("x", (try story.current_choice_tag(0, 0)).get());
+    try story.choose_choice_index(0);
+    const after = try play(gpa, story);
+    defer gpa.free(after);
+    try std.testing.expectEqualStrings("out\n", after);
+}

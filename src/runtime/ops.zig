@@ -272,15 +272,22 @@ pub fn end_tag(story: *Story) Error!vm.Signal {
         return .output;
     }
     const items = state.output.items.slice();
+    // As ink's Story.cs: only a control command other than `#` is an error; glue and tag
+    // values inside the tag are dropped with it, and only its text is kept.
     var start = items.len;
     while (start > 0) {
         start -= 1;
-        if (items[start].kind == .begin_tag) break;
-        if (items[start].kind != .text) return fail(story, .unexpected_command_in_tag, .{});
+        switch (items[start].kind) {
+            .begin_tag => break,
+            .begin_string, .end_tag => return fail(story, .unexpected_command_in_tag, .{}),
+            .text, .glue, .tag => {},
+        }
     } else return fail(story, .unexpected_command_in_tag, .{});
+    assert(items[start].kind == .begin_tag);
     var writer: std.Io.Writer = .fixed(state.line_bytes);
     var cleaner: output_module.Cleaner = .{ .writer = &writer };
     for (items[start + 1 ..]) |item| {
+        if (item.kind != .text) continue;
         const whole = strings_of(story).get(item.string);
         cleaner.write(whole[item.start..][0..item.length]) catch return error.OutputLimit;
     }
