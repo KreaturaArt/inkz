@@ -369,6 +369,31 @@ floor of the gain; a story with hundreds of globals and temps gains more):
 
 The program grows by 4 bytes per string (crime_scene: 1,788 bytes).
 
+## Native dispatch and save load, measured and decided (P16.18, F15, F18)
+
+`zig build bench-profile`, ReleaseFast, Apple M3, after the name classes (P16.9):
+
+| Zone | crime_scene | generated (1000 knots) |
+|---|---:|---:|
+| `call_native` in one play | 8.35 µs, 10.1% (288 calls) | 4.25 µs, 2.3% (200 calls) |
+| `load_validate` in one save load | 5.97 µs, 43.9% | 62.0 µs, 47.9% |
+| `load_commit` in one save load | 6.23 µs, 45.8% | 62.9 µs, 48.5% |
+
+- **F15, native dispatch: kept as a runtime switch.** The rule was to build comptime-opcode
+  prongs (fino's dispatch) if `call_native` passes 5% of play on a bench story. It does on
+  crime_scene, so they were built: one `inline else` prong per native opcode, with
+  `native.binary`/`unary` taking the opcode at compile time. Play was no faster (crime_scene
+  81.3–83.0 µs with them against 79.4 µs without; the generated story 182.7–184.8 against
+  182.8 µs), so they were taken out again. The zone's time is the operations themselves
+  (popping the operands, reserving room, the arithmetic, pushing the result), not the
+  switch.
+- **F18, save load: two passes kept.** The rule was to switch to one pass if a single pass
+  into the idle lookahead buffers stayed atomic and saved more than 30%. The passes are
+  about even, so one pass could save up to 45%, but it can't stay atomic: a save sets the
+  globals, the visit counts, the heap, the lists and the parked flows, and only the live
+  flow has a second (lookahead) copy to stage into. A failed load must leave the story as it
+  was (D15), so the validating pass stays.
+
 ## Profile per pipeline stage (TASK-153)
 
 `zig build bench-profile` shows where the pipeline spends its time. Profile zones

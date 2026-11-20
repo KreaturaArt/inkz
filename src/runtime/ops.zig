@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const builtin = @import("builtin");
+const profile = @import("../core/profile.zig");
 const assert = std.debug.assert;
 const index = @import("../core/index.zig");
 const instruction_module = @import("../core/instruction.zig");
@@ -319,6 +320,8 @@ fn is_unary(opcode: Opcode) bool {
 }
 
 pub fn call_native(story: *Story, opcode: Opcode) Error!void {
+    const profile_zone = profile.begin(.call_native);
+    defer profile_zone.end();
     assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     assert(@backingInt(opcode) <= @backingInt(Opcode.list_invert));
     var operands: [2]Value = undefined;
@@ -330,6 +333,8 @@ pub fn call_native(story: *Story, opcode: Opcode) Error!void {
     }
     try reserve(story, operands[0..count]);
     var context: NativeContext = .{ .story = story };
+    // A runtime switch on the opcode: comptime prongs (fino's) measured no faster (F15,
+    // docs/benchmarks.md).
     const result = if (count == 1)
         native.unary(&context, opcode, operands[0])
     else
