@@ -8,6 +8,9 @@
 //! - `// lint: allow function_length: <reason>` or `// lint: allow recursion: <reason>` in the
 //!   comment block directly above a function.
 //! - `// lint: allow assertion_density: <reason>` anywhere in a file.
+//! - `// lint: allow hot_path: <reason>` in the comment block directly above a function in a
+//!   hot-path file, for code there that the step doesn't run (loading, the host API, path
+//!   lookups). An empty reason is reported.
 //!
 //! The recursion check resolves calls by name: `f()` and `x.f()` match functions named `f` in
 //! the same file, and `alias.f()` matches `f` in the file imported as `alias`. Calls through a
@@ -41,9 +44,34 @@ pub const Rule = enum {
     hot_path,
 };
 
-/// The VM's dispatch loop, which must not resolve paths or compare or hash strings.
-pub const hot_path_file = "src/runtime/vm.zig";
-const hot_path_forbidden = [_][]const u8{ "mem.eql", "hash", "resolve_path", "path_string" };
+/// The files the VM's step reaches, which must not resolve paths, compare or hash strings, or
+/// find names (tests in them are not checked).
+pub const hot_path_files = [_][]const u8{
+    "src/runtime/vm.zig",
+    "src/runtime/ops.zig",
+    "src/runtime/native.zig",
+    "src/runtime/call_stack.zig",
+    "src/runtime/lists.zig",
+    "src/runtime/output.zig",
+    "src/runtime/heap.zig",
+    "src/runtime/text_cache.zig",
+    "src/runtime/choices.zig",
+    "src/runtime/lookahead.zig",
+    "src/runtime/state.zig",
+    "src/runtime/value.zig",
+};
+const hot_path_forbidden = [_][]const u8{
+    "mem.eql",
+    "hash(",
+    "Hash(",
+    "std.hash",
+    "resolve_path",
+    "path_string",
+    "strings.find",
+    "_by_name(",
+    "global_slot(",
+};
+const hot_path_allow = "lint: allow hot_path:";
 
 pub const Diagnostic = struct {
     path: []const u8,
@@ -129,6 +157,7 @@ pub const Linter = struct {
         const file_index: u32 = @intCast(linter.files.items.len - 1);
         try linter.check_lines(file_index);
         try linter.scan_declarations(file_index);
+        if (is_hot_path(path)) try linter.check_hot_path(file_index);
         try linter.scan_calls(file_index);
     }
 
@@ -183,25 +212,60 @@ pub const Linter = struct {
                 );
                 try linter.report(file.path, @intCast(line_index + 1), .line_length, message);
             }
-            if (std.mem.endsWith(u8, file.path, hot_path_file)) {
-                try linter.check_hot_path(file.path, file.source[start..end], line_index + 1);
+        }
+    }
+
+    /// The hot-path gate on a hot-path file's code, outside tests and suppressed functions
+    /// (comments may name what is forbidden).
+    fn check_hot_path(linter: *Linter, file_index: u32) !void {
+        const file = &linter.files.items[file_index];
+        assert(is_hot_path(file.path));
+        const skipped = try linter.arena.alloc(bool, file.line_starts.len);
+        @memset(skipped, false);
+        try linter.skip_hot_path_exempt(file_index, skipped);
+        for (file.line_starts, 0..) |start, line_index| {
+            if (skipped[line_index]) continue;
+            const text = file.source[start..line_end(file.source, start)];
+            const code_end = std.mem.indexOf(u8, text, "//") orelse text.len;
+            for (hot_path_forbidden) |forbidden| {
+                if (std.mem.indexOf(u8, text[0..code_end], forbidden) == null) continue;
+                const message = try std.fmt.allocPrint(
+                    linter.arena,
+                    "'{s}' in the VM's hot path",
+                    .{forbidden},
+                );
+                try linter.report(file.path, @intCast(line_index + 1), .hot_path, message);
             }
         }
     }
 
-    /// The hot-path gate on one line of code (comments may name what is forbidden).
-    fn check_hot_path(linter: *Linter, path: []const u8, text: []const u8, line: usize) !void {
-        assert(line > 0);
-        assert(std.mem.endsWith(u8, path, hot_path_file));
-        const code_end = std.mem.indexOf(u8, text, "//") orelse text.len;
-        for (hot_path_forbidden) |forbidden| {
-            if (std.mem.indexOf(u8, text[0..code_end], forbidden) == null) continue;
-            const message = try std.fmt.allocPrint(
-                linter.arena,
-                "'{s}' in the VM's hot path",
-                .{forbidden},
-            );
-            try linter.report(path, @intCast(line), .hot_path, message);
+    /// Marks the lines of tests, comptime blocks and functions under a hot-path suppression;
+    /// reports a suppression without a reason.
+    fn skip_hot_path_exempt(linter: *Linter, file_index: u32, skipped: []bool) !void {
+        const file = &linter.files.items[file_index];
+        assert(skipped.len == file.line_starts.len);
+        const nodes_count: u32 = @intCast(file.tree.nodes.len);
+        var node_raw: u32 = 1;
+        while (node_raw < nodes_count) : (node_raw += 1) {
+            const node: Ast.Node.Index = @fromBackingInt(@intCast(node_raw));
+            const tag = file.tree.nodeTag(node);
+            if (tag != .test_decl and tag != .@"comptime") continue;
+            const first = token_line(&file.tree, file.tree.firstToken(node));
+            const last = token_line(&file.tree, file.tree.lastToken(node));
+            @memset(skipped[first - 1 .. last], true);
+        }
+        const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
+        for (functions) |function| {
+            const reason = comment_block_after(file, function.line, hot_path_allow) orelse
+                continue;
+            if (reason.len == 0) {
+                const message = "a hot-path suppression needs a reason";
+                try linter.report(file.path, function.line, .hot_path, message);
+                continue;
+            }
+            const last = token_line(&file.tree, function.token_last);
+            assert(last >= function.line);
+            @memset(skipped[function.line - 1 .. last], true);
         }
     }
 
@@ -730,6 +794,30 @@ fn token_line(tree: *const Ast, token: Ast.TokenIndex) u32 {
 }
 
 /// Whether the run of `//` comment lines directly above `line` (1-based) contains `needle`.
+/// Whether `path` is one of the files the VM's step reaches.
+fn is_hot_path(path: []const u8) bool {
+    assert(path.len > 0);
+    for (hot_path_files) |hot| {
+        if (std.mem.endsWith(u8, path, hot)) return true;
+    }
+    return false;
+}
+
+/// The text after `needle` (trimmed) in the comment block above `line`, or null.
+fn comment_block_after(file: *const SourceFile, line: u32, needle: []const u8) ?[]const u8 {
+    assert(line > 0);
+    assert(needle.len > 0);
+    var above = line - 1;
+    while (above > 0) : (above -= 1) {
+        const start = file.line_starts[above - 1];
+        const text = std.mem.trim(u8, file.source[start..line_end(file.source, start)], " \t");
+        if (!std.mem.startsWith(u8, text, "//")) return null;
+        const at = std.mem.indexOf(u8, text, needle) orelse continue;
+        return std.mem.trim(u8, text[at + needle.len ..], " \t");
+    }
+    return null;
+}
+
 fn comment_block_has(file: *const SourceFile, line: u32, needle: []const u8) bool {
     assert(line > 0);
     assert(needle.len > 0);
@@ -899,16 +987,50 @@ test "long lines and long functions are reported" {
 }
 
 test "the VM's hot path may not compare or hash strings" {
-    // The hot-path grep gate: the same line in the VM and in another file, and in
-    // a comment.
+    // The hot-path grep gate: the same line in the VM and in a file the step doesn't
+    // reach, and in a comment.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const text = "fn f(a: []const u8) bool {\n    assert(a.len > 0);\n    assert(true);\n" ++
         "    // mem.eql is named here only\n    return std.mem.eql(u8, a, \"x\");\n}\n";
     const in_vm = try lint_samples(arena.allocator(), &.{.{ "src/runtime/vm.zig", text }});
     try expect_rules(in_vm, &.{.hot_path});
-    const elsewhere = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", text }});
+    const elsewhere = try lint_samples(arena.allocator(), &.{.{ "src/runtime/load.zig", text }});
     try expect_rules(elsewhere, &.{});
+}
+
+test "every file the step reaches is on the hot path" {
+    // A name lookup in ops.zig, which the step runs, is reported; the same lookup in a
+    // test there is not.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const lookup = "fn temp(s: S, name: []const u8) ?u32 {\n    assert(name.len > 0);\n" ++
+        "    return s.strings.find(name);\n}\n";
+    const in_ops = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", lookup }});
+    try expect_rules(in_ops, &.{.hot_path});
+    try std.testing.expectEqual(@as(u32, 3), in_ops[0].line);
+    const in_test = "test \"t\" {\n    _ = s.strings.find(\"x\");\n}\n";
+    const tested = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", in_test }});
+    try expect_rules(tested, &.{});
+    const names = "fn g(p: P) void {\n    assert(true);\n    _ = p.global_slot(1);\n" ++
+        "    _ = p.list_item_by_name(\"a\");\n}\n";
+    const found = try lint_samples(arena.allocator(), &.{.{ "src/runtime/lists.zig", names }});
+    try expect_rules(found, &.{ .hot_path, .hot_path });
+}
+
+test "a hot-path suppression needs a reason" {
+    // The same lookup under a reasoned suppression (with a doc comment between) is
+    // allowed; under an empty one it is reported, and so is the suppression.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const body = "fn temp(s: S, name: []const u8) ?u32 {\n    assert(name.len > 0);\n" ++
+        "    return s.strings.find(name);\n}\n";
+    const reasoned = "// lint: allow hot_path: the host names it\n/// Finds a temp.\n" ++ body;
+    const allowed = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", reasoned }});
+    try expect_rules(allowed, &.{});
+    const empty = "// lint: allow hot_path:\n" ++ body;
+    const unreasoned = try lint_samples(arena.allocator(), &.{.{ "src/runtime/ops.zig", empty }});
+    try expect_rules(unreasoned, &.{ .hot_path, .hot_path });
 }
 
 test "a suppression comment allows a long function" {

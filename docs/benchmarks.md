@@ -244,7 +244,7 @@ The same comparisons in ReleaseFast:
 | 0 allocations after init in `cont`, `choose_choice_index`, `evaluate_function`, `set_variable`, `switch_flow`, `load_json` | Test-enforced in `src/testing/zero_allocation.zig`. The `load_json` test was added in P9.4. |
 | `Story.init` allocates exactly `Limits.bytes_total()` | Test-enforced (`src/runtime/state.zig`) |
 | No recursion, functions ≤ 70 lines, lines ≤ 100 columns, ≥ 2 asserts per function; `zig build lint` passes with an empty allowlist | Met. The allowlist was removed in P9.1. |
-| No path resolution, string hashing or `mem.eql` in the VM hot path | Lint gate on `src/runtime/vm.zig`, added in P9.4 |
+| No path resolution, string hashing or `mem.eql` in the VM hot path | Lint gate since P9.4. It covered only `src/runtime/vm.zig` until P16.7, while `ops.zig` scanned globals by name and hashed list item names on every temp read. Since P16.7 the gate covers every runtime file the step reaches (`hot_path_files` in `tools/lint.zig`) and also forbids `strings.find`, `_by_name(` and `global_slot(`. The resolution functions in `ops.zig` carry the temporary suppression `P16 F1/F2`, which P16.8 and P16.9 remove. |
 | Memory bounded over 10k turns | Test-enforced: heap compaction over 10,000 rounds, and flow switching |
 | Size guards: `Value` 12 B, `Frame` ≤ 24 B, `Instruction` and `Node` 5 B SoA, `Token` 9 B SoA | Comptime asserts and size tests |
 | Simulation, 10k seeds, including compact-always | Met. `zig build simulate -Doptimize=ReleaseSafe -- --seeds 10000`, plain and with `--compact-always on`: 1,830,000 runs each (183 cases × 10,000 seeds), 0 failures |
