@@ -559,8 +559,11 @@ test "diagnostics reach the caller as inklecate prints them" {
         const stem = entry.name[0 .. entry.name.len - ".ink".len];
         const expected_name = try std.fmt.allocPrint(gpa, "{s}.expected", .{stem});
         defer gpa.free(expected_name);
-        const expected = try directory.readFileAlloc(io, expected_name, gpa, .limited(1 << 20));
-        defer gpa.free(expected);
+        const file = try directory.readFileAlloc(io, expected_name, gpa, .limited(1 << 20));
+        defer gpa.free(file);
+        // The first line is the provenance header the mise task writes.
+        const header_end = std.mem.indexOfScalar(u8, file, '\n') orelse return error.MissingHeader;
+        const expected = file[header_end + 1 ..];
         checked += 1;
         if (!std.mem.eql(u8, expected, out.written())) {
             mismatches += 1;
