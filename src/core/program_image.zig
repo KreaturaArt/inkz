@@ -451,9 +451,18 @@ fn load_arrays(
     const list_items = try copy_section(gpa, layout, .list_items);
     errdefer gpa.free(list_items);
     const externals = try copy_section(gpa, layout, .externals);
+    errdefer gpa.free(externals);
+    // Derived from the tables, so the image doesn't store it.
+    const name_classes = try program_module.build_name_classes(
+        gpa,
+        strings.count(),
+        globals,
+        list_items,
+    );
     const header = layout.header;
     return .{
         .strings = strings,
+        .name_classes = name_classes,
         .instructions = instructions.toOwnedSlice(),
         .extra = extra,
         .containers = containers.toOwnedSlice(),

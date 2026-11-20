@@ -447,45 +447,41 @@ const NativeContext = struct {
 
 // Variables (ink's VariablesState).
 
-/// How often `global_slot` scanned the globals: tests check that slot access never does.
-pub var global_slot_calls: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
-
-// lint: allow hot_path: P16 F1/F2 (a scan of the globals by name)
-pub fn global_slot(story: *const Story, name: StringId) ?GlobalSlot {
-    assert(!name.is_none());
-    if (builtin.is_test) global_slot_calls += 1;
-    for (story.program.globals, 0..) |global, slot| {
-        if (global.name == name) return .from_int(@intCast(slot));
-    }
-    return null;
-}
-
-// lint: allow hot_path: P16 F1/F2
-/// ink's GetRawVariableWithName: globals and list items for context 0 or -1, then temps.
+/// ink's GetRawVariableWithName: a global or a list item for context 0 or -1, then temps.
+/// The name's class (`Program.name_classes`) says which, with one read.
 fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
     assert(!name.is_none());
     assert(context >= -1);
     if (context == 0 or context == -1) {
-        if (global_slot(story, name)) |slot| return story.state.globals[slot.to_int()];
-        if (try single_item_list(story, name)) |list| return list;
+        const class = story.program.name_class(name);
+        switch (class.kind) {
+            .global => return story.state.globals[class.index],
+            .list_item => return try single_item_list(story, .from_int(class.index)),
+            .none => {},
+            _ => unreachable,
+        }
     }
     const stack = &story.state.call_stack;
     if (context > @as(i32, @intCast(stack.depth()))) return null;
     return stack.temp_get(name, if (context == 0) -1 else context);
 }
 
-// lint: allow hot_path: P16 F1/F2
 /// The variable pointer `raw_variable` would return, or null when it would return anything
 /// else; allocates nothing. A list item's name is never a pointer.
 fn raw_pointer(story: *Story, name: StringId, context: i32) ?value_module.VariablePointer {
     assert(!name.is_none());
     assert(context >= -1);
     if (context == 0 or context == -1) {
-        if (global_slot(story, name)) |slot| {
-            const global = story.state.globals[slot.to_int()];
-            return if (global == .variable_pointer) global.variable_pointer else null;
+        const class = story.program.name_class(name);
+        switch (class.kind) {
+            .global => {
+                const global = story.state.globals[class.index];
+                return if (global == .variable_pointer) global.variable_pointer else null;
+            },
+            .list_item => return null,
+            .none => {},
+            _ => unreachable,
         }
-        if (story.program.list_item_by_name(story.program.strings.get(name)) != null) return null;
     }
     const value = frame_temp(story, name, context) orelse return null;
     return if (value == .variable_pointer) value.variable_pointer else null;
@@ -500,12 +496,17 @@ fn frame_temp(story: *Story, name: StringId, context: i32) ?Value {
     return stack.temp_get(name, if (context == 0) -1 else context);
 }
 
-// lint: allow hot_path: P16 F1/F2
-/// A list item named `name` as a one-item list (ink's FindSingleItemListWithName).
-fn single_item_list(story: *Story, name: StringId) Error!?Value {
-    assert(!name.is_none());
-    const text = story.program.strings.get(name);
-    const item = story.program.list_item_by_name(text) orelse return null;
+/// The global slot `name` names, if it names a global.
+fn global_of(story: *const Story, name: StringId) ?GlobalSlot {
+    const class = story.program.name_class(name);
+    if (class.kind != .global) return null;
+    assert(story.program.globals[class.index].name == name);
+    return .from_int(class.index);
+}
+
+/// List item `item` as a one-item list (ink's FindSingleItemListWithName).
+fn single_item_list(story: *Story, item: ListItemIndex) Error!Value {
+    assert(item.to_int() < story.program.list_items.len);
     const origin = story.program.list_items[item.to_int()].origin;
     const reference = story.state.store_list(&.{item}, &.{origin}, &.{}) catch
         return error.ListLimit;
@@ -552,14 +553,13 @@ pub fn temp_value(story: *Story, name: StringId) Error!Value {
     return .{ .integer = 0 };
 }
 
-// lint: allow hot_path: P16 F1/F2
 /// ink's ResolveVariablePointer, for a pointer stored by a declaration.
 fn resolve_variable_pointer(story: *Story, pointer: value_module.VariablePointer) Error!Value {
     assert(!pointer.name.is_none());
     assert(pointer.context >= -1);
     var context = pointer.context;
     if (context == -1) {
-        context = if (global_slot(story, pointer.name) != null)
+        context = if (global_of(story, pointer.name) != null)
             0
         else
             @as(i32, @intCast(story.state.call_stack.depth())) - 1;
@@ -609,14 +609,12 @@ pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     try assign_existing(story, name, true, value);
 }
 
-// lint: allow hot_path: P16 F1/F2
 pub fn assign_temp(story: *Story, name: StringId, value: Value) Error!void {
     assert(!name.is_none());
     assert(value != .tag);
-    try assign_existing(story, name, global_slot(story, name) != null, value);
+    try assign_existing(story, name, global_of(story, name) != null, value);
 }
 
-// lint: allow hot_path: P16 F1/F2
 /// ink's Assign for a re-assignment: follow pointers to the variable they name, then set it.
 fn assign_existing(
     story: *Story,
@@ -639,7 +637,7 @@ fn assign_existing(
         is_global = context == 0;
     }
     if (is_global) {
-        const slot = global_slot(story, name) orelse return fail(
+        const slot = global_of(story, name) orelse return fail(
             story,
             .variable_not_found,
             .{ .name = name },

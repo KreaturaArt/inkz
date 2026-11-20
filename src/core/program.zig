@@ -51,8 +51,54 @@ pub const ExternalInfo = extern struct {
     fallback: ContainerIndex,
 };
 
+/// What a string names when a story reads a variable by it (ink's GetRawVariableWithName
+/// looks for a global, then a list item, then a temp): one entry per `StringId`.
+pub const NameClass = packed struct(u32) {
+    kind: Kind,
+    /// The global's slot or the list item's index; 0 for `none`.
+    index: u30,
+
+    pub const Kind = enum(u2) { none, global, list_item, _ };
+
+    pub const none: NameClass = .{ .kind = .none, .index = 0 };
+};
+
+comptime {
+    assert(@sizeOf(NameClass) == 4);
+}
+
+/// The name classes of a program's strings: a global wins over a list item, and among list
+/// items (by full name `origin.item` or bare name) the first one does, as ink's lookups go.
+/// Derived from the tables, so images don't store it: the builder and the image loader
+/// build it.
+pub fn build_name_classes(
+    gpa: std.mem.Allocator,
+    strings_count: u32,
+    globals: []const GlobalInfo,
+    list_items: []const ListItem,
+) std.mem.Allocator.Error![]NameClass {
+    assert(strings_count > 0);
+    const classes = try gpa.alloc(NameClass, strings_count);
+    @memset(classes, .none);
+    for (list_items, 0..) |item, position| {
+        for ([_]StringId{ item.full_name, item.name }) |name| {
+            if (name.is_none() or name.to_int() >= strings_count) continue;
+            const class = &classes[name.to_int()];
+            if (class.kind == .none) class.* = .{ .kind = .list_item, .index = @intCast(position) };
+        }
+    }
+    for (globals, 0..) |global, slot| {
+        if (global.name.is_none() or global.name.to_int() >= strings_count) continue;
+        classes[global.name.to_int()] = .{ .kind = .global, .index = @intCast(slot) };
+    }
+    return classes;
+}
+
 pub const Program = struct {
     strings: string_pool.FrozenStringPool,
+    /// What each string names as a variable (`build_name_classes`), so the VM resolves a
+    /// name with one read instead of scanning the globals and hashing for list items.
+    name_classes: []const NameClass,
     instructions: std.MultiArrayList(Instruction).Slice,
     extra: []const u32,
     containers: std.MultiArrayList(ContainerInfo).Slice,
@@ -85,6 +131,7 @@ pub const Program = struct {
         global_out_of_range,
         external_out_of_range,
         list_items_not_partitioned,
+        name_classes_mismatch,
         list_item_origin_mismatch,
         fallback_out_of_range,
         list_item_out_of_range,
@@ -94,6 +141,7 @@ pub const Program = struct {
 
     pub fn deinit(program: *Program, gpa: std.mem.Allocator) void {
         program.strings.deinit(gpa);
+        gpa.free(program.name_classes);
         program.instructions.deinit(gpa);
         gpa.free(program.extra);
         program.containers.deinit(gpa);
@@ -356,12 +404,43 @@ pub const Program = struct {
             }
         }
         if (next != program.list_items.len) return .list_items_not_partitioned;
+        if (!program.name_classes_consistent()) return .name_classes_mismatch;
         for (program.externals) |external| {
             if (external.fallback.is_none()) continue;
             if (external.fallback.to_int() >= program.containers.len) return .fallback_out_of_range;
         }
         assert(next == program.list_items.len);
         return .ok;
+    }
+
+    /// Every string has a class, and each class names a global or list item of that name
+    /// that ink's lookup order picks.
+    fn name_classes_consistent(program: *const Program) bool {
+        if (program.name_classes.len != program.strings.count()) return false;
+        for (program.name_classes, 0..) |class, position| {
+            const name: StringId = .from_int(@intCast(position));
+            switch (class.kind) {
+                .none => if (class.index != 0) return false,
+                .global => {
+                    if (class.index >= program.globals.len) return false;
+                    if (program.globals[class.index].name != name) return false;
+                },
+                .list_item => {
+                    if (class.index >= program.list_items.len) return false;
+                    const item = program.list_items[class.index];
+                    if (item.full_name != name and item.name != name) return false;
+                },
+                _ => return false,
+            }
+        }
+        return true;
+    }
+
+    /// What `name` names as a variable.
+    pub fn name_class(program: *const Program, name: StringId) NameClass {
+        assert(!name.is_none());
+        assert(name.to_int() < program.name_classes.len);
+        return program.name_classes[name.to_int()];
     }
 
     pub fn global_by_name(program: *const Program, name: []const u8) ?GlobalSlot {
