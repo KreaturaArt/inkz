@@ -232,3 +232,55 @@ test "list origin item counts that overflow u32 are rejected" {
     origins[1].items_count = std.math.maxInt(u32);
     try expect_rejected(&program, .list_items_not_partitioned);
 }
+
+test "a trusted load gives the same program as a checked one" {
+    // Every ground-truth case's image, loaded both ways (P16.19, F17).
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var loaded_count: u32 = 0;
+    for (try cases.ids(arena, io)) |id| {
+        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
+        const cwd = std.Io.Dir.cwd();
+        const json = cwd.readFileAlloc(io, path, arena, .limited(16 << 20)) catch continue;
+        var program = ink_json.load(arena, json) catch continue;
+        var image: std.Io.Writer.Allocating = .init(arena);
+        try program_image.write(&program, &image.writer);
+        var checked = try program_image.load(arena, image.written());
+        var trusted = try program_image.load_trusted(arena, image.written());
+        try program_testing.expect_same_program(&checked, &trusted);
+        loaded_count += 1;
+    }
+    try std.testing.expect(loaded_count > 150);
+}
+
+test "a trusted load still rejects a wrong header and section layout" {
+    // The same named errors as `load`: magic, format version, endianness, the section count
+    // and a section's element size.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa, "VAR x = 1\nHello {x}.\n-> END\n");
+    defer program.deinit(gpa);
+    var image: std.Io.Writer.Allocating = .init(gpa);
+    defer image.deinit();
+    try program_image.write(&program, &image.writer);
+    const Corruption = struct { at: u32, value: u8, expected: program_image.Error };
+    const corruptions = [_]Corruption{
+        .{ .at = 0, .value = 'X', .expected = error.NotAProgramImage },
+        .{ .at = 8, .value = 99, .expected = error.UnsupportedFormatVersion },
+        .{ .at = 12, .value = 0x55, .expected = error.UnsupportedEndianness },
+        .{ .at = 32, .value = 3, .expected = error.SectionLayoutMismatch },
+        .{ .at = 40, .value = 7, .expected = error.SectionLayoutMismatch },
+    };
+    for (corruptions) |corruption| {
+        const copy = try gpa.dupe(u8, image.written());
+        defer gpa.free(copy);
+        copy[corruption.at] = corruption.value;
+        try std.testing.expectError(corruption.expected, program_image.load(gpa, copy));
+        try std.testing.expectError(corruption.expected, program_image.load_trusted(gpa, copy));
+    }
+    try std.testing.expectError(
+        error.ImageTruncated,
+        program_image.load_trusted(gpa, image.written()[0 .. image.written().len - 4]),
+    );
+}

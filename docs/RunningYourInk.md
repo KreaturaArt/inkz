@@ -115,7 +115,11 @@ defer story.deinit(gpa);
 ```
 
 `load` treats the image as untrusted. A wrong, truncated or corrupted image returns a named
-error (`error.NotAProgramImage`, `error.InvalidImage`, ...), never a crash. Images carry a
+error (`error.NotAProgramImage`, `error.InvalidImage`, ...), never a crash. An image your own
+build wrote and ships inside the program can use `program_image.load_trusted`. It checks
+the header and the layout but trusts the records, so in ReleaseFast it loads about 3× faster.
+Safe builds still verify the records and panic on a bad one. Never use it for a file a
+player can change. Images carry a
 format version. After an inkz update that changes it, `load` returns
 `error.UnsupportedFormatVersion`; write the image again from the JSON or the source.
 

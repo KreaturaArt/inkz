@@ -32,7 +32,8 @@ const stories = [_]Story{
     .{ .name = "generated_1000_knots", .json_path = "test/fixture/bench/generated.ink.json" },
 };
 
-pub const Format = enum { json, image };
+/// `image_trusted` is the image through `program_image.load_trusted` (loads only).
+pub const Format = enum { json, image, image_trusted };
 pub const Operation = enum { load, store };
 
 /// What a run shares: when, which code, which build, which machine.
@@ -142,6 +143,7 @@ const Timed = struct {
                 var program = switch (timed.format) {
                     .json => try ink_json.load(gpa, subject.json),
                     .image => try program_image.load(gpa, subject.image),
+                    .image_trusted => try program_image.load_trusted(gpa, subject.image),
                 };
                 const elapsed = timer.nanoseconds(timed.io);
                 program.deinit(gpa);
@@ -149,7 +151,9 @@ const Timed = struct {
             },
             .store => switch (timed.format) {
                 .json => try ink_json.serialize(gpa, &subject.program, &timed.out.writer),
-                .image => try program_image.write(&subject.program, &timed.out.writer),
+                .image, .image_trusted => {
+                    try program_image.write(&subject.program, &timed.out.writer);
+                },
             },
         }
         return timer.nanoseconds(timed.io);
@@ -190,7 +194,7 @@ pub fn record_of(
 ) Record {
     const bytes: u64 = switch (format) {
         .json => if (operation == .load) subject.json.len else subject.json_written.len,
-        .image => subject.image.len,
+        .image, .image_trusted => subject.image.len,
     };
     const seconds = @as(f64, @floatFromInt(stats.median)) / 1e9;
     return .{
@@ -270,8 +274,10 @@ pub fn main(init: std.process.Init) !void {
         var subject: Subject = try .init(gpa, json);
         defer subject.deinit(gpa);
         try subject.check_round_trips(gpa);
-        for ([_]Format{ .json, .image }) |format| {
+        for ([_]Format{ .json, .image, .image_trusted }) |format| {
             for ([_]Operation{ .load, .store }) |operation| {
+                // A trusted store is the image's store.
+                if (format == .image_trusted and operation == .store) continue;
                 const stats = try measure(gpa, io, &subject, format, operation);
                 const record = record_of(run, story.name, &subject, format, operation, stats);
                 try std.json.Stringify.value(record, .{}, &lines.writer);
