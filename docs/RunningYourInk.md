@@ -598,6 +598,11 @@ Some limits bound more than one buffer's length:
   before each goes to the sink. A longer tag makes `cont` and `current_tags` return
   `error.TagBytesLimit`.
 
+Two bounds are fixed rather than in `Limits`, since they size scratch on the native stack: a
+list holds at most 1024 items (a list operation that would make a longer one returns
+`error.ListLimit`), and a shuffle (`{~a|b|c}`) has at most 1024 alternatives (a longer one
+returns `error.ShuffleLimit`). ink has neither bound.
+
 ### Fitting limits to a story
 
 Every buffer records its peak. Play the story as widely as you can with the default limits,

@@ -42,6 +42,8 @@ pub const Error = error{
     TagBytesLimit,
     SnapshotLimit,
     LookaheadLogLimit,
+    /// A shuffle sequence (`{~a|b}`) has more than `ops.shuffle_elements_max` (1024) elements.
+    ShuffleLimit,
     StepLimit,
     /// An external function the story calls has no binding (and no fallback); see
     /// `Story.missing_externals` (ink's ValidateExternalBindings, at the first `cont`).

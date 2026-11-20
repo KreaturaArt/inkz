@@ -172,3 +172,40 @@ test "assigning a popped string to a temp named like a list item allocates nothi
     try std.testing.expectEqualStrings("a\n", text);
     story.core.state.verify();
 }
+
+/// A line with one shuffle of `elements` alternatives, owned by the caller.
+fn shuffle_source(gpa: std.mem.Allocator, elements: u32) ![]u8 {
+    assert(elements > 1);
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    errdefer source.deinit();
+    try source.writer.writeAll("{~");
+    for (0..elements) |position| {
+        if (position > 0) try source.writer.writeByte('|');
+        try source.writer.print("e{d}", .{position});
+    }
+    try source.writer.writeAll("}\n-> END\n");
+    return source.toOwnedSlice();
+}
+
+test "a shuffle past shuffle_elements_max returns ShuffleLimit" {
+    // 1025 alternatives don't fit the shuffle's fixed buffer of unpicked indices: the
+    // limit has its own error (it was the story error for a malformed shuffle). 1024 play.
+    const gpa = std.testing.allocator;
+    const too_many = try shuffle_source(gpa, 1025);
+    defer gpa.free(too_many);
+    var program = try compile.compile_source(gpa, too_many);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    try std.testing.expectError(error.ShuffleLimit, story.cont());
+    try std.testing.expectEqual(@as(u32, 0), story.error_count());
+
+    const most = try shuffle_source(gpa, 1024);
+    defer gpa.free(most);
+    var fits = try compile.compile_source(gpa, most);
+    defer fits.deinit(gpa);
+    const fitting = try start(gpa, &fits, .{});
+    defer stop(gpa, fitting);
+    const line = (try fitting.cont()).get();
+    try std.testing.expect(line[0] == 'e');
+}
