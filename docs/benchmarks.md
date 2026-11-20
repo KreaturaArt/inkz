@@ -394,6 +394,16 @@ The program grows by 4 bytes per string (crime_scene: 1,788 bytes).
   flow has a second (lookahead) copy to stage into. A failed load must leave the story as it
   was (D15), so the validating pass stays.
 
+## Resolve keys, measured and decided (P16.16, F13)
+
+Finding F13 proposed interning names at sema so that resolve's tables key on `{ObjectIndex,
+StringId}` instead of hashing name slices. Measured on the bench's 1,000-knot story
+(ReleaseFast, M3): resolve takes 0.95–1.8 ms, and its tables hash 23,252 keys over 154 KB
+of names, which is about 32 µs of Wyhash, plus 6,081 short compares. That is 2–3% of
+resolve and well under 1% of a compile. Integer keys would still hash (a smaller key), and
+interning every identifier once costs about as many hashes as the lookups save. **Decision:
+keys stay `{scope, []const u8}`.** The win isn't there to take.
+
 ## Profile per pipeline stage (TASK-153)
 
 `zig build bench-profile` shows where the pipeline spends its time. Profile zones
