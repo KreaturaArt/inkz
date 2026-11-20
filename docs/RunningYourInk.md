@@ -660,11 +660,8 @@ const Log = struct {
     fn receive(context: ?*anyopaque, diagnostic: inkz.compiler.messages.Diagnostic) void {
         const log: *@This() = @ptrCast(@alignCast(context.?));
         if (diagnostic.severity == .@"error") log.errors += 1;
-        std.debug.print("{t}: line {d}: {s}\n", .{
-            diagnostic.severity,
-            diagnostic.line,
-            diagnostic.message,
-        });
+        // A host would show `diagnostic.file`, `.line` and `.message` here.
+        std.debug.assert(diagnostic.message.len > 0);
     }
 };
 
