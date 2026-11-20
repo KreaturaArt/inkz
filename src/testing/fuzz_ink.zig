@@ -447,6 +447,17 @@ pub const Choices = union(enum) {
     }
 };
 
+/// A swarm over `E`'s keys: all of them with weight 1/8, else each with probability ½, and
+/// one drawn key when that leaves none.
+pub inline fn draw_subset(choices: Choices, E: type) std.EnumSet(E) {
+    if (choices.weighted(7, 1)) return .full;
+    const Mask = @FieldType(@FieldType(std.EnumSet(E), "bits"), "mask");
+    var set: std.EnumSet(E) = .{ .bits = .{ .mask = choices.choose(Mask) } };
+    if (set.count() == 0) set.insert(choices.choose(E));
+    assert(set.count() > 0);
+    return set;
+}
+
 /// One of `set`'s keys: `below(count)`, then that set key. There are no retries and no
 /// fallbacks, so a left-out key is never picked and none is favoured. On a full set this is
 /// `below(len)`, as a pick from the whole list was.

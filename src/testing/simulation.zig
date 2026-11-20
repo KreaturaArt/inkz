@@ -311,7 +311,13 @@ test "a swarm mix takes only its actions, and the full mix is the old one" {
         try std.testing.expectEqual(mix.encode(), (try Mix.decode(mix.encode())).encode());
         if (mix.encode() != Mix.full.encode()) differs += 1;
         var counts: std.EnumArray(Mix.Action, u32) = .initFill(0);
-        _ = try simulate_mix(&story, seed, mix, save_buffer, &counts);
+        const finding = try simulate_mix(&story, seed, mix, save_buffer, &counts);
+        // The printed --swarm-config replays the run: the same finding and actions.
+        var replayed: std.EnumArray(Mix.Action, u32) = .initFill(0);
+        const config = try Mix.decode(mix.encode());
+        const again = try simulate_mix(&story, seed, config, save_buffer, &replayed);
+        try std.testing.expectEqual(finding, again);
+        try std.testing.expectEqualSlices(u32, &counts.values, &replayed.values);
         for (std.enums.values(Mix.Action)) |action| {
             if (mix.weights.get(action) == 0) try std.testing.expectEqual(0, counts.get(action));
         }
