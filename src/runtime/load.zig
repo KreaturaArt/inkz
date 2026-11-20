@@ -117,7 +117,7 @@ const Loader = struct {
         assert(loader.commit);
         const s = loader.state();
         s.evaluation.clear();
-        s.call_stack.reset(.start_of(loader.story.program.root_container()));
+        s.call_stack.fresh(.start_of(loader.story.program.root_container()));
         s.output.clear();
         s.choices.clear();
         flows.reset(s);

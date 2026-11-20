@@ -358,7 +358,7 @@ pub const State = struct {
     /// counts, globals undefined until the global declaration has run.
     pub fn reset(state: *State) void {
         state.evaluation.clear();
-        state.call_stack.reset(.start_of(Program.root));
+        state.call_stack.fresh(.start_of(Program.root));
         state.output.clear();
         state.choices.clear();
         @memset(state.globals, .null);

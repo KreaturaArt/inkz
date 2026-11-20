@@ -113,7 +113,7 @@ pub fn switch_flow(state: *State, name: []const u8) Error!void {
     state.current_flow = target;
     const record = &state.flows[target];
     if (record.parked_words == 0) {
-        state.call_stack.reset(.start_of(Program.root));
+        state.call_stack.fresh(.start_of(Program.root));
         state.output.clear();
         state.choices.clear();
     } else {
