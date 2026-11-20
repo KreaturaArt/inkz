@@ -284,7 +284,23 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
             return;
         }
     }
-    if (context.variable_diverts.isSet(divert.to_int())) return;
+    if (context.variable_diverts.isSet(divert.to_int())) {
+        // A divert-target value names content: `-> x` of a variable is ink's error, and so
+        // is TURNS_SINCE of one.
+        const parent = tree.parent(divert);
+        if (tree.kind(parent) != .divert_target) return;
+        try context.report(.variable_divert_target, divert);
+        // A call is a divert flagged as one (ink's proxy divert).
+        const call = tree.parent(parent);
+        const calls = tree.kind(call) == .divert and tree.has(call, Flags.function_call);
+        const call_path = if (calls) divert_path(context, call) else null;
+        if (call_path != null and call_path.?.count == 1 and
+            std.mem.eql(u8, call_path.?.first(), "TURNS_SINCE"))
+        {
+            try context.report(.turns_since_variable_target, call);
+        }
+        return;
+    }
     if (target.is_none()) try context.report(.target_not_found, divert);
 }
 
