@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const resolve = @import("resolve.zig");
 const lookups = @import("resolve_lookups.zig");
 const collisions = @import("resolve_collisions.zig");
+const argument_checks = @import("resolve_arguments.zig");
 const sema = @import("sema.zig");
 const ast_module = @import("ast.zig");
 const Context = resolve.Context;
@@ -108,7 +109,10 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             assert(tree.children_of(object).len > 0);
             const proxy = tree.children_of(object)[0];
             assert(tree.kind(proxy) == .divert);
-            if (is_builtin(name) or is_list) context.skipped.set(proxy.to_int());
+            if (is_builtin(name) or is_list) {
+                context.skipped.set(proxy.to_int());
+                try argument_checks.check_call(context, object, is_list);
+            }
         },
         .divert => try generate_divert(context, object),
         .knot, .stitch => try check_flow(context, object),
@@ -171,12 +175,16 @@ fn generate_divert(context: *Context, divert: ObjectIndex) !void {
     if (context.skipped.isSet(divert.to_int())) return;
     const path = divert_path(context, divert) orelse return;
     if (is_end_or_done(&path)) return;
-    if (lookups.resolve_variable(context, path.first(), divert) != null) {
+    if (lookups.resolve_variable(context, path.first(), divert)) |found| {
+        if (found == .argument) {
+            try argument_checks.check_divert_parameter(context, divert, path.first());
+        }
         context.variable_diverts.set(divert.to_int());
         return;
     }
     const target = try lookups.resolve_path(context, &path, divert);
     context.targets[divert.to_int()] = target orelse .none;
+    try argument_checks.check_divert(context, divert);
 }
 
 // The references pass.
@@ -259,9 +267,12 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
     }
     if (path.count == 1) {
         const name = path.first();
-        const is_external = context.lookup(&context.externals, Tree.root, name) != null;
-        if (is_builtin(name) or is_external) {
+        const external = context.lookup(&context.externals, Tree.root, name);
+        if (is_builtin(name) or external != null) {
             if (!is_call) try context.report(.builtin_not_called, divert);
+            if (external) |declaration| {
+                try argument_checks.check_external(context, divert, declaration);
+            }
             return;
         }
     }
