@@ -103,7 +103,8 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
         defer profile_zone.end();
-        break :parsed grammar.parse(gpa, source, .{}) catch |err| switch (err) {
+        const text = source_space.without_bom(source);
+        break :parsed grammar.parse(gpa, text, .{}) catch |err| switch (err) {
             // The parser gave up on the story.
             error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
                 return error.CompileFailed;
@@ -173,6 +174,32 @@ test "a 0 byte inside the source is text, not the end" {
     const text = try compile_to_json(gpa, "a\x00b\n");
     defer gpa.free(text);
     try std.testing.expect(std.mem.indexOf(u8, text, "\"^a\\u0000b\"") != null);
+}
+
+test "a UTF-8 byte order mark is not text, in a source, a file or an included file" {
+    // inklecate reads files with .NET's File.ReadAllText, which drops the mark; it was once
+    // compiled as the first character of the first text.
+    const gpa = std.testing.allocator;
+    const bom = "\xEF\xBB\xBF";
+    const expected = "{\"inkVersion\":21,\"root\":[[\"^Hello\",\"\\n\"," ++
+        "[\"done\",{\"#n\":\"g-0\"}],null],\"done\",null],\"listDefs\":{}}";
+    const text = try compile_to_json(gpa, bom ++ "Hello\n");
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings(expected, text);
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    const main_text = bom ++ "INCLUDE other.ink\nMain.\n";
+    try temporary.dir.writeFile(io, .{ .sub_path = "main.ink", .data = main_text });
+    try temporary.dir.writeFile(io, .{ .sub_path = "other.ink", .data = bom ++ "Other.\n" });
+    var program = try compile_file(gpa, io, temporary.dir, "main.ink");
+    defer program.deinit(gpa);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try ink_json.serialize(gpa, &program, &out.writer);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"^Other.\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"^Main.\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), bom) == null);
 }
 
 /// The old compiler's peak bytes compiling test/fixture/crime_scene.ink to JSON in a Debug
