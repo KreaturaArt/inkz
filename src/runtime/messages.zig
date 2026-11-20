@@ -77,9 +77,37 @@ fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Write
             type_name(diagnostic.other_number >> 8),
             type_name(diagnostic.other_number & 0xff),
         }),
+        .operation_not_for_type => return writer.print("Cannot perform operation '{s}' on {s}", .{
+            opcode_word(diagnostic.number),
+            rank_name(diagnostic.other_number),
+        }),
+        .pop_unexpected => return writer.print("Found {s}, when expected {s}", .{
+            pop_name(diagnostic.number),
+            pop_name(diagnostic.other_number),
+        }),
         else => fixed_text(diagnostic.code),
     };
     try writer.writeAll(text);
+}
+
+/// What ink calls a function return, a tunnel onwards, or the end of a flow (a FrameKind
+/// number, or 2 for the end).
+fn pop_name(number: i32) []const u8 {
+    assert(number >= 0 and number <= 2);
+    return switch (number) {
+        0 => "tunnel onwards statement (->->)",
+        1 => "function return statement (~ return)",
+        else => "end of flow (-> END or choice)",
+    };
+}
+
+/// ink's ValueType name for a `Value.rank`.
+fn rank_name(rank: i32) []const u8 {
+    assert(rank >= 0 and rank <= 5);
+    const names = [_][]const u8{
+        "Int", "Float", "List", "String", "DivertTarget", "VariablePointer",
+    };
+    return names[@intCast(rank)];
 }
 
 /// The native function's name as ink spells it (its JSON word), from an opcode number.
