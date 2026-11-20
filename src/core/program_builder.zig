@@ -643,12 +643,20 @@ pub const ProgramBuilder = struct {
         errdefer gpa.free(list_items);
         const externals = try builder.externals.toOwnedSlice(gpa);
         errdefer gpa.free(externals);
+        const name_classes = try program_module.build_name_classes(
+            gpa,
+            builder.strings.count(),
+            globals,
+            list_items,
+        );
+        errdefer gpa.free(name_classes);
         const strings = try builder.strings.freeze(gpa);
         builder.strings = fresh_strings;
         var containers = builder.containers;
         builder.containers = .empty;
         const program: Program = .{
             .strings = strings,
+            .name_classes = name_classes,
             .instructions = instructions.toOwnedSlice(),
             .extra = extra,
             .containers = containers.toOwnedSlice(),

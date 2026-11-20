@@ -14,6 +14,9 @@ const StringId = @import("index.zig").StringId;
 /// How many times the table hashed a string: tests check that `intern` hashes once.
 var hashes_for_tests: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
 
+/// How many times a frozen pool looked a string up: tests check the VM never does.
+pub var finds_for_tests: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
+
 fn count_hash() void {
     if (builtin.is_test) hashes_for_tests += 1;
 }
@@ -252,6 +255,7 @@ pub const FrozenStringPool = struct {
 
     /// The id of `bytes` if it is interned. Never allocates.
     pub fn find(frozen: *const FrozenStringPool, bytes: []const u8) ?StringId {
+        if (builtin.is_test) finds_for_tests += 1;
         const id = table_find(&frozen.table, &frozen.strings, bytes);
         if (id) |found| assert(std.mem.eql(u8, frozen.get(found), bytes));
         if (bytes.len == 0) assert(id.? == empty_id);
