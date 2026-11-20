@@ -179,9 +179,7 @@ pub const Choices = struct {
         if (snapshot.frames_count != frames.len or snapshot.temps_count != temps.len) return false;
         if (!std.meta.eql(snapshot.previous_pointer, previous)) return false;
         const stored_temps = choices.temps.slice()[snapshot.temps_first..][0..snapshot.temps_count];
-        if (!std.mem.eql(u8, std.mem.sliceAsBytes(stored_temps), std.mem.sliceAsBytes(temps))) {
-            return false;
-        }
+        if (!temps_equal(stored_temps, temps)) return false;
         const stored = choices.frames.slice()[snapshot.frames_first..][0..snapshot.frames_count];
         for (stored, frames) |a, b| {
             // Frames are compared without their temp offsets, which differ by design.
@@ -247,6 +245,31 @@ pub const Choices = struct {
         fault.verify(choices.check());
     }
 };
+
+/// Whether two temp ranges hold the same names and values, compared field by field: a
+/// byte compare would read the padding a short payload (a bool, an int) leaves in a Value,
+/// which depends on the backend, so whether snapshots were shared did too.
+fn temps_equal(a: []const Temp, b: []const Temp) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |left, right| {
+        if (left.name != right.name) return false;
+        if (!values_identical(left.value, right.value)) return false;
+    }
+    assert(a.len == b.len);
+    return true;
+}
+
+/// Same tag and same payload. Floats compare by their bits, so 0.0 and -0.0 differ and a
+/// NaN equals itself: a shared snapshot must restore exactly what was stored.
+fn values_identical(a: Value, b: Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    const result = switch (a) {
+        .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
+        else => std.meta.eql(a, b),
+    };
+    if (result) assert(std.meta.activeTag(a) == std.meta.activeTag(b));
+    return result;
+}
 
 const TestState = struct {
     frames: [8]Frame = undefined,
@@ -335,6 +358,7 @@ test "choosing restores the thread the choice was made in" {
 }
 
 const Value = value_module.Value;
+const StringId = @import("../core/index.zig").StringId;
 
 test "choice limits return their errors" {
     // Negative space: fill the choices, then the tags.
@@ -347,4 +371,34 @@ test "choice limits return their errors" {
     const many: [9]StringReference = @splat(.heap(0));
     try std.testing.expectError(error.TagLimit, choices.add(&stack, test_choice(1), &many));
     try std.testing.expectEqual(@as(u32, 0), choices.count());
+}
+
+test "temps compare by field, not by the padding of their values" {
+    // Two temps holding `true` whose Values differ only in the padding after the bool's
+    // byte (found as the bytes an i32 payload uses beyond its first one): they are equal.
+    // Different values, names and float bits are not.
+    var probe: Value = .{ .integer = 0x04030201 };
+    const probe_bytes = std.mem.asBytes(&probe);
+    const payload = std.mem.indexOf(u8, probe_bytes, &.{ 1, 2, 3, 4 }) orelse
+        std.mem.indexOf(u8, probe_bytes, &.{ 4, 3, 2, 1 }).?;
+    const name: StringId = .from_int(3);
+    var a: [1]Temp = .{.{ .name = name, .value = .{ .bool = true } }};
+    var b = a;
+    const a_bytes = std.mem.asBytes(&a[0].value);
+    const b_bytes = std.mem.asBytes(&b[0].value);
+    try std.testing.expectEqual(@as(u8, 1), a_bytes[payload]); // the bool's byte
+    for (payload + 1..payload + 4) |position| {
+        a_bytes[position] = 0xAA;
+        b_bytes[position] = 0x55;
+    }
+    try std.testing.expect(!std.mem.eql(u8, std.mem.sliceAsBytes(&a), std.mem.sliceAsBytes(&b)));
+    try std.testing.expect(temps_equal(&a, &b));
+    b[0].value = .{ .bool = false };
+    try std.testing.expect(!temps_equal(&a, &b));
+    b[0] = .{ .name = .from_int(4), .value = .{ .bool = true } };
+    try std.testing.expect(!temps_equal(&a, &b));
+    const zero: [1]Temp = .{.{ .name = name, .value = .{ .float = 0.0 } }};
+    const negative_zero: [1]Temp = .{.{ .name = name, .value = .{ .float = -0.0 } }};
+    try std.testing.expect(!temps_equal(&zero, &negative_zero));
+    try std.testing.expect(temps_equal(&zero, &zero));
 }
