@@ -114,6 +114,10 @@ pub const ListSlab = struct {
     }
 };
 
+/// The most items one list holds: what a list operation builds, what loading a save reads
+/// and what printing a list sorts are all bounded by it (ListLimit, or SaveTooLarge on load).
+pub const list_items_max = 1024;
+
 /// Builds a list in a bounded scratch buffer before storing it.
 const Builder = struct {
     items: [items_max]ListItemIndex = undefined,
@@ -121,7 +125,7 @@ const Builder = struct {
     origins: [origins_max]ListOriginIndex = undefined,
     origins_count: u32 = 0,
 
-    const items_max = 1024;
+    const items_max = list_items_max;
     const origins_max = 64;
 
     fn add(builder: *Builder, item: ListItemIndex) error{ListLimit}!void {
@@ -479,9 +483,16 @@ pub const Lists = struct {
     }
 
     /// The list's text: item names ordered by value, then by origin name (InkList.ToString).
-    pub fn write(lists: Lists, list: ListReference, writer: *std.Io.Writer) !void {
+    /// Sorting needs a copy of the items: a list longer than `list_items_max` (which no list
+    /// operation or load makes) returns ListLimit instead of overflowing it.
+    pub fn write(
+        lists: Lists,
+        list: ListReference,
+        writer: *std.Io.Writer,
+    ) (std.Io.Writer.Error || error{ListLimit})!void {
         const items = lists.slab.view(list).items;
-        var ordered: [Builder.items_max]ListItemIndex = undefined;
+        var ordered: [list_items_max]ListItemIndex = undefined;
+        if (items.len > ordered.len) return error.ListLimit;
         @memcpy(ordered[0..items.len], items);
         std.mem.sort(ListItemIndex, ordered[0..items.len], lists, display_less_than);
         for (ordered[0..items.len], 0..) |item, position| {
@@ -489,7 +500,7 @@ pub const Lists = struct {
             const name = lists.program.list_items[item.to_int()].name;
             try writer.writeAll(lists.program.strings.get(name));
         }
-        assert(items.len <= Builder.items_max);
+        assert(items.len <= list_items_max);
     }
 
     fn display_less_than(lists: Lists, a: ListItemIndex, b: ListItemIndex) bool {
@@ -615,6 +626,28 @@ test "a list prints ordered by value, then origin name" {
     var writer: std.Io.Writer = .fixed(&buffer);
     try lists.write(mixed, &writer);
     try std.testing.expectEqualStrings("red, small, blue, large", writer.buffered());
+}
+
+test "printing a list longer than the sort buffer returns ListLimit" {
+    // Negative space: a slab list of list_items_max + 1 items (stored directly, as no list
+    // operation would) can't be sorted for printing; write returns ListLimit, where the
+    // copy into the sort buffer overflowed. One item fewer prints.
+    var program = try test_program(std.testing.allocator);
+    defer program.deinit(std.testing.allocator);
+    var words: [list_items_max + 8]u32 = undefined;
+    var slab = ListSlab.init(&words);
+    const lists: Lists = .{ .program = &program, .slab = &slab };
+    const many: [list_items_max + 1]ListItemIndex = @splat(red);
+    const too_long = try slab.store(&many, &.{});
+    var buffer: [8]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&buffer);
+    try std.testing.expectError(error.ListLimit, lists.write(too_long, &writer));
+    try std.testing.expectEqual(@as(usize, 0), writer.end);
+    slab.truncate(0);
+    const fits = try slab.store(many[0..list_items_max], &.{});
+    var discarding: std.Io.Writer.Discarding = .init(&.{});
+    try lists.write(fits, &discarding.writer);
+    try std.testing.expectEqual(@as(u64, list_items_max * 5 - 2), discarding.count);
 }
 
 test "a full slab returns ListLimit" {
