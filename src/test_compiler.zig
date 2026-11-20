@@ -19,4 +19,5 @@ test {
     _ = @import("compiler/compile.zig");
     _ = @import("compiler/lowering_tests.zig");
     _ = @import("compiler/termination_tests.zig");
+    _ = @import("compiler/argument_tests.zig");
 }

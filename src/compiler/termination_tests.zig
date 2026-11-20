@@ -12,10 +12,10 @@ const lower = @import("lower.zig");
 const compile = @import("compile.zig");
 const Code = resolve.Code;
 
-const Expected = struct { code: Code, line: u32 };
+pub const Expected = struct { code: Code, line: u32 };
 
 /// The story's diagnostics: the resolution's, or with none, the lowering's.
-fn expect_diagnostics(source: []const u8, expected: []const Expected) !void {
+pub fn expect_diagnostics(source: []const u8, expected: []const Expected) !void {
     assert(source.len > 0);
     assert(expected.len < 16);
     const gpa = std.testing.allocator;
