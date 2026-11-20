@@ -157,12 +157,12 @@ Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|---|---|
-| crime_scene | 625.9 | 241.3 | 101617 | 130947 | 13230307 | 2254334 | 39536 | 1513 | 1490.0 |
-| crime_scene, fitted limits | 389.4 | 63.4 | 101971 | 131403 | 13276340 | 86494 | 39536 | 1513 | 57.2 |
-| generated (1000 knots) | 5756.4 | 1000.7 | 464247 | 464247 | 12543958 | 2916047 | 505080 | 32010 | 91.1 |
-| generated, fitted limits | 5605.3 | 764.3 | 470560 | 470560 | 12714540 | 738199 | 505080 | 32010 | 23.1 |
+| crime_scene | 655.6 | 283.8 | 105686 | 136191 | 13760069 | 2259389 | 38696 | 1513 | 1493.3 |
+| crime_scene, fitted limits | 392.8 | 34.1 | 104981 | 135282 | 13668298 | 87973 | 38696 | 1513 | 58.1 |
+| generated (1000 knots) | 5830.6 | 594.3 | 469897 | 469897 | 12696616 | 2940683 | 505056 | 32010 | 91.9 |
+| generated, fitted limits | 5632.0 | 368.2 | 474929 | 474929 | 12832587 | 758827 | 505056 | 32010 | 23.7 |
 
-The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
+The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2.
 <!-- bench-runtime:safe:end -->
 
 <!-- bench-runtime:fast:start -->
@@ -170,21 +170,21 @@ The state is the limits' fixed budget, allocated once: the defaults, or limits f
 
 | Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|---|---|
-| crime_scene | 304.4 | 44.1 | 216102 | 278477 | 28135949 | 2254334 | 39536 | 1513 | 1490.0 |
-| crime_scene, fitted limits | 267.8 | 43.7 | 218298 | 281307 | 28421902 | 86494 | 39536 | 1513 | 57.2 |
-| generated (1000 knots) | 4295.5 | 665.2 | 1100289 | 1100289 | 29729811 | 2916047 | 505080 | 32010 | 91.1 |
-| generated, fitted limits | 4272.9 | 648.1 | 1103084 | 1103084 | 29805340 | 738199 | 505080 | 32010 | 23.1 |
+| crime_scene | 300.7 | 25.8 | 243974 | 314393 | 31764792 | 2259389 | 38696 | 1513 | 1493.3 |
+| crime_scene, fitted limits | 272.2 | 17.6 | 245305 | 316109 | 31938165 | 87973 | 38696 | 1513 | 58.1 |
+| generated (1000 knots) | 4556.0 | 280.5 | 1124131 | 1124131 | 30374019 | 2940683 | 505056 | 32010 | 91.9 |
+| generated, fitted limits | 4566.4 | 265.5 | 1109315 | 1109315 | 29973688 | 758827 | 505056 | 32010 | 23.7 |
 
-The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
+The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2.
 <!-- bench-runtime:fast:end -->
 
 <!-- bench-compile:safe:start -->
 ### Compiler, safe
 
-| Story | Compile (ms) | Peak bytes |
-|---|---|---|
-| crime_scene | 1.56 | 246873 |
-| generated (1000 knots) | 26.38 | 4753137 |
+| Story | Compile (ms) | Peak bytes | Workspace retries |
+|---|---|---|---|
+| crime_scene | 1.33 | 245284 | 0 |
+| generated (1000 knots) | 19.30 | 4742829 | 0 |
 
 Source to JSON; the time is the mean of 20 compiles.
 <!-- bench-compile:safe:end -->
@@ -192,10 +192,10 @@ Source to JSON; the time is the mean of 20 compiles.
 <!-- bench-compile:fast:start -->
 ### Compiler, fast
 
-| Story | Compile (ms) | Peak bytes |
-|---|---|---|
-| crime_scene | 0.87 | 223231 |
-| generated (1000 knots) | 14.78 | 4292970 |
+| Story | Compile (ms) | Peak bytes | Workspace retries |
+|---|---|---|---|
+| crime_scene | 0.83 | 230257 | 0 |
+| generated (1000 knots) | 12.24 | 4292974 | 0 |
 
 Source to JSON; the time is the mean of 20 compiles.
 <!-- bench-compile:fast:end -->

@@ -31,6 +31,14 @@ pub const is_warning = grammar.Grammar.is_warning;
 pub const Options = struct {
     /// ink's countAllVisits: count the visits of every knot, stitch, gather and choice.
     count_all_visits: bool = false,
+    /// Filled in with what the compile did, for tests and the bench.
+    statistics: ?*Statistics = null,
+};
+
+pub const Statistics = struct {
+    /// Whole parses after the first: the workspace estimate was too small (T15). The corpus
+    /// keeps this at 0 (finding F14).
+    workspace_retries: u32 = 0,
 };
 
 /// The stages after parsing, on a parsed story (one file, or a space's). The object tree,
@@ -101,6 +109,11 @@ fn lower_parsed(
 /// Compiles one ink file's text. It reads no files: a story with an INCLUDE is CompileFailed
 /// (use `compile_file`).
 pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
+    return compile_source_with(gpa, source, .{});
+}
+
+/// `compile_source` with options.
+pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options) !Program {
     assert(@TypeOf(gpa) == Allocator);
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
@@ -115,11 +128,12 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
         };
     };
     defer parsed.deinit(gpa);
+    if (options.statistics) |statistics| statistics.workspace_retries = parsed.attempts - 1;
     // There is no directory to INCLUDE from: inklecate's "Failed to load: 'name'" error.
     if (std.mem.indexOfScalar(ast.Tag, parsed.tree.tags, .include) != null) {
         return error.CompileFailed;
     }
-    return compile_parsed(gpa, &parsed, null, .{});
+    return compile_parsed(gpa, &parsed, null, options);
 }
 
 /// Compiles `path` (in `directory`) and the files it includes.
@@ -145,6 +159,7 @@ pub fn compile_file_with(
         else => |other| return other,
     };
     defer space.deinit(gpa);
+    if (options.statistics) |statistics| statistics.workspace_retries = space.parsed.attempts - 1;
     if (space.problems.len > 0) return error.CompileFailed;
     return compile_parsed(gpa, &space.parsed, &space, options);
 }
@@ -407,4 +422,24 @@ test "compile_to_json: weaves nested deeper than the JSON paths allow are Compil
     var program = try compile_source(gpa, text.items);
     program.deinit(gpa);
     try std.testing.expectError(error.CompileFailed, compile_to_json(gpa, text.items));
+}
+
+test "a source denser than the workspace estimate retries, and says so" {
+    // A story of short knots with nothing but diverts is far denser in nodes per byte than
+    // the estimate: the parse retries with a doubled workspace, the compile succeeds, and
+    // the statistics count the retries (P16.17, F14).
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    for (0..400) |index| {
+        try source.writer.print("==k{d}\n->k{d}\n", .{ index, (index + 1) % 400 });
+    }
+    var statistics: Statistics = .{};
+    var program = try compile_source_with(gpa, source.written(), .{ .statistics = &statistics });
+    defer program.deinit(gpa);
+    try std.testing.expect(statistics.workspace_retries > 0);
+    var plain: Statistics = .{};
+    var hello = try compile_source_with(gpa, "Hello, world.\n", .{ .statistics = &plain });
+    defer hello.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 0), plain.workspace_retries);
 }
