@@ -177,3 +177,17 @@ test "a tunnel can't return onwards to END or DONE" {
     var program = try compile.compile_source(gpa, valid);
     program.deinit(gpa);
 }
+
+test "a negated left operand of '?' is an error, as in ink" {
+    // ERROR: line 3: Using 'not' or '!' here negates 'v' rather than the result of the '?'
+    // or 'has' operator. You need to add parentheses around the (A ? B) expression.
+    // (also lines 5 and 6: parentheses around `not v` don't count; `-v`, `not (v ? 1)` and
+    // `!?` are fine.) Found by the differential swarm run (P16.3).
+    const source = "VAR v = true\nLIST l = a, b\n{not v ? 1}\n{not (v ? 1)}\n{(not v) ? 1}\n" ++
+        "~ temp x = !v has a\n{-v ? 1}\n{not v !? 1}\n";
+    try expect_diagnostics(source, &.{
+        .{ .code = .negated_has_operand, .line = 3 },
+        .{ .code = .negated_has_operand, .line = 5 },
+        .{ .code = .negated_has_operand, .line = 6 },
+    });
+}

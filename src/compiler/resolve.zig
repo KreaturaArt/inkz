@@ -114,6 +114,10 @@ pub const Code = enum(u8) {
     duplicate_list_item,
     list_item_not_found,
     constant_redefined,
+    /// BinaryExpression.ResolveReferences, on `not A ? B` (parentheses don't count): "Using
+    /// 'not' or '!' here negates 'A' rather than the result of the '?' or 'has' operator. You
+    /// need to add parentheses around the (A ? B) expression."
+    negated_has_operand,
     /// UnaryExpression.WithInner on a literal it can't fold, `- true` (inklecate throws
     /// "Unexpected operation or number type").
     unsupported_fold,
