@@ -326,6 +326,10 @@ fn write_operand_instruction(
             const reassigned = instruction.opcode == .global_assign;
             try write_variable(writer, key, global_name(writer, slot), reassigned);
         },
+        .temp_assign_written_global => {
+            const name = writer.string(@fromBackingInt(@intCast(instruction.operand)));
+            try write_variable(writer, "VAR=", name, true);
+        },
         .temp_get, .temp_declare, .temp_assign => {
             const name = writer.string(@fromBackingInt(@intCast(instruction.operand)));
             const key = if (instruction.opcode == .temp_get) "VAR?" else "temp=";

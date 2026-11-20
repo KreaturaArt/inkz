@@ -113,7 +113,8 @@ const VariableFixup = struct {
     container: ContainerIndex,
     position: u32,
     name: StringId,
-    /// A `VAR?` read (a `temp_get` until resolved) or a re-assignment (a `temp_assign`).
+    /// A `VAR?` read (a `temp_get` until resolved) or a `VAR=` re-assignment (a
+    /// `temp_assign_written_global` until resolved to a `global_assign`).
     kind: enum { get, assign } = .get,
 };
 
@@ -402,7 +403,7 @@ pub const ProgramBuilder = struct {
         });
         switch (kind) {
             .get => try builder.add(.temp_get, id),
-            .assign => try builder.add(.temp_assign, id),
+            .assign => try builder.add(.temp_assign_written_global, id),
         }
     }
 
@@ -691,7 +692,8 @@ pub const ProgramBuilder = struct {
             const at = staged.instructions_first + fixup.position;
             const global_slot = position_of(builder.globals.items, fixup.name);
             if (fixup.kind == .assign) {
-                assert(opcodes[at] == .temp_assign);
+                // A name with no global slot stays a temp assignment written `VAR=`.
+                assert(opcodes[at] == .temp_assign_written_global);
                 if (global_slot) |slot| {
                     opcodes[at] = .global_assign;
                     operands[at] = slot;
