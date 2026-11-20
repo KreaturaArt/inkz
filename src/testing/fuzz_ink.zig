@@ -447,6 +447,20 @@ pub const Choices = union(enum) {
     }
 };
 
+/// One of `set`'s keys: `below(count)`, then that set key. There are no retries and no
+/// fallbacks, so a left-out key is never picked and none is favoured. On a full set this is
+/// `below(len)`, as a pick from the whole list was.
+pub inline fn pick_from(choices: Choices, E: type, set: std.EnumSet(E)) E {
+    assert(set.count() > 0);
+    var skip = choices.below(set.count());
+    var keys = set.iterator();
+    while (keys.next()) |key| {
+        if (skip == 0) return key;
+        skip -= 1;
+    }
+    unreachable;
+}
+
 pub const Generator = struct {
     choices: Choices,
     writer: std.Io.Writer,
@@ -512,18 +526,8 @@ pub const Generator = struct {
         return list[generator.choices.below(list.len)];
     }
 
-    /// One of `set`'s keys: `below(count)`, then that set key. There are no retries and no
-    /// fallbacks, so a left-out key is never written and none is favoured. On a full set
-    /// this is `below(len)`, as a pick from the whole list was.
     inline fn pick_enabled(generator: *Generator, E: type, set: std.EnumSet(E)) E {
-        assert(set.count() > 0);
-        var skip = generator.choices.below(set.count());
-        var keys = set.iterator();
-        while (keys.next()) |key| {
-            if (skip == 0) return key;
-            skip -= 1;
-        }
-        unreachable;
+        return pick_from(generator.choices, E, set);
     }
 
     /// An index whose bit is set in `mask`: `choose(T)` when every one is (as the full mix
