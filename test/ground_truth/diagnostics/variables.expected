@@ -1,0 +1,3 @@
+ERROR: 'variables.ink' line 2: Unresolved variable: x
+ERROR: 'variables.ink' line 2: Using 'not' or '!' here negates 'x' rather than the result of the '?' or 'has' operator. You need to add parentheses around the (A ? B) expression.
+ERROR: 'variables.ink' line 3: Variable could not be found to assign to: 'y'

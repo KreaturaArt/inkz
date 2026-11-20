@@ -1,0 +1,2 @@
+ERROR: 'redeclared.ink' line 2: found declaration variable 'x' that was already declared (line 1 of redeclared.ink)
+ERROR: 'redeclared.ink' line 5: found declaration variable 't' that was already declared (line 4 of redeclared.ink)

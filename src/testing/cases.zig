@@ -63,8 +63,10 @@ pub fn ids(arena: std.mem.Allocator, io: std.Io) ![]const []const u8 {
     const all = try list_sorted(arena, io, cases_directory, ".expected");
     var kept: std.ArrayList([]const u8) = .empty;
     for (all) |id| {
-        // .NET reference data for unit tests, not story cases.
-        if (!std.mem.startsWith(u8, id, "dotnet_")) try kept.append(arena, id);
+        // .NET reference data for unit tests and the compiler's messages, not story cases.
+        if (std.mem.startsWith(u8, id, "dotnet_")) continue;
+        if (std.mem.startsWith(u8, id, "diagnostics/")) continue;
+        try kept.append(arena, id);
     }
     return kept.items;
 }

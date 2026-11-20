@@ -1,0 +1,1 @@
+ERROR: 'duplicate_label.ink' line 3: A choice with the same label name 'a' already exists in this context on line 2

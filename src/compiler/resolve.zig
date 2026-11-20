@@ -118,6 +118,11 @@ pub const Code = enum(u8) {
     /// 'not' or '!' here negates 'A' rather than the result of the '?' or 'has' operator. You
     /// need to add parentheses around the (A ? B) expression."
     negated_has_operand,
+    /// DivertTarget.ResolveReferences, a divert-target value used other than as a value, a
+    /// compared operand or TURNS_SINCE's argument: "Can't use a divert target like that. Did
+    /// you intend to call '-> k' as a function: likeThis(), or check the read count:
+    /// likeThis, with no arrows?"
+    divert_target_misused,
     /// DivertTarget.ResolveReferences, on `-> x` for a variable `x`: "Since 'x' is a
     /// variable, it shouldn't be preceded by '->' here."
     variable_divert_target,
@@ -152,6 +157,8 @@ pub const Code = enum(u8) {
 pub const Diagnostic = struct {
     code: Code,
     object: ObjectIndex,
+    /// The object a message points back to (the first declaration of a duplicate), or none.
+    other: ObjectIndex = .none,
 };
 
 pub const Resolution = struct {
@@ -288,10 +295,24 @@ pub const Context = struct {
 
     /// Records an error on `object`; as in ink, an object gets at most one.
     pub fn report(context: *Context, code: Code, object: ObjectIndex) !void {
+        return context.report_with(code, object, .none);
+    }
+
+    /// `report`, with the object the message points back to.
+    pub fn report_with(
+        context: *Context,
+        code: Code,
+        object: ObjectIndex,
+        other: ObjectIndex,
+    ) !void {
         assert(object.to_int() < context.tree.count());
         if (context.had_error.isSet(object.to_int())) return;
         context.had_error.set(object.to_int());
-        try context.diagnostics.append(context.gpa, .{ .code = code, .object = object });
+        try context.diagnostics.append(context.gpa, .{
+            .code = code,
+            .object = object,
+            .other = other,
+        });
     }
 
     pub fn level(context: *const Context, flow: ObjectIndex) FlowLevel {
