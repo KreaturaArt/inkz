@@ -76,6 +76,16 @@ pub const Limits = struct {
     pub const ProgramShape = struct {
         count_slots: u32,
         globals_count: u32,
+
+        /// The words of the lookahead's "logged" bitset: one bit per slot the undo log can
+        /// target (each global, each visit count, each turn index), so a slot is logged at
+        /// most once per snapshot.
+        pub fn patch_logged_words(shape: ProgramShape) u32 {
+            const bits = @as(u64, shape.globals_count) + 2 * @as(u64, shape.count_slots);
+            const words = (bits + 31) / 32; // rounded up
+            assert(words * 32 >= bits);
+            return @intCast(words);
+        }
     };
 
     pub fn check(limits: *const Limits) Fault {
@@ -116,8 +126,10 @@ pub const Limits = struct {
 
     fn bytes_total_checked(limits: *const Limits, shape: ProgramShape) ?u64 {
         const live = limits.live_flow_bytes();
-        // The lookahead snapshot is a second copy of the live-flow buffers.
-        const lookahead = live + @as(u64, limits.patch_entries_max) * element_bytes.patch_entry;
+        // The lookahead snapshot is a second copy of the live-flow buffers, plus the undo log
+        // and its bitset of logged slots.
+        const lookahead = live + @as(u64, limits.patch_entries_max) * element_bytes.patch_entry +
+            @as(u64, shape.patch_logged_words()) * 4;
         const shared = limits.shared_bytes(shape);
         const total = std.math.add(u64, live, lookahead) catch return null;
         const result = std.math.add(u64, total, shared) catch return null;
@@ -332,7 +344,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 2_203_392), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 2_203_420), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -370,12 +382,12 @@ test "the sizing example in docs/benchmarks.md" {
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
     try std.testing.expectEqual(@as(u64, 1_852_800), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 2_230_656), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_231_432), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
     try std.testing.expectEqual(@as(u64, 195_120), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 254_768), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 254_848), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {

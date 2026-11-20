@@ -241,6 +241,10 @@ pub const State = struct {
     // The lookahead snapshot and parked flows.
     lookahead: FlowBuffers,
     patch: []PatchEntry,
+    /// One bit per slot the undo log can target (globals, then visit counts, then turn
+    /// indices): set while the active snapshot has logged that slot, so it logs each slot
+    /// once (the first old value is the one restore needs). Clear when no snapshot is active.
+    patch_logged: []u32,
     flows: []FlowRecord,
     parking: []u32,
     current_flow: u32 = 0,
@@ -366,6 +370,7 @@ pub const State = struct {
         state.did_safe_exit = false;
         state.output_stashes_count = 0;
         state.snapshot = .{};
+        @memset(state.patch_logged, 0);
         flows.reset(state);
         state.verify();
     }
@@ -724,6 +729,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .global_defaults = carver.take(Value, shape.globals_count),
         .visit_counts = carver.take(u32, shape.count_slots),
         .turn_indices = carver.take(i32, shape.count_slots),
+        .patch_logged = carver.take(u32, shape.patch_logged_words()),
         .lists = .init(carver.take(u32, limits.list_words_max)),
         .observer_events = .init(carver.take(GlobalSlot, limits.observer_events_max)),
         .errors = .init(carver.take(Diagnostic, limits.errors_max)),

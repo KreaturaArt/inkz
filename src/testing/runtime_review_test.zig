@@ -1,0 +1,69 @@
+//! Runtime fixes from the final review (P15.1), each checked through a whole story: the
+//! lookahead's undo log, long tags, glue in choice tags, lists that print long, and ink's
+//! list-and-int operation errors. The stories are compiled from the ink in each test.
+
+const std = @import("std");
+const assert = std.debug.assert;
+const compile = @import("../compiler/compile.zig");
+const api = @import("../runtime/api.zig");
+const Program = @import("../core/program.zig").Program;
+
+/// A story on `program` with `limits`, owned by the caller.
+fn start(gpa: std.mem.Allocator, program: *const Program, limits: api.Limits) !*api.Story {
+    assert(program.containers.len > 0);
+    const story = try gpa.create(api.Story);
+    errdefer gpa.destroy(story);
+    try story.init(gpa, program, .{ .limits = limits });
+    return story;
+}
+
+fn stop(gpa: std.mem.Allocator, story: *api.Story) void {
+    story.deinit(gpa);
+    gpa.destroy(story);
+}
+
+/// The story's whole output until it stops or asks for a choice, owned by the caller.
+fn play(gpa: std.mem.Allocator, story: *api.Story) ![]u8 {
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    errdefer text.deinit();
+    var lines: u32 = 0;
+    while (story.can_continue()) : (lines += 1) {
+        assert(lines < 1000);
+        try text.writer.writeAll((try story.cont()).get());
+    }
+    return text.toOwnedSlice();
+}
+
+/// The first story error's message, written into `buffer`.
+fn first_error(story: *api.Story, buffer: []u8) ![]const u8 {
+    assert(story.error_count() > 0);
+    var writer: std.Io.Writer = .fixed(buffer);
+    try story.write_error(0, &writer);
+    return writer.buffered();
+}
+
+test "a loop that writes one variable 1100 times before the line ends fits the undo log" {
+    // The newline after "Hello" starts a lookahead, and the loop runs inside it before
+    // "World" ends it: 1100 writes each of `x`, the gather's visit count and its turn
+    // index. With one log entry per write, the default 1024 entries ran out.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\VAR x = 0
+        \\Hello
+        \\- (top)
+        \\~ x++
+        \\{ x < 1100: -> top }
+        \\World
+        \\-> END
+        \\
+    );
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    const text = try play(gpa, story);
+    defer gpa.free(text);
+    // ink 1.2.1 prints the same three lines: the branch's space makes the line after
+    // "Hello" non-empty, so its newline is kept.
+    try std.testing.expectEqualStrings("Hello\n\nWorld\n", text);
+    try std.testing.expectEqual(@as(i32, 1100), story.get_variable("x").?.get().integer);
+}
