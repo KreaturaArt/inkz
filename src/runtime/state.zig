@@ -222,6 +222,9 @@ pub const State = struct {
     lists: lists_module.ListSlab,
     /// Scratch for text being assembled (`/str`, tags) and for Debug checks.
     line_bytes: []u8,
+    /// Scratch for one tag of the current line, cleaned, while it is passed to a tag sink
+    /// (`Limits.tag_bytes_max`).
+    tag_bytes: []u8,
     /// The current line's cleaned text, kept between calls.
     text_cache: text_cache_module.TextCache,
     observers: []Observer,
@@ -266,6 +269,7 @@ pub const State = struct {
         parking_words: u32 = 0,
         patch_entries: u32 = 0,
         line_bytes: u32 = 0,
+        tag_bytes: u32 = 0,
         load_nodes: u32 = 0,
         flows: u32 = 1,
     };
@@ -330,6 +334,7 @@ pub const State = struct {
             .string_marks = state.output.string_marks.peak,
             .choices = choices.records.peak,
             .tags = choices.tags.peak,
+            .tag_bytes = state.peaks.tag_bytes,
             .heap_bytes = state.strings.peak,
             .list_words = state.lists.peak,
             .flows = state.peaks.flows,
@@ -747,6 +752,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         },
         .strings = .init(carver.take(u8, limits.heap_bytes_max)),
         .line_bytes = carver.take(u8, limits.output_bytes_max),
+        .tag_bytes = carver.take(u8, limits.tag_bytes_max),
         .observers = observers,
     };
     result.text_cache.text = carver.take(u8, limits.output_bytes_max);

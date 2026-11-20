@@ -38,6 +38,8 @@ pub const Error = error{
     ListLimit,
     ChoiceLimit,
     TagLimit,
+    /// A tag of the current line is longer than `Limits.tag_bytes_max` after cleaning.
+    TagBytesLimit,
     SnapshotLimit,
     LookaheadLogLimit,
     StepLimit,
@@ -671,15 +673,23 @@ pub const Story = struct {
     fn current_tags_count(story: *Story) Error!u32 {
         assert(story.state.output.items.count <= story.state.output.items.buffer.len);
         var counter: TagCounter = .{};
-        story.state.output.collect_tags(ops.strings_of(story), &counter) catch
-            return error.OutputLimit;
+        try story.collect_tags(&counter);
         return counter.count;
     }
 
     /// Calls `sink.tag(text)` for each tag of the current line.
     pub fn current_tags(story: *Story, sink: anytype) !void {
         assert(@typeInfo(@TypeOf(sink)) == .pointer);
-        try story.state.output.collect_tags(ops.strings_of(story), sink);
+        try story.collect_tags(sink);
+    }
+
+    /// The tags of the current line, each cleaned into the tag scratch and passed to `sink`.
+    fn collect_tags(story: *Story, sink: anytype) !void {
+        const state = &story.state;
+        assert(state.tag_bytes.len == state.limits.tag_bytes_max);
+        const longest = try state.output.collect_tags(ops.strings_of(story), state.tag_bytes, sink);
+        assert(longest <= state.tag_bytes.len);
+        state.peaks.tag_bytes = @max(state.peaks.tag_bytes, longest);
     }
 
     /// ink's end-of-content errors, when the story can't continue.

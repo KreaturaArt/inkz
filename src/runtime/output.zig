@@ -370,39 +370,59 @@ pub const Output = struct {
     }
 
     /// The current tags, as ink's currentTags builds them; `tag(text)` is called for each.
-    pub fn collect_tags(output: *const Output, strings: anytype, sink: anytype) !void {
-        var buffer: [1024]u8 = undefined;
-        var pending: std.Io.Writer = .fixed(&buffer);
+    /// A tag's text pieces are cleaned straight into `scratch` (the state's `tag_bytes`), so
+    /// a tag longer than it, after cleaning, is `error.TagBytesLimit`. Returns the longest
+    /// cleaned tag, for the usage peak.
+    pub fn collect_tags(output: *const Output, strings: anytype, scratch: []u8, sink: anytype) !u32 {
+        assert(scratch.len > 0);
+        var pending: Pending = .{ .cleaned = .fixed(scratch) };
         var in_tag = false;
         for (output.items.slice()) |item| {
             switch (item.kind) {
                 .begin_tag => {
-                    if (in_tag and pending.end > 0) try flush_tag(&pending, sink);
+                    if (in_tag) try pending.flush(sink);
                     in_tag = true;
                 },
                 .end_tag => {
-                    if (pending.end > 0) try flush_tag(&pending, sink);
+                    try pending.flush(sink);
                     in_tag = false;
                 },
-                .text => if (in_tag) try pending.writeAll(item.bytes(strings)),
+                .text => if (in_tag) try pending.write(item.bytes(strings)),
                 .tag => if (!in_tag and item.length > 0) try sink.tag(item.bytes(strings)),
                 else => {},
             }
         }
-        if (pending.end > 0) try flush_tag(&pending, sink);
-        assert(pending.end == 0);
+        try pending.flush(sink);
+        assert(pending.raw_bytes == 0);
+        return pending.longest;
     }
 
-    fn flush_tag(pending: *std.Io.Writer, sink: anytype) !void {
-        assert(pending.buffer.len > 0);
-        assert(pending.end > 0);
-        var buffer: [1024]u8 = undefined;
-        var cleaned: std.Io.Writer = .fixed(&buffer);
-        var cleaner: Cleaner = .{ .writer = &cleaned };
-        try cleaner.write(pending.buffered());
-        try sink.tag(cleaned.buffered());
-        pending.end = 0;
-    }
+    /// One tag being collected: its raw length so far and its cleaned text.
+    const Pending = struct {
+        cleaned: std.Io.Writer,
+        cleaner: Cleaner = undefined,
+        raw_bytes: u64 = 0,
+        longest: u32 = 0,
+
+        fn write(pending: *Pending, text: []const u8) error{TagBytesLimit}!void {
+            if (pending.raw_bytes == 0) pending.cleaner = .{ .writer = &pending.cleaned };
+            pending.raw_bytes += text.len;
+            pending.cleaner.write(text) catch return error.TagBytesLimit;
+            assert(pending.cleaned.end <= pending.cleaned.buffer.len);
+        }
+
+        /// Passes the tag to the sink if any text was written since the last flush (a tag of
+        /// whitespace only is passed as empty text, as ink does).
+        fn flush(pending: *Pending, sink: anytype) !void {
+            if (pending.raw_bytes == 0) return;
+            assert(pending.cleaner.writer == &pending.cleaned);
+            const text = pending.cleaned.buffered();
+            pending.longest = @max(pending.longest, @as(u32, @intCast(text.len)));
+            try sink.tag(text);
+            pending.cleaned.end = 0;
+            pending.raw_bytes = 0;
+        }
+    };
 
     pub fn check(output: *const Output) Fault {
         assert(output.items.buffer.len > 0);
@@ -699,7 +719,9 @@ test "dynamic tags are assembled and cleaned" {
     try test_output.output.push_command(.end_tag);
     try test_output.text(3);
     var sink: TagSink = .{};
-    try test_output.output.collect_tags(test_output.strings, &sink);
+    var scratch: [16]u8 = undefined;
+    const longest = try test_output.output.collect_tags(test_output.strings, &scratch, &sink);
+    try std.testing.expectEqual(@as(u32, 7), longest);
     try std.testing.expectEqual(@as(u32, 1), sink.count);
     try std.testing.expectEqualStrings("big red", sink.seen[0][0..sink.lengths[0]]);
     var buffer: [64]u8 = undefined;
