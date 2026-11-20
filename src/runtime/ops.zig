@@ -438,6 +438,31 @@ fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
     return stack.temp_get(name, if (context == 0) -1 else context);
 }
 
+/// The variable pointer `raw_variable` would return, or null when it would return anything
+/// else; allocates nothing. A list item's name is never a pointer.
+fn raw_pointer(story: *Story, name: StringId, context: i32) ?value_module.VariablePointer {
+    assert(!name.is_none());
+    assert(context >= -1);
+    if (context == 0 or context == -1) {
+        if (global_slot(story, name)) |slot| {
+            const global = story.state.globals[slot.to_int()];
+            return if (global == .variable_pointer) global.variable_pointer else null;
+        }
+        if (story.program.list_item_by_name(story.program.strings.get(name)) != null) return null;
+    }
+    const value = frame_temp(story, name, context) orelse return null;
+    return if (value == .variable_pointer) value.variable_pointer else null;
+}
+
+/// The temp `name` in the frame of `context` (0 and -1: the current one), or null.
+fn frame_temp(story: *Story, name: StringId, context: i32) ?Value {
+    assert(!name.is_none());
+    const stack = &story.state.call_stack;
+    assert(stack.depth() > 0);
+    if (context > @as(i32, @intCast(stack.depth()))) return null;
+    return stack.temp_get(name, if (context == 0) -1 else context);
+}
+
 /// A list item named `name` as a one-item list (ink's FindSingleItemListWithName).
 fn single_item_list(story: *Story, name: StringId) Error!?Value {
     assert(!name.is_none());
@@ -549,11 +574,12 @@ fn assign_existing(
     var context: i32 = -1;
     var is_global = start_global;
     var hops: u32 = 0;
-    while (try raw_variable(story, name, context)) |existing| : (hops += 1) {
-        if (existing != .variable_pointer) break;
+    // `value` was popped, so nothing roots it: this walk must not allocate (raw_variable
+    // would make a one-item list for a list item's name, and that may compact).
+    while (raw_pointer(story, name, context)) |pointer| : (hops += 1) {
         if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle, .{});
-        name = existing.variable_pointer.name;
-        context = existing.variable_pointer.context;
+        name = pointer.name;
+        context = pointer.context;
         is_global = context == 0;
     }
     if (is_global) {
@@ -564,7 +590,8 @@ fn assign_existing(
         );
         return set_global(story, slot, value);
     }
-    const old = try raw_variable(story, name, context);
+    // ink's SetTemporaryVariable keeps list origins from the temp's own old value.
+    const old = frame_temp(story, name, context);
     const stored = try retain_list_origins(story, old, value);
     story.state.call_stack.temp_set(name, stored, false, context) catch |err| switch (err) {
         error.TempNotFound => return fail(story, .temp_not_found, .{ .name = name }),

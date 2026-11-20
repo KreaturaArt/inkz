@@ -142,3 +142,33 @@ test "glue inside a choice tag is dropped, as ink does" {
     defer gpa.free(after);
     try std.testing.expectEqualStrings("out\n", after);
 }
+
+test "assigning a popped string to a temp named like a list item allocates nothing first" {
+    // Re-assigning a temp first checks whether it holds a variable pointer. For a name that
+    // is also a list item, that check made a one-item list, and with `compact_always` the
+    // compaction dropped the new, popped and unrooted, string. ink's compiler rejects such
+    // a temp, so the story is compiled with the temp named `z`, renamed to `a` in the JSON.
+    const gpa = std.testing.allocator;
+    const json = try compile.compile_to_json(gpa,
+        \\LIST l = a, b
+        \\~ temp z = "x"
+        \\~ z = "long" + " string"
+        \\{z}
+        \\-> END
+        \\
+    );
+    defer gpa.free(json);
+    const renamed = try std.mem.replaceOwned(u8, gpa, json, "\"z\"", "\"a\"");
+    defer gpa.free(renamed);
+    try std.testing.expect(!std.mem.eql(u8, json, renamed));
+    const story = try gpa.create(api.Story);
+    defer gpa.destroy(story);
+    try story.init_from_json(gpa, renamed, .{});
+    defer story.deinit(gpa);
+    story.core.state.compact_always = true;
+    const text = try play(gpa, story);
+    defer gpa.free(text);
+    // `{a}` reads the list item, as ink's GetRawVariableWithName looks for one before temps.
+    try std.testing.expectEqualStrings("a\n", text);
+    story.core.state.verify();
+}
