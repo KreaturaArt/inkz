@@ -132,6 +132,30 @@ pub fn build(b: *std.Build) void {
     run_simulate.addPassthruArgs();
     b.step("simulate", "Play every case with seeded random choices").dependOn(&run_simulate.step);
 
+    // The differential swarm run (docs/fuzzing.md): generated cases, compared with what ink's
+    // harness (`mise run reference:swarm`) wrote. Nothing here needs .NET but `swarm-reduce`.
+    const swarm_differential = add_executable(
+        b,
+        "swarm_differential",
+        "src/swarm_differential.zig",
+        target,
+        optimize,
+    );
+    swarm_differential.root_module.addOptions("build_options", build_options);
+    const swarm_steps = [_][3][]const u8{
+        .{ "swarm-gen", "gen", "Write generated swarm cases (-- --seed S --count N --out DIR)" },
+        .{ "swarm-check", "check", "Compare inkz with ink's results for swarm cases (-- DIR)" },
+        .{ "swarm-reduce", "reduce", "Reduce a divergent swarm case (-- DIR CASE --harness DLL)" },
+    };
+    for (swarm_steps) |swarm_step| {
+        const run = b.addRunArtifact(swarm_differential);
+        run.setCwd(b.path("."));
+        run.has_side_effects = true;
+        run.addArg(swarm_step[1]);
+        run.addPassthruArgs();
+        b.step(swarm_step[0], swarm_step[2]).dependOn(&run.step);
+    }
+
     const lint = add_executable(b, "lint", "tools/lint.zig", target, optimize);
     const run_lint = b.addRunArtifact(lint);
     run_lint.setCwd(b.path("."));

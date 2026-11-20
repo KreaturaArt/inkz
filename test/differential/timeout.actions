@@ -1,0 +1,6 @@
+lines_max 1000
+play_seeded 1
+globals
+save
+load_fresh
+globals

@@ -70,6 +70,89 @@ Shared pieces:
 - It also gives runtime stories a budget of 10,000 steps per `cont`. Generated stories loop,
   and the default budget of 1,000,000 made each input slow.
 
+## Differential swarm run
+
+The targets above check invariants: no crash, `check()` holds, round trips match. The
+differential run also checks **behaviour**: each generated story is compiled and played by
+inkz and by ink v1.2.1, and everything the host can observe must match. It is an offline
+run, because ink needs .NET; `zig build` itself never does (plan D19).
+
+```sh
+zig build swarm-gen -Doptimize=ReleaseSafe -- --seed 1 --count 2000 --out zig-out/swarm/1
+mise run reference:swarm -- zig-out/swarm/1
+zig build swarm-check -Doptimize=ReleaseSafe -- zig-out/swarm/1
+```
+
+1. `swarm-gen` writes, for each case `<n>`:
+   - `<n>.ink`: a generated story with its own drawn swarm configuration;
+   - `<n>.actions`: `lines_max 1000`, `play_seeded <seed>`, `globals`, `save`, `load_fresh`
+     and `globals`;
+   - `<n>.swarm`: the configuration line and the seed.
+   The same seed writes the same files.
+2. `reference:swarm` runs `ink_harness batch <dir>` (`tools/ink_harness/Program.cs`), one
+   .NET process for the whole directory. For each story it writes:
+   - `<n>.ink.json` and `<n>.expected`, or
+   - `<n>.compile_errors` when inklecate rejects the story, or
+   - `<n>.timeout` when ink doesn't finish it in 5 s (a divert loop without output, or
+     recursion without end).
+   A thread that runs on can't be stopped, so after two timeouts the process exits with 3,
+   and the script starts a new one, which skips the stories that have results.
+   `lines_max` caps each `continue_maximally` in both harnesses alike: generated stories
+   often loop with output.
+3. `swarm-check` (`src/testing/differential.zig`) compiles each story with inkz and compares:
+   - **compile acceptance**: both compile, or both reject;
+   - **runtime**: inklecate's JSON played by inkz against ink's transcript (the oracle's
+     comparison, so `save:` lines compare as JSON);
+   - **pipeline**: inkz's own JSON played by inkz against ink's transcript;
+   - **structure**: inkz's JSON against inklecate's.
+   Each replay runs in its own process (`replay_case --json`), so a crash is a result. Every
+   divergence is printed with its configuration, and the step fails.
+4. `zig build swarm-reduce -- <dir> <n> --harness reference/ink_harness_build/ink_harness.dll`
+   reduces a divergent case by features. It regenerates the case from its seed with one
+   swarm feature removed at a time (a set key, or a bound lowered to its least value), runs
+   ink on the candidate, and keeps the removal when the same kind of divergence stays. That
+   is one ink run per feature, so a configuration of 60 features takes 61 runs.
+5. A reduced divergence is either fixed, with a ground-truth case under
+   `test/ground_truth/swarm/` (`mise run reference:expected -- swarm/<name>`), or recorded
+   in the divergence ledger with its reason.
+
+`swarm-check` doesn't count two kinds of difference as divergences, but only when the
+transcripts match up to the line where they start:
+- **ink exceptions**: ink throws a .NET exception that isn't one of ink's, such as
+  `DivideByZeroException` for an integer `/` or `%` by 0. The host would crash; inkz reports
+  ink's story error instead.
+- **inkz limits**: inkz stops at one of its limits (`ThreadLimit`, `FrameLimit`...), which
+  ink doesn't have, for example a knot that starts a thread of itself.
+
+### Results (2026-11-20)
+
+`--seed 1 --count 2000`: ink took 6.5 minutes and the check a few seconds.
+
+| Outcome | Stories |
+|---|---:|
+| played by both | 1,309 |
+| rejected by both | 601 |
+| ink didn't finish in 5 s | 88 |
+| ink crashed the process (a stack overflow) | 2 |
+| ink exception (not compared after it) | 12 |
+| inkz limit (not compared after it) | 10 |
+| divergences, before the fixes below | 38 (12 compile acceptance, 26 runtime) |
+| divergences, after them | 2, both the ledgered `swarm/thread_previous_pointer` (P16.21) |
+
+`swarm-reduce` on one of the two, case 01848, took 34 ink runs (28 s). A removal that keeps the
+divergence is kept, so the reduction stops short when a removal changes the story so much
+that the divergence goes, as it did for the 46 extra globals there.
+
+### What the differential run found
+
+| Divergence | Fix | Ground truth |
+|---|---|---|
+| After `-> END`, a save had `"threadCounter":0`. ink's `ForceEnd` calls `CallStack.Reset`, which keeps the counter that every generated choice advances. | `CallStack.reset` keeps the counter; `CallStack.fresh` (a new flow, `reset_state`, a loaded save) starts it from 0. | `swarm/thread_counter_after_end` |
+| A `->->` outside a tunnel gave inkz's own message. | ink's "Found tunnel onwards statement (->->), when expected end of flow (-> END or choice)". | `swarm/pop_unexpected` |
+| An operation a type lacks, such as `?` on numbers, gave inkz's own message. | ink's "Cannot perform operation '?' on Float", with the type ink coerces the operands to. | `swarm/operation_not_for_type`, `swarm/operation_not_for_int` |
+| inkz compiled `not v ? 1`, which ink rejects: "Using 'not' or '!' here negates 'v' rather than the result of the '?' or 'has' operator" (11 stories). | The check from `BinaryExpression.ResolveReferences`, code `negated_has_operand`. | unit test in `src/compiler/termination_tests.zig` |
+| After two threads in a row that print nothing, ink saves the first thread's divert as `previousContentObject`, inkz the second's (2 stories). | Not yet: P16.21. | `swarm/thread_previous_pointer`, ledgered |
+
 ## Results (2026-11-13)
 
 All runs used ReleaseSafe unless noted. None crashed once the bugs below were fixed.

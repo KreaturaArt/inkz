@@ -5,6 +5,8 @@
 #   random              regenerate test/ground_truth/dotnet_random.expected
 #   floats              regenerate test/ground_truth/dotnet_floats.expected
 #   paths [case...]     regenerate test/ground_truth/<case>.paths (container paths and hashes)
+#   swarm <dir>...      ink's results for generated swarm cases (`zig build swarm-gen`):
+#                       <n>.ink.json and <n>.expected, <n>.compile_errors or <n>.timeout
 set -euo pipefail
 
 ink_tag="v1.2.1"
@@ -90,6 +92,31 @@ paths() {
     done
 }
 
+# One harness process per directory; it exits 3 when stories ink can't finish pile up (their
+# threads can't be stopped), and a new process goes on from the first case without results.
+swarm() {
+    [ "$#" -gt 0 ] || { echo "usage: reference.sh swarm <dir>..." >&2; exit 2; }
+    for directory in "$@"; do
+        local status=3
+        while [ "$status" -ne 0 ]; do
+            status=0
+            harness batch "$directory" 5 2> "$directory/batch.log" || status=$?
+            [ "$status" -eq 0 ] || [ "$status" -eq 3 ] || {
+                # ink crashed the process (a stack overflow): the story it was running is
+                # marked, and the next process skips it.
+                local running
+                running="$(ls "$directory"/*.running 2>/dev/null | head -n 1)"
+                [ -n "$running" ] || { cat "$directory/batch.log" >&2; exit "$status"; }
+                mv "$running" "${running%.running}.harness_crash"
+            }
+        done
+        echo "swarm: $directory: $(ls "$directory" | grep -c '\.expected$') played," \
+            "$(ls "$directory" | grep -c '\.compile_errors$') rejected," \
+            "$(ls "$directory" | grep -c '\.timeout$') timed out," \
+            "$(ls "$directory" | grep -c '\.harness_crash$') crashed ink"
+    done
+}
+
 command="${1:-}"
 shift || true
 case "$command" in
@@ -98,5 +125,6 @@ case "$command" in
     random) setup; random ;;
     paths) setup; paths "$@" ;;
     floats) setup; floats ;;
+    swarm) setup; swarm "$@" ;;
     *) echo "usage: reference.sh setup|expected [case...]|random|paths [case...]" >&2; exit 2 ;;
 esac
