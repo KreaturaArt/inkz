@@ -102,6 +102,43 @@ pub const Declaration = enum { v0, v1, v2, c0, l0, e0 };
 const variables: std.EnumSet(Declaration) = .initMany(&.{ .v0, .v1, .v2 });
 const words = [_][]const u8{ "Hello", "the cat", "a", "", "!", "  spaced  ", "x\\{y\\}" };
 
+/// Features for ink's name resolution (`GetRawVariableWithName`, variable pointers), which the
+/// full mix of the first generator didn't write:
+/// - `temp`: temps `u0`-`u3` declared, re-assigned, incremented and read in each flow (and a
+///   function's parameter `x` read in its body).
+/// - `ref`: `f2(ref x)` and `f3(ref y)`, which passes its pointer on to `f2`, called with
+///   globals, temps and parameters, so variable pointers get contexts -1, 0 and n.
+/// - `items`: list items read by full name (`l0.a`) and by bare name (`b`).
+/// - `l1`: a second list, `LIST l1 = a, d`, so the bare `a` is ambiguous and the generator
+///   writes `l0.a` and `l1.a`.
+/// - `collision`: one name ink rejects per source (a temp named like a global, a list item or
+///   a knot, or the ambiguous bare `a`), for comparing compile errors. It is drawn with
+///   probability 1/8 and is not in `Swarm.all`.
+pub const Resolution = enum { temp, ref, items, l1, collision };
+
+const ResolutionLine = enum {
+    temp_declare,
+    temp_assign,
+    temp_increment,
+    ref_call,
+    global_assign,
+    collision,
+};
+
+const ResolutionTerm = enum { temp_read, item_full, item_bare, ref_call, global_read, ambiguous };
+
+/// A list item's text, and whether it needs `l1` (else `l0`).
+const Item = struct { []const u8, bool };
+const items_full = [_]Item{
+    .{ "l0.a", false },
+    .{ "l0.b", false },
+    .{ "l0.c", false },
+    .{ "l1.a", true },
+    .{ "l1.d", true },
+};
+const items_bare = [_]Item{ .{ "b", false }, .{ "c", false }, .{ "d", true } };
+const temps_count = 4;
+
 comptime {
     assert(binary_operators.len == std.enums.values(Operator).len);
     assert(targets.len == std.enums.values(Target).len);
@@ -122,14 +159,21 @@ pub const Swarm = struct {
     terms_max: u8,
     choice_depth_max: u8,
     knots_count: u8,
+    resolution: std.EnumSet(Resolution),
+    /// Globals `n0`... declared beyond `v0`-`v2`, read and assigned: 0 to 64 (`g` would
+    /// collide with the gathers' labels).
+    globals_extra: u8,
 
     pub const lines_limit = 10;
     pub const terms_limit = 4;
     pub const choice_depth_limit = 3;
     pub const knots_limit = 3;
+    pub const globals_extra_limit = 64;
 
-    /// Every feature at the largest bounds: the generator's full mix.
-    pub const all: Swarm = .{
+    /// The first generator's full mix: every feature but the resolution ones, at the largest
+    /// bounds. It takes the same choices as that generator did, so its seeds give the same
+    /// sources.
+    pub const classic: Swarm = .{
         .lines = .full,
         .terms = .full,
         .operators = .full,
@@ -140,6 +184,18 @@ pub const Swarm = struct {
         .terms_max = terms_limit,
         .choice_depth_max = choice_depth_limit,
         .knots_count = knots_limit,
+        .resolution = .empty,
+        .globals_extra = 0,
+    };
+
+    /// Every feature at the largest bounds, but `collision`, which would make each source
+    /// fail to compile.
+    pub const all: Swarm = all: {
+        var swarm = classic;
+        swarm.resolution = .full;
+        swarm.resolution.remove(.collision);
+        swarm.globals_extra = globals_extra_limit;
+        break :all swarm;
     };
 
     /// No feature: what a generator has used before it writes anything.
@@ -154,6 +210,8 @@ pub const Swarm = struct {
         .terms_max = 0,
         .choice_depth_max = 0,
         .knots_count = 0,
+        .resolution = .empty,
+        .globals_extra = 0,
     };
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
@@ -172,7 +230,16 @@ pub const Swarm = struct {
             .terms_max = choices.range(u8, 1, terms_limit),
             .choice_depth_max = choices.range(u8, 1, choice_depth_limit),
             .knots_count = choices.range(u8, 1, knots_limit),
+            .resolution = draw_set(choices, Resolution),
+            .globals_extra = if (choices.choose(bool))
+                choices.range(u8, 1, globals_extra_limit)
+            else
+                0,
         };
+        // A collision fails the compile, so it gets ¼ of the usual probability.
+        if (swarm.resolution.contains(.collision) and !choices.weighted(3, 1)) {
+            swarm.resolution.remove(.collision);
+        }
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -200,6 +267,9 @@ pub const Swarm = struct {
             swarm.terms.remove(.list);
             swarm.terms.remove(.list_query);
         }
+        if (!declared.contains(.l0) and !swarm.resolution.contains(.l1)) {
+            swarm.resolution.remove(.items);
+        }
         if (swarm.inlines.count() == 0) swarm.lines.remove(.text_inline);
         if (swarm.lines.count() == 0) swarm.lines.insert(.text);
         if (swarm.terms.count() == 0) swarm.terms.insert(.integer);
@@ -223,7 +293,8 @@ pub const Swarm = struct {
             (swarm.inlines.count() > 0 or !swarm.lines.contains(.text_inline)) and
             swarm.lines_max >= 1 and swarm.lines_max <= lines_limit and
             swarm.terms_max >= 1 and swarm.terms_max <= terms_limit and
-            swarm.choice_depth_max >= 1 and swarm.choice_depth_max <= choice_depth_limit;
+            swarm.choice_depth_max >= 1 and swarm.choice_depth_max <= choice_depth_limit and
+            swarm.globals_extra <= globals_extra_limit;
     }
 
     pub fn eql(a: Swarm, b: Swarm) bool {
@@ -385,6 +456,12 @@ pub const Generator = struct {
     used: Swarm = .none,
     /// Unique label suffixes for choices and gathers.
     labels: u32 = 0,
+    /// The temps `u0`-`u3` declared in the current flow, as bits.
+    temps: u8 = 0,
+    /// Whether the current flow is a function with the parameter `x`.
+    parameter: bool = false,
+    /// Whether the source has its one collision.
+    collided: bool = false,
 
     pub const Case = struct {
         source: []const u8,
@@ -505,6 +582,14 @@ pub const Generator = struct {
         if (generator.declared(.l0) and generator.keep()) generator.put("LIST l0 = a, (b), c\n");
         if (generator.declared(.e0) and generator.keep()) generator.put("EXTERNAL e0(x)\n");
         generator.used.declarations = generator.swarm.declarations;
+        if (generator.swarm.resolution.contains(.l1)) {
+            generator.used.resolution.insert(.l1);
+            generator.put("LIST l1 = a, d\n");
+        }
+        for (0..generator.swarm.globals_extra) |index| generator.print("VAR n{d} = {d}\n", .{
+            index,
+            index,
+        });
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
@@ -517,10 +602,20 @@ pub const Generator = struct {
             generator.swarm.lines.intersectWith(function_lines)
         else
             generator.swarm.lines;
-        if (enabled.count() == 0) return;
+        if (enabled.count() == 0 and generator.resolution_lines().count() == 0) return;
         const lines_max = generator.swarm.lines_max;
         var lines: u32 = 0;
         while (lines < lines_max and !!generator.choices.more(3, 1)) : (lines += 1) {
+            // A resolution line takes a choice only when one is possible, so `classic`
+            // takes the first generator's choices.
+            const kinds = generator.resolution_lines();
+            if (kinds.count() > 0 and
+                (enabled.count() == 0 or generator.choices.weighted(2, 1)))
+            {
+                generator.resolution_line(kinds);
+                continue;
+            }
+            if (enabled.count() == 0) break;
             const line = if (all_lines)
                 generator.choices.choose(Line)
             else
@@ -697,6 +792,10 @@ pub const Generator = struct {
 
     fn term(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
+        const kinds = generator.resolution_terms();
+        if (kinds.count() > 0 and generator.choices.weighted(2, 1)) {
+            return generator.resolution_term(kinds);
+        }
         const set = generator.swarm.terms;
         const kind = if (set.eql(.full))
             generator.choices.choose(Term)
@@ -715,7 +814,12 @@ pub const Generator = struct {
             .random => generator.put("RANDOM(1, 3)"),
             .visits => generator.put(generator.knot_target()),
             .turns_since => generator.turns_since(),
-            .list => generator.put(if (generator.choices.choose(bool)) "(a, c)" else "l0"),
+            .list => {
+                // With `l1`, a bare `a` is ambiguous: ink rejects it.
+                const l1 = generator.swarm.resolution.contains(.l1);
+                const literal = if (l1) "(l0.a, c)" else "(a, c)";
+                generator.put(if (generator.choices.choose(bool)) literal else "l0");
+            },
             .list_query => generator.put("LIST_COUNT(l0)"),
             .choice_count => generator.put("CHOICE_COUNT()"),
             .negate => generator.negate(),
@@ -745,10 +849,12 @@ pub const Generator = struct {
         assert(generator.writer.end <= generator.writer.buffer.len);
         if (!generator.keep()) return;
         generator.print("=== k{d} ===\n", .{index});
+        generator.flow_start(false);
         generator.weave(false);
         generator.knot_end();
         if (index != 0) return;
         if (generator.keep()) generator.put("= s0\n");
+        generator.flow_start(false);
         generator.weave(false);
         generator.knot_end();
     }
@@ -781,15 +887,225 @@ pub const Generator = struct {
             "=== function f1() ===\n",
             "=== function e0(x) ===\n",
         };
-        for (headers) |header| {
+        for (headers, [_]bool{ true, false, true }) |header, parameter| {
             if (!generator.keep()) continue;
             generator.put(header);
+            generator.flow_start(parameter);
             generator.weave(true);
             generator.put("~ return ");
             generator.expression();
             generator.put("\n");
         }
+        generator.flow_start(false);
+        if (generator.swarm.resolution.contains(.ref)) {
+            // f3 passes its own pointer on: a pointer to a pointer.
+            generator.put("=== function f2(ref x) ===\n~ x++\n~ return x\n");
+            generator.put("=== function f3(ref y) ===\n~ f2(y)\n~ return y\n");
+        }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// A knot, stitch or function starts: temps of the flow before are out of scope.
+    fn flow_start(generator: *Generator, parameter: bool) void {
+        assert(generator.temps < 1 << temps_count);
+        generator.temps = 0;
+        generator.parameter = parameter;
+    }
+
+    fn temps_declared(generator: *const Generator) u32 {
+        assert(generator.temps < 1 << temps_count);
+        return @popCount(generator.temps);
+    }
+
+    /// The resolution lines possible here and now.
+    fn resolution_lines(generator: *const Generator) std.EnumSet(ResolutionLine) {
+        const on = generator.swarm.resolution;
+        var kinds: std.EnumSet(ResolutionLine) = .empty;
+        if (on.contains(.temp)) {
+            if (generator.temps_declared() < temps_count) kinds.insert(.temp_declare);
+            if (generator.temps_declared() > 0) {
+                kinds.insert(.temp_assign);
+                kinds.insert(.temp_increment);
+            }
+        }
+        if (on.contains(.ref) and generator.ref_targets_count() > 0) kinds.insert(.ref_call);
+        if (generator.swarm.globals_extra > 0) kinds.insert(.global_assign);
+        if (on.contains(.collision) and !generator.collided) kinds.insert(.collision);
+        assert(kinds.count() <= std.enums.values(ResolutionLine).len);
+        return kinds;
+    }
+
+    fn resolution_line(generator: *Generator, kinds: std.EnumSet(ResolutionLine)) void {
+        assert(kinds.count() > 0);
+        switch (generator.pick_enabled(ResolutionLine, kinds)) {
+            .temp_declare => {
+                generator.used.resolution.insert(.temp);
+                var free = ~generator.temps & ((1 << temps_count) - 1);
+                for (0..generator.choices.below(@popCount(free))) |_| free &= free - 1;
+                const index = @ctz(free);
+                generator.print("~ temp u{d} = ", .{index});
+                generator.expression();
+                generator.put("\n");
+                // Declared after its expression, which can't read it yet.
+                generator.temps |= @as(u8, 1) << @intCast(index);
+            },
+            .temp_assign => {
+                generator.used.resolution.insert(.temp);
+                generator.print("~ u{d} = ", .{generator.declared_temp()});
+                generator.expression();
+                generator.put("\n");
+            },
+            .temp_increment => {
+                generator.used.resolution.insert(.temp);
+                generator.print("~ u{d}++\n", .{generator.declared_temp()});
+            },
+            .ref_call => {
+                generator.put("~ ");
+                generator.ref_call();
+                generator.put("\n");
+            },
+            .global_assign => {
+                const global = generator.choices.below(generator.swarm.globals_extra);
+                generator.print("~ n{d} = ", .{global});
+                generator.expression();
+                generator.put("\n");
+            },
+            .collision => generator.collision(),
+        }
+        assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// One of the temps declared in this flow.
+    fn declared_temp(generator: *Generator) u32 {
+        assert(generator.temps != 0);
+        var declared_bits = generator.temps;
+        for (0..generator.choices.below(@popCount(declared_bits))) |_| {
+            declared_bits &= declared_bits - 1;
+        }
+        return @ctz(declared_bits);
+    }
+
+    /// The resolution terms possible here and now.
+    fn resolution_terms(generator: *const Generator) std.EnumSet(ResolutionTerm) {
+        const on = generator.swarm.resolution;
+        var kinds: std.EnumSet(ResolutionTerm) = .empty;
+        if (on.contains(.temp) and (generator.temps != 0 or generator.parameter)) {
+            kinds.insert(.temp_read);
+        }
+        if (on.contains(.items)) {
+            kinds.insert(.item_full);
+            kinds.insert(.item_bare);
+        }
+        if (on.contains(.ref) and generator.ref_targets_count() > 0) kinds.insert(.ref_call);
+        if (generator.swarm.globals_extra > 0) kinds.insert(.global_read);
+        if (on.contains(.collision) and on.contains(.l1) and generator.declared(.l0) and
+            !generator.collided) kinds.insert(.ambiguous);
+        return kinds;
+    }
+
+    fn resolution_term(generator: *Generator, kinds: std.EnumSet(ResolutionTerm)) void {
+        assert(kinds.count() > 0);
+        switch (generator.pick_enabled(ResolutionTerm, kinds)) {
+            .temp_read => {
+                generator.used.resolution.insert(.temp);
+                const count = generator.temps_declared() + @intFromBool(generator.parameter);
+                generator.put_local(@intCast(generator.choices.below(count)));
+            },
+            .item_full => generator.put(generator.list_item(&items_full)),
+            .item_bare => generator.put(generator.list_item(&items_bare)),
+            .ref_call => generator.ref_call(),
+            .global_read => {
+                generator.print("n{d}", .{generator.choices.below(generator.swarm.globals_extra)});
+            },
+            .ambiguous => {
+                generator.used.resolution.insert(.collision);
+                generator.collided = true;
+                generator.put("a");
+            },
+        }
+        assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// One of `items` whose list is declared; the bare `a` only when it isn't ambiguous.
+    fn list_item(generator: *Generator, items: []const Item) []const u8 {
+        const l0 = generator.declared(.l0);
+        const l1 = generator.swarm.resolution.contains(.l1);
+        assert(l0 or l1);
+        generator.used.resolution.insert(.items);
+        const bare_a = l0 and !l1 and items.len == items_bare.len;
+        var count: u32 = @intFromBool(bare_a);
+        for (items) |item| count += @intFromBool(if (item[1]) l1 else l0);
+        var skip = generator.choices.below(count);
+        for (items) |item| {
+            if (!(if (item[1]) l1 else l0)) continue;
+            if (skip == 0) return item[0];
+            skip -= 1;
+        }
+        assert(bare_a and skip == 0);
+        return "a";
+    }
+
+    /// What a ref parameter can point to: the declared globals, the extra globals, this
+    /// flow's temps and the function's parameter.
+    fn ref_targets_count(generator: *const Generator) u32 {
+        const globals = generator.swarm.declarations.intersectWith(variables).count();
+        return @as(u32, @intCast(globals)) + @intFromBool(generator.swarm.globals_extra > 0) +
+            generator.temps_declared() + @intFromBool(generator.parameter);
+    }
+
+    /// `f2(target)` or `f3(target)`, which passes it on as a pointer to a pointer.
+    fn ref_call(generator: *Generator) void {
+        const count = generator.ref_targets_count();
+        assert(count > 0);
+        generator.used.resolution.insert(.ref);
+        generator.put(if (generator.choices.choose(bool)) "f2(" else "f3(");
+        var chosen: u32 = @intCast(generator.choices.below(count));
+        const declared_variables = generator.swarm.declarations.intersectWith(variables);
+        const globals: u32 = @intCast(declared_variables.count());
+        if (chosen < globals) {
+            var keys = declared_variables.iterator();
+            while (keys.next()) |key| : (chosen -= 1) {
+                if (chosen == 0) {
+                    generator.put(@tagName(key));
+                    break;
+                }
+            }
+        } else if (chosen == globals and generator.swarm.globals_extra > 0) {
+            generator.print("n{d}", .{generator.choices.below(generator.swarm.globals_extra)});
+        } else {
+            generator.put_local(chosen - globals - @intFromBool(generator.swarm.globals_extra > 0));
+        }
+        generator.put(")");
+    }
+
+    /// The `index`th temp declared in this flow, or the parameter `x` after them.
+    fn put_local(generator: *Generator, index: u32) void {
+        assert(index < generator.temps_declared() + @intFromBool(generator.parameter));
+        if (index == generator.temps_declared()) return generator.put("x");
+        var declared_bits = generator.temps;
+        for (0..index) |_| declared_bits &= declared_bits - 1;
+        generator.print("u{d}", .{@ctz(declared_bits)});
+    }
+
+    /// A name ink rejects: a temp named like a global, a list item or a knot.
+    fn collision(generator: *Generator) void {
+        assert(!generator.collided);
+        generator.collided = true;
+        generator.used.resolution.insert(.collision);
+        const names = [_][]const u8{ "v0", "a", "k0" };
+        const possible = [_]bool{ generator.declared(.v0), generator.declared(.l0), true };
+        var count: u32 = 0;
+        for (possible) |on| count += @intFromBool(on);
+        var skip = generator.choices.below(count);
+        for (names, possible) |name, on| {
+            if (!on) continue;
+            if (skip == 0) {
+                generator.print("~ temp {s} = 1\n", .{name});
+                return;
+            }
+            skip -= 1;
+        }
+        unreachable;
     }
 };
 
@@ -884,7 +1200,7 @@ pub fn generate_case_seeded(seed: u64, buffer: []u8, options: Options) Generator
     return Generator.generate_case(.{ .random = prng.random() }, buffer, options);
 }
 
-test "Swarm.all reproduces the generator before swarms" {
+test "Swarm.classic reproduces the generator before swarms" {
     // Golden hashes of the generator's output at 9018c6d, before the swarm: `all` takes
     // the same choices, so seeded corpora and replays keep their meaning.
     const golden = [_]struct { seed: u64, length: u32, hash: u64 }{
@@ -894,7 +1210,7 @@ test "Swarm.all reproduces the generator before swarms" {
     };
     var buffer: [source_bytes_max]u8 = undefined;
     for (golden) |expected| {
-        const source = generate_seeded(expected.seed, &buffer, .{ .swarm = .all });
+        const source = generate_seeded(expected.seed, &buffer, .{ .swarm = .classic });
         try std.testing.expectEqual(expected.length, @as(u32, @intCast(source.len)));
         try std.testing.expectEqual(expected.hash, std.hash.Wyhash.hash(0, source));
     }
@@ -975,7 +1291,11 @@ test "a source uses only its configuration's features" {
         if (!case.swarm.eql(.all)) subsets += 1;
         for (markers_unique) |unique| {
             if (unique.present(case.swarm)) continue;
-            try std.testing.expect(std.mem.indexOf(u8, case.source, unique.text) == null);
+            if (std.mem.indexOf(u8, case.source, unique.text) != null) {
+                const written = "seed {d}: '{s}' is left out but written\n";
+                std.debug.print(written, .{ seed, unique.text });
+                return error.TestUnexpectedResult;
+            }
         }
         const knots = [_][]const u8{ "=== k0 ", "=== k1 ", "=== k2 " };
         for (knots[case.swarm.knots_count..]) |header| {
@@ -1034,15 +1354,87 @@ test "Swarm.format round-trips through Swarm.parse" {
         "",
         "lines=text",
         "lines=nope terms=integer operators=add inlines= targets=k0 declarations= " ++
-            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1",
+            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0",
         // k2 names a knot that a count of 1 doesn't write.
         "lines=text terms=integer operators=add inlines= targets=k2 declarations= " ++
-            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1",
+            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0",
     };
     for (invalid) |bad| try std.testing.expectError(error.InvalidSwarm, Swarm.parse(bad));
     const one = "lines=text terms=integer operators=add inlines= targets=k0 declarations= " ++
-        "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1";
+        "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0";
     var writer: std.Io.Writer = .fixed(&text);
     try writer.print("{f}", .{try Swarm.parse(one)});
     try std.testing.expectEqualStrings(one, writer.buffered());
+}
+
+test "each resolution feature appears when on and never when off" {
+    // 1,000 seeded draws: every resolution feature (and the extra globals) is written by
+    // some source that has it on, and its text is absent from every source that has it off.
+    const Check = struct { feature: ?Resolution, texts: []const []const u8 };
+    const checks = [_]Check{
+        .{ .feature = .temp, .texts = &.{"~ temp u"} },
+        .{ .feature = .ref, .texts = &.{"=== function f2(ref x)"} },
+        // `l0.a` is also the list literal's item when `l1` is on.
+        .{ .feature = .items, .texts = &.{ "l0.b", "l0.c", "l1." } },
+        .{ .feature = .l1, .texts = &.{"LIST l1"} },
+        .{ .feature = .collision, .texts = &.{ "~ temp v0 =", "~ temp a =", "~ temp k0 =" } },
+        .{ .feature = null, .texts = &.{"VAR n0 "} },
+    };
+    var seen: [checks.len]u32 = @splat(0);
+    var buffer: [source_bytes_max]u8 = undefined;
+    for (0..1000) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{});
+        try std.testing.expect(case.swarm.covers(case.used));
+        for (checks, &seen) |check, *count| {
+            const on = if (check.feature) |feature|
+                case.swarm.resolution.contains(feature)
+            else
+                case.swarm.globals_extra > 0;
+            var written = false;
+            for (check.texts) |text| {
+                if (std.mem.indexOf(u8, case.source, text) != null) written = true;
+            }
+            if (!on) try std.testing.expect(!written);
+            if (written) count.* += 1;
+        }
+    }
+    for (seen) |count| try std.testing.expect(count > 0);
+}
+
+test "most sources with only the resolution features compile" {
+    // A configuration of plain text and integers plus every resolution feature but
+    // `collision`: at least 60% of 200 seeds compile, so they reach the runtime.
+    const gpa = std.testing.allocator;
+    var buffer: [source_bytes_max]u8 = undefined;
+    var swarm = Swarm.classic;
+    swarm.lines = .initMany(&.{.text});
+    swarm.terms = .initMany(&.{.integer});
+    swarm.declarations = .initMany(&.{ .v0, .l0 });
+    swarm.resolution = .initMany(&.{ .temp, .ref, .items, .l1 });
+    var compiled: u32 = 0;
+    var resolving: u32 = 0;
+    const seeds = 200;
+    for (0..seeds) |seed| {
+        swarm.globals_extra = @intCast(seed % (Swarm.globals_extra_limit + 1));
+        const case = generate_case_seeded(seed, &buffer, .{ .swarm = swarm });
+        if (case.used.resolution.count() > 0) resolving += 1;
+        var program = compile.compile_source(gpa, case.source) catch continue;
+        program.deinit(gpa);
+        compiled += 1;
+    }
+    try std.testing.expect(resolving * 2 > seeds);
+    try std.testing.expect(compiled * 10 >= seeds * 6);
+}
+
+test "64 extra globals stay below the source bound" {
+    // `Swarm.all` declares the most globals; no seed fills the buffer (a full one would cut
+    // the source short).
+    var buffer: [source_bytes_max]u8 = undefined;
+    var longest: usize = 0;
+    for (0..200) |seed| {
+        const source = generate_seeded(seed, &buffer, .{ .swarm = .all });
+        try std.testing.expect(std.mem.indexOf(u8, source, "VAR n63 = 63\n") != null);
+        longest = @max(longest, source.len);
+    }
+    try std.testing.expect(longest < source_bytes_max / 2);
 }
