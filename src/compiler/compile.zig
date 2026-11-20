@@ -202,6 +202,26 @@ test "a UTF-8 byte order mark is not text, in a source, a file or an included fi
     try std.testing.expect(std.mem.indexOf(u8, out.written(), bom) == null);
 }
 
+test "a literal ink can't fold, such as - true, fails to compile instead of leaking an error" {
+    // inklecate throws "Unexpected operation or number type" on each; `{ - true: ... }` once
+    // returned error.UnsupportedFold from compile_source.
+    const gpa = std.testing.allocator;
+    const sources = [_][]const u8{
+        "{ - true: -> s }\n== s\nhi\n-> DONE\n",
+        "VAR x = - true\n{x}\n",
+        "CONST c = - false\n{c}\n",
+        "~ temp t = -(-true)\n{t}\n",
+        "{RANDOM(-true, 2)}\n",
+    };
+    for (sources) |source| {
+        try std.testing.expectError(error.CompileFailed, compile_source(gpa, source));
+        try std.testing.expectError(error.CompileFailed, compile_to_json(gpa, source));
+    }
+    // What ink folds compiles.
+    var program = try compile_source(gpa, "{ - 1: x } {not true} {-1.5} {!0}\n");
+    program.deinit(gpa);
+}
+
 /// The old compiler's peak bytes compiling test/fixture/crime_scene.ink to JSON in a Debug
 /// build, the baseline of the memory criterion.
 const old_compiler_peak_bytes_crime_scene = 535_946;
