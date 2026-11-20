@@ -388,6 +388,28 @@ pub fn load(gpa: Allocator, bytes: []const u8) Error!Program {
     return program;
 }
 
+/// Loads an image this binary built itself, at build time (F17): the header, version,
+/// endianness and section layout are checked as `load` checks them, and the copies stay in
+/// bounds, but the records (opcodes, flags, references, `Program.check`) are trusted. Safe
+/// builds still verify them and panic on a bad one; ReleaseFast skips that. Use `load` for
+/// any image that comes from outside the build.
+pub fn load_trusted(gpa: Allocator, bytes: []const u8) Error!Program {
+    assert(sections_count > 0);
+    const layout = try Layout.of(bytes);
+    try check_columns(&layout);
+    var strings = try load_strings(gpa, &layout);
+    var program = load_arrays(gpa, &layout, strings) catch |err| {
+        strings.deinit(gpa);
+        return err;
+    };
+    if (std.debug.runtime_safety) {
+        check_shape(&layout) catch @panic("a trusted program image has a bad record");
+        check_references(&program) catch @panic("a trusted program image has a bad reference");
+        program.verify();
+    }
+    return program;
+}
+
 /// What can be checked on the raw sections: opcodes, flag bits, equal column lengths.
 fn check_shape(layout: *const Layout) Error!void {
     assert(layout.header.sections_count == sections_count);
@@ -395,6 +417,11 @@ fn check_shape(layout: *const Layout) Error!void {
     for (layout.get(.flags)) |flags| {
         if (flags & ~@as(u8, 0b111) != 0) return error.InvalidImage;
     }
+    try check_columns(layout);
+}
+
+/// The SoA columns have equal lengths, so copying them stays in bounds.
+fn check_columns(layout: *const Layout) Error!void {
     if (layout.count(.opcodes) != layout.count(.operands)) return error.InvalidImage;
     const containers = layout.count(.parent);
     if (containers == 0) return error.InvalidImage;
