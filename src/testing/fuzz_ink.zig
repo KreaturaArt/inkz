@@ -21,8 +21,11 @@ pub const Options = struct {
     /// Let the fuzzer splice raw bytes into the source (for the parser's targets).
     splices: bool = false,
     /// The features the source may use; null draws a configuration from the choices.
-    swarm: ?Swarm = null,
+    /// `-Dfuzz-swarm=off` makes the default the full mix, to measure swarm against it.
+    swarm: ?Swarm = if (build_options.fuzz_swarm) null else Swarm.all,
 };
+
+const build_options = @import("build_options");
 
 pub const Line = enum {
     text,
