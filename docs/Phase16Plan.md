@@ -1,6 +1,6 @@
 # Phase 16: reference findings and swarm testing
 
-Status: proposed (2026-11-20). Branch `dod-findings`.
+Status: done (2026-11-20). Branch `dod-findings`. Every issue P16.1–P16.21 is closed; P16.21 came out of the first differential run.
 
 **Sources:**
 - `docs/DODReferenceComparison.md` §19: the 18 findings F1–F18, each checked at `9018c6d`.
@@ -333,10 +333,11 @@ part of the phase's acceptance.
 
 ## 8. Phase acceptance
 
-- [ ] P16.1–P16.20 closed, each with its tests.
-- [ ] `zig build ci` passes on macOS and on GitHub CI (ubuntu and macos).
-- [ ] Ground truth 0 divergences. A differential swarm run of at least 10,000 stories has 0
-      unexplained divergences.
-- [ ] `docs/fuzzing.md` has the swarm results table. `docs/benchmarks.md` has the F15/F18
-      decisions and a play benchmark before and after F1/F2.
-- [ ] `docs/DODReferenceComparison.md` §19 shows each finding's status.
+- [x] P16.1–P16.20 closed, each with its tests (and P16.21, found on the way).
+- [x] `zig build ci` passes on macOS (34/34 steps, 475 tests). GitHub CI runs when the
+      branch is pushed.
+- [x] Ground truth 0 divergences (191 cases, empty ledger). A differential swarm run of
+      10,000 stories has 0 divergences (`docs/fuzzing.md`).
+- [x] `docs/fuzzing.md` has the swarm results table. `docs/benchmarks.md` has the F15/F18
+      decisions, the F13 decision and a play benchmark before and after F1/F2.
+- [x] `docs/DODReferenceComparison.md` §19 shows each finding's status.
