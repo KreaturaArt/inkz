@@ -192,7 +192,10 @@ fn value_text(story: *Story, value: Value) Error![]const u8 {
         },
         .bool => |flag| writer.writeAll(if (flag) "true" else "false") catch
             return error.OutputLimit,
-        .list => |list| lists_of(story).write(list, &writer) catch return error.OutputLimit,
+        .list => |list| lists_of(story).write(list, &writer) catch |err| switch (err) {
+            error.ListLimit => return error.ListLimit,
+            error.WriteFailed => return error.OutputLimit,
+        },
         .divert_target => |target| {
             const path = story.program.table().get(target).path;
             writer.print("DivertTargetValue({s})", .{story.program.strings.get(path)}) catch

@@ -19,6 +19,7 @@ const choices_module = @import("choices.zig");
 const state_module = @import("state.zig");
 const flows = @import("flows.zig");
 const heap = @import("heap.zig");
+const lists_module = @import("lists.zig");
 const lookahead = @import("lookahead.zig");
 const story_module = @import("story.zig");
 const Story = story_module.Story;
@@ -691,7 +692,7 @@ const Loader = struct {
         assert(origins_node == null or origins_node.? < loader.tree.nodes.len);
         try loader.kind_is(items_node, .object);
         const program = loader.story.program;
-        var items: [1024]index.ListItemIndex = undefined;
+        var items: [lists_module.list_items_max]index.ListItemIndex = undefined;
         var origins: [64]index.ListOriginIndex = undefined;
         var items_count: u32 = 0;
         var origins_count: u32 = 0;
