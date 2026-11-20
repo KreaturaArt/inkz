@@ -152,7 +152,10 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
     if (try_exit_function_evaluation_from_game(story)) return;
     const stack = &story.state.call_stack;
     if (stack.current_frame().kind != kind or !stack.can_pop(null)) {
-        return fail(story, .pop_mismatch, .{});
+        // ink's names: what was found, and what the current frame (or the flow's end) wanted.
+        const frame_kind = stack.current_frame().kind;
+        const current: i32 = if (stack.can_pop(null)) @backingInt(frame_kind) else 2;
+        return fail(story, .pop_unexpected, .{ .numbers = .{ @backingInt(kind), current } });
     }
     try pop_call_stack(story, null);
     if (override) |target| story.diverted_pointer = .start_of(target);
@@ -345,10 +348,19 @@ fn native_failure(story: *Story, err: native.Error, opcode: Opcode, operands: []
         error.IntegerOverflow => fail(story, .integer_overflow, .{}),
         error.FloatToIntegerOutOfRange => fail(story, .float_to_integer_out_of_range, .{}),
         error.VoidOperand => fail(story, .void_operand, .{}),
-        error.UnsupportedOperation,
-        error.IncompatibleTypes,
-        => fail(story, .unsupported_operation, .{}),
+        error.UnsupportedOperation => operation_not_for_type(story, opcode, operands),
+        error.IncompatibleTypes => fail(story, .unsupported_operation, .{}),
     };
+}
+
+/// ink's "Cannot perform operation '<op>' on <type>": the type is the one ink's
+/// CoerceValuesToSingleType gives the operands (at least Int, so a Bool is an Int).
+fn operation_not_for_type(story: *Story, opcode: Opcode, operands: []const Value) Error {
+    assert(operands.len == 1 or operands.len == 2);
+    var rank: i8 = 0;
+    for (operands) |operand| rank = @max(rank, operand.rank() orelse 0);
+    assert(rank >= 0 and rank <= 5);
+    return fail(story, .operation_not_for_type, .{ .numbers = .{ @backingInt(opcode), rank } });
 }
 
 /// ink's "Can not call use '<op>' operation on <type> and <type>": the opcode and both

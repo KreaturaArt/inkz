@@ -60,6 +60,9 @@ pub const Diagnostic = struct {
         turns_since_expected_target,
         tunnel_return_not_target,
         pop_mismatch,
+        /// ink's "Found <popped>, when expected <current>": `number` the popped FrameKind,
+        /// `other_number` the current frame's, or 2 when the stack can't pop.
+        pop_unexpected,
         unmatched_end_string,
         unexpected_command_in_tag,
         no_truth_value,
@@ -68,6 +71,9 @@ pub const Diagnostic = struct {
         float_to_integer_out_of_range,
         void_operand,
         unsupported_operation,
+        /// ink's "Cannot perform operation": `number` the opcode, `other_number` the rank
+        /// (`Value.rank`) of the type the operands were coerced to.
+        operation_not_for_type,
         /// `number`: the opcode; `other_number`: the operands' Value tags, left << 8 | right.
         list_operand_types,
         variable_not_found,
