@@ -1,6 +1,22 @@
 # DOD Migration Plan — full data-oriented inkz (TigerStyle edition)
 
-Status: accepted, revision 4 (2026-11-11). All decisions D1–D22 confirmed. Sources: audits of `src/runtime` and `src/compiler`, plus the reference projects `reference/fino` and `reference/zirp`. Engineering rules come from `TIGER_STYLE.md` (repo root).
+Status: accepted, revision 4 (2026-11-11); built (phases 0–15). This plan says what was
+intended. Where the code differs, the "As built" column of the technique table (§2) and the
+list below say what was built instead, and why (P16.20).
+
+**Deviations from the target design:**
+- Target design item 1 (tokens): tokens are `{start, end}`, 8 B, with no tag and no lexer.
+  The grammar is scannerless, because ink's lexing depends on context.
+- Item 5 (dispatch): the VM is a plain `while` and `switch`. P12.3 measured dispatch at
+  0–2% of play, so a labeled-switch interpreter wasn't built.
+- §4.4 (lists): ordered item arrays with linear scans, not bitsets. ink's `LIST_RANDOM` and
+  min/max ties depend on insertion order (D15 amendment), and ink lists are small.
+- §4.11 (compiler front end): no line table and no `Result{program, diagnostics}`.
+  Positions are computed per diagnostic (P16.11 adds the line table), and diagnostics
+  reach the caller only from P16.12.
+- `ContainerInfo.named_count` is a `u32`, not the planned `u16`.
+- The small tables (globals, list items, origins, externals) are slices of structs, not
+  SoA: they are small and read whole. All decisions D1–D22 confirmed. Sources: audits of `src/runtime` and `src/compiler`, plus the reference projects `reference/fino` and `reference/zirp`. Engineering rules come from `TIGER_STYLE.md` (repo root).
 
 Every phase and phase item is tracked as a git-native issue (`git issue tree`). Phase N is the parent issue `TASK-14N`, and item PN.M is `TASK-14N.M` (P6b is `TASK-146.4`). See `AGENTS.md`.
 
@@ -77,7 +93,7 @@ On top of that, several behaviours **diverge from ink** (§1.1), so the old runt
 
 **Target design** (zirp for the front end, fino for the IR/VM, TigerStyle for the engineering rules):
 
-1. **Tokens.** SoA `{tag: u8, start: u32, end: u32}` produced by one mode-aware labeled-switch lexer.
+1. **Tokens.** SoA `{tag: u8, start: u32, end: u32}` produced by one mode-aware labeled-switch lexer. (As built: `{start, end}` from the grammar rules, no lexer; see the deviations above.)
 2. **AST.** SoA `{tag: u8, payload: u32}`, 5 bytes per node, children stored contiguously. It is built by a **non-recursive**, explicit-stack parser with resilient grammar (`.missing` nodes and an error array).
 3. **Program** ("story image"). One immutable, interned, pre-resolved bytecode image, **shared by the compiler output and the JSON loader**, and shareable between many `Story` instances. It contains:
    - SoA instructions `{opcode: u8, operand: u32}` plus an `extra: []u32` side table. i32 and f32 literals live directly in the operand.
@@ -172,27 +188,27 @@ The old runtime's results for any of these are **not** reference behaviour (S1�
 
 ## 2. Techniques adopted from the references
 
-| # | Technique | Source | Applied in inkz |
-|---|---|---|---|
-| T1 | `enum(u32) { none = maxInt, _ }` index newtypes | fino `index_sea/Parser.zig:9`, zirp `Ast.zig:55` | `ContainerIndex`, `InstructionIndex`, `StringId`, `NodeIndex`, `TokenIndex`, `GlobalSlot`, `ListItemIndex`, `ListOriginIndex`, `ExternalIndex`, `FlowIndex`, `FileIndex` |
-| T2 | Token = `tag` u8 + `start` u32 in separate arrays | zirp `Tokenizer.zig:65-110` | compiler tokens. **Deviation:** we also store `end` u32 (9 B per token). Ink lexing is context-sensitive (for example inside a choice's `[...]`), so recovering the end by re-lexing from a hint is a source of subtle bugs. |
-| T3 | Node = `tag` u8 + packed-union u32 (`first_child` / `token` / `none` / `missing`); children contiguous; lists trailing | zirp `Ast.zig:37-53` | compiler AST |
-| T4 | Scratch stack `marker`/`push`/`push_up`/`wrap`; nodes are append-only, so backtracking only truncates counts | zirp `Parser.zig:386-445` | parser |
-| T5 | Grammar never fails: `expect` returns `.missing` plus an error; `skip` recovers; a gas counter (= TigerStyle loop bound); first-set invariant | zirp `grammar.zig` | parser |
-| T6 | Comptime typed views plus `to_typed()`; comptime exhaustiveness checks (= TigerStyle compile-time asserts) | zirp `Ast.zig:2267-2660` | AST API, sema |
-| T7 | `TagSet` comptime bitsets | zirp `Ast.zig:813` | parser first/recovery sets |
-| T8 | `string_bytes` plus an adapted `HashMapUnmanaged(u32, void, Context)`; deduplicate by tentative append and shrink | ZIR `AstGen.zig:11011` | `string_pool.zig` |
-| T9 | `extra_add` / `extra_get(T, index) -> {data, end}` serialization into `extra: []u32` | ZIR `AstGen.zig:72` | wide operands |
-| T10 | Shared instruction buffer with `instructions_top` for nested bodies | ZIR GenZir | lowering of nested containers |
-| T11 | Fixed instruction: `opcode` u8 + u32 operand; packed sub-payloads via `@bitCast` | fino `Vm.zig:229` | `Instruction` |
-| T12 | Labeled-switch threaded dispatch, `pc` kept in a local, `inline` prongs plus `comptime opcode` | fino `Vm.zig:400-849` | `vm.zig` |
-| T13 | Comptime-typed constructors `instruction_add(comptime opcode, @FieldType(...))` | fino `moar_smaller/Parser.zig:385` | program builder |
-| T14 | `@sizeOf` guard tests | fino | every core type (TigerStyle "assert type sizes") |
-| T15 | Reserve up front, flag overflow, retry with doubled capacity, then copy an exact-size result | zirp `Parser.reserve` | compiler workspace (init-phase only) |
-| T16 | Side tables keyed by `NodeIndex` | zirp `AstRlAnnotate`, `Render.Fixups` | sema results |
-| T17 | Refcount and copy-on-write | fino `Vm.zig:37-79` | **rejected**, see D4 |
-| T18 | Snapshot tests (`.ast.zon`, `SNAP_UPDATE=1`), correctness and resilience corpora, `// error` markers | zirp `main.zig:245-480` | parser tests |
-| T19 | Post-order and marker linearisation with backpatch stacks, compiled in **one non-recursive pass** | fino `moar_smaller/compiler.zig` | sema and lowering traversal (D9) |
+| # | Technique | Source | Applied in inkz | As built |
+|---|---|---|---|---|
+| T1 | `enum(u32) { none = maxInt, _ }` index newtypes | fino `index_sea/Parser.zig:9`, zirp `Ast.zig:55` | `ContainerIndex`, `InstructionIndex`, `StringId`, `NodeIndex`, `TokenIndex`, `GlobalSlot`, `ListItemIndex`, `ListOriginIndex`, `ExternalIndex`, `FlowIndex`, `FileIndex` | Adopted, everywhere |
+| T2 | Token = `tag` u8 + `start` u32 in separate arrays | zirp `Tokenizer.zig:65-110` | compiler tokens. **Deviation:** we also store `end` u32. (As built there is no `tag` either: 8 B per token, see the As built column.) Ink lexing is context-sensitive (for example inside a choice's `[...]`), so recovering the end by re-lexing from a hint is a source of subtle bugs. | Changed: `{start, end}` 8 B, no tag, recorded by the grammar rules (no lexer) |
+| T3 | Node = `tag` u8 + packed-union u32 (`first_child` / `token` / `none` / `missing`); children contiguous; lists trailing | zirp `Ast.zig:37-53` | compiler AST | Adopted, plus count-node lists (ink lists have no closing token) |
+| T4 | Scratch stack `marker`/`push`/`push_up`/`wrap`; nodes are append-only, so backtracking only truncates counts | zirp `Parser.zig:386-445` | parser | Adopted, without `push_up` |
+| T5 | Grammar never fails: `expect` returns `.missing` plus an error; `skip` recovers; a gas counter (= TigerStyle loop bound); first-set invariant | zirp `grammar.zig` | parser | Partial: `none`/`missing`, gas and a depth limit; ink's recovery model kept for diagnostic parity |
+| T6 | Comptime typed views plus `to_typed()`; comptime exhaustiveness checks (= TigerStyle compile-time asserts) | zirp `Ast.zig:2267-2660` | AST API, sema | Not built: sema reads children by position (P16.13 names the slots) |
+| T7 | `TagSet` comptime bitsets | zirp `Ast.zig:813` | parser first/recovery sets | Not built: no token tags to put in a set |
+| T8 | `string_bytes` plus an adapted `HashMapUnmanaged(u32, void, Context)`; deduplicate by tentative append and shrink | ZIR `AstGen.zig:11011` | `string_pool.zig` | Adopted (`bytes` + `ends`); no tentative append |
+| T9 | `extra_add` / `extra_get(T, index) -> {data, end}` serialization into `extra: []u32` | ZIR `AstGen.zig:72` | wide operands | Adopted, plus `decodable` validation of untrusted images |
+| T10 | Shared instruction buffer with `instructions_top` for nested bodies | ZIR GenZir | lowering of nested containers | Adopted in `ProgramBuilder` |
+| T11 | Fixed instruction: `opcode` u8 + u32 operand; packed sub-payloads via `@bitCast` | fino `Vm.zig:229` | `Instruction` | Adopted, widened to u8 + u32 SoA (inline i32/f32) |
+| T12 | Labeled-switch threaded dispatch, `pc` kept in a local, `inline` prongs plus `comptime opcode` | fino `Vm.zig:400-849` | `vm.zig` | Not built: dispatch measured at 0–2% (P12.3) |
+| T13 | Comptime-typed constructors `instruction_add(comptime opcode, @FieldType(...))` | fino `moar_smaller/Parser.zig:385` | program builder | Adopted (`init(comptime op, …)`) |
+| T14 | `@sizeOf` guard tests | fino | every core type (TigerStyle "assert type sizes") | Adopted, as comptime asserts tied to the budget |
+| T15 | Reserve up front, flag overflow, retry with doubled capacity, then copy an exact-size result | zirp `Parser.reserve` | compiler workspace (init-phase only) | Adopted as restart at 2× plus `settle` |
+| T16 | Side tables keyed by `NodeIndex` | zirp `AstRlAnnotate`, `Render.Fixups` | sema results | Adopted: resolve tables keyed by `ObjectIndex` |
+| T17 | Refcount and copy-on-write | fino `Vm.zig:37-79` | **rejected**, see D4 | Rejected (D4) |
+| T18 | Snapshot tests (`.ast.zon`, `SNAP_UPDATE=1`), correctness and resilience corpora, `// error` markers | zirp `main.zig:245-480` | parser tests | Not adopted as such: ground-truth transcripts from the C# harness instead |
+| T19 | Post-order and marker linearisation with backpatch stacks, compiled in **one non-recursive pass** | fino `moar_smaller/compiler.zig` | sema and lowering traversal (D9) | Adapted: a post-order walk per stage, not one pass (ink needs sema and resolution first) |
 
 **Rejected:**
 - From fino: per-push `try append`, per-call `call_stack` allocation, re-duplicating literals on every execution, and the refcount/COW scheme.
@@ -671,7 +687,7 @@ Phase 0 has a real internal order:
 - **P1.4 `extra.zig`.** ✅ Round trip of a struct with u32, enum, packed and trailing-slice fields.
 - **P1.5 `bounded_stack.zig` and `work_stack.zig`.** ✅ Overflow returns an error; `truncate` restores the previous length; `check()` reports a corrupted length (D20).
 - **P1.6 `tag_set.zig`.** ✅ Set algebra.
-- **P1.7 `sizes_test.zig`.** ✅ Size asserts for every core type (`Value` 12 B; `OutputItem` ≤ 12 B; `Frame` ≤ 24 B; `Instruction` and `Node` 5 B in SoA; `Token` 9 B in SoA).
+- **P1.7 `sizes_test.zig`.** ✅ Size asserts for every core type (`Value` 12 B; `OutputItem` ≤ 12 B; `Frame` ≤ 24 B; `Instruction` and `Node` 5 B in SoA; `Token` 9 B in SoA, as built 8 B: no tag).
 - **P1.8 `dotnet_random.zig`.** ✅ The first 1000 outputs of `Next()` match the .NET 8 sequences generated by `mise run reference:random` for seeds 0, 1, 42, `maxInt(i32)`, `minInt(i32)` and other negative seeds. Those sequences are checked in as test data.
 - **P1.9 `path.zig`.** ✅ Parses and resolves absolute paths, relative paths, `^` and numeric components against a test container table. Rejects malformed paths with a named error. Zero allocations.
 
@@ -833,5 +849,5 @@ P0.8 lint gates every task after it. P9.3/P9.4 after P9.1 + P9.2.
 - **0 recursion, no function over 70 lines** (except the two D10 exceptions), no line over 100 columns, an assertion density of at least 2 per function in `src/`. `zig build lint` passes with an empty allowlist.
 - The VM hot path contains no path-string resolution, no string hashing and no `mem.eql` (lint grep gate on `vm.zig`).
 - Memory stays bounded over 10k turns (test-enforced).
-- Size guards hold: `Value` 12 B; `Frame` ≤ 24 B; `Instruction` and `Node` 5 B SoA; `Token` 9 B SoA.
+- Size guards hold: `Value` 12 B; `Frame` ≤ 24 B; `Instruction` and `Node` 5 B SoA; `Token` 9 B SoA (as built 8 B: no tag).
 - Benchmarks (ReleaseSafe): `cont()` throughput at least 3× baseline, load at least 2× faster, compiler peak memory at least 2× lower. These targets will be revised after P0.6.

@@ -197,12 +197,18 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-### Labeled switches for scanners and dispatch
+### Labeled switches
 
-Scanners are labeled-switch state machines: each prong does one small thing and continues
-with the next state, so the loop compiles to direct jumps. Plan D10 allows the VM's dispatch
-to exceed 70 lines for this, if each prong stays a few lines and delegates to a helper; it
-currently fits in 70 lines without the exception.
+A labeled switch (`continue :label` to the next state) compiles to direct jumps, so it is
+the pattern for a hand-written state machine, such as the scanner below. inkz has none
+today, for measured reasons:
+- **The grammar is scannerless.** ink is context-sensitive (a `-` is a gather, an operator
+  or text depending on where it is), so the grammar rules read characters and record
+  tokens as `{start, end}` only (`src/compiler/core.zig`); there is no separate lexer.
+- **The VM is a `while` and a `switch`** (`vm.zig`). P12.3 measured dispatch at 0–2% of
+  play; the time is in the step bodies. Plan D10's exception to the 70-line rule for a
+  threaded dispatch stays reserved for a labeled-switch VM, which would be built only if a
+  profile shows dispatch (see `docs/benchmarks.md`, F15).
 
 ```zig
 const std = @import("std");

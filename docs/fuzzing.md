@@ -61,7 +61,27 @@ compare runs of one target, not targets with each other.
 | VM | `src/fuzz/vm.zig` | `keeps the state consistent` | generated stories played with the fuzzer's seed, bindings and choices | `state.check` after every call |
 | Save and load | `src/fuzz/save.zig` | `loaded save plays` | a played story's save, loaded into a fresh story; the save with its tokens edited | the same save JSON and the same transcript; an edited save leaves the story unchanged or checked |
 | Save loader (raw) | `src/fuzz_targets.zig` | `save loader never crashes` | raw bytes | the state is unchanged or checked |
-| Host API | `src/fuzz/host.zig` | `host calls` | up to 48 API calls in any order, with names and values in the pool and outside it | a result or an error; `state.check` after each call |
+| Host API | `src/fuzz/host.zig` | `host calls` | up to 48 API calls in any order from the session's drawn call set, with names and values in the pool and outside it | a result or an error; `state.check` after each call |
+| Limits | `src/fuzz/limits.zig` | `limits drawn` | generated stories and a host call mix under limits drawn per field: the default, or tight (1 to 16 of a count, 256 to 4,096 bytes) | a result or an error; `state.check` after each call; a story that failed in the middle of a step answers `cont` with `error.StoryFailed` |
+
+Swarms beyond the generator (plan §3.5):
+
+- **Host calls.** Each session draws its call set (`host.draw_calls`): the full set with
+  weight 1/8, else each call with probability ½, and `cont` always. `reset` and
+  `save_and_load` wipe or rebuild the state, so sessions without them reach depth.
+- **Limits.** The limits target draws every `Limits` field as its default or tight, and
+  compact-always as a feature. It also checks the **budget property** on 64 seeds: a run
+  that hit no limit, replayed under `Limits.fitted(usage, 1)`, makes the same calls with the
+  same errors. The property first failed: the heap's peak counted the bytes used, not the
+  room `ops.reserve` asks for before an operation (the worst case of a float's text), so a
+  fitted heap of 28 bytes failed the reservation. The heap's and the list slab's peaks now
+  include reservations (`note_need`).
+- **Simulator.** `zig build simulate -- --swarm on` draws an action mix per seed
+  (`simulation.Mix.draw`): each of save and load, a flow switch and back, `set_variable`,
+  `evaluate_function` and `choose_path_string` on with probability ½ and a weight of 1 to 20
+  per 100 turns, and compact-always with probability ½. `Mix.full` is the mix before swarms.
+  A failure prints `--swarm-config <hex>`, which replays its mix. `--seeds 10000 --swarm on`
+  (ReleaseSafe): 1,880,000 runs, 0 failures, 37 s.
 
 Shared pieces:
 
