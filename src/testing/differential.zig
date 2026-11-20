@@ -83,13 +83,14 @@ pub fn write_case(
     return case.swarm;
 }
 
-/// Writes `count` cases named `00000`... into `directory`.
-pub fn generate(io: std.Io, directory: std.Io.Dir, seed: u64, count: u32) !void {
+/// Writes `count` cases named `00000`... into `directory`, each with its drawn
+/// configuration or, when given, `swarm`.
+pub fn generate(io: std.Io, directory: std.Io.Dir, seed: u64, count: u32, swarm: ?Swarm) !void {
     assert(count > 0);
     for (0..count) |index| {
         var name: [16]u8 = undefined;
         const case_name = try std.fmt.bufPrint(&name, "{d:0>5}", .{index});
-        _ = try write_case(io, directory, case_name, case_seed(seed, @intCast(index)), null);
+        _ = try write_case(io, directory, case_name, case_seed(seed, @intCast(index)), swarm);
     }
 }
 
@@ -437,8 +438,8 @@ test "generate writes the same files for the same seed" {
     defer first.cleanup();
     var second = std.testing.tmpDir(.{ .iterate = true });
     defer second.cleanup();
-    try generate(io, first.dir, 7, 5);
-    try generate(io, second.dir, 7, 5);
+    try generate(io, first.dir, 7, 5, null);
+    try generate(io, second.dir, 7, 5, null);
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();

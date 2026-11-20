@@ -7,6 +7,7 @@
 //! byte slices are only taken after the last allocation.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const assert = std.debug.assert;
 const index = @import("../core/index.zig");
 const instruction_module = @import("../core/instruction.zig");
@@ -446,9 +447,13 @@ const NativeContext = struct {
 
 // Variables (ink's VariablesState).
 
+/// How often `global_slot` scanned the globals: tests check that slot access never does.
+pub var global_slot_calls: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
+
 // lint: allow hot_path: P16 F1/F2 (a scan of the globals by name)
 pub fn global_slot(story: *const Story, name: StringId) ?GlobalSlot {
     assert(!name.is_none());
+    if (builtin.is_test) global_slot_calls += 1;
     for (story.program.globals, 0..) |global, slot| {
         if (global.name == name) return .from_int(@intCast(slot));
     }
@@ -510,7 +515,13 @@ fn single_item_list(story: *Story, name: StringId) Error!?Value {
 /// ink's GetVariableWithName: the variable's value, following variable pointers.
 pub fn variable_value(story: *Story, name: StringId, context: i32) Error!?Value {
     assert(!name.is_none());
-    var value = try raw_variable(story, name, context) orelse return null;
+    const value = try raw_variable(story, name, context) orelse return null;
+    return follow_pointers(story, value);
+}
+
+/// `value`, or the value its variable pointers lead to (null when one names nothing).
+fn follow_pointers(story: *Story, start: Value) Error!?Value {
+    var value = start;
     var hops: u32 = 0;
     while (value == .variable_pointer) : (hops += 1) {
         if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle, .{});
@@ -521,10 +532,13 @@ pub fn variable_value(story: *Story, name: StringId, context: i32) Error!?Value 
     return value;
 }
 
+/// The global in `slot`, read through the slot: ink's GetVariableWithName finds the same
+/// global by its name. Only a variable pointer stored there follows ink's pointer rules.
 pub fn global_value(story: *Story, slot: GlobalSlot) Error!Value {
     assert(slot.to_int() < story.program.globals.len);
-    const name = story.program.globals[slot.to_int()].name;
-    const value = try variable_value(story, name, 0) orelse return .{ .integer = 0 };
+    const stored = story.state.globals[slot.to_int()];
+    if (stored != .variable_pointer) return stored;
+    const value = try follow_pointers(story, stored) orelse return .{ .integer = 0 };
     assert(value != .variable_pointer);
     return value;
 }
@@ -582,9 +596,15 @@ pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
     };
 }
 
+/// A re-assignment of the global in `slot`, through the slot (`set_global` keeps the
+/// lookahead's undo log). Only a variable pointer stored there follows ink's pointer rules,
+/// by name.
 pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.program.globals.len);
     assert(value != .tag);
+    if (story.state.globals[slot.to_int()] != .variable_pointer) {
+        return set_global(story, slot, value);
+    }
     const name = story.program.globals[slot.to_int()].name;
     try assign_existing(story, name, true, value);
 }
