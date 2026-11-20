@@ -7,6 +7,13 @@
 //   floats                                   float.ToString() for a fixed set of values
 //   run <story.ink.json> <case.actions> <name>  replay host actions, print the transcript;
 //                                            a missing .actions file means `play`
+//   batch <dir> [seconds]                    for each <n>.ink in dir without results:
+//                                            compile to <n>.ink.json (or <n>.compile_errors)
+//                                            and replay <n>.actions into <n>.expected, or
+//                                            write <n>.timeout after `seconds` (default 5);
+//                                            exits 3 when loops it can't stop pile up, so
+//                                            the caller runs it again; <n>.running marks the
+//                                            story in progress, for a crash of the process
 //
 // Every text output starts with a provenance header. Strings are JSON-escaped so the files
 // compare byte for byte. Nothing here depends on the clock: the story seed is always set.
@@ -46,6 +53,8 @@ static class Program
                 return Paths(arguments[1]);
             case "run" when arguments.Length == 4:
                 return Run(arguments[1], arguments[2], arguments[3]);
+            case "batch" when arguments.Length == 2 || arguments.Length == 3:
+                return Batch(arguments[1], arguments.Length == 3 ? int.Parse(arguments[2]) : 5);
             default:
                 return Usage();
         }
@@ -201,6 +210,99 @@ static class Program
         }
         Console.Out.Write(output.ToString());
         return 0;
+    }
+
+    // The differential swarm run (P16.3): generated stories, one process for all of them.
+    // A story ink can't finish (a divert loop without output, endless recursion) runs on in
+    // a thread that can't be stopped; after a few of those the process exits with 3, and
+    // the caller starts it again, which skips the stories that have results.
+    static int Batch(string directory, int seconds)
+    {
+        var sources = Directory.GetFiles(directory, "*.ink");
+        Array.Sort(sources, StringComparer.Ordinal);
+        var stuck = 0;
+        foreach (var source in sources)
+        {
+            var stem = source.Substring(0, source.Length - ".ink".Length);
+            if (File.Exists(stem + ".expected") || File.Exists(stem + ".compile_errors") ||
+                File.Exists(stem + ".timeout") || File.Exists(stem + ".harness_crash")) continue;
+            var name = Path.GetFileName(stem);
+            // A stack overflow in ink ends the process; the marker tells the caller which
+            // story it was.
+            File.WriteAllText(stem + ".running", "");
+            string result = null;
+            var worker = new System.Threading.Thread(() => result = BatchOne(stem, name), 256 << 20);
+            worker.IsBackground = true;
+            worker.Start();
+            var finished = worker.Join(TimeSpan.FromSeconds(seconds));
+            File.Delete(stem + ".running");
+            if (!finished)
+            {
+                File.WriteAllText(stem + ".timeout", $"no result after {seconds} s\n");
+                stuck += 1;
+                if (stuck >= 2) return 3;
+                continue;
+            }
+            if (result != null) Console.Error.WriteLine($"{name}: {result}");
+        }
+        return 0;
+    }
+
+    // Compiles and replays one story; null, or what went wrong in the harness itself.
+    static string BatchOne(string stem, string name)
+    {
+        var errors = new List<string>();
+        var compiler = new Compiler(File.ReadAllText(stem + ".ink"), new Compiler.Options
+        {
+            sourceFilename = name + ".ink",
+            errorHandler = (message, type) =>
+            {
+                if (type == ErrorType.Error) errors.Add(message);
+            },
+        });
+        Ink.Runtime.Story story;
+        try
+        {
+            story = compiler.Compile();
+        }
+        catch (Exception exception)
+        {
+            errors.Add("compiler exception: " + exception.Message);
+            story = null;
+        }
+        if (story == null || errors.Count > 0)
+        {
+            File.WriteAllText(stem + ".compile_errors", string.Join("\n", errors) + "\n");
+            return null;
+        }
+        var json = story.ToJson();
+        File.WriteAllText(stem + ".ink.json", json, new UTF8Encoding(true));
+        var output = new StringBuilder();
+        output.Append(Provenance($"mise run reference:swarm -- {name}"));
+        try
+        {
+            var transcript = new Transcript(json);
+            foreach (var raw in File.ReadAllLines(stem + ".actions"))
+            {
+                var line = raw.Trim();
+                if (line.Length == 0 || line.StartsWith("#")) continue;
+                output.Append("> ").Append(line).Append('\n');
+                transcript.Apply(line, output);
+            }
+        }
+        catch (StopTranscript)
+        {
+            // The exception is already in the transcript.
+        }
+        catch (Exception exception)
+        {
+            // ink's own failures that aren't StoryExceptions (a stack overflow guard, a
+            // null reference): recorded so the checker can tell them apart.
+            output.Append("harness_exception: ").Append(Transcript.Json(exception.GetType().Name))
+                .Append('\n');
+        }
+        File.WriteAllText(stem + ".expected", output.ToString());
+        return null;
     }
 
     static int Run(string storyPath, string actionsPath, string name)

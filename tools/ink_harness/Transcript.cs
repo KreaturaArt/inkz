@@ -12,6 +12,11 @@ sealed class StopTranscript : Exception
 {
 }
 
+// `continue_maximally` reached the `lines_max` cap, as inkz's harness reports it.
+sealed class ContinueLimit : Exception
+{
+}
+
 sealed class Transcript
 {
     const int TurnsMax = 200;
@@ -21,6 +26,9 @@ sealed class Transcript
     readonly List<string> warnings = new List<string>();
     readonly List<string> events = new List<string>();
     string lastSave;
+    // The line cap of `continue_maximally`, set by the `lines_max` action (inkz's harness has
+    // the same action; without it there is no cap).
+    int linesMax = int.MaxValue;
 
     public Transcript(string json)
     {
@@ -54,6 +62,12 @@ sealed class Transcript
         {
             FlushMessages(output);
             output.Append("exception: ").Append(Json(exception.Message)).Append('\n');
+            throw new StopTranscript();
+        }
+        catch (ContinueLimit)
+        {
+            FlushMessages(output);
+            output.Append("exception: \"ContinueLimit\"\n");
             throw new StopTranscript();
         }
         FlushMessages(output);
@@ -102,6 +116,7 @@ sealed class Transcript
                 break;
             case "tags_at": Line(output, "tags", JsonList(story.TagsForContentAtPath(argument))); break;
             case "global_tags": Line(output, "tags", JsonList(story.globalTags)); break;
+            case "lines_max": linesMax = ParseInt(argument); break;
             default: throw new ArgumentException($"unknown action '{action}'");
         }
     }
@@ -121,7 +136,18 @@ sealed class Transcript
 
     void ContinueMaximally(StringBuilder output)
     {
-        while (story.canContinue) ContinueOnce(output);
+        if (linesMax == int.MaxValue)
+        {
+            while (story.canContinue) ContinueOnce(output);
+            return;
+        }
+        // As inkz's harness: at most linesMax lines, then the limit even if the story ended.
+        for (var line = 0; line < linesMax; line += 1)
+        {
+            if (!story.canContinue) return;
+            ContinueOnce(output);
+        }
+        throw new ContinueLimit();
     }
 
     void WriteChoices(StringBuilder output)

@@ -19,6 +19,10 @@ run = "tools/ink_harness/reference.sh random"
 description = "Regenerate container paths and shuffle hashes from ink (P2.4)"
 run = "tools/ink_harness/reference.sh paths"
 
+[tasks."reference:swarm"]
+description = "Run ink on generated swarm cases (zig build swarm-gen) for zig build swarm-check"
+run = "tools/ink_harness/reference.sh swarm"
+
 [tasks."reference:floats"]
 description = "Regenerate .NET float formatting ground truth (P4.1)"
 run = "tools/ink_harness/reference.sh floats"
