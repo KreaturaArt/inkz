@@ -9,6 +9,16 @@ before it. Random bytes would mostly stop at the first check.
   fuzzer's choices pick each construct: knots, stitches, functions, declarations, weave,
   diverts, tunnels, threads, conditionals and expressions. All names come from a small pool
   that the generator declares, so about 70% of the sources compile.
+- **Swarm testing.** Each generated source first draws a configuration (`Swarm` in
+  `fuzz_ink.zig`, after Groce et al., "Swarm Testing", ISSTA 2012): the line kinds, terms,
+  operators, inline constructs, divert targets and declarations it may use, and its bounds
+  (lines per weave, terms per expression, choice depth, knots). Each feature is on with
+  probability ½, and one draw in 8 is `Swarm.all`, the full mix. Leaving features out of a
+  whole source makes the rest dense and keeps suppressors such as an early `-> END` out of
+  the configurations that need depth. The generator picks only enabled features, with no
+  retries. `Swarm.format` writes a configuration as one line and `Swarm.parse` reads it
+  back, for failure reports and reproduce commands. `Swarm.all` takes the same choices as
+  the generator before swarms, so its seeds still give the same sources.
 - **Loader targets.** These start from a valid file (a program image, a story's JSON or a
   save) and let the fuzzer edit its words or tokens.
 
