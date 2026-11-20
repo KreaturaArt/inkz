@@ -155,3 +155,25 @@ test "-> DONE and -> END can't be divert-target values" {
     var program = try compile.compile_source(gpa, "-> DONE\n");
     program.deinit(gpa);
 }
+
+test "a tunnel can't return onwards to END or DONE" {
+    // inklecate throws a NullReferenceException on each; the error is ours. Each once
+    // reached an unreachable in emission (generate_tunnel_onwards' divert target).
+    const gpa = std.testing.allocator;
+    const cases = [_]struct { source: []const u8, line: u32 }{
+        .{ .source = "->-> END\n", .line = 1 },
+        .{ .source = "->-> DONE\n", .line = 1 },
+        .{ .source = "-> t ->\n== t\n->-> DONE\n", .line = 3 },
+        .{ .source = "-> t ->\n-> END\n== t\nhi\n->-> END\n", .line = 5 },
+    };
+    for (cases) |case| {
+        try expect_diagnostics(case.source, &.{
+            .{ .code = .tunnel_onwards_to_end_or_done, .line = case.line },
+        });
+        try std.testing.expectError(error.CompileFailed, compile.compile_source(gpa, case.source));
+    }
+    // Returning onwards to a knot, or plainly, is fine.
+    const valid = "-> t ->\n-> END\n== t\n->-> k\n== k\n-> END\n";
+    var program = try compile.compile_source(gpa, valid);
+    program.deinit(gpa);
+}

@@ -236,8 +236,11 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
     const path = divert_path(context, divert) orelse return;
     if (is_end_or_done(&path)) {
         // DONE and END are instructions, not content a divert-target value can point at.
-        if (tree.kind(tree.parent(divert)) == .divert_target) {
-            try context.report(.done_or_end_as_value, divert);
+        const parent_kind = tree.kind(tree.parent(divert));
+        if (parent_kind == .divert_target) try context.report(.done_or_end_as_value, divert);
+        // Nor can a tunnel return onwards to them: there is no container to return to.
+        if (parent_kind == .tunnel_onwards) {
+            try context.report(.tunnel_onwards_to_end_or_done, divert);
         }
         return;
     }
