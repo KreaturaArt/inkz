@@ -670,7 +670,8 @@ test "a resolve error in an included file reports that file's line and column" {
     try std.testing.expectEqual(@as(usize, 1), resolution.diagnostics.len);
     const diagnostic = resolution.diagnostics[0];
     try std.testing.expectEqual(Code.target_not_found, diagnostic.code);
-    const where = space.location(sema.object_offset(&space.parsed, &tree, diagnostic.object));
+    const offset = sema.object_offset(&space.parsed, &tree, diagnostic.object);
+    const where = try space.locate(gpa, offset);
     try std.testing.expectEqualStrings("other.ink", where.path);
     try std.testing.expectEqual(@as(u32, 3), where.line);
     try std.testing.expectEqual(@as(u32, 6), where.column);

@@ -53,10 +53,14 @@ pub const Space = struct {
     /// An INCLUDE node's file (`no_file` if it couldn't be included).
     included: std.AutoHashMapUnmanaged(u32, u32),
     problems: []const Problem,
+    /// The offsets of the space's newlines, in order: built by the first `locate` (one
+    /// allocation), so a position costs two binary searches instead of a scan of the text.
+    newlines: ?[]u32 = null,
 
     pub fn deinit(space: *Space, gpa: Allocator) void {
         assert(space.parsed.roots.len == space.files.len);
         assert(space.files.len > 0);
+        if (space.newlines) |newlines| gpa.free(newlines);
         space.included.deinit(gpa);
         space.parsed.deinit(gpa);
         space.arena.deinit();
@@ -72,8 +76,45 @@ pub const Space = struct {
         return space.parsed.roots[file];
     }
 
-    /// The file, line and column (from 1) of an offset in the space.
-    pub fn location(space: *const Space, offset: u32) Location {
+    /// The file, line and column (from 1) of an offset in the space, from the newline table
+    /// (built here the first time). Columns count the comment-free text, as ink's
+    /// CommentEliminator leaves it.
+    pub fn locate(space: *Space, gpa: Allocator, offset: u32) Allocator.Error!Location {
+        assert(space.files.len > 0);
+        assert(offset <= space.parsed.source.len);
+        if (space.newlines == null) space.newlines = try newline_offsets(gpa, space.parsed.source);
+        const newlines = space.newlines.?;
+        const file = space.files[space.file_at(offset)];
+        assert(file.start <= offset and offset <= file.end);
+        // Newlines before `offset` and before the file's start: the lines in between.
+        const before = lower_bound(newlines, offset);
+        const before_file = lower_bound(newlines, file.start);
+        assert(before >= before_file);
+        const line_start = if (before > before_file) newlines[before - 1] + 1 else file.start;
+        return .{
+            .path = file.path,
+            .line = @intCast(before - before_file + 1),
+            .column = offset - line_start + 1,
+        };
+    }
+
+    /// The file an offset is in: the last one that starts at or before it (files are laid
+    /// end to end, so at a boundary the later file wins, as the scan does).
+    pub fn file_at(space: *const Space, offset: u32) usize {
+        assert(space.files.len > 0);
+        var low: usize = 0;
+        var high: usize = space.files.len;
+        while (low < high) {
+            const middle = low + (high - low) / 2;
+            if (space.files[middle].start <= offset) low = middle + 1 else high = middle;
+        }
+        assert(low > 0);
+        return low - 1;
+    }
+
+    /// `locate` by scanning: the file table linearly, the text for newlines. The reference
+    /// the table is tested against.
+    pub fn location_scan(space: *const Space, offset: u32) Location {
         assert(space.files.len > 0);
         assert(offset <= space.parsed.source.len);
         var file_index: usize = 0;
@@ -86,6 +127,32 @@ pub const Space = struct {
         return .{ .path = file.path, .line = position.line, .column = position.column };
     }
 };
+
+/// The offsets of `text`'s newlines, in one allocation.
+fn newline_offsets(gpa: Allocator, text: []const u8) Allocator.Error![]u32 {
+    assert(text.len < std.math.maxInt(u32));
+    const offsets = try gpa.alloc(u32, std.mem.count(u8, text, "\n"));
+    var count: usize = 0;
+    for (text, 0..) |byte, at| {
+        if (byte != '\n') continue;
+        offsets[count] = @intCast(at);
+        count += 1;
+    }
+    assert(count == offsets.len);
+    return offsets;
+}
+
+/// How many of `sorted` are below `value`.
+fn lower_bound(sorted: []const u32, value: u32) usize {
+    var low: usize = 0;
+    var high: usize = sorted.len;
+    while (low < high) {
+        const middle = low + (high - low) / 2;
+        if (sorted[middle] < value) low = middle + 1 else high = middle;
+    }
+    assert(low <= sorted.len);
+    return low;
+}
 
 /// A file's text without its UTF-8 byte order mark, which .NET's File.ReadAllText drops
 /// before inklecate parses it.
@@ -388,7 +455,7 @@ test "include.ink: two files included, laid out after the root" {
     try std.testing.expectEqual(@as(u32, 0), space.parsed.diagnostics_count);
     try std.testing.expectEqual(@as(u32, 2), space.included.count());
     // The root's text comes first; each file's offsets locate in that file.
-    const second = space.location(space.files[2].start + 3);
+    const second = try space.locate(gpa, space.files[2].start + 3);
     try std.testing.expectEqualStrings("includes/included_file_2.ink", second.path);
     try std.testing.expectEqual(@as(u32, 1), second.line);
     try std.testing.expectEqual(@as(u32, 4), second.column);
@@ -418,7 +485,7 @@ test "an include cycle is a diagnostic on the INCLUDE, not a hang" {
     try std.testing.expectEqual(@as(usize, 2), space.files.len);
     try std.testing.expectEqual(@as(usize, 1), space.problems.len);
     try std.testing.expectEqual(Problem.Code.include_cycle, space.problems[0].code);
-    const where = space.location(space.problems[0].offset);
+    const where = try space.locate(gpa, space.problems[0].offset);
     try std.testing.expectEqualStrings("b.ink", where.path);
     try std.testing.expectEqual(@as(u32, 2), where.line);
 }
@@ -439,7 +506,8 @@ test "a missing include and the include limits are diagnostics" {
     try std.testing.expectEqual(@as(usize, 2), space.problems.len);
     try std.testing.expectEqual(Problem.Code.include_not_found, space.problems[0].code);
     try std.testing.expectEqual(Problem.Code.include_too_deep, space.problems[1].code);
-    try std.testing.expectEqualStrings("b.ink", space.location(space.problems[1].offset).path);
+    const deep = try space.locate(gpa, space.problems[1].offset);
+    try std.testing.expectEqualStrings("b.ink", deep.path);
 }
 
 test "files that fit the source bound one by one but not together are an error" {
@@ -493,4 +561,75 @@ test "loading a space frees everything whichever allocation fails" {
         load_and_free,
         .{temporary.dir},
     );
+}
+
+/// Three files with INCLUDEs and block comments that span lines, in a temporary directory.
+fn three_files(gpa: Allocator, directory: std.Io.Dir) !Space {
+    const io = std.testing.io;
+    try directory.writeFile(io, .{
+        .sub_path = "a.ink",
+        .data = "INCLUDE b.ink\nA one /* a\ncomment */ two\n\nINCLUDE c.ink\nA end",
+    });
+    try directory.writeFile(io, .{ .sub_path = "b.ink", .data = "B\n/* x\n\ny */B two\n" });
+    try directory.writeFile(io, .{ .sub_path = "c.ink", .data = "C // note\nC two\n" });
+    return load(gpa, io, directory, "a.ink", .{});
+}
+
+test "the newline table locates every offset as the scan does" {
+    // Every offset of a three-file space, comments and INCLUDEs among them: the same file,
+    // line and column from the table as from scanning (P16.11).
+    const gpa = std.testing.allocator;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var space = try three_files(gpa, temporary.dir);
+    defer space.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 3), space.files.len);
+    for (0..space.parsed.source.len + 1) |at| {
+        const offset: u32 = @intCast(at);
+        const table = try space.locate(gpa, offset);
+        const scan = space.location_scan(offset);
+        try std.testing.expectEqualStrings(scan.path, table.path);
+        try std.testing.expectEqual(scan.line, table.line);
+        try std.testing.expectEqual(scan.column, table.column);
+    }
+}
+
+test "the newline table is one allocation, made once" {
+    const gpa = std.testing.allocator;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var space = try three_files(gpa, temporary.dir);
+    defer space.deinit(gpa);
+    var counting = @import("../core/counting_allocator.zig").CountingAllocator.init(gpa);
+    _ = try space.locate(counting.allocator(), 5);
+    try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
+    _ = try space.locate(counting.allocator(), space.files[2].start);
+    try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
+}
+
+test "a file's first and last byte and a boundary locate in the right file" {
+    const gpa = std.testing.allocator;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    var space = try three_files(gpa, temporary.dir);
+    defer space.deinit(gpa);
+    for (space.files, 0..) |file, index| {
+        try std.testing.expect(file.end > file.start);
+        // The first byte is the file's, at line 1, column 1.
+        const first = try space.locate(gpa, file.start);
+        if (index == 0 or space.files[index - 1].end < file.start) {
+            try std.testing.expectEqualStrings(file.path, first.path);
+        }
+        try std.testing.expectEqual(index, space.file_at(file.start + 1));
+        // The last byte is still this file's.
+        try std.testing.expectEqual(index, space.file_at(file.end - 1));
+        try std.testing.expectEqualStrings(file.path, (try space.locate(gpa, file.end - 1)).path);
+    }
+    // At a boundary (one file's end, the next one's start) the later file wins.
+    try std.testing.expectEqual(space.files[1].start, space.files[0].end);
+    try std.testing.expectEqual(@as(usize, 1), space.file_at(space.files[0].end));
+    const boundary = try space.locate(gpa, space.files[1].start);
+    try std.testing.expectEqualStrings(space.files[1].path, boundary.path);
+    try std.testing.expectEqual(@as(u32, 1), boundary.line);
+    try std.testing.expectEqual(@as(u32, 1), boundary.column);
 }
