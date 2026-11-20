@@ -348,6 +348,27 @@ For example, to show the median load times of the latest ReleaseFast run:
 tail -n 8 bench/load_store.jsonl | jq -r 'select(.operation == "load") | [.story, .format, .median_ns] | @tsv'
 ```
 
+## Variable resolution by slot and name class (P16.8, P16.9)
+
+Before Phase 16, every global read or write found its slot again by name (a scan over the
+globals), and every temp read first scanned the globals, then hashed the name to look for a
+list item, before it reached the temps. Now globals are read and written through their
+resolved slot (F2), and `Program.name_classes` (4 bytes per string, rebuilt on image load)
+answers "global, list item or temp" with one read (F1). The VM looks no name up by its text
+while it plays (tests count `FrozenStringPool.find` calls).
+
+`zig build bench`, turns/s, Apple M3 (the bench stories have few globals, so this is the
+floor of the gain; a story with hundreds of globals and temps gains more):
+
+| Story | Mode | Before (d7e324e) | After F2 (70e746f) | After F1 |
+|---|---|---:|---:|---:|
+| crime_scene | ReleaseSafe | 101,798 | 102,877 | 105,821 (+4.0%) |
+| crime_scene | ReleaseFast | 228,622 | 233,280 | 240,688 (+5.3%) |
+| generated (1000 knots) | ReleaseSafe | 477,556 | 464,849 | 474,997 (noise) |
+| generated (1000 knots) | ReleaseFast | 1,117,463 | 1,109,337 | 1,127,830 (noise) |
+
+The program grows by 4 bytes per string (crime_scene: 1,788 bytes).
+
 ## Profile per pipeline stage (TASK-153)
 
 `zig build bench-profile` shows where the pipeline spends its time. Profile zones
