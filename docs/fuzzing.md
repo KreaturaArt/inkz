@@ -83,6 +83,16 @@ Swarms beyond the generator (plan §3.5):
   A failure prints `--swarm-config <hex>`, which replays its mix. `--seeds 10000 --swarm on`
   (ReleaseSafe): 1,880,000 runs, 0 failures, 37 s.
 
+- **Loader mutations** (plan §3.6). Each mutated input draws its operators
+  (`fuzz_ink.draw_subset`). For a program image (`src/fuzz/image.zig`) they are: a word set
+  to any value or to a boundary (0, 1, the largest index, `none`, a heap reference's bit,
+  all ones), a word copied from elsewhere in the image, two neighbouring words swapped, a
+  byte, a bit, and truncation. A set with only the copy builds cross-wired but plausible
+  records for `decodable` and `Program.check` to reject. For ink JSON and saves
+  (`src/fuzz/json.zig`, used by `src/fuzz/save.zig`) they are the token edits plus a
+  boundary number, a pool name and a renamed object key. 100K ReleaseSafe runs each (image
+  101,487, JSON 102,068, save 106,615): no crash.
+
 Shared pieces:
 
 - `src/fuzz/play.zig` compiles a generated story and sets it up. The fuzzer picks the random
