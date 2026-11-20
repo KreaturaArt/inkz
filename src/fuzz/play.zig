@@ -14,6 +14,7 @@ pub const Story = api.Story;
 pub const Value = api.Value;
 const CoreStory = @import("../runtime/story.zig").Story;
 const Allocator = std.mem.Allocator;
+const Limits = @import("../core/limits.zig").Limits;
 
 /// Steps (lines and choices) one play may take: generated stories loop.
 pub const steps_max = 256;
@@ -55,10 +56,22 @@ pub const Setup = struct {
 };
 
 pub fn init_story(story: *Story, gpa: Allocator, program: *const Program, setup: Setup) !void {
+    // Generated stories loop; a small step budget keeps each input fast.
+    const limits: Limits = .{ .steps_per_continue_max = steps_per_continue_max };
+    return init_story_with(story, gpa, program, setup, limits);
+}
+
+pub fn init_story_with(
+    story: *Story,
+    gpa: Allocator,
+    program: *const Program,
+    setup: Setup,
+    limits: Limits,
+) !void {
     assert(program.check() == .ok);
+    assert(limits.check() == .ok);
     try story.init(gpa, program, .{
-        // Generated stories loop; a small step budget keeps each input fast.
-        .limits = .{ .steps_per_continue_max = steps_per_continue_max },
+        .limits = limits,
         .random_seed = setup.random_seed,
         .allow_external_function_fallbacks = setup.fallbacks,
         // Runtime errors are part of play: generated stories divide by zero, mix types,
