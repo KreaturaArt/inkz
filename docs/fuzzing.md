@@ -208,7 +208,7 @@ every fix of Phase 16:
 
 | Outcome | Stories |
 |---|---:|
-| played by both or rejected by both, and compared | 9,562 |
+| played by both or rejected by both, and compared | 9,561 |
 | ink didn't finish in 5 s | 355 |
 | ink crashed the process | 4 |
 | ink exception (not compared after it) | 29 |
