@@ -130,6 +130,14 @@ pub const FlowRecord = struct {
 
 pub const flow_name_bytes_max = 50;
 
+/// The words of one external's binding (`story.Binding`, `element_bytes.binding`), which the
+/// story keeps in this block, so `Story.init` makes one allocation.
+pub const binding_words_each = element_bytes.binding / 8;
+
+comptime {
+    assert(element_bytes.binding % 8 == 0);
+}
+
 pub const output_stashes_max = 8;
 
 /// A parked output stream: `items` items then `marks` string marks, from word `first`.
@@ -236,6 +244,8 @@ pub const State = struct {
     /// The current line's cleaned text, kept between calls.
     text_cache: text_cache_module.TextCache,
     observers: []Observer,
+    /// The story's external bindings, as raw words (`Story.bindings` views them).
+    binding_words: []u64,
     observer_events: BoundedStack(GlobalSlot),
     /// ink's currentErrors and currentWarnings. They are not saved (ink doesn't
     /// save them), the lookahead restore drops ones added since its snapshot, and
@@ -301,6 +311,7 @@ pub const State = struct {
         return .{
             .count_slots = program.count_slots_count,
             .globals_count = @intCast(program.globals.len),
+            .externals_count = @intCast(program.externals.len),
         };
     }
 
@@ -727,6 +738,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     const shape = State.shape_of(program);
     // 8-byte aligned first.
     const observers = carver.take(Observer, limits.observers_max);
+    const binding_words = carver.take(u64, shape.externals_count * binding_words_each);
     const live = carve_flow(carver, limits);
     const lookahead = carve_flow(carver, limits);
     var result: State = .{
@@ -767,6 +779,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .line_bytes = carver.take(u8, limits.output_bytes_max),
         .tag_bytes = carver.take(u8, limits.tag_bytes_max),
         .observers = observers,
+        .binding_words = binding_words,
     };
     result.text_cache.text = carver.take(u8, limits.output_bytes_max);
     assert(result.text_cache.check() == .ok);

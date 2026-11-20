@@ -134,3 +134,46 @@ test "load_json allocates nothing" {
     try load.load_json(&story, saved);
     try std.testing.expectEqual(before, counting.growths());
 }
+
+const compile = @import("../compiler/compile.zig");
+const HostValue = @import("../runtime/story.zig").HostValue;
+
+fn twice(context: ?*anyopaque, _: *Story, arguments: []const HostValue) anyerror!HostValue {
+    assert(context == null);
+    return .{ .integer = arguments[0].integer * 2 };
+}
+
+test "Story.init makes one allocation, bindings included, and binding allocates nothing" {
+    // A story with two externals under a counting allocator: init allocates exactly
+    // Limits.bytes_total of its shape (externals counted) once; binding, rebinding and
+    // calling the externals allocate nothing; deinit frees that one block (P16.10).
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\EXTERNAL e(x)
+        \\EXTERNAL f(x)
+        \\{e(2)} {f(3)}
+        \\
+    );
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(@as(usize, 2), program.externals.len);
+    var counting = CountingAllocator.init(gpa);
+    var story: Story = undefined;
+    try story.init(counting.allocator(), &program, .{});
+    errdefer story.deinit(counting.allocator());
+    const limits: @import("../core/limits.zig").Limits = .{};
+    const shape = state_module.State.shape_of(&program);
+    try std.testing.expectEqual(@as(u32, 2), shape.externals_count);
+    try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
+    try std.testing.expectEqual(limits.bytes_total(shape), counting.bytes_live);
+    story.on_error = support.ignore_message;
+    try story.bind_external_function("e", twice, null, true);
+    try story.bind_external_function("f", twice, null, true);
+    try story.unbind_external_function("f");
+    try story.bind_external_function("f", twice, null, true);
+    const text = try story.cont();
+    try std.testing.expectEqualStrings("4 6\n", text);
+    try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
+    story.deinit(counting.allocator());
+    try std.testing.expectEqual(@as(u64, 0), counting.bytes_live);
+    try std.testing.expectEqual(@as(u64, 1), counting.frees_count);
+}
