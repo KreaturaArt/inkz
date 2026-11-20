@@ -61,11 +61,61 @@ pub const Code = enum(u8) {
     /// DivertTarget.ResolveReferences: "Can't use -> DONE or -> END as variable divert
     /// targets".
     done_or_end_as_value,
+    /// `->-> END` or `->-> DONE` (inklecate crashes on it): "Can't use '->-> END' or
+    /// '->-> DONE': a tunnel can only return onwards to a knot, stitch or label. Write
+    /// '->->' and then '-> END' instead".
+    tunnel_onwards_to_end_or_done,
+    // Divert.CheckArgumentValidity, on the divert.
+    /// "Divert target needs to be a knot or stitch in order to pass arguments".
+    arguments_to_non_flow,
+    /// "Divert target (k) doesn't take parameters".
+    flow_takes_no_parameters,
+    /// "Divert can't store arguments in a divert target variable".
+    arguments_in_divert_target,
+    /// "Divert to 'k' requires 1 arguments, but there weren't any passed to it" (also
+    /// "but only got n" and "but got n"; "Function call ..." for a call).
+    wrong_argument_count,
+    /// On the argument: "Target 'k' expects a divert target for the parameter named -> x
+    /// but saw 5".
+    divert_target_argument_expected,
+    /// "Divert Passing read count of 'k' instead of a divert target. You probably meant
+    /// '-> k'".
+    read_count_instead_of_divert_target,
+    // Divert.GenerateRuntimeObject's arguments, on the divert.
+    /// "Function call Expected variable name to pass by reference to 'ref a' but saw 5".
+    reference_argument_not_variable,
+    /// "Function call can't pass a read count by reference. 'k' is a knot/stitch/label, but
+    /// 'f' requires the name of a VAR to be passed."
+    read_count_by_reference,
+    /// Divert.ResolveTargetContent, on the parameter's flow: "Since 'x' is used as a
+    /// variable divert target (on line 3), it should be marked as: -> x".
+    divert_parameter_unmarked,
+    /// Divert.CheckExternalArgumentValidity: "Function call incorrect number of arguments
+    /// sent to external function 'e'. Expected 1 but got 2".
+    external_argument_count,
+    // FunctionCall.GenerateIntoContainer, on the call.
+    /// "POW should take 2 parameters", "FLOOR should take 1 parameter", "The TURNS()
+    /// function shouldn't take any arguments", "RANDOM should take 2 parameters: a minimum
+    /// and a maximum integer", "SEED_RANDOM should take 1 parameter - an integer seed",
+    /// "LIST_RANGE should take 3 parameters - a list, a min and a max", "LIST_RANDOM should
+    /// take 1 parameter - a list", and "The TURNS_SINCE() function should take one argument:
+    /// a divert target to the target knot, stitch, gather or choice you want to check. e.g.
+    /// TURNS_SINCE(-> myKnot)" (inklecate crashes on TURNS_SINCE(), SEED_RANDOM() and
+    /// LIST_RANDOM() with no argument).
+    builtin_argument_count,
+    /// "RANDOM's minimum parameter should be an integer", "SEED_RANDOM's parameter should be
+    /// an integer seed".
+    builtin_argument_not_integer,
+    /// "Can currently only construct a list from one integer (or an empty list from a given
+    /// list definition)".
+    list_from_more_than_one_value,
     ambiguous_list_item,
     global_refers_to_variable,
     duplicate_list_item,
     list_item_not_found,
     constant_redefined,
+    /// UnaryExpression.WithInner on a literal it can't fold, `- true` (inklecate throws
+    /// "Unexpected operation or number type").
     unsupported_fold,
     // FlowBase.GenerateRuntimeObject's flow checks.
     function_is_stitch,
