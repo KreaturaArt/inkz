@@ -1,424 +1,257 @@
-# inkz Architecture
+# inkz architecture
 
-High-level diagrams for the Zig ink runtime and compiler. All diagrams use [Mermaid](https://mermaid.js.org/) syntax.
+Eight diagrams of the code as it is. `docs/ArchitectureAndDevOverview.md` walks through the
+same ground in prose; `docs/DODMigrationPlan.md` §4 records why it is built this way. File
+names are under `src/` unless they say otherwise.
 
----
+## 1. Pipeline
 
-## 1. Full Pipeline Overview
-
-The ink toolchain has two distinct stages: a **compiler** (`.ink` → `.ink.json`) and a **runtime** (`.ink.json` → story output). Both stages share the same **Data Oriented Programming (DOP) AST** — the compiler builds and serializes it to `.ink.json`; the runtime deserializes `.ink.json` back into the same DOP AST and executes it directly. All memory allocation happens at startup or during parsing; there is **zero dynamic allocation** during story execution.
-
-```mermaid
-flowchart LR
-    subgraph Compiler["Stage 1 — Compiler (inkz)"]
-        direction TB
-        ink[".ink source\nfiles"]
-        Tokenizer["Tokenizer\n(labeled switch)"]
-        Parser["Recursive Descent\nParser"]
-        ParsedAST["Parsed AST\nParsed.Story"]
-        CodeGen["DOP AST Builder\ngenerateRuntimeObject()"]
-        RefResolve["Reference Resolver\nresolveReferences()"]
-        JSON[".ink.json\n(serialized DOP AST)"]
-
-        ink --> Tokenizer --> Parser --> ParsedAST --> CodeGen --> RefResolve --> JSON
-    end
-
-    subgraph Runtime["Stage 2 — Runtime"]
-        direction TB
-        JSONIn[".ink.json"]
-        Loader["JSON Deserializer\nStory.initFromJson()"]
-        DOPASTNode["DOP AST\n(same structure as compiler output)\nall memory allocated at startup"]
-        Engine["Step Loop\ncont() / step()\nzero allocation during execution"]
-        Output["Text Output\n+ Choices"]
-
-        JSONIn --> Loader --> DOPASTNode --> Engine --> Output
-    end
-
-    JSON -->|embed or load| JSONIn
-
-    subgraph Host["Host Application"]
-        Game["Game Loop\nchooseChoiceIndex()"]
-    end
-
-    Output --> Game
-    Game -->|next turn| Engine
-```
-
----
-
-## 2. DOP AST Object Model (Compiler & Runtime)
-
-The DOP AST is the shared intermediate representation used by both the compiler (to serialize to `.ink.json`) and the runtime (deserialized from `.ink.json` at startup). It is built from a single general-purpose `Container` type and a tagged union `RuntimeObject` for all content. Node data is stored in flat arrays (see `MultiArrayList` in Guidelines); no virtual dispatch or heap allocation occurs during execution.
-
-```mermaid
-classDiagram
-    class RuntimeObject {
-        <<tagged union>>
-        string_value : []const u8
-        int_value    : i64
-        float_value  : f64
-        bool_value   : bool
-        divert_target  : DivertTargetValue
-        variable_pointer : VariablePointerValue
-        control_command  : ControlCommand
-        native_function  : NativeFunction
-        divert             : Divert
-        choice_point       : ChoicePoint
-        variable_assignment : VariableAssignment
-        variable_reference  : VariableReference
-        void_value : void
-        container  : *Container
-    }
-
-    class Container {
-        +content        : []RuntimeObject
-        +named_content  : StringHashMap(*Container)
-        +name           : ?[]const u8
-        +flags          : ContainerFlags
-    }
-
-    class ContainerFlags {
-        <<bit flags>>
-        visits        : 0x1
-        turns         : 0x2
-        count_start_only : 0x4
-    }
-
-    class Divert {
-        +target_path      : Path
-        +pushes_to_stack  : bool
-        +stack_push_type  : PushPopType
-        +is_conditional   : bool
-        +is_external      : bool
-        +external_args    : u32
-    }
-
-    class ChoicePoint {
-        +path_on_choice   : Path
-        +flags            : ChoiceFlags
-    }
-
-    class ControlCommand {
-        <<enum>>
-        eval_start / eval_end
-        eval_output
-        duplicate
-        pop_evaluated_value
-        begin_string / end_string
-        choice_count
-        turn_index
-        turns_since
-        visit_count
-        sequence_shuffle_index
-        start_thread
-        done / end
-        nop
-    }
-
-    Container "1" *-- "0..*" RuntimeObject : content
-    Container "1" *-- "0..*" Container : named_content
-```
-
----
-
-## 3. Runtime State Machine
-
-All mutable story state is isolated in `StoryState`, enabling save/load by serialising this struct to JSON.
-
-```mermaid
-classDiagram
-    class Story {
-        +main_content_container : Container
-        +list_definitions : ListDefinitionsOrigin
-        +state : StoryState
-        +on_error : ?ErrorHandler
-        ---
-        +initFromJson(alloc, json) !Story
-        +cont() ![]const u8
-        +continueMaximally() ![]const u8
-        +canContinue() bool
-        +currentChoices() []Choice
-        +chooseChoiceIndex(i) !void
-        +choosePathString(path) !void
-        +evaluateFunction(name, out, args) !?Value
-        +bindExternalFunction(name, fn, opts) !void
-        +observeVariable(name, cb) !void
-    }
-
-    class StoryState {
-        +call_stack      : CallStack
-        +output_stream   : ArrayList(RuntimeObject)
-        +evaluation_stack : ArrayList(RuntimeObject)
-        +current_choices : ArrayList(Choice)
-        +variables_state : VariablesState
-        +visit_counts    : StringHashMap(u32)
-        +turn_indices    : StringHashMap(u32)
-        +current_turn    : u32
-        +story_seed      : u32
-        +did_safe_exit   : bool
-        ---
-        +toJson(alloc) ![]u8
-        +loadJson(json) !void
-    }
-
-    class CallStack {
-        +threads         : ArrayList(Thread)
-        +thread_counter  : u32
-        ---
-        +currentElement() *Element
-        +push(type) !void
-        +pop(type) !void
-        +canPop(type) bool
-    }
-
-    class Thread {
-        +call_stack      : ArrayList(Element)
-        +thread_index    : u32
-        +previous_pointer : Pointer
-    }
-
-    class Element {
-        +type              : PushPopType
-        +current_pointer   : Pointer
-        +in_expression_evaluation : bool
-        +temporary_variables : VariablesState
-    }
-
-    class PushPopType {
-        <<enum>>
-        tunnel
-        function
-    }
-
-    class VariablesState {
-        +globals     : StringHashMap(RuntimeObject)
-        +patch       : ?StatePatch
-        +variable_changed_event : ?Callback
-        ---
-        +get(name) ?RuntimeObject
-        +set(name, val) !void
-    }
-
-    class Choice {
-        +text            : []const u8
-        +source_path     : []const u8
-        +target_path     : Path
-        +tags            : [][]const u8
-        +index           : u32
-    }
-
-    Story       *-- StoryState
-    StoryState  *-- CallStack
-    StoryState  *-- VariablesState
-    StoryState  *-- "0..*" Choice
-    CallStack   *-- "1..*" Thread
-    Thread      *-- "0..*" Element
-    Element      --> PushPopType
-```
-
----
-
-## 4. Parser Architecture
-
-The parser is a hand-written recursive descent parser. The tokenizer uses Zig's labeled `switch` for zero-cost dispatch.
-
-```mermaid
-flowchart TD
-    subgraph Tokenizer
-        src["[]const u8\nsource bytes"]
-        LSW["labeled switch\n(:tok switch token_type)"]
-        Tokens["Token stream\nToken{ .tag, .loc }"]
-        src --> LSW --> Tokens
-    end
-
-    subgraph StringParser["StringParser (base)"]
-        SP["parseString / parseInt\nparseSingleCharacter\nsave() / restore()"]
-        Combinators["Combinators\noneOrMore / interleave\nspaced / exclude / string"]
-    end
-
-    subgraph InkParser["InkParser (extends StringParser)"]
-        TopLevel["parse() → Parsed.Story"]
-        KnotRule["knotDefinition()"]
-        StitchRule["stitchDefinition()"]
-        ChoiceRule["choiceDefinition()"]
-        ExprRule["expression()"]
-        DivertRule["divert()"]
-        TopLevel --> KnotRule
-        TopLevel --> StitchRule
-        KnotRule --> StitchRule
-        KnotRule --> ChoiceRule
-        StitchRule --> ChoiceRule
-        StitchRule --> DivertRule
-        ChoiceRule --> ExprRule
-    end
-
-    Tokens --> SP
-    SP --> Combinators
-    Combinators --> InkParser
-
-    subgraph ParsedAST["Parsed AST"]
-        PS["Parsed.Story"]
-        PK["Parsed.Knot"]
-        PSt["Parsed.Stitch"]
-        PC["Parsed.Choice"]
-        PD["Parsed.Divert"]
-        PE["Parsed.Expression"]
-        PS --> PK --> PSt --> PC
-        PSt --> PD
-        PC --> PE
-    end
-
-    TopLevel --> PS
-```
-
----
-
-## 5. DOP AST Construction & Serialization
-
-Two-pass code generation converts the parsed AST into the shared DOP AST, which is then serialized to `.ink.json`. The runtime deserializes that JSON back into the same DOP AST structure — there is no separate "runtime format".
-
-```mermaid
-sequenceDiagram
-    participant P as Parsed.Story
-    participant CG as generateRuntimeObject()
-    participant DA as DOP AST (Container)
-    participant RR as resolveReferences()
-    participant JS as JSON Serializer
-
-    P->>CG: exportRuntime(allocator)
-    loop for each Parsed.Object
-        CG->>DA: create Container / RuntimeObject node(s)
-        Note over CG,DA: Knots/Stitches/Choices → nested Containers
-    end
-    CG->>DA: assemble root container
-
-    P->>RR: resolveReferences(context)
-    loop for each Parsed.Divert / Parsed.Choice
-        RR->>DA: patch target_path from name → runtime Path
-    end
-    RR-->>JS: fully linked DOP AST → serialize to .ink.json
-```
-
----
-
-## 6. Step Loop & Evaluation Model
-
-The runtime evaluation model: content flows to `output_stream`; logic flows through `evaluation_stack`.
-
-```mermaid
-flowchart TD
-    cont["cont()"] --> loop{"canContinue?"}
-    loop -->|yes| step["step()"]
-    loop -->|no| tryDefault["tryFollowDefaultInvisibleChoice()"]
-    tryDefault -->|found| step
-    tryDefault -->|not found| done(["return output_stream text"])
-
-    step --> advance["advance current_pointer\nget current_object"]
-    advance --> classify{object type?}
-
-    classify -->|StringValue| appendOut["append to output_stream"]
-    classify -->|ControlCommand| handleCmd["performLogicAndFlowControl()"]
-    classify -->|Divert| jump["update current_pointer\n(may push callstack)"]
-    classify -->|ChoicePoint| addChoice["build Choice\nappend to current_choices"]
-    classify -->|NativeFunction| evalFn["pop args from eval_stack\npush result"]
-    classify -->|VariableAssignment| setVar["write to variables_state"]
-    classify -->|VariableReference| pushVar["push value to eval_stack"]
-
-    handleCmd --> evalMode{in eval mode?}
-    evalMode -->|yes → eval_start| pushEval["push to evaluation_stack"]
-    evalMode -->|no → eval_output| moveOut["pop eval_stack → output_stream"]
-    evalMode -->|done/end| exitFlow["mark safe exit / end story"]
-
-    appendOut --> loop
-    jump --> loop
-    addChoice --> loop
-    evalFn --> loop
-    setVar --> loop
-    pushVar --> loop
-    pushEval --> loop
-    moveOut --> loop
-```
-
----
-
-## 7. Compiler Stage 2 — Tokenizer (Labeled Switch)
-
-The compiler tokenizer uses Zig's labeled `switch` (`continue :tok`) for a tight, branch-prediction-friendly dispatch loop with no heap allocation.
+Two producers make the same immutable `Program` through one `ProgramBuilder`; stories run
+it. A `Program` can be written back as inklecate's JSON.
 
 ```mermaid
 flowchart LR
-    subgraph LabeledSwitch[":tok labeled switch loop"]
-        direction TB
-        start(["pos = 0"])
-        read["ch = source[pos]"]
-        sw{"switch ch"}
+    ink[".ink files"] --> space["source_space<br/>files end to end,<br/>comments removed"]
+    space --> parse["grammar<br/>(explicit-stack parser)"]
+    parse --> sema["sema<br/>object tree"]
+    sema --> resolve["resolve<br/>names, targets"]
+    resolve --> lower["lower<br/>runtime IR, flatten, layout"]
+    lower --> builder
 
-        start --> read --> sw
+    json[".ink.json<br/>(inklecate)"] --> loader["ink_json.load<br/>streaming, no tree"]
+    loader --> builder
 
-        sw -->|'='| scanKnot["scan knot/stitch/function\n→ .knot_marker / .stitch_marker"]
-        sw -->|'*' '+' '-'| scanBullet["scan choice/gather bullet\n→ .choice / .gather"]
-        sw -->|'{'| scanBrace["scan inline logic\n→ .left_brace"]
-        sw -->|'/'| scanComment["check // or /*\n→ .comment / skip"]
-        sw -->|'"'| scanStr["scan string literal\n→ .string"]
-        sw -->|'~'| scanLogic["scan logic line\n→ .tilde"]
-        sw -->|'<' '>'| scanGlue["scan glue / comparison\n→ .glue / .lt / .gt"]
-        sw -->|'a'..'z' 'A'..'Z'| scanIdent["scan identifier/keyword\n→ .identifier / .keyword_*"]
-        sw -->|'0'..'9'| scanNum["scan integer/float\n→ .int / .float"]
-        sw -->|'\\n'| scanNL["emit .newline\nadvance line counter"]
-        sw -->|else| scanText["accumulate plain text\n→ .text"]
+    builder["core/program_builder"] --> program[("Program<br/>immutable, shareable")]
+    program --> serialize["ink_json.serialize"] --> json_out[".ink.json"]
 
-        scanKnot --> emit["emit Token{ .tag, .loc }"]
-        scanBullet --> emit
-        scanBrace --> emit
-        scanComment --> emit
-        scanStr --> emit
-        scanLogic --> emit
-        scanGlue --> emit
-        scanIdent --> emit
-        scanNum --> emit
-        scanNL --> emit
-        scanText --> emit
-
-        emit -->|"continue :tok"| read
-        emit -->|"pos >= source.len"| done(["→ .eof"])
-    end
+    program --> story1["Story A<br/>State + Continue loop"]
+    program --> story2["Story B"]
+    story1 <--> host["host via inkz.Story<br/>(runtime/api.zig)"]
+    story1 <--> save["save format v10<br/>to_json / load_json"]
 ```
 
----
+## 2. The program image
 
-## 8. Memory Strategy
+`core/program.zig`. Everything is struct-of-arrays data addressed by `u32` index newtypes;
+nothing is a pointer, and every target is resolved when the program is built.
 
-**All** memory allocation happens at startup or during JSON parsing/deserialization. There is **zero dynamic heap allocation** during story execution (`step()`, `cont()`). The DOP AST nodes are allocated once into the Story Arena and remain immutable for the lifetime of the story.
+```mermaid
+classDiagram
+    class Program {
+        strings: FrozenStringPool
+        instructions: MultiArrayList~Instruction~
+        containers: MultiArrayList~ContainerInfo~
+        named: []NamedEntry
+        globals: []GlobalInfo
+        list_origins: []ListOrigin
+        list_items: []ListItem
+        externals: []ExternalInfo
+        global_declaration: ContainerIndex
+        count_slots_count: u32
+        ink_version: u32
+        check() Fault
+        verify()
+    }
+    class Instruction {
+        opcode: Opcode (u8)
+        operand: u32
+    }
+    class ContainerInfo {
+        instruction_first: InstructionIndex
+        instruction_count: u32
+        parent: ContainerIndex
+        index_in_parent: u32
+        depth: u16
+        flags: visits, turns, count_start_only
+        name, path: StringId
+        path_hash: u32
+        named_first, named_count: u32
+        count_slot: u32
+    }
+    class NamedEntry {
+        name: StringId
+        child: ContainerIndex
+    }
+    class ListItem {
+        origin: ListOriginIndex
+        name, full_name: StringId
+        value: i32
+    }
+    class ExternalInfo {
+        name: StringId
+        fallback: ContainerIndex
+    }
+    class Extra {
+        words: []u32
+        divert targets and flags, choice points
+    }
+    Program "1" *-- "n" Instruction : 5 B each, one per ink content item
+    Program "1" *-- "n" ContainerInfo : container 0 is the root
+    ContainerInfo ..> Instruction : contiguous range
+    ContainerInfo ..> NamedEntry : knots, stitches, labels
+    Instruction ..> ContainerInfo : enter_container, divert targets
+    Instruction ..> Extra : wide operands are an index here
+    Program "1" *-- "n" ListItem
+    Program "1" *-- "n" ExternalInfo
+    Program "1" *-- "1" Extra
+```
+
+Opcodes group as content (`text`, `newline`, `glue`, `integer`, `float`, `bool`, `void`,
+`divert_target`, `variable_pointer`, `list`, `tag`), control (`eval_start`, `string_start`,
+`choice_count`, `random`, `start_thread`, `done`, `end`, `tag_start`, ...), ink's native
+operators (`add` ... `list_invert`) and structure (`enter_container`, `divert`,
+`call_external`, `choice_point`, variable reads and writes, `read_count`).
+
+## 3. Compiler stages and their data
+
+`compiler/compile.zig`. Each stage's output is index-addressed arrays. The object tree, the
+resolution and the syntax tree are freed once lowering is done, before layout and emission.
 
 ```mermaid
 flowchart TD
-    subgraph Phases["Allocation Phases"]
-        direction LR
-        P1["Startup / Parse\n(Story.initFromJson)\nall DOP AST nodes allocated"]
-        P2["Runtime Execution\n(cont / step)\nzero allocation"]
-        P3["State transitions\n(save / load / reset)\nState Arena recycled"]
-        P1 --> P2 --> P3
+    subgraph parse["Parse (core.zig, grammar*.zig)"]
+        source["one source buffer<br/>+ file table"] --> tokens["tokens on demand<br/>{tag, start, end}"]
+        tokens --> ast["syntax tree (ast.zig)<br/>tag u8 + word u32 per node,<br/>children contiguous"]
     end
-
-    subgraph Arenas["Allocator Strategy"]
-        GA["GeneralPurposeAllocator\nor ArenaAllocator"]
-        StoryArena["Story Arena\n(freed on story.deinit)"]
-        StateArena["State Arena\n(freed on state reset / save-load)"]
-        TurnArena["Turn Arena\n(freed each cont() call)"]
+    subgraph middle["Object tree and resolution"]
+        ast --> objects["sema.Tree<br/>ink's ParsedHierarchy:<br/>flows, weaves, choices, gathers"]
+        objects --> resolution["resolve.Resolution<br/>declarations, divert targets,<br/>naming collisions"]
     end
-
-    GA --> StoryArena
-    GA --> StateArena
-    GA --> TurnArena
-
-    subgraph Owned["Owned at each level"]
-        StoryArena --> SC["DOP AST nodes:\nContainers, RuntimeObjects,\nStrings, List definitions\n(immutable after init)"]
-        StateArena --> SS["Mutable state:\nCallStack, VariablesState,\nVisit counts"]
-        TurnArena --> SO["Per-turn output:\ntext lines, choice text,\ntag slices"]
+    subgraph back["Lowering (lower*.zig)"]
+        resolution --> ir["lower_ir: runtime container tree<br/>(GenerateRuntimeObject)"]
+        ir --> flatten["count flags, FlattenContainersIn,<br/>termination checks"]
+        flatten --> layout["lower_layout: container paths"]
+        layout --> emit["lower_emit: ProgramBuilder calls,<br/>in the order the JSON loader makes them"]
     end
-
-    note1["❌ No allocation inside step()\nfor hot-path string operations"]
-    note2["✅ Output strings are slices\ninto the source JSON or intern pool"]
-    TurnArena -.-> note1
-    StoryArena -.-> note2
+    emit --> program[("Program")]
+    parse -. "a parse error stops here" .-> failed["error.CompileFailed"]
+    resolution -. "resolution errors" .-> failed
 ```
+
+## 4. The parser machine
+
+`compiler/core.zig`. ink's backtracking `StringParser` rules, run on an explicit frame stack
+instead of the native one. A rule is a step function with phases; each step returns an
+`Action`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Step: push frame(rule, checkpoint)
+    Step --> Call: .call / .peek(rule)
+    Call --> Step: push callee frame
+    Step --> Again: .again (phase changed)
+    Again --> Step
+    Step --> Succeed: .succeed
+    Step --> Fail: .fail
+    Succeed --> Resume: pop frame, keep nodes<br/>(peek undoes the input)
+    Fail --> Resume: pop frame, restore checkpoint<br/>(input, tokens, nodes, scratch)
+    Resume --> Step: caller's next phase reads machine.outcome
+    Resume --> [*]: stack empty
+```
+
+A checkpoint holds the input position and the token, node and scratch counts, so a failed
+rule undoes everything since its call; diagnostics survive, as ink's do. Finished nodes sit
+on a scratch stack until `wrap` moves a parent's children into one contiguous run. Frames
+are bounded by `parse_depth_max` and steps by a gas counter proportional to the input; both
+end in a diagnostic, not a crash.
+
+## 5. One VM step
+
+`runtime/vm.zig`: ink's `Step`, `NextContent` and `PerformLogicAndFlowControl`. The pointer
+is `{container, index}` in the current frame. `run` repeats `step` until the output changes,
+a choice appears, the flow ends, or the step budget runs out.
+
+```mermaid
+flowchart TD
+    start(["step"]) --> null{"pointer null?"}
+    null -- yes --> ended(["ended"])
+    null -- no --> enter["enter_containers:<br/>follow enter_container at index 0,<br/>count each visit"]
+    enter --> fetch{"instruction at pointer?"}
+    fetch -- "past the end" --> next
+    fetch -- yes --> perform["perform: native op, content,<br/>divert, choice_point, variables,<br/>external call or control op (ops.zig)"]
+    perform --> next["next_content"]
+    next --> diverted{"diverted pointer set?"}
+    diverted -- yes --> jump["jump; visit containers<br/>changed by the divert"]
+    diverted -- no --> inc{"index + 1 in the container?"}
+    inc -- yes --> done(["signal to run()"])
+    inc -- no --> pop{"function or thread<br/>to pop?"}
+    pop -- yes --> next
+    pop -- no --> done
+    jump --> done
+```
+
+## 6. The Continue loop and newline lookahead
+
+`runtime/story.zig` and `runtime/lookahead.zig`: ink's `ContinueInternal`. `cont()` returns
+one line, but runs past its newline to see whether glue or tags extend it.
+
+```mermaid
+stateDiagram-v2
+    [*] --> Running: cont() — clear output, batch observers
+    Running --> Check: vm.run returns (output changed, choice, ended)
+    Check --> Running: in string evaluation, or nothing new
+    Check --> Snapshot: output ends in newline<br/>and can continue
+    Snapshot --> Lookahead: copy live-flow prefixes,<br/>start the undo log
+    Lookahead --> Check2: vm.run returns
+    Check2 --> Lookahead: only whitespace after the newline
+    Check2 --> Restore: new text or tags,<br/>or an unsafe external function
+    Check2 --> Discard: glue removed the newline
+    Discard --> Running
+    Restore --> Finish: copy buffers back, undo the log,<br/>truncate the heap
+    Check --> Finish: can't continue (choices, DONE, END,<br/>or out of content)
+    Finish --> [*]: the cleaned line, report errors,<br/>notify queued observers
+```
+
+Every check needs the current line's cleaned text: ink's `CleanOutputWhitespace` over the
+whole output stream. `runtime/text_cache.zig` (P10.1) keeps it between checks, with the
+cleaner's state and a copy of the items it came from. While the output only grows and no
+heap string changes (`StringHeap.generation`), only new items are cleaned. Any other change
+cleans from the start: glue, trimming, `/str`, a restore, a flow switch, a load, heap
+truncation or compaction. Debug builds compare every cached line with a full clean. Before
+the cache, cleaning took about half of play time; with it, play is 1.5–1.8× faster.
+
+While a snapshot is active, writes to shared arrays (globals, visit counts, turn indices,
+the random state) go through the undo log, so a restore needs no copy of them. When the
+pointer runs out, an all-invisible default choice is followed automatically; otherwise ink's
+end-of-content errors and warnings are raised.
+
+## 7. Memory
+
+`runtime/state.zig`, `runtime/heap.zig`, `runtime/flows.zig`. `Story.init` makes one
+allocation of exactly `Limits.bytes_total()` bytes and carves every buffer from it; nothing
+allocates afterwards. Views returned to the host point into this block and are valid until
+the next mutating call.
+
+```mermaid
+flowchart TB
+    subgraph block["one allocation: Limits.bytes_total(shape)"]
+        subgraph live["live flow"]
+            evaluation["evaluation stack<br/>Value, 12 B"]
+            calls["call stack: threads,<br/>frames (24 B), temps (16 B)"]
+            output["output items (12 B),<br/>string marks"]
+            choices["choices, choice tags,<br/>thread snapshots"]
+        end
+        subgraph shared["shared by all flows"]
+            globals["globals + defaults"]
+            counts["visit counts, turn indices"]
+            heap["string heap + list slab<br/>sliding mark-compact"]
+            diagnostics["errors, warnings,<br/>observers, observer queue"]
+            line["text cache: cleaned line (the cont() view)<br/>+ its items; line bytes (scratch)"]
+        end
+        lookahead["lookahead copy of the live flow<br/>+ undo log (patch entries)"]
+        parking["flow parking region<br/>(inactive flows, set-aside output)"]
+        scratch["load scratch (save tokens),<br/>ancestor scratch"]
+    end
+    live -- "take / restore" --> lookahead
+    live -- "switch_flow packs / unpacks used prefixes" --> parking
+    heap -. "compaction roots: values in every box above" .- live
+```
+
+The heap is compacted only when an allocation doesn't fit. Compaction keeps allocation
+order, so heap marks recorded by the lookahead snapshot stay valid after relocation.
+Running out of any buffer returns a named error (`error.HeapLimit`, `error.FlowLimit`, ...).
+
+Every buffer records its peak (P10.2). `Story.usage()` reports them, and `Limits.fitted(usage,
+margin)` sizes a story's limits from them. The default budget is about 2.2 MB per story.
+Fitted limits need about 40–50 KB for the stories measured, at the same speed, because play
+speed doesn't depend on the budget.

@@ -1,5 +1,6 @@
-# Mac
-.DS_Store
+# Project
+
+reference/
 
 # Zig
 .zig-cache/
@@ -8,7 +9,13 @@ zig-pkg/
 build/
 build-*/
 docgen_tmp/
-sample.DS_Store
 
 # AI
 .claude
+
+# Mac
+.DS_Store
+
+# Reference harness build output
+tools/ink_harness/obj/
+tools/ink_harness/bin/

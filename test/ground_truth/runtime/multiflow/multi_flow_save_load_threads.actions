@@ -1,0 +1,32 @@
+# Tests.cs TestMultiFlowSaveLoadThreads: flows keep their state across switches, saves
+# contain every flow, and removing the active flow returns to the default one.
+continue
+switch_flow Blue Flow
+choose_path blue
+continue
+switch_flow Red Flow
+choose_path red
+continue
+switch_flow Blue Flow
+current_text
+choices
+switch_flow Red Flow
+current_text
+choices
+save
+choose 0
+continue_maximally
+reset
+load
+choose 1
+continue_maximally
+load
+switch_flow Blue Flow
+choose 0
+continue_maximally
+load
+switch_flow Blue Flow
+choose 1
+continue_maximally
+remove_flow Blue Flow
+continue

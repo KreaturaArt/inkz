@@ -1,0 +1,70 @@
+(story
+  (statements
+    (choice header:1 none none (content_list
+        text"Plain choice") none (content_list
+        newline))
+    (choice header:65537 none none none (content_list
+        text"Only in the choice") (content_list
+        text" Then the output."
+        newline))
+    (choice header:65537 none none (content_list
+        text"Start ") (content_list
+        text"choice only") (content_list
+        text" inner"
+        newline))
+    (sticky_choice header:1 none none (content_list
+        text"Sticky choice") none (content_list
+        newline))
+    (choice header:1 identifier"label" none (content_list
+        text"Labelled") none (content_list
+        newline))
+    (choice header:1 none (variable_reference (path identifier"visited")) (content_list
+        text"Conditional") none (content_list
+        newline))
+    (choice header:1 none (conditions
+        (variable_reference (path identifier"a"))
+        (variable_reference (path identifier"b"))) (content_list
+        text"Several conditions") none (content_list
+        newline))
+    (choice header:1 identifier"both" (variable_reference (path identifier"a")) (content_list
+        text"Label and condition") none (content_list
+        newline))
+    (choice header:131073 none none none none (content_list
+        (divert (path identifier"fallback") none)
+        newline))
+    (choice header:1 none none (content_list
+        text"Divert at the end ") none (content_list
+        (divert (path identifier"somewhere") none)
+        newline))
+    (choice header:65537 none none none (content_list
+        text"Bracket") (content_list
+        text" "
+        (divert (path identifier"somewhere") none)
+        newline))
+    (choice header:2 none none (content_list
+        text"Nested choice") none (content_list
+        newline))
+    (choice header:3 none none (content_list
+        text"Deeper") none (content_list
+        newline))
+    (choice header:2 none none (content_list
+        text"Spaced bullets") none (content_list
+        newline))
+    (gather header:1 none)
+    text"Gather"
+    newline
+    (gather header:1 identifier"named")
+    text"Named gather"
+    newline
+    (gather header:2 none)
+    text"Nested gather"
+    newline
+    (gather header:2 none)
+    text"Spaced gather"
+    newline
+    (gather header:1 none)
+    text"Text after a bare gather."
+    newline
+    (choice header:131073 none none none none (content_list
+        (divert (path identifier"invisible") none)
+        newline))))

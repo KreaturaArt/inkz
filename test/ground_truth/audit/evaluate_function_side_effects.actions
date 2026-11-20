@@ -1,0 +1,6 @@
+# The function changes a global and a visit count; both persist (S1).
+continue
+evaluate add int 3
+evaluate add int 4
+choose 0
+continue_maximally

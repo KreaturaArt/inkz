@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["ev","str","^you","/str",2,"/ev",{"->":"greet"},["done",{"#n":"g-0"}],null],"done",{"greet":[{"temp=":"times"},{"temp=":"who"},"^Hello ","ev",{"VAR?":"who"},"out","/ev","^ ","ev",{"VAR?":"times"},"out","/ev","^ times.","\n","ev",{"VAR?":"times"},1,"+","/ev",{"temp=":"total"},"ev",{"VAR?":"total"},"out","/ev","\n","done",null]}],"listDefs":{}}

@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["^Start.","\n",{"->":"knot"},["done",{"#n":"g-0"}],null],"done",{"knot":["^In the knot.","\n",{"->":".^.stitch"},{"stitch":["^In the stitch.","\n",{"->":"other"},null]}],"other":[{"->":".^.first"},{"first":["^First stitch.","\n","end",null]}]}],"listDefs":{}}

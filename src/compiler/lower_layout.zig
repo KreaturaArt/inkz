@@ -1,0 +1,156 @@
+//! The end of ink's ExportRuntime on the lowering's IR: the count flags ResolveReferences
+//! sets (read counts, divert targets, TURNS_SINCE), FlattenContainersIn (an unnamed container
+//! without named content is spliced into its parent), and where every item ends up, for the
+//! emission through ProgramBuilder (lower_emit.zig).
+
+const std = @import("std");
+const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
+const lower = @import("lower.zig");
+const sema = @import("sema.zig");
+const ir_module = @import("lower_ir.zig");
+const Lowering = lower.Lowering;
+const Lowered = lower.Lowered;
+const ObjectIndex = sema.ObjectIndex;
+const Ir = ir_module.Ir;
+const ContainerId = ir_module.ContainerId;
+const ItemId = ir_module.ItemId;
+
+/// The count flags ink's ResolveReferences sets on the containers it counts.
+pub fn set_count_flags(lowering: *Lowering) void {
+    const tree = lowering.tree;
+    for (0..tree.count()) |position| {
+        const object: ObjectIndex = .from_int(@intCast(position));
+        const target = lowering.resolution.targets[object.to_int()];
+        switch (tree.kind(object)) {
+            .variable_reference => {
+                if (lowering.resolution.references[object.to_int()] != .read_count) continue;
+                flag(lowering, target, ir_module.count_visits);
+            },
+            .divert_target => {
+                const divert = tree.children_of(object)[0];
+                assert(tree.kind(divert) == .divert);
+                const counted = lowering.resolution.targets[divert.to_int()];
+                // ink moves a TURNS_SINCE argument under the call (out of its proxy divert).
+                var parent = tree.parent(object);
+                if (tree.kind(parent) == .divert and tree.has(parent, sema.Flags.function_call)) {
+                    parent = tree.parent(parent);
+                }
+                const turns_only = tree.kind(parent) == .function_call and
+                    std.mem.eql(u8, lowering.child_name(parent, 0), "TURNS_SINCE");
+                const both = ir_module.count_visits | ir_module.count_turns;
+                const flags = if (turns_only) ir_module.count_turns else both;
+                flag(lowering, counted, flags);
+            },
+            else => {},
+        }
+    }
+    assert(lowering.runtime_containers.len == tree.count());
+}
+
+fn flag(lowering: *Lowering, object: ObjectIndex, flags: u8) void {
+    if (object.is_none()) return;
+    const container = lowering.runtime_containers[object.to_int()];
+    if (container.is_none()) return;
+    lowering.ir.container(container).flags |= flags;
+}
+
+/// TryFlattenContainer's test: no name and no named content (named-only or in content).
+fn flattenable(ir: *Ir, id: ContainerId) bool {
+    const container = ir.container(id);
+    if (container.name != null or container.named.items.len > 0) return false;
+    var item_id = container.first;
+    while (!item_id.is_none()) : (item_id = ir.next.items[item_id.to_int()]) {
+        const value = ir.item(item_id);
+        if (value == .container and ir.container(value.container).name != null) return false;
+    }
+    return true;
+}
+
+/// FlattenContainersIn from the root: every flattenable container's content moves into its
+/// nearest unflattened ancestor, in place. Each kept container's final content becomes one
+/// run of `Ir.flat`.
+pub fn flatten(lowering: *Lowering) !void {
+    // finish_story has set the root, which is kept (it is named in the program).
+    assert(!lowering.root.is_none());
+    const gpa = lowering.gpa;
+    const ir = &lowering.ir;
+    var pending: std.ArrayList(ContainerId) = .empty;
+    defer pending.deinit(gpa);
+    // Cursors into the linked contents being expanded, innermost last.
+    var cursors: std.ArrayList(ItemId) = .empty;
+    defer cursors.deinit(gpa);
+    try ir.flat.ensureTotalCapacityPrecise(gpa, ir.items.items.len);
+    try pending.append(gpa, lowering.root);
+    while (pending.pop()) |id| {
+        const first: u32 = @intCast(ir.flat.items.len);
+        try cursors.append(gpa, ir.container(id).first);
+        while (cursors.items.len > 0) {
+            const top = &cursors.items[cursors.items.len - 1];
+            const item_id = top.*;
+            if (item_id.is_none()) {
+                _ = cursors.pop();
+                continue;
+            }
+            top.* = ir.next.items[item_id.to_int()];
+            const value = ir.item(item_id);
+            if (value == .container and flattenable(ir, value.container)) {
+                try cursors.append(gpa, ir.container(value.container).first);
+                continue;
+            }
+            try ir.flat.append(gpa, item_id);
+            if (value == .container) try pending.append(gpa, value.container);
+        }
+        ir.container(id).flat_first = first;
+        ir.container(id).flat_count = @as(u32, @intCast(ir.flat.items.len)) - first;
+        for (ir.container(id).named.items) |named| try pending.append(gpa, named);
+    }
+    assert(pending.items.len == 0);
+}
+
+/// Where each item ended up: the targets the emission gives the builder.
+pub const Layout = struct {
+    gpa: Allocator,
+    item_container: []ContainerId,
+    item_position: []u32,
+
+    pub fn deinit(layout: *Layout) void {
+        assert(layout.item_container.len == layout.item_position.len);
+        layout.gpa.free(layout.item_container);
+        layout.gpa.free(layout.item_position);
+    }
+};
+
+/// Sets each container's parent and records every item's position.
+pub fn lay_out(lowered: *Lowered) !Layout {
+    assert(!lowered.root.is_none());
+    assert(lowered.ir.flat.items.len <= lowered.ir.items.items.len);
+    const ir = &lowered.ir;
+    const gpa = ir.gpa;
+    var layout: Layout = .{
+        .gpa = gpa,
+        .item_container = try gpa.alloc(ContainerId, ir.items.items.len),
+        .item_position = try gpa.alloc(u32, ir.items.items.len),
+    };
+    errdefer layout.deinit();
+    @memset(layout.item_container, .none);
+    @memset(layout.item_position, 0);
+    var pending: std.ArrayList(ContainerId) = .empty;
+    defer pending.deinit(gpa);
+    try pending.append(gpa, lowered.root);
+    while (pending.pop()) |id| {
+        for (ir.content_of(id), 0..) |item_id, position| {
+            layout.item_container[item_id.to_int()] = id;
+            layout.item_position[item_id.to_int()] = @intCast(position);
+            const value = ir.item(item_id);
+            if (value != .container) continue;
+            ir.container(value.container).parent = id;
+            try pending.append(gpa, value.container);
+        }
+        for (ir.container(id).named.items) |named| {
+            ir.container(named).parent = id;
+            try pending.append(gpa, named);
+        }
+    }
+    return layout;
+}

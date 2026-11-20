@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["ev",{"VAR?":"big"},1,"+","/ev",{"VAR=":"big","re":true},"ev",{"VAR?":"big"},"out","/ev","\n","ev",7,3.0,"/","out","/ev","\n","ev",0.1,0.2,"+","out","/ev","\n","ev",1000000.0,3.3,"*","out","/ev","\n",["done",{"#n":"g-0"}],null],"done",{"global decl":["ev",2147483647,{"VAR=":"big"},"/ev","end",null]}],"listDefs":{}}

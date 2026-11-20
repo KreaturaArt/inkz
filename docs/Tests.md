@@ -1,6 +1,15 @@
 ## Fixture Test Coverage
 
-This document is generated from direct fixture references in `src/**/*.zig` test code.
+> **Historical snapshot (pre-DOD).** This report predates the DOD migration (phases 0-13): the
+> files it names (`src/test/helpers.zig`, `src/test/compiler_helpers.zig`,
+> `src/compiler/parser.zig`, `src/compiler/tokenizer.zig`, `src/runtime/json_loader.zig`) and
+> its generator no longer exist, and the test names have changed. Today every compiled fixture
+> is played by the transcript corpus (`src/testing/transcripts.zig`, `test/transcripts/`) and
+> compared with ink by the ground-truth oracle (`src/testing/ground_truth_test.zig`); the
+> per-fixture end-to-end tests are in `src/testing/e2e_tests.zig` and
+> `src/testing/e2e_api.zig`. See `docs/ArchitectureAndDevOverview.md`.
+
+This document was generated from direct fixture references in `src/**/*.zig` test code.
 A fixture is marked unused when no unit test references that file directly; it may still be exercised indirectly via another fixture, for example `INCLUDE` targets.
 
 ## Summary
