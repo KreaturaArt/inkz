@@ -87,6 +87,15 @@ pub const Space = struct {
     }
 };
 
+/// A file's text without its UTF-8 byte order mark, which .NET's File.ReadAllText drops
+/// before inklecate parses it.
+pub fn without_bom(text: []const u8) []const u8 {
+    const bom = "\xEF\xBB\xBF";
+    const stripped = if (std.mem.startsWith(u8, text, bom)) text[bom.len..] else text;
+    assert(stripped.len == text.len or stripped.len + bom.len == text.len);
+    return stripped;
+}
+
 /// An INCLUDE found during discovery: its name and offset in its file.
 const Include = struct { name: []const u8, offset: u32 };
 
@@ -213,10 +222,13 @@ const Discovery = struct {
         const limit: std.Io.Limit = .limited(file_bytes_max);
         const directory = discovery.directory;
         const io = discovery.io;
-        return directory.readFileAlloc(io, path, discovery.arena, limit) catch |err| switch (err) {
-            error.OutOfMemory => return err,
-            else => return null,
+        const text = directory.readFileAlloc(io, path, discovery.arena, limit) catch |err| {
+            switch (err) {
+                error.OutOfMemory => return err,
+                else => return null,
+            }
         };
+        return without_bom(text);
     }
 
     /// Parses a file on its own to find its INCLUDEs, and records it.
