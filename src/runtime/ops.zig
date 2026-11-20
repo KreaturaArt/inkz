@@ -330,13 +330,15 @@ pub fn call_native(story: *Story, opcode: Opcode) Error!void {
         native.unary(&context, opcode, operands[0])
     else
         native.binary(&context, opcode, operands[0], operands[1]);
-    const value = result catch |err| return native_failure(story, err);
+    const value = result catch |err| return native_failure(story, err, opcode, operands[0..count]);
     try vm.push_evaluation(story, value);
 }
 
-fn native_failure(story: *Story, err: native.Error) Error {
+fn native_failure(story: *Story, err: native.Error, opcode: Opcode, operands: []const Value) Error {
     assert(err != error.ListLimit or story.program.list_items.len > 0);
+    assert(operands.len > 0);
     return switch (err) {
+        error.ListOperandTypes => list_operand_types(story, opcode, operands),
         error.HeapLimit => error.HeapLimit,
         error.ListLimit => error.ListLimit,
         error.DivisionByZero => fail(story, .division_by_zero, .{}),
@@ -347,6 +349,17 @@ fn native_failure(story: *Story, err: native.Error) Error {
         error.IncompatibleTypes,
         => fail(story, .unsupported_operation, .{}),
     };
+}
+
+/// ink's "Can not call use '<op>' operation on <type> and <type>": the opcode and both
+/// operands' types go into the diagnostic's numbers for the message.
+fn list_operand_types(story: *Story, opcode: Opcode, operands: []const Value) Error {
+    assert(operands.len == 2);
+    assert(operands[0] == .list or operands[1] == .list);
+    const left: i32 = @backingInt(std.meta.activeTag(operands[0]));
+    const right: i32 = @backingInt(std.meta.activeTag(operands[1]));
+    const numbers: [2]i32 = .{ @backingInt(opcode), left << 8 | right };
+    return fail(story, .list_operand_types, .{ .numbers = numbers });
 }
 
 /// Makes room for the result of an operation on `operands` so that it can't compact: a

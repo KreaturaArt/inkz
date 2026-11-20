@@ -68,6 +68,8 @@ pub const Diagnostic = struct {
         float_to_integer_out_of_range,
         void_operand,
         unsupported_operation,
+        /// `number`: the opcode; `other_number`: the operands' Value tags, left << 8 | right.
+        list_operand_types,
         variable_not_found,
         variable_pointer_cycle,
         temp_not_found,

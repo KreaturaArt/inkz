@@ -28,6 +28,9 @@ pub const Error = error{
     UnsupportedOperation,
     /// The operands can't be coerced to one type, like a divert target and an int.
     IncompatibleTypes,
+    /// A list meets a non-list in an operation other than list + int, list - int, `&&` or
+    /// `||` (ink's "Can not call use '…' operation on List and Int").
+    ListOperandTypes,
     ListLimit,
     HeapLimit,
 };
