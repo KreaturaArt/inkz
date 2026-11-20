@@ -1,0 +1,25 @@
+(story
+  (statements
+    (knot identifier"logic" none (statements
+        (temp_declaration identifier"a" integer"1")
+        (assignment identifier"a" integer"2")
+        (add_assignment identifier"a" integer"3")
+        (subtract_assignment identifier"a" integer"4")
+        (increment (variable_reference (path identifier"a")))
+        (decrement (variable_reference (path identifier"a")))
+        (content_list
+          (call_statement (function_call identifier"f" (arguments)))
+          newline)
+        (content_list
+          (call_statement (function_call identifier"f" (arguments (variable_reference (path identifier"a")) (variable_reference (path identifier"b")))))
+          newline)
+        (content_list
+          (temp_declaration identifier"b" (function_call identifier"f" (arguments (variable_reference (path identifier"a")))))
+          newline)
+        (content_list
+          (temp_declaration identifier"c" (string
+              (content_list
+                (inline_value (function_call identifier"f" (arguments))))))
+          newline)
+        (return none)
+        (return (add (variable_reference (path identifier"a")) integer"1"))))))

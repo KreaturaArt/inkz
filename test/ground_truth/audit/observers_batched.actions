@@ -1,0 +1,7 @@
+# P5.7: batched notification per Continue, immediate notification for a host set.
+observe x
+observe y
+set x int 10
+continue
+continue
+set y int 5

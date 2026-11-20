@@ -1,0 +1,6 @@
+# 2500 characters survive a save.
+continue_maximally
+save
+load_fresh
+choose 0
+continue_maximally

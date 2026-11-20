@@ -18,7 +18,7 @@ The runtime should not have any dynamic memory allocation at runtime, all memory
 
 # 23.2.2026
 
-In this project we want to create a zig 0.16 rewrite of Ink is inkle's scripting language
+In this project we want to create a zig 0.16 (now Zig 0.17.1, see `mise.toml`) rewrite of Ink is inkle's scripting language
 for writing interactive narrative, both for text-centric games as well as more graphical
 games that contain highly branching stories.
 

@@ -1,0 +1,6 @@
+# Tests.cs TestVariableObserver: notified once per Continue batch, with the latest value.
+observe testVar
+continue_maximally
+choices
+choose 0
+continue

@@ -1,0 +1,95 @@
+(story
+  (statements
+    (content_list
+      (sequence sequence_kind:1 (branches
+          (content_list
+            text"a")
+          (content_list
+            text"b")
+          (content_list
+            text"c"))))
+    newline
+    (content_list
+      (sequence sequence_kind:2 (branches
+          (content_list
+            text"a")
+          (content_list
+            text"b"))))
+    newline
+    (content_list
+      (sequence sequence_kind:8 (branches
+          (content_list
+            text"once")
+          (content_list
+            text"twice"))))
+    newline
+    (content_list
+      (sequence sequence_kind:4 (branches
+          (content_list
+            text"shuffled")
+          (content_list
+            text"ones"))))
+    newline
+    (content_list
+      (sequence sequence_kind:1 (branches
+          (content_list
+            text"stop")
+          (content_list
+            text"ping"))))
+    newline
+    (content_list
+      (sequence sequence_kind:1 (branches
+          (content_list
+            text"cycle")
+          (content_list
+            text"shuffle"))))
+    newline
+    (content_list
+      (sequence sequence_kind:1 (branches
+          (content_list)
+          (content_list
+            text"empty first")
+          (content_list))))
+    newline
+    (content_list
+      (sequence sequence_kind:8 (branches
+          (content_list
+            text" a")
+          (content_list
+            text"b"))))
+    newline
+    (content_list
+      (sequence sequence_kind:12 (branches
+          (content_list
+            text" a")
+          (content_list
+            text"b"))))
+    newline
+    (content_list
+      (sequence sequence_kind:2 (branches
+          (content_list
+            newline
+            (statements
+              text"one"
+              newline))
+          (content_list
+            newline
+            (statements
+              text"two"
+              newline)))))
+    newline
+    (content_list
+      (sequence sequence_kind:1 (branches
+          (content_list
+            newline
+            (statements
+              text"first"
+              newline))
+          (content_list)
+          (content_list
+            newline
+            (statements
+              text"third"
+              newline)))))
+    newline))
+! 7:4 message sequence_combination
