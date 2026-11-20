@@ -218,11 +218,17 @@ pub fn check_case(
 /// Whether a difference is one inkz makes on purpose: ink threw an exception that isn't
 /// ink's, or inkz stopped at a limit. Either way the transcripts must match up to that line.
 fn by_design(arena: std.mem.Allocator, expected: []const u8, actual: []const u8) !?Skip {
-    var skip: Skip = .ink_exception;
-    const line = marker_line(expected, "harness_exception: ") orelse line: {
-        skip = .inkz_limit;
-        break :line limit_line(actual) orelse return null;
-    };
+    // Whichever comes first: ink's own exception or inkz's limit (a story whose text grows
+    // without end hits inkz's heap limit before ink runs out of memory).
+    const exception = marker_line(expected, "harness_exception: ");
+    const limit = limit_line(actual);
+    const exception_first = exception != null and (limit == null or exception.? <= limit.?);
+    const skip: Skip, const line = if (exception_first)
+        .{ .ink_exception, exception.? }
+    else if (limit) |found|
+        .{ .inkz_limit, found }
+    else
+        return null;
     const before_expected = first_lines(expected, line);
     const before_actual = first_lines(actual, line);
     return if (try oracle.compare(arena, before_expected, before_actual) == null) skip else null;

@@ -203,6 +203,23 @@ transcripts match up to the line where they start:
 | divergences, before the fixes below | 38 (12 compile acceptance, 26 runtime) |
 | divergences, after them | 0 (the last 2 fixed in P16.21) |
 
+The phase's acceptance run, `--seed 16 --count 10000` (ink took about 45 minutes), after
+every fix of Phase 16:
+
+| Outcome | Stories |
+|---|---:|
+| played by both or rejected by both, and compared | 9,562 |
+| ink didn't finish in 5 s | 355 |
+| ink crashed the process | 4 |
+| ink exception (not compared after it) | 29 |
+| inkz limit (not compared after it) | 51 |
+| divergences | 0 |
+
+It found two more differences, both fixed: a divert through a variable holding a number
+says "it contained '1'." in ink (`swarm/divert_variable_holds_number`), and a story whose
+text grows without end hits inkz's heap limit before ink runs out of memory, which the
+checker now counts as an inkz limit.
+
 `swarm-reduce` on one of the two, case 01848, took 34 ink runs (28 s). A removal that keeps the
 divergence is kept, so the reduction stops short when a removal changes the story so much
 that the divergence goes, as it did for the 46 extra globals there.
