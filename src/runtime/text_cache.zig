@@ -81,6 +81,7 @@ pub const TextCache = struct {
         return cache.text[0..cache.end];
     }
 
+    // lint: allow hot_path: compares the output items' bytes, not strings
     /// Whether the cleaned prefix still holds: the output starts with the cached items and
     /// the heap's strings are as they were.
     fn reusable(cache: *const TextCache, items: []const Item, generation: u32) bool {

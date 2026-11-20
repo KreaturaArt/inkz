@@ -525,6 +525,7 @@ pub const State = struct {
         return reference;
     }
 
+    // lint: allow hot_path: tests and fuzz targets compare states; the step never hashes
     /// A hash of everything a story can observe or that later steps depend on: the live
     /// flow, the shared arrays and scalars, and the used heap. Values hash by tag and payload,
     /// so padding never counts. For tests of take and restore, and of determinism.
@@ -619,11 +620,13 @@ pub fn visit_temps(temps: []Temp, visitor: anytype) void {
     }
 }
 
+// lint: allow hot_path: State.hash, for tests
 fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
     for (values) |value| hash_value(hasher, value);
     assert(@typeInfo(@TypeOf(hasher)) == .pointer);
 }
 
+// lint: allow hot_path: State.hash, for tests
 fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
     hasher.update(&.{@backingInt(value)});
     switch (value) {
@@ -636,6 +639,7 @@ fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
     }
 }
 
+// lint: allow hot_path: State.hash, for tests
 fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
     for (temps) |temp| {
         std.hash.autoHash(hasher, temp.name);
@@ -644,6 +648,7 @@ fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
 }
 
 /// Field by field, so struct padding never counts.
+// lint: allow hot_path: State.hash, for tests
 fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
     for (records) |record| std.hash.autoHash(hasher, record);
     assert(@typeInfo(@TypeOf(records)) == .pointer);

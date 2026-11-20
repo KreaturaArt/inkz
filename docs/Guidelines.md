@@ -155,7 +155,12 @@ if (story.can_continue()) _ = try story.cont(); // `line` and `text` are stale f
   shipped mode, and runs whole-structure checks at batch boundaries, not per instruction.
 - The unit of work is one `cont()`: text is assembled and observers are notified once per
   call. The heap is compacted only when an allocation fails.
-- The VM's hot path never resolves a path, hashes or compares strings (lint: `hot_path`).
+- The VM's hot path never resolves a path, hashes or compares strings, or finds a name
+  (lint: `hot_path`). The hot path is every runtime file the step reaches
+  (`hot_path_files` in `tools/lint.zig`): `vm`, `ops`, `native`, `call_stack`, `lists`,
+  `output`, `heap`, `text_cache`, `choices`, `lookahead`, `state` and `value`. Tests and
+  comptime blocks there aren't checked. A function there that the step doesn't run, or that
+  must compare text as ink does, takes `// lint: allow hot_path: <reason>` above it.
 - Measure in ReleaseSafe and ReleaseFast (`zig build bench`).
 
 ## Naming and layout

@@ -433,6 +433,7 @@ const NativeContext = struct {
 
 // Variables (ink's VariablesState).
 
+// lint: allow hot_path: P16 F1/F2 (a scan of the globals by name)
 pub fn global_slot(story: *const Story, name: StringId) ?GlobalSlot {
     assert(!name.is_none());
     for (story.program.globals, 0..) |global, slot| {
@@ -441,6 +442,7 @@ pub fn global_slot(story: *const Story, name: StringId) ?GlobalSlot {
     return null;
 }
 
+// lint: allow hot_path: P16 F1/F2
 /// ink's GetRawVariableWithName: globals and list items for context 0 or -1, then temps.
 fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
     assert(!name.is_none());
@@ -454,6 +456,7 @@ fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
     return stack.temp_get(name, if (context == 0) -1 else context);
 }
 
+// lint: allow hot_path: P16 F1/F2
 /// The variable pointer `raw_variable` would return, or null when it would return anything
 /// else; allocates nothing. A list item's name is never a pointer.
 fn raw_pointer(story: *Story, name: StringId, context: i32) ?value_module.VariablePointer {
@@ -479,6 +482,7 @@ fn frame_temp(story: *Story, name: StringId, context: i32) ?Value {
     return stack.temp_get(name, if (context == 0) -1 else context);
 }
 
+// lint: allow hot_path: P16 F1/F2
 /// A list item named `name` as a one-item list (ink's FindSingleItemListWithName).
 fn single_item_list(story: *Story, name: StringId) Error!?Value {
     assert(!name.is_none());
@@ -521,6 +525,7 @@ pub fn temp_value(story: *Story, name: StringId) Error!Value {
     return .{ .integer = 0 };
 }
 
+// lint: allow hot_path: P16 F1/F2
 /// ink's ResolveVariablePointer, for a pointer stored by a declaration.
 fn resolve_variable_pointer(story: *Story, pointer: value_module.VariablePointer) Error!Value {
     assert(!pointer.name.is_none());
@@ -571,12 +576,14 @@ pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     try assign_existing(story, name, true, value);
 }
 
+// lint: allow hot_path: P16 F1/F2
 pub fn assign_temp(story: *Story, name: StringId, value: Value) Error!void {
     assert(!name.is_none());
     assert(value != .tag);
     try assign_existing(story, name, global_slot(story, name) != null, value);
 }
 
+// lint: allow hot_path: P16 F1/F2
 /// ink's Assign for a re-assignment: follow pointers to the variable they name, then set it.
 fn assign_existing(
     story: *Story,

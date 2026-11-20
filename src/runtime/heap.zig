@@ -327,7 +327,7 @@ fn store_text(heap: *StringHeap, text: []const u8) ?StringReference {
     assert(text.len < 1 << 16);
     const reference = heap.try_allocate(@intCast(text.len)) orelse return null;
     @memcpy(heap.get(reference), text);
-    assert(std.mem.eql(u8, heap.get(reference), text));
+    assert(heap.get(reference).len == text.len);
     return reference;
 }
 

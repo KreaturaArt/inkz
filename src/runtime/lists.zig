@@ -251,6 +251,7 @@ pub const Lists = struct {
         return builder.finish(lists.slab);
     }
 
+    // lint: allow hot_path: ink's ListFromInt names the origin with a runtime string
     /// The list item of origin `origin_name` with value `value` as a one-item list, an
     /// empty list if the origin has no such item, or null if there is no such origin
     /// (ink's ListFromInt).
