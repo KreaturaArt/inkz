@@ -200,6 +200,14 @@ fn check(context: *Context, object: ObjectIndex) !void {
         .divert => try check_divert(context, object),
         .variable_reference => try check_variable_reference(context, object),
         .list_literal => try check_list_literal(context, object),
+        .binary => {
+            // ink's `not A ? B` check: a negated left operand of `?` (or `has`).
+            const ast = context.ast();
+            const node = context.tree.node(object);
+            if (ast.tag(node) == .has and ast.tag(ast.child(node, 0)) == .not) {
+                try context.report(.negated_has_operand, object);
+            }
+        },
         .function_call => {
             // A list's name called as a function makes a list (ink's ResolveList).
             const name = context.child_name(object, 0);
