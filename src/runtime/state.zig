@@ -42,6 +42,8 @@ const Choices = choices_module.Choices;
 pub const Diagnostic = struct {
     /// A string argument, such as a variable name, or a reference to nothing.
     argument: StringReference,
+    /// A second string the message prints, such as the value a divert variable held.
+    detail: StringReference = .none,
     /// Numbers the message prints, such as RANDOM's bounds.
     number: i32 = 0,
     other_number: i32 = 0,
@@ -449,8 +451,14 @@ pub const State = struct {
         visit_flow(state.live_flow(), visitor);
         visit_values(state.globals, visitor);
         visit_values(state.global_defaults, visitor);
-        for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
-        for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
+        for (state.errors.slice()) |*diagnostic| {
+            visitor.string(&diagnostic.argument);
+            visitor.string(&diagnostic.detail);
+        }
+        for (state.warnings.slice()) |*diagnostic| {
+            visitor.string(&diagnostic.argument);
+            visitor.string(&diagnostic.detail);
+        }
         flows.visit_parked(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
             const words = state.parking[stash.first..][0 .. stash.items * 3];

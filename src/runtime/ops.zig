@@ -67,9 +67,10 @@ fn lists_of(story: *Story) lists_module.Lists {
     return .{ .program = story.program, .slab = &story.state.lists };
 }
 
-/// What an error message prints besides its code: a name, or two numbers.
+/// What an error message prints besides its code: a name, a second string, or two numbers.
 pub const Arguments = struct {
     name: StringId = .none,
+    detail: StringReference = .none,
     numbers: [2]i32 = .{ 0, 0 },
 };
 
@@ -80,6 +81,7 @@ pub fn fail(story: *Story, code: Code, arguments: Arguments) Error {
     assert(@backingInt(code) > 0 or code == .story_error);
     story.state.add_diagnostic(.{
         .argument = if (arguments.name.is_none()) .none else .program(arguments.name),
+        .detail = arguments.detail,
         .number = arguments.numbers[0],
         .other_number = arguments.numbers[1],
         .pointer = vm.current_pointer(story),
@@ -182,6 +184,13 @@ pub fn eval_output(story: *Story) Error!vm.Signal {
     }
     assert(state.output.items.count <= state.output.items.buffer.len);
     return .output;
+}
+
+/// A value's ink ToString as a string: the string itself, or its text in a new heap string.
+pub fn value_string(story: *Story, value: Value) Error!StringReference {
+    if (value == .string) return value.string;
+    const text = try value_text(story, value);
+    return store_string(story, text, &.{});
 }
 
 /// A value's ink ToString, in the line buffer (free while stepping).
