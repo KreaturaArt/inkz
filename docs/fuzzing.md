@@ -51,8 +51,8 @@ compare runs of one target, not targets with each other.
 | Comment removal | `src/fuzz/source.zig` | `comment removal` | bytes weighted toward `/`, `*`, newlines | output no longer than the input and a subsequence of it; every line kept |
 | INCLUDE discovery | `src/fuzz/source.zig` | `INCLUDE discovery` | 4 fuzzer-written files of INCLUDEs (chains, cycles, missing files), with tight bounds | a space or an error; files form a tree within the depth and file bounds, laid end to end |
 | Parser | `src/fuzz/parser.zig` | `well-formed tree` | generated ink with raw bytes spliced in | a tree or an error; every node reached once, with a valid shape and in-range tokens |
-| Sema and resolve | `src/fuzz/sema.zig` | `consistent tree` | generated ink that parses | every object is its parent's child exactly once; the resolution is in range |
-| Lower and emit | `src/fuzz/lower.zig` | `survive their JSON` | generated ink | `Program.check`; compiling twice gives the same image; serialize then load gives the same image |
+| Sema and resolve | `src/fuzz/sema.zig` | `consistent tree` | generated ink that parses | every object is its parent's child exactly once; the resolution is in range; with reference errors, lowering still runs for its diagnostics and the compile delivers an error |
+| Lower and emit | `src/fuzz/lower.zig` | `survive their JSON` | generated ink | `Program.check`; compiling twice gives the same image; serialize then load gives the same image; a failed compile delivers at least one error |
 | Compiler (raw) | `src/fuzz_targets.zig` | `compiler never crashes` | raw bytes | a program or an error |
 | JSON loader | `src/fuzz/json.zig` | `mutated ink JSON` | a compiled story's JSON with its tokens edited | a checked program or an error |
 | JSON loader (raw) | `src/fuzz_targets.zig` | `JSON loader never crashes` | raw bytes | a checked program or an error |
