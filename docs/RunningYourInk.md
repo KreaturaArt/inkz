@@ -684,9 +684,18 @@ them with inklecate's output (`mise run reference:diagnostics`). Some difference
   For example, every unclosed parenthesis says "closing parenthesis ')' for expression".
 - A few parse errors land elsewhere than ink's, or ink drops a repeat that inkz reports:
   `{x + }`, for example, and the checks on the branches of a multi-line conditional.
-- inkz resolves names before it checks how flows end. So when names fail, the loose-end
-  warnings ink would also print don't come, and two flows with the same name are one error
-  on the first, not ink's "Story already contains flow named".
+- ink prints some objects by their C# class name. In "Functions may not contain choices,
+  but saw '* ContentList(...)...'", inkz prints a choice's text but leaves its other
+  content out.
+- ink turns a warning raised inside a divert's or call's arguments into an error, such as
+  "Duplicate of item 'a' in list." in `f((a, a))`. inkz keeps it a warning.
+- The errors for a story the parser gives up on are inkz's own: one that nests too deeply,
+  is larger than the source limit, or needs more parser workspace than its limit. inklecate
+  has no such limits.
+
+As in ink, an error while generating code (a wrong argument count, a duplicate EXTERNAL)
+hides the reference errors, which ink never checks then. Loose-end warnings still arrive
+next to reference errors, as ink's do.
 
 ```zig
 var directory = try std.Io.Dir.cwd().openDir(io, "stories", .{});
