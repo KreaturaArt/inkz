@@ -116,8 +116,25 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             }
         },
         .divert => try generate_divert(context, object),
-        .knot, .stitch => try check_flow(context, object),
+        .knot, .stitch => {
+            try check_flow(context, object);
+            try check_duplicate_flow(context, object);
+        },
         else => {},
+    }
+}
+
+/// FlowBase.GenerateRuntimeObject's named content: a flow named like an earlier sibling.
+fn check_duplicate_flow(context: *Context, flow: ObjectIndex) !void {
+    const tree = context.tree;
+    assert(tree.is_flow(flow));
+    const name = context.flow_name(flow);
+    for (tree.children_of(tree.parent(flow))) |sibling| {
+        if (sibling == flow) return;
+        if (!tree.is_flow(sibling)) continue;
+        if (std.mem.eql(u8, name, context.flow_name(sibling))) {
+            return context.report_with(.duplicate_flow, flow, sibling);
+        }
     }
 }
 
@@ -129,12 +146,12 @@ fn check_flow(context: *Context, flow: ObjectIndex) !void {
     const tree = context.tree;
     if (!tree.has(flow, Flags.function)) {
         const found = try tree.find(context.gpa, flow, Tree.is_return) orelse return;
-        return context.report(.return_outside_function, found);
+        return context.report_with(.return_outside_function, found, flow);
     }
     if (tree.kind(flow) == .stitch) try context.report(.function_is_stitch, flow);
     const children = tree.children_of(flow);
     for (children) |child| {
-        if (tree.is_flow(child)) try context.report(.function_has_stitch, child);
+        if (tree.is_flow(child)) try context.report_with(.function_has_stitch, child, flow);
     }
     // A flow's root weave is its first child; a function without one has nothing more.
     if (children.len == 0 or tree.kind(children[0]) != .weave) return;
@@ -217,7 +234,6 @@ fn check(context: *Context, object: ObjectIndex) !void {
         .divert => try check_divert(context, object),
         .variable_reference => try check_variable_reference(context, object),
         .list_literal => try check_list_literal(context, object),
-        .divert_target => try check_divert_target_usage(context, object),
         .binary => if (negates_has_operand(context, object)) {
             try context.report(.negated_has_operand, object);
         },
@@ -313,17 +329,73 @@ fn check_divert_target_usage(context: *Context, target: ObjectIndex) !void {
     }
 }
 
-/// Divert.ResolveReferences.
+/// Divert.ResolveReferences, then (ink resolves children first) the checks of the
+/// divert-target value and the TURNS_SINCE or READ_COUNT call around it.
 fn check_divert(context: *Context, divert: ObjectIndex) !void {
     const tree = context.tree;
     if (context.skipped.isSet(divert.to_int())) return;
     const path = divert_path(context, divert) orelse return;
-    if (is_end_or_done(&path)) {
-        // DONE and END are instructions, not content a divert-target value can point at.
-        const parent_kind = tree.kind(tree.parent(divert));
-        if (parent_kind == .divert_target) try context.report(.done_or_end_as_value, divert);
-        // Nor can a tunnel return onwards to them: there is no container to return to.
-        if (parent_kind == .tunnel_onwards) {
+    try check_divert_itself(context, divert, &path);
+    const parent = tree.parent(divert);
+    if (tree.kind(parent) != .divert_target) return;
+    try check_target_value(context, parent, divert, &path);
+    const call = counting_call(context, parent) orelse return;
+    if (context.variable_diverts.isSet(divert.to_int())) {
+        try context.report(.turns_since_variable_target, call);
+    } else if (!is_end_or_done(&path) and context.targets[divert.to_int()].is_none()) {
+        try context.report_with(.turns_since_target_not_found, call, divert);
+    }
+}
+
+/// The TURNS_SINCE or READ_COUNT call whose argument `argument` is: its proxy divert (a
+/// call is a divert flagged as one), or null. ink counts both targets alike
+/// (`_divertTargetToCount`, `_variableReferenceToCount`).
+fn counting_call(context: *const Context, argument: ObjectIndex) ?ObjectIndex {
+    const tree = context.tree;
+    const call = tree.parent(argument);
+    if (call.is_none()) return null;
+    if (tree.kind(call) != .divert or !tree.has(call, Flags.function_call)) return null;
+    const call_path = divert_path(context, call) orelse return null;
+    if (call_path.count != 1) return null;
+    const name = call_path.first();
+    const counts = std.mem.eql(u8, name, "TURNS_SINCE") or std.mem.eql(u8, name, "READ_COUNT");
+    return if (counts) call else null;
+}
+
+/// DivertTarget.ResolveReferences, on the value `target` around `divert`: DONE and END
+/// first, then the usage, a variable's name, and a flow with `ref` parameters. Each is an
+/// error on the value, which keeps one.
+fn check_target_value(
+    context: *Context,
+    target: ObjectIndex,
+    divert: ObjectIndex,
+    path: *const Path,
+) !void {
+    assert(context.tree.kind(target) == .divert_target);
+    // DONE and END are instructions, not content a divert-target value can point at.
+    if (is_end_or_done(path)) return context.report(.done_or_end_as_value, target);
+    try check_divert_target_usage(context, target);
+    if (context.variable_diverts.isSet(divert.to_int())) {
+        try context.report(.variable_divert_target, target);
+    }
+    // A stored divert target can't know to pass a variable by reference (ink issue 538).
+    const flow = context.targets[divert.to_int()];
+    if (flow.is_none() or !context.tree.is_flow(flow)) return;
+    for (context.parameters(flow), 0..) |parameter, position| {
+        if (parameter != .reference_parameter) continue;
+        try context.report_details(.divert_target_to_reference_flow, target, .{
+            .other = flow,
+            .name = context.parameter_name(flow, @intCast(position)),
+        });
+    }
+}
+
+/// Divert.ResolveReferences' own checks.
+fn check_divert_itself(context: *Context, divert: ObjectIndex, path: *const Path) !void {
+    const tree = context.tree;
+    if (is_end_or_done(path)) {
+        // A tunnel can't return onwards to DONE or END: there is no container to return to.
+        if (tree.kind(tree.parent(divert)) == .tunnel_onwards) {
             try context.report(.tunnel_onwards_to_end_or_done, divert);
         }
         return;
@@ -335,10 +407,11 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
     if (!target.is_none() and tree.is_flow(target)) {
         const is_function = tree.has(target, Flags.function);
         const in_divert_target = tree.kind(tree.parent(divert)) == .divert_target;
-        if (!is_function and is_call) try context.report(.not_a_function, divert);
-        if (is_function and !is_call and !in_divert_target) try context.report(
+        if (!is_function and is_call) try context.report_with(.not_a_function, divert, target);
+        if (is_function and !is_call and !in_divert_target) try context.report_with(
             .function_diverted_to,
             divert,
+            target,
         );
     }
     if (path.count == 1) {
@@ -352,25 +425,8 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
             return;
         }
     }
-    if (context.variable_diverts.isSet(divert.to_int())) {
-        // A divert-target value names content: `-> x` of a variable is ink's error, and so
-        // is TURNS_SINCE of one.
-        const parent = tree.parent(divert);
-        if (tree.kind(parent) != .divert_target) return;
-        try context.report(.variable_divert_target, divert);
-        // A call is a divert flagged as one (ink's proxy divert). ink counts the target of
-        // TURNS_SINCE and READ_COUNT alike (`_divertTargetToCount`).
-        const call = tree.parent(parent);
-        const calls = tree.kind(call) == .divert and tree.has(call, Flags.function_call);
-        const call_path = if (calls) divert_path(context, call) else null;
-        if (call_path != null and call_path.?.count == 1 and
-            (std.mem.eql(u8, call_path.?.first(), "TURNS_SINCE") or
-                std.mem.eql(u8, call_path.?.first(), "READ_COUNT")))
-        {
-            try context.report(.turns_since_variable_target, call);
-        }
-        return;
-    }
+    // A variable divert's checks are its divert-target value's (check_target_value).
+    if (context.variable_diverts.isSet(divert.to_int())) return;
     if (target.is_none()) try context.report(.target_not_found, divert);
 }
 
@@ -400,6 +456,10 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
     if (try lookups.resolve_path(context, &path, reference)) |target| {
         references[reference.to_int()] = .read_count;
         context.targets[reference.to_int()] = target;
+        // TURNS_SINCE(k) and READ_COUNT(k) count a variable's target, not k's own count.
+        if (counting_call(context, reference)) |call| {
+            try context.report_with(.count_without_arrow, call, reference);
+        }
         return;
     }
     if (path.count > 1) {
@@ -411,17 +471,30 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
     if (found == null) try context.report(.unresolved_variable, reference);
 }
 
-/// List.GenerateIntoContainer's lookups: each item of a list literal must exist.
+/// List.GenerateIntoContainer's lookups: each item of a list literal must exist, and once.
 fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
     const ast = context.ast();
     const node = context.tree.node(literal);
-    for (0..ast.list(node).count) |position| {
+    const count = ast.list(node).count;
+    for (0..count) |position| {
         const text = context.parsed.leaf_text(ast.item(node, position));
         const dot = std.mem.indexOfScalar(u8, text, '.');
         const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
         const item = if (dot) |at| text[at + 1 ..] else text;
-        if (try lookups.resolve_list_item(context, list_name, item, literal) == null) {
-            try context.report(.list_item_not_found, literal);
+        const found = try lookups.resolve_list_item(context, list_name, item, literal) orelse {
+            try context.report_details(.list_item_not_found, literal, .{ .name = text });
+            continue;
+        };
+        // An item an earlier position already named (quadratic, as literals are short).
+        for (0..position) |earlier| {
+            const earlier_text = context.parsed.leaf_text(ast.item(node, earlier));
+            const earlier_dot = std.mem.indexOfScalar(u8, earlier_text, '.');
+            const earlier_list: ?[]const u8 = if (earlier_dot) |at| earlier_text[0..at] else null;
+            const earlier_item = if (earlier_dot) |at| earlier_text[at + 1 ..] else earlier_text;
+            const element = lookups.find_list_item(context, earlier_list, earlier_item);
+            if (element != found) continue;
+            try context.report_details(.duplicate_list_literal_item, literal, .{ .name = text });
+            break;
         }
     }
     assert(context.tree.kind(literal) == .list_literal);
@@ -476,7 +549,14 @@ fn check_increment(context: *Context, increment: ObjectIndex) !void {
         joined_first(context, ast.slot(ast.slot(node, .name), .path));
     const found = lookups.resolve_variable(context, name, increment);
     context.references[increment.to_int()] = found orelse .unresolved;
-    if (found == null) try context.report(.increment_target_not_found, increment);
+    if (found == null) {
+        try context.report_details(.increment_target_not_found, increment, .{ .name = name });
+    }
+    // An increment is a statement: on a line of its own, not inside an expression.
+    switch (tree.kind(tree.parent(increment))) {
+        .weave, .story, .knot, .stitch, .content_list => {},
+        else => try context.report(.increment_as_sub_expression, increment),
+    }
 }
 
 /// A variable reference's name: ink joins the path with dots; only a one-component path

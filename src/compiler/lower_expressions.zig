@@ -115,7 +115,7 @@ fn binary(
 }
 
 /// BinaryExpression's NativeNameForOp.
-fn native_name(tag: Tag) []const u8 {
+pub fn native_name(tag: Tag) []const u8 {
     assert(ast_module.shape(tag) != .leaf);
     assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return switch (tag) {
