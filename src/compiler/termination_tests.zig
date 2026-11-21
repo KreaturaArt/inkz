@@ -214,4 +214,11 @@ test "a divert target of a variable is an error, as in ink" {
         std.testing.allocator,
         source,
     ));
+    // READ_COUNT counts its target as TURNS_SINCE does, so it gets the same second error
+    // (PR #2 review).
+    try expect_diagnostics("=== function f(y) ===\n~ temp k0 = 1\n" ++
+        "~ temp t = READ_COUNT(-> k0)\n~ return t\n", &.{
+        .{ .code = .variable_divert_target, .line = 3 },
+        .{ .code = .turns_since_variable_target, .line = 3 },
+    });
 }

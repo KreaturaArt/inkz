@@ -358,12 +358,14 @@ fn check_divert(context: *Context, divert: ObjectIndex) !void {
         const parent = tree.parent(divert);
         if (tree.kind(parent) != .divert_target) return;
         try context.report(.variable_divert_target, divert);
-        // A call is a divert flagged as one (ink's proxy divert).
+        // A call is a divert flagged as one (ink's proxy divert). ink counts the target of
+        // TURNS_SINCE and READ_COUNT alike (`_divertTargetToCount`).
         const call = tree.parent(parent);
         const calls = tree.kind(call) == .divert and tree.has(call, Flags.function_call);
         const call_path = if (calls) divert_path(context, call) else null;
         if (call_path != null and call_path.?.count == 1 and
-            std.mem.eql(u8, call_path.?.first(), "TURNS_SINCE"))
+            (std.mem.eql(u8, call_path.?.first(), "TURNS_SINCE") or
+                std.mem.eql(u8, call_path.?.first(), "READ_COUNT")))
         {
             try context.report(.turns_since_variable_target, call);
         }
