@@ -29,7 +29,7 @@ pub const Class = enum(u8) {
 
     pub fn of(text: []const u8) Class {
         assert(text.len < 1 << 20);
-        if (std.mem.eql(u8, text, "\n")) return .newline;
+        if (text.len == 1 and text[0] == '\n') return .newline;
         for (text) |character| {
             if (character != ' ' and character != '\t') return .non_whitespace;
         }

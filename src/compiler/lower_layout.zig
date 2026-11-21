@@ -37,7 +37,7 @@ pub fn set_count_flags(lowering: *Lowering) void {
                     parent = tree.parent(parent);
                 }
                 const turns_only = tree.kind(parent) == .function_call and
-                    std.mem.eql(u8, lowering.child_name(parent, 0), "TURNS_SINCE");
+                    std.mem.eql(u8, lowering.slot_name(parent, .name), "TURNS_SINCE");
                 const both = ir_module.count_visits | ir_module.count_turns;
                 const flags = if (turns_only) ir_module.count_turns else both;
                 flag(lowering, counted, flags);

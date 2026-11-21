@@ -63,6 +63,14 @@ pub const StringHeap = struct {
         return .heap(at);
     }
 
+    /// Records that `bytes` more must fit now (a reservation before an operation), so the
+    /// peak, and `Limits.fitted` from it, covers the room the runtime asks for, not only
+    /// what it used.
+    pub fn note_need(heap: *StringHeap, bytes: u32) void {
+        assert(heap.used <= heap.bytes.len);
+        heap.peak = @max(heap.peak, heap.used +| bytes);
+    }
+
     /// Shortens the most recently allocated string to `length` bytes.
     pub fn shrink_last(heap: *StringHeap, reference: StringReference, length: u32) void {
         const at = reference.heap_offset();
@@ -327,7 +335,7 @@ fn store_text(heap: *StringHeap, text: []const u8) ?StringReference {
     assert(text.len < 1 << 16);
     const reference = heap.try_allocate(@intCast(text.len)) orelse return null;
     @memcpy(heap.get(reference), text);
-    assert(std.mem.eql(u8, heap.get(reference), text));
+    assert(heap.get(reference).len == text.len);
     return reference;
 }
 

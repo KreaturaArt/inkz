@@ -140,66 +140,6 @@ test "fuzz: the program image loader never crashes" {
     try std.testing.fuzz({}, load_image, .{ .corpus = corpus });
 }
 
-/// A valid image, mutated by the fuzzer. Random bytes rarely pass the image's magic, so
-/// the raw target stops at the header; here every input starts valid, and the fuzzer picks
-/// what to change: an aligned word, a byte, a bit, or the length.
-const Mutation = enum { word, byte, bit, truncate };
-const mutations_max = 16;
-
-fn load_mutated_image(image: []const u8, smith: *std.testing.Smith) anyerror!void {
-    assert(image.len >= 8);
-    assert(image.len % 4 == 0);
-    const gpa = std.testing.allocator;
-    const bytes = try gpa.dupe(u8, image);
-    defer gpa.free(bytes);
-    var length = bytes.len;
-    var count: u32 = 0;
-    while (count < mutations_max and length > 0 and !smith.eos()) : (count += 1) {
-        switch (smith.value(Mutation)) {
-            .word => {
-                const word = smith.index(length / 4);
-                std.mem.writeInt(u32, bytes[word * 4 ..][0..4], smith.value(u32), .little);
-            },
-            .byte => bytes[smith.index(length)] = smith.value(u8),
-            .bit => bytes[smith.index(length)] ^= @as(u8, 1) << smith.value(u3),
-            .truncate => length = smith.index(length),
-        }
-        if (length < 4) break;
-    }
-    assert(length <= bytes.len);
-    var program = program_image.load(gpa, bytes[0..length]) catch return;
-    defer program.deinit(gpa);
-    assert(program.check() == .ok);
-}
-
-test "fuzz: a mutated program image loads or is rejected" {
-    // The base image: a story with knots, choices, variables, lists and an external, so that
-    // every section has elements to mutate. The empty input leaves it valid.
-    const gpa = std.testing.allocator;
-    const source =
-        \\EXTERNAL roll(sides)
-        \\LIST mood = calm, (angry)
-        \\VAR x = 5
-        \\Hello {x}. # tag
-        \\* [Go] -> knot
-        \\=== knot ===
-        \\~ x = roll(6)
-        \\{mood ? angry: Grr|Fine} -> END
-        \\=== function roll(sides) ===
-        \\~ return 4
-        \\
-    ;
-    var program = try compile.compile_source(gpa, source);
-    defer program.deinit(gpa);
-    var image: std.Io.Writer.Allocating = .init(gpa);
-    defer image.deinit();
-    try program_image.write(&program, &image.writer);
-    var loaded = try program_image.load(gpa, image.written());
-    defer loaded.deinit(gpa);
-    assert(loaded.check() == .ok);
-    try std.testing.fuzz(image.written(), load_mutated_image, .{ .corpus = &.{""} });
-}
-
 // One target per pipeline stage, each in its own file.
 test {
     _ = @import("fuzz/source.zig");
@@ -207,7 +147,9 @@ test {
     _ = @import("fuzz/sema.zig");
     _ = @import("fuzz/lower.zig");
     _ = @import("fuzz/json.zig");
+    _ = @import("fuzz/image.zig");
     _ = @import("fuzz/vm.zig");
     _ = @import("fuzz/save.zig");
     _ = @import("fuzz/host.zig");
+    _ = @import("fuzz/limits.zig");
 }

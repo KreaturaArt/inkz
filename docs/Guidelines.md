@@ -36,6 +36,13 @@ index" and is never a valid position; `to_int` asserts on it.
 Without pointers, a structure can be copied with `@memcpy` (lookahead snapshots, parked
 flows), relocated (heap compaction), saved and checked by `check()`.
 
+The rule is strict for data that is copied, parked, saved or snapshotted by value: every
+flow buffer's element, the lookahead's `PatchEntry`, `Value`, diagnostics and flow records.
+`state.zig` checks them at compile time with `pointer_free.has_no_pointers(T)`
+(`src/core/pointer_free.zig`), which rejects any pointer, slice or function pointer
+anywhere in a type. Control structures that are never copied by value (a `Story`'s
+bindings, the compiler's IR during one compile) may hold slices and pointers.
+
 ```zig
 const std = @import("std");
 const inkz = @import("inkz");
@@ -155,7 +162,12 @@ if (story.can_continue()) _ = try story.cont(); // `line` and `text` are stale f
   shipped mode, and runs whole-structure checks at batch boundaries, not per instruction.
 - The unit of work is one `cont()`: text is assembled and observers are notified once per
   call. The heap is compacted only when an allocation fails.
-- The VM's hot path never resolves a path, hashes or compares strings (lint: `hot_path`).
+- The VM's hot path never resolves a path, hashes or compares strings, or finds a name
+  (lint: `hot_path`). The hot path is every runtime file the step reaches
+  (`hot_path_files` in `tools/lint.zig`): `vm`, `ops`, `native`, `call_stack`, `lists`,
+  `output`, `heap`, `text_cache`, `choices`, `lookahead`, `state` and `value`. Tests and
+  comptime blocks there aren't checked. A function there that the step doesn't run, or that
+  must compare text as ink does, takes `// lint: allow hot_path: <reason>` above it.
 - Measure in ReleaseSafe and ReleaseFast (`zig build bench`).
 
 ## Naming and layout
@@ -192,12 +204,18 @@ pub fn main(init: std.process.Init) !void {
 }
 ```
 
-### Labeled switches for scanners and dispatch
+### Labeled switches
 
-Scanners are labeled-switch state machines: each prong does one small thing and continues
-with the next state, so the loop compiles to direct jumps. Plan D10 allows the VM's dispatch
-to exceed 70 lines for this, if each prong stays a few lines and delegates to a helper; it
-currently fits in 70 lines without the exception.
+A labeled switch (`continue :label` to the next state) compiles to direct jumps, so it is
+the pattern for a hand-written state machine, such as the scanner below. inkz has none
+today, for measured reasons:
+- **The grammar is scannerless.** ink is context-sensitive (a `-` is a gather, an operator
+  or text depending on where it is), so the grammar rules read characters and record
+  tokens as `{start, end}` only (`src/compiler/core.zig`); there is no separate lexer.
+- **The VM is a `while` and a `switch`** (`vm.zig`). P12.3 measured dispatch at 0–2% of
+  play; the time is in the step bodies. Plan D10's exception to the 70-line rule for a
+  threaded dispatch stays reserved for a labeled-switch VM, which would be built only if a
+  profile shows dispatch (see `docs/benchmarks.md`, F15).
 
 ```zig
 const std = @import("std");

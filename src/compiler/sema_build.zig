@@ -172,7 +172,7 @@ pub const Builder = struct {
     fn expand_flow(builder: *Builder, flow: ObjectIndex, node: NodeIndex) !void {
         const ast = builder.tree();
         const is_story = ast.tag(node) == .story;
-        const statements = if (is_story) ast.item(node, 0) else ast.child(node, 2);
+        const statements = if (is_story) ast.item(node, 0) else ast.slot(node, .statements);
         assert(ast.tag(statements) == .statements);
         const items_first: u32 = @intCast(builder.items.items.len);
         if (is_story) {
@@ -297,7 +297,7 @@ pub const Builder = struct {
         const node: NodeIndex = .from_int(item);
         switch (ast.tag(node)) {
             .choice, .sticky_choice, .gather => {
-                const header = ast.data[ast.child(node, 0).to_int()];
+                const header = ast.data[ast.slot(node, .header).to_int()];
                 assert(header & 0xffff > 0);
                 return header & 0xffff;
             },
@@ -350,25 +350,29 @@ pub const Builder = struct {
     fn expand_choice(builder: *Builder, choice: ObjectIndex, node: NodeIndex) !void {
         const ast = builder.tree();
         assert(ast.tag(node) == .choice or ast.tag(node) == .sticky_choice);
-        for ([_]u32{ 3, 4, 5 }) |position| {
-            const content = ast.child(node, position);
+        const contents = [_]NodeIndex{
+            ast.slot(node, .start),
+            ast.slot(node, .choice_only),
+            ast.slot(node, .inner),
+        };
+        for (contents) |content| {
             if (ast.tag(content) != .none) try builder.add_child(choice, content);
         }
-        const condition = ast.child(node, 2);
+        const condition = ast.slot(node, .condition);
         if (ast.tag(condition) != .none) try builder.add_child(choice, condition);
     }
 
     /// Conditional: the initial condition (if any), then the branches.
     fn expand_conditional(builder: *Builder, conditional: ObjectIndex, node: NodeIndex) !void {
         const ast = builder.tree();
-        const initial = ast.child(node, 0);
+        const initial = ast.slot(node, .initial);
         if (ast.tag(initial) != .none) try builder.add_child(conditional, initial);
-        const branches = ast.list(ast.child(node, 1));
+        const branches = ast.list(ast.slot(node, .branches));
         for (0..branches.count) |position| {
             const branch: NodeIndex = at(branches, position);
             try builder.add_child(conditional, branch);
         }
-        assert(ast.tag(ast.child(node, 1)) == .branches);
+        assert(ast.tag(ast.slot(node, .branches)) == .branches);
     }
 
     /// ConditionalSingleBranch: a weave of its content (if any), then its own condition (ink
@@ -377,7 +381,7 @@ pub const Builder = struct {
         assert(builder.children.items.len <= builder.kinds.items.len);
         const ast = builder.tree();
         const is_else = ast.tag(node) == .else_branch;
-        const content = ast.child(node, if (is_else) 0 else 1);
+        const content = ast.slot(node, .content);
         if (ast.tag(content) != .none) {
             const first: u32 = @intCast(builder.items.items.len);
             try builder.append_items(content, .all);
@@ -386,7 +390,7 @@ pub const Builder = struct {
             }
         }
         if (!is_else) {
-            const condition = ast.child(node, 0);
+            const condition = ast.slot(node, .condition);
             if (ast.tag(condition) != .none) try builder.add_child(branch, condition);
         }
     }
@@ -394,7 +398,7 @@ pub const Builder = struct {
     /// Sequence: a weave per element, or the empty content list itself.
     fn expand_sequence(builder: *Builder, sequence: ObjectIndex, node: NodeIndex) !void {
         const ast = builder.tree();
-        const elements = ast.list(ast.child(node, 1));
+        const elements = ast.list(ast.slot(node, .elements));
         for (0..elements.count) |position| {
             const element: NodeIndex = at(elements, position);
             assert(ast.tag(element) == .content_list);
@@ -441,7 +445,7 @@ pub const Builder = struct {
                     const proxy = try builder.create(.divert, Flags.function_call, object, node);
                     return builder.adopt(proxy);
                 }
-                const arguments = ast.child(node, 1);
+                const arguments = ast.slot(node, .arguments);
                 if (ast.tag(arguments) == .none) return;
                 const listed = ast.list(arguments);
                 for (0..listed.count) |position| {
@@ -452,25 +456,25 @@ pub const Builder = struct {
                 }
             },
             .tunnel_onwards, .@"return", .divert_target, .negate, .not => {
-                const inner = ast.child(node, 0);
+                const inner = ast.slot(node, .inner);
                 if (ast.tag(inner) != .none) try builder.add_child(object, inner);
             },
             .temp_declaration, .assignment, .variable_declaration, .const_declaration => {
-                const value = ast.child(node, 1);
+                const value = ast.slot(node, .value);
                 const absent = ast.tag(value) == .none or ast.tag(value) == .missing;
                 if (!absent) try builder.add_child(object, value);
             },
             .add_assignment, .subtract_assignment => {
-                const value = ast.child(node, 1);
+                const value = ast.slot(node, .value);
                 if (ast.tag(value) != .missing) try builder.add_child(object, value);
             },
             .list_declaration => {
-                const items = ast.child(node, 1);
+                const items = ast.slot(node, .items);
                 try builder.adopt(try builder.create(.list_definition, 0, object, items));
             },
             else => if (ast_module.shape(tag) == .fixed and is_binary(tag)) {
-                try builder.add_child(object, ast.child(node, 0));
-                try builder.add_child(object, ast.child(node, 1));
+                try builder.add_child(object, ast.slot(node, .left));
+                try builder.add_child(object, ast.slot(node, .right));
             },
         }
     }
@@ -491,7 +495,7 @@ pub const Builder = struct {
                 .call_statement => extra |= Flags.pop_result,
                 else => break,
             }
-            node = ast.child(node, 0);
+            node = ast.slot(node, .inner);
         }
         const mapped = map_tag(ast.tag(node));
         assert(ast.tag(node) != .inline_value);

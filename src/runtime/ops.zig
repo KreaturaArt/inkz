@@ -7,6 +7,8 @@
 //! byte slices are only taken after the last allocation.
 
 const std = @import("std");
+const builtin = @import("builtin");
+const profile = @import("../core/profile.zig");
 const assert = std.debug.assert;
 const index = @import("../core/index.zig");
 const instruction_module = @import("../core/instruction.zig");
@@ -65,9 +67,10 @@ fn lists_of(story: *Story) lists_module.Lists {
     return .{ .program = story.program, .slab = &story.state.lists };
 }
 
-/// What an error message prints besides its code: a name, or two numbers.
+/// What an error message prints besides its code: a name, a second string, or two numbers.
 pub const Arguments = struct {
     name: StringId = .none,
+    detail: StringReference = .none,
     numbers: [2]i32 = .{ 0, 0 },
 };
 
@@ -78,6 +81,7 @@ pub fn fail(story: *Story, code: Code, arguments: Arguments) Error {
     assert(@backingInt(code) > 0 or code == .story_error);
     story.state.add_diagnostic(.{
         .argument = if (arguments.name.is_none()) .none else .program(arguments.name),
+        .detail = arguments.detail,
         .number = arguments.numbers[0],
         .other_number = arguments.numbers[1],
         .pointer = vm.current_pointer(story),
@@ -152,7 +156,10 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
     if (try_exit_function_evaluation_from_game(story)) return;
     const stack = &story.state.call_stack;
     if (stack.current_frame().kind != kind or !stack.can_pop(null)) {
-        return fail(story, .pop_mismatch, .{});
+        // ink's names: what was found, and what the current frame (or the flow's end) wanted.
+        const frame_kind = stack.current_frame().kind;
+        const current: i32 = if (stack.can_pop(null)) @backingInt(frame_kind) else 2;
+        return fail(story, .pop_unexpected, .{ .numbers = .{ @backingInt(kind), current } });
     }
     try pop_call_stack(story, null);
     if (override) |target| story.diverted_pointer = .start_of(target);
@@ -177,6 +184,13 @@ pub fn eval_output(story: *Story) Error!vm.Signal {
     }
     assert(state.output.items.count <= state.output.items.buffer.len);
     return .output;
+}
+
+/// A value's ink ToString as a string: the string itself, or its text in a new heap string.
+pub fn value_string(story: *Story, value: Value) Error!StringReference {
+    if (value == .string) return value.string;
+    const text = try value_text(story, value);
+    return store_string(story, text, &.{});
 }
 
 /// A value's ink ToString, in the line buffer (free while stepping).
@@ -315,6 +329,8 @@ fn is_unary(opcode: Opcode) bool {
 }
 
 pub fn call_native(story: *Story, opcode: Opcode) Error!void {
+    const profile_zone = profile.begin(.call_native);
+    defer profile_zone.end();
     assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     assert(@backingInt(opcode) <= @backingInt(Opcode.list_invert));
     var operands: [2]Value = undefined;
@@ -326,6 +342,8 @@ pub fn call_native(story: *Story, opcode: Opcode) Error!void {
     }
     try reserve(story, operands[0..count]);
     var context: NativeContext = .{ .story = story };
+    // A runtime switch on the opcode: comptime prongs (fino's) measured no faster (F15,
+    // docs/benchmarks.md).
     const result = if (count == 1)
         native.unary(&context, opcode, operands[0])
     else
@@ -345,10 +363,19 @@ fn native_failure(story: *Story, err: native.Error, opcode: Opcode, operands: []
         error.IntegerOverflow => fail(story, .integer_overflow, .{}),
         error.FloatToIntegerOutOfRange => fail(story, .float_to_integer_out_of_range, .{}),
         error.VoidOperand => fail(story, .void_operand, .{}),
-        error.UnsupportedOperation,
-        error.IncompatibleTypes,
-        => fail(story, .unsupported_operation, .{}),
+        error.UnsupportedOperation => operation_not_for_type(story, opcode, operands),
+        error.IncompatibleTypes => fail(story, .unsupported_operation, .{}),
     };
+}
+
+/// ink's "Cannot perform operation '<op>' on <type>": the type is the one ink's
+/// CoerceValuesToSingleType gives the operands (at least Int, so a Bool is an Int).
+fn operation_not_for_type(story: *Story, opcode: Opcode, operands: []const Value) Error {
+    assert(operands.len == 1 or operands.len == 2);
+    var rank: i8 = 0;
+    for (operands) |operand| rank = @max(rank, operand.rank() orelse 0);
+    assert(rank >= 0 and rank <= 5);
+    return fail(story, .operation_not_for_type, .{ .numbers = .{ @backingInt(opcode), rank } });
 }
 
 /// ink's "Can not call use '<op>' operation on <type> and <type>": the opcode and both
@@ -379,6 +406,7 @@ fn reserve(story: *Story, operands: []Value) Error!void {
     }
     const short = state.strings.bytes.len - state.strings.used < string_bytes;
     if (short or state.compact_always) state.compact(operands);
+    state.strings.note_need(string_bytes);
     if (state.strings.bytes.len - state.strings.used < string_bytes) return error.HeapLimit;
     if (has_list) try reserve_list(story, operands);
 }
@@ -433,21 +461,19 @@ const NativeContext = struct {
 
 // Variables (ink's VariablesState).
 
-pub fn global_slot(story: *const Story, name: StringId) ?GlobalSlot {
-    assert(!name.is_none());
-    for (story.program.globals, 0..) |global, slot| {
-        if (global.name == name) return .from_int(@intCast(slot));
-    }
-    return null;
-}
-
-/// ink's GetRawVariableWithName: globals and list items for context 0 or -1, then temps.
+/// ink's GetRawVariableWithName: a global or a list item for context 0 or -1, then temps.
+/// The name's class (`Program.name_classes`) says which, with one read.
 fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
     assert(!name.is_none());
     assert(context >= -1);
     if (context == 0 or context == -1) {
-        if (global_slot(story, name)) |slot| return story.state.globals[slot.to_int()];
-        if (try single_item_list(story, name)) |list| return list;
+        const class = story.program.name_class(name);
+        switch (class.kind) {
+            .global => return story.state.globals[class.index],
+            .list_item => return try single_item_list(story, .from_int(class.index)),
+            .none => {},
+            _ => unreachable,
+        }
     }
     const stack = &story.state.call_stack;
     if (context > @as(i32, @intCast(stack.depth()))) return null;
@@ -460,11 +486,16 @@ fn raw_pointer(story: *Story, name: StringId, context: i32) ?value_module.Variab
     assert(!name.is_none());
     assert(context >= -1);
     if (context == 0 or context == -1) {
-        if (global_slot(story, name)) |slot| {
-            const global = story.state.globals[slot.to_int()];
-            return if (global == .variable_pointer) global.variable_pointer else null;
+        const class = story.program.name_class(name);
+        switch (class.kind) {
+            .global => {
+                const global = story.state.globals[class.index];
+                return if (global == .variable_pointer) global.variable_pointer else null;
+            },
+            .list_item => return null,
+            .none => {},
+            _ => unreachable,
         }
-        if (story.program.list_item_by_name(story.program.strings.get(name)) != null) return null;
     }
     const value = frame_temp(story, name, context) orelse return null;
     return if (value == .variable_pointer) value.variable_pointer else null;
@@ -479,11 +510,17 @@ fn frame_temp(story: *Story, name: StringId, context: i32) ?Value {
     return stack.temp_get(name, if (context == 0) -1 else context);
 }
 
-/// A list item named `name` as a one-item list (ink's FindSingleItemListWithName).
-fn single_item_list(story: *Story, name: StringId) Error!?Value {
-    assert(!name.is_none());
-    const text = story.program.strings.get(name);
-    const item = story.program.list_item_by_name(text) orelse return null;
+/// The global slot `name` names, if it names a global.
+fn global_of(story: *const Story, name: StringId) ?GlobalSlot {
+    const class = story.program.name_class(name);
+    if (class.kind != .global) return null;
+    assert(story.program.globals[class.index].name == name);
+    return .from_int(class.index);
+}
+
+/// List item `item` as a one-item list (ink's FindSingleItemListWithName).
+fn single_item_list(story: *Story, item: ListItemIndex) Error!Value {
+    assert(item.to_int() < story.program.list_items.len);
     const origin = story.program.list_items[item.to_int()].origin;
     const reference = story.state.store_list(&.{item}, &.{origin}, &.{}) catch
         return error.ListLimit;
@@ -493,7 +530,13 @@ fn single_item_list(story: *Story, name: StringId) Error!?Value {
 /// ink's GetVariableWithName: the variable's value, following variable pointers.
 pub fn variable_value(story: *Story, name: StringId, context: i32) Error!?Value {
     assert(!name.is_none());
-    var value = try raw_variable(story, name, context) orelse return null;
+    const value = try raw_variable(story, name, context) orelse return null;
+    return follow_pointers(story, value);
+}
+
+/// `value`, or the value its variable pointers lead to (null when one names nothing).
+fn follow_pointers(story: *Story, start: Value) Error!?Value {
+    var value = start;
     var hops: u32 = 0;
     while (value == .variable_pointer) : (hops += 1) {
         if (hops == story.state.limits.frames_max) return fail(story, .variable_pointer_cycle, .{});
@@ -504,10 +547,13 @@ pub fn variable_value(story: *Story, name: StringId, context: i32) Error!?Value 
     return value;
 }
 
+/// The global in `slot`, read through the slot: ink's GetVariableWithName finds the same
+/// global by its name. Only a variable pointer stored there follows ink's pointer rules.
 pub fn global_value(story: *Story, slot: GlobalSlot) Error!Value {
     assert(slot.to_int() < story.program.globals.len);
-    const name = story.program.globals[slot.to_int()].name;
-    const value = try variable_value(story, name, 0) orelse return .{ .integer = 0 };
+    const stored = story.state.globals[slot.to_int()];
+    if (stored != .variable_pointer) return stored;
+    const value = try follow_pointers(story, stored) orelse return .{ .integer = 0 };
     assert(value != .variable_pointer);
     return value;
 }
@@ -527,7 +573,7 @@ fn resolve_variable_pointer(story: *Story, pointer: value_module.VariablePointer
     assert(pointer.context >= -1);
     var context = pointer.context;
     if (context == -1) {
-        context = if (global_slot(story, pointer.name) != null)
+        context = if (global_of(story, pointer.name) != null)
             0
         else
             @as(i32, @intCast(story.state.call_stack.depth())) - 1;
@@ -564,9 +610,15 @@ pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
     };
 }
 
+/// A re-assignment of the global in `slot`, through the slot (`set_global` keeps the
+/// lookahead's undo log). Only a variable pointer stored there follows ink's pointer rules,
+/// by name.
 pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.program.globals.len);
     assert(value != .tag);
+    if (story.state.globals[slot.to_int()] != .variable_pointer) {
+        return set_global(story, slot, value);
+    }
     const name = story.program.globals[slot.to_int()].name;
     try assign_existing(story, name, true, value);
 }
@@ -574,7 +626,7 @@ pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
 pub fn assign_temp(story: *Story, name: StringId, value: Value) Error!void {
     assert(!name.is_none());
     assert(value != .tag);
-    try assign_existing(story, name, global_slot(story, name) != null, value);
+    try assign_existing(story, name, global_of(story, name) != null, value);
 }
 
 /// ink's Assign for a re-assignment: follow pointers to the variable they name, then set it.
@@ -599,7 +651,7 @@ fn assign_existing(
         is_global = context == 0;
     }
     if (is_global) {
-        const slot = global_slot(story, name) orelse return fail(
+        const slot = global_of(story, name) orelse return fail(
             story,
             .variable_not_found,
             .{ .name = name },
@@ -966,6 +1018,7 @@ fn reserve_list(story: *Story, keep: []Value) Error!void {
     const words: u32 = @intCast(3 + program.list_items.len + program.list_origins.len);
     const short = state.lists.words.len - state.lists.used < words;
     if (short or state.compact_always) state.compact(keep);
+    state.lists.note_need(words);
     if (state.lists.words.len - state.lists.used < words) return error.ListLimit;
     assert(state.lists.used + words <= state.lists.words.len);
 }

@@ -37,4 +37,5 @@ test {
     _ = ink_json;
     _ = program_image;
     _ = @import("sizes_test.zig");
+    _ = @import("pointer_free.zig");
 }

@@ -18,6 +18,15 @@ const file_bytes_max = 16 * 1024 * 1024;
 
 /// The case's `.ink` compiled from its directory (so INCLUDEs resolve as in inklecate).
 fn compile_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !Program {
+    return compile_case_with(arena, io, id, null);
+}
+
+fn compile_case_with(
+    arena: std.mem.Allocator,
+    io: std.Io,
+    id: []const u8,
+    statistics: ?*compile.Statistics,
+) !Program {
     const path = try cases.source_path(arena, io, id);
     const directory_path = std.fs.path.dirname(path) orelse ".";
     var directory = try std.Io.Dir.cwd().openDir(io, directory_path, .{});
@@ -28,7 +37,10 @@ fn compile_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !Program {
         id,
     });
     const count_all_visits = if (std.Io.Dir.cwd().access(io, marker, .{})) true else |_| false;
-    const options: compile.Options = .{ .count_all_visits = count_all_visits };
+    const options: compile.Options = .{
+        .count_all_visits = count_all_visits,
+        .statistics = statistics,
+    };
     return compile.compile_file_with(arena, io, directory, std.fs.path.basename(path), options);
 }
 
@@ -142,4 +154,25 @@ test "the verified pair holds for whole stories" {
         defer loaded.deinit(gpa);
         try program_testing.expect_same_program(&compiled, &loaded);
     }
+}
+
+test "every ground-truth story compiles without a workspace retry" {
+    // The workspace estimate covers the corpus: a retry is a whole second parse (F14,
+    // P16.17); "a source denser than the workspace estimate retries" shows the other side.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    var compiled: u32 = 0;
+    for (try cases.ids(arena, io)) |id| {
+        _ = cases.source_path(arena, io, id) catch continue;
+        var statistics: compile.Statistics = .{};
+        _ = compile_case_with(arena, io, id, &statistics) catch continue;
+        if (statistics.workspace_retries != 0) {
+            std.debug.print("{s}: {d} workspace retries\n", .{ id, statistics.workspace_retries });
+            return error.WorkspaceRetried;
+        }
+        compiled += 1;
+    }
+    try std.testing.expect(compiled > 150);
 }

@@ -115,7 +115,11 @@ defer story.deinit(gpa);
 ```
 
 `load` treats the image as untrusted. A wrong, truncated or corrupted image returns a named
-error (`error.NotAProgramImage`, `error.InvalidImage`, ...), never a crash. Images carry a
+error (`error.NotAProgramImage`, `error.InvalidImage`, ...), never a crash. An image your own
+build wrote and ships inside the program can use `program_image.load_trusted`. It checks
+the header and the layout but trusts the records, so in ReleaseFast it loads about 3× faster.
+Safe builds still verify the records and panic on a bad one. Never use it for a file a
+player can change. Images carry a
 format version. After an inkz update that changes it, `load` returns
 `error.UnsupportedFormatVersion`; write the image again from the JSON or the source.
 
@@ -636,8 +640,62 @@ measured it: a story that later needs more gets a named limit error, so keep the
 - `compile_to_json(gpa, source)` returns the story as inklecate's `.ink.json`.
 
 A leading UTF-8 byte order mark is ignored, in a source and in every file. A story with
-errors returns `error.CompileFailed`. The compiler doesn't report its
-diagnostics through this API yet.
+errors returns `error.CompileFailed`.
+
+### Diagnostics
+
+`compile_source_with` and `compile_file_with` take `.diagnostics`, a sink that receives every
+error, warning and `TODO:` note when the compile ends, failed or not. Each one carries its
+severity, a code name, the file, the line and column (from 1), and inklecate's message.
+They arrive in inklecate's order: author notes, then warnings, then errors. The strings are
+valid only during the call, so copy what you keep.
+
+```zig
+const std = @import("std");
+const inkz = @import("inkz");
+
+const Log = struct {
+    errors: u32 = 0,
+
+    fn receive(context: ?*anyopaque, diagnostic: inkz.compiler.messages.Diagnostic) void {
+        const log: *@This() = @ptrCast(@alignCast(context.?));
+        if (diagnostic.severity == .@"error") log.errors += 1;
+        // A host would show `diagnostic.file`, `.line` and `.message` here.
+        std.debug.assert(diagnostic.message.len > 0);
+    }
+};
+
+test "a compile's diagnostics" {
+    const gpa = std.testing.allocator;
+    var log: Log = .{};
+    const sink: inkz.compiler.messages.Sink = .{ .context = &log, .function = Log.receive };
+    const result = inkz.compiler.compile_source_with(gpa, "Hello\n-> nowhere\n", .{
+        .diagnostics = sink,
+    });
+    try std.testing.expectError(error.CompileFailed, result);
+    // "line 2: Divert target not found: '-> nowhere'"
+    try std.testing.expectEqual(@as(u32, 1), log.errors);
+}
+```
+
+The messages are inklecate's, word for word, and `test/ground_truth/diagnostics` compares
+them with inklecate's output (`mise run reference:diagnostics`). Some differences remain:
+- Where one inkz code stands for several of ink's wordings, the most common one is used.
+  For example, every unclosed parenthesis says "closing parenthesis ')' for expression".
+- A few parse errors land elsewhere than ink's, or ink drops a repeat that inkz reports:
+  `{x + }`, for example, and the checks on the branches of a multi-line conditional.
+- ink prints some objects by their C# class name. In "Functions may not contain choices,
+  but saw '* ContentList(...)...'", inkz prints a choice's text but leaves its other
+  content out.
+- ink turns a warning raised inside a divert's or call's arguments into an error, such as
+  "Duplicate of item 'a' in list." in `f((a, a))`. inkz keeps it a warning.
+- The errors for a story the parser gives up on are inkz's own: one that nests too deeply,
+  is larger than the source limit, or needs more parser workspace than its limit. inklecate
+  has no such limits.
+
+As in ink, an error while generating code (a wrong argument count, a duplicate EXTERNAL)
+hides the reference errors, which ink never checks then. Loose-end warnings still arrive
+next to reference errors, as ink's do.
 
 ```zig
 var directory = try std.Io.Dir.cwd().openDir(io, "stories", .{});

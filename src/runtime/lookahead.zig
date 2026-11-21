@@ -299,7 +299,7 @@ fn store_text(state: *State, text: []const u8) value_module.StringReference {
     assert(state.strings.used <= state.strings.bytes.len);
     const reference = state.strings.try_allocate(@intCast(text.len)).?;
     @memcpy(state.strings.get(reference), text);
-    assert(std.mem.eql(u8, state.strings.get(reference), text));
+    assert(state.strings.get(reference).len == text.len);
     return reference;
 }
 

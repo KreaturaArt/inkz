@@ -120,13 +120,13 @@ pub const Lowering = struct {
             assert(lowering.tree.kind(definition) == .list_definition);
             const elements = lowering.tree.children_of(definition);
             const items = try arena.alloc(ir_module.ListItem, elements.len);
-            const name = lowering.child_name(lowering.tree.parent(definition), 0);
+            const name = lowering.slot_name(lowering.tree.parent(definition), .name);
             list.* = .{ .name = name, .items = items };
             for (elements, items) |element, *entry| {
                 assert(lowering.tree.kind(element) == .list_element);
                 entry.* = .{
                     .origin = list.name,
-                    .name = lowering.child_name(element, 0),
+                    .name = lowering.slot_name(element, .name),
                     .value = resolution.item_values[element.to_int()],
                 };
             }
@@ -163,11 +163,15 @@ pub const Lowering = struct {
         return &lowering.parsed.tree;
     }
 
-    /// The name in an object's syntax node child `position` (an identifier leaf).
-    pub fn child_name(lowering: *const Lowering, object: ObjectIndex, position: u32) []const u8 {
+    /// The text of slot `which` of an object's syntax node (an identifier leaf).
+    pub fn slot_name(
+        lowering: *const Lowering,
+        object: ObjectIndex,
+        comptime which: ast_module.Slot,
+    ) []const u8 {
         // Objects ink creates without syntax (gathers, the done divert) have no name.
         assert(!lowering.tree.node(object).is_none());
-        return lowering.parsed.child_text(lowering.tree.node(object), position);
+        return lowering.parsed.slot_text(lowering.tree.node(object), which);
     }
 
     /// Whether `name` is an EXTERNAL function (ink's story.externals).
@@ -181,7 +185,7 @@ pub const Lowering = struct {
         const call = lowering.tree.parent(divert);
         assert(lowering.tree.kind(call) == .function_call);
         if (!lowering.resolution.targets[call.to_int()].is_none()) return true;
-        return expressions.is_builtin_call(lowering.child_name(call, 0));
+        return expressions.is_builtin_call(lowering.slot_name(call, .name));
     }
 
     pub fn result(lowering: *const Lowering, object: ObjectIndex) Result {
@@ -317,7 +321,7 @@ pub const Lowering = struct {
         const container = try ir.new_container();
         lowering.runtime_containers[flow.to_int()] = container;
         if (tree.kind(flow) != .story) ir.container(container).name =
-            lowering.child_name(flow, 0);
+            lowering.slot_name(flow, .name);
         if (lowering.count_all_visits) ir.container(container).flags |= ir_module.count_visits;
         try lowering.add_parameter_assignments(container, flow);
         const children = tree.children_of(flow);
@@ -346,7 +350,7 @@ pub const Lowering = struct {
     ) !void {
         assert(lowering.tree.is_flow(flow));
         if (lowering.tree.kind(flow) == .story) return;
-        const parameters = lowering.ast().child(lowering.tree.node(flow), 1);
+        const parameters = lowering.ast().slot(lowering.tree.node(flow), .parameters);
         if (lowering.ast().tag(parameters) == .none) return;
         assert(lowering.ast().tag(parameters) == .parameters);
         var position = lowering.ast().list(parameters).count;
@@ -395,7 +399,7 @@ pub const Lowering = struct {
             const at_story = tree.closest_flow(object) == Tree.root;
             return tree.has(object, Flags.new_temporary) and at_story;
         }
-        const name = lowering.child_name(object, 0);
+        const name = lowering.slot_name(object, .name);
         if (tree.has(object, Flags.list)) {
             const definition = tree.children_of(object)[0];
             assert(tree.kind(definition) == .list_definition);
@@ -417,7 +421,7 @@ pub const Lowering = struct {
 fn has_parameters(lowering: *const Lowering, flow: ObjectIndex) bool {
     assert(lowering.tree.is_flow(flow));
     assert(lowering.tree.kind(flow) != .story);
-    const parameters = lowering.ast().child(lowering.tree.node(flow), 1);
+    const parameters = lowering.ast().slot(lowering.tree.node(flow), .parameters);
     return lowering.ast().tag(parameters) != .none and lowering.ast().list(parameters).count > 0;
 }
 

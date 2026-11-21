@@ -46,6 +46,8 @@ const CompilerMeasurement = struct {
     name: []const u8,
     milliseconds: f64,
     peak_bytes: u64,
+    /// Whole re-parses because the workspace estimate was too small (F14: kept at 0).
+    workspace_retries: u32,
 };
 
 /// `count` runs of `once`, back to back; returns the mean nanoseconds.
@@ -86,7 +88,15 @@ fn measure_compiler(
     var counting = CountingAllocator.init(gpa);
     counting.allocator().free(try compiler.compile_to_json(counting.allocator(), source));
     std.debug.assert(counting.bytes_live == 0);
-    return .{ .name = name, .milliseconds = nanoseconds / 1e6, .peak_bytes = counting.bytes_peak };
+    var statistics: compiler.Statistics = .{};
+    var program = try compiler.compile_source_with(gpa, source, .{ .statistics = &statistics });
+    program.deinit(gpa);
+    return .{
+        .name = name,
+        .milliseconds = nanoseconds / 1e6,
+        .peak_bytes = counting.bytes_peak,
+        .workspace_retries = statistics.workspace_retries,
+    };
 }
 
 /// A large story: `generated_knots_count` knots, each with text, a variable update and two
@@ -263,9 +273,15 @@ fn write_compiler_report(
     const writer = &section.writer;
     const markers = try Markers.of(arena, "bench-compile");
     try writer.print("{s}\n### Compiler, {t}\n\n", .{ markers.start, builtin.mode });
-    try writer.writeAll("| Story | Compile (ms) | Peak bytes |\n|---|---|---|\n");
+    try writer.writeAll("| Story | Compile (ms) | Peak bytes | Workspace retries |\n");
+    try writer.writeAll("|---|---|---|---|\n");
     for (measurements) |m| {
-        try writer.print("| {s} | {d:.2} | {d} |\n", .{ m.name, m.milliseconds, m.peak_bytes });
+        try writer.print("| {s} | {d:.2} | {d} | {d} |\n", .{
+            m.name,
+            m.milliseconds,
+            m.peak_bytes,
+            m.workspace_retries,
+        });
     }
     try writer.print(
         "\nSource to JSON; the time is the mean of {d} compiles.\n{s}\n",

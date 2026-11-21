@@ -200,6 +200,7 @@ fn minimum(a: f32, b: f32) f32 {
     return result;
 }
 
+// lint: allow hot_path: ink's == on strings compares their text
 fn string_binary(context: anytype, opcode: Opcode, a: Value, b: Value) Error!Value {
     assert(a == .string or b == .string);
     var buffer_a: [32]u8 = undefined;

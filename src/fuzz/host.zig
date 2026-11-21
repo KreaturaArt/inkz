@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
+const Program = @import("../core/program.zig").Program;
 
 const Value = play.Value;
 const calls_max = 48;
@@ -30,6 +31,19 @@ const Call = enum {
     flow_names,
     save_and_load,
 };
+
+/// The calls a session may make (a swarm over calls, plan §3.5). `cont` is always in it, so
+/// stories advance; leaving out `reset` and `save_and_load`, which wipe or rebuild the
+/// state, gives long sessions their depth.
+pub const CallSet = std.EnumSet(Call);
+
+/// Every call with weight 1/8, else each one with probability ½, and `cont`.
+pub fn draw_calls(choices: fuzz_ink.Choices) CallSet {
+    var calls = fuzz_ink.draw_subset(choices, Call);
+    calls.insert(.cont);
+    assert(calls.contains(.cont));
+    return calls;
+}
 
 const paths = [_][]const u8{ "k0", "k1", "k2", "k0.s0", "f0", "e0", "k0.s1", "missing", "0" };
 const variables = [_][]const u8{ "v0", "v1", "v2", "c0", "l0", "missing" };
@@ -66,14 +80,34 @@ fn value(choices: fuzz_ink.Choices, kept: ?Value) Value {
     };
 }
 
-/// One host call. `kept` is the last divert target read, so one goes back in (strings and
-/// lists are views, valid only until the next mutating call).
-fn call(story: *play.Story, choices: fuzz_ink.Choices, kept: *?Value) !void {
+/// One host call from `calls`; returns which. `kept` is the last divert target read, so one
+/// goes back in (strings and lists are views, valid only until the next mutating call).
+pub fn call(story: *play.Story, choices: fuzz_ink.Choices, kept: *?Value, calls: CallSet) !Call {
     assert(story.core.state.check() == .ok);
+    assert(calls.contains(.cont));
     var sink: Sink = .{};
     var text: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&text);
-    switch (choices.choose(Call)) {
+    // The full set takes the choice the target took before swarms.
+    const kind = if (calls.eql(.full))
+        choices.choose(Call)
+    else
+        fuzz_ink.pick_from(choices, Call, calls);
+    try call_kind(story, choices, kept, kind, &sink, &writer);
+    assert(writer.end <= text.len);
+    assert(story.core.state.check() == .ok);
+    return kind;
+}
+
+fn call_kind(
+    story: *play.Story,
+    choices: fuzz_ink.Choices,
+    kept: *?Value,
+    kind: Call,
+    sink: *Sink,
+    writer: *std.Io.Writer,
+) !void {
+    switch (kind) {
         .cont => if (story.can_continue()) {
             _ = try story.cont();
         },
@@ -98,7 +132,7 @@ fn call(story: *play.Story, choices: fuzz_ink.Choices, kept: *?Value) !void {
             const arguments = [_]Value{ value(choices, kept.*), value(choices, kept.*) };
             const count = choices.below(3);
             const name = pick(choices, &functions);
-            const result = try story.evaluate_function(name, arguments[0..count], &writer);
+            const result = try story.evaluate_function(name, arguments[0..count], writer);
             if (result.get() == .divert_target) kept.* = result.get();
         },
         .switch_flow => try story.switch_flow(pick(choices, &flows)),
@@ -106,15 +140,13 @@ fn call(story: *play.Story, choices: fuzz_ink.Choices, kept: *?Value) !void {
         .remove_flow => try story.remove_flow(pick(choices, &flows)),
         .reset => try story.reset_state(),
         .visit_count => _ = story.visit_count_at_path_string(pick(choices, &paths)),
-        .current_tags => try story.current_tags(&sink),
-        .global_tags => try story.global_tags(&sink),
-        .path_tags => try story.tags_for_content_at_path(pick(choices, &paths), &sink),
+        .current_tags => try story.current_tags(sink),
+        .global_tags => try story.global_tags(sink),
+        .path_tags => try story.tags_for_content_at_path(pick(choices, &paths), sink),
         .current_text => _ = try story.current_text(),
-        .flow_names => try story.alive_flow_names(&sink),
+        .flow_names => try story.alive_flow_names(sink),
         .save_and_load => try save_and_load(story),
     }
-    assert(writer.end <= text.len);
-    assert(story.core.state.check() == .ok);
 }
 
 /// A save loaded back into the story it came from.
@@ -132,27 +164,39 @@ fn host_calls(_: void, smith: *Smith) anyerror!void {
     _ = try check_calls(.{ .smith = smith });
 }
 
-/// A generated story and a sequence of host calls on it; whether it compiled.
-fn check_calls(choices: fuzz_ink.Choices) !bool {
+/// What a session drew and made.
+const Session = struct { calls: CallSet, made: CallSet };
+
+/// A generated story and a sequence of host calls on it; null when it didn't compile.
+fn check_calls(choices: fuzz_ink.Choices) !?Session {
     const gpa = std.testing.allocator;
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    var program = try play.compile_story(gpa, choices, &buffer) orelse return false;
+    var program = try play.compile_story(gpa, choices, &buffer) orelse return null;
     defer program.deinit(gpa);
+    return try session_on(&program, choices);
+}
+
+/// A session of host calls on a story of `program`.
+fn session_on(program: *const Program, choices: fuzz_ink.Choices) !Session {
+    const gpa = std.testing.allocator;
     assert(program.check() == .ok);
     var story: play.Story = undefined;
-    try play.init_story(&story, gpa, &program, .pick(choices));
+    try play.init_story(&story, gpa, program, .pick(choices));
     defer story.deinit(gpa);
-    assert(story.core.program == &program);
+    assert(story.core.program == program);
+    const calls = draw_calls(choices);
+    var session: Session = .{ .calls = calls, .made = .empty };
     var kept: ?Value = null;
-    var calls: u32 = 0;
-    while (calls < calls_max and choices.more(7, 1)) : (calls += 1) {
+    var count: u32 = 0;
+    while (count < calls_max and choices.more(7, 1)) : (count += 1) {
         // An error is an answer. After one in the middle of a step the story fails closed
         // (error.StoryFailed) until reset_state or load_json, which the sequence may call.
-        call(&story, choices, &kept) catch {};
+        const made = call(&story, choices, &kept, calls) catch continue;
+        session.made.insert(made);
         assert(story.core.state.check() == .ok);
     }
-    assert(calls <= calls_max);
-    return true;
+    assert(count <= calls_max);
+    return session;
 }
 
 test "fuzz: host calls in any order keep the state consistent" {
@@ -160,8 +204,42 @@ test "fuzz: host calls in any order keep the state consistent" {
     var sessions: u32 = 0;
     for (0..32) |seed| {
         var prng: std.Random.DefaultPrng = .init(seed);
-        if (try check_calls(.{ .random = prng.random() })) sessions += 1;
+        if (try check_calls(.{ .random = prng.random() }) != null) sessions += 1;
     }
     try std.testing.expect(sessions > 16);
     try std.testing.fuzz({}, host_calls, .{ .corpus = &.{""} });
+}
+
+test "fuzz: a session makes only the calls it drew" {
+    // 1,000 seeded sessions on 8 seeded stories: every call made is in the session's set,
+    // `cont` is in every set, and some sessions leave out both suppressors (reset and
+    // save_and_load).
+    const gpa = std.testing.allocator;
+    var programs: [8]Program = undefined;
+    var compiled: u32 = 0;
+    defer for (programs[0..compiled]) |*program| program.deinit(gpa);
+    var seed: u64 = 0;
+    while (compiled < programs.len) : (seed += 1) {
+        try std.testing.expect(seed < 256);
+        var prng: std.Random.DefaultPrng = .init(seed);
+        var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
+        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+        programs[compiled] = try play.compile_story(gpa, choices, &buffer) orelse continue;
+        compiled += 1;
+    }
+    var without_suppressors: u32 = 0;
+    var subsets: u32 = 0;
+    for (0..1000) |session_seed| {
+        var prng: std.Random.DefaultPrng = .init(session_seed);
+        const program = &programs[session_seed % programs.len];
+        const session = try session_on(program, .{ .random = prng.random() });
+        try std.testing.expect(session.calls.contains(.cont));
+        try std.testing.expect(session.made.subsetOf(session.calls));
+        if (!session.calls.eql(.full)) subsets += 1;
+        if (!session.calls.contains(.reset) and !session.calls.contains(.save_and_load)) {
+            without_suppressors += 1;
+        }
+    }
+    try std.testing.expect(subsets > 800);
+    try std.testing.expect(without_suppressors > 150);
 }

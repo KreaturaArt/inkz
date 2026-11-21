@@ -127,13 +127,13 @@ pub const CallStack = struct {
         };
     }
 
-    /// One thread with one tunnel frame at `start`, as ink's Reset.
+    /// One thread with one tunnel frame at `start`, as ink's Reset, which keeps the thread
+    /// counter (an `END` doesn't restart it). A new call stack also zeroes it: `fresh`.
     pub fn reset(call_stack: *CallStack, start: Pointer) void {
         assert(!start.is_null());
         call_stack.frames.clear();
         call_stack.threads.clear();
         call_stack.temps.clear();
-        call_stack.thread_counter = 0;
         call_stack.threads.push(.{
             .frame_first = 0,
             .frame_count = 1,
@@ -150,6 +150,14 @@ pub const CallStack = struct {
             .in_expression_evaluation = false,
         }) catch unreachable;
         call_stack.verify();
+    }
+
+    /// A new call stack: `reset`, and the thread counter from 0 (a new flow, a reset story, a
+    /// loaded save before its counter is read).
+    pub fn fresh(call_stack: *CallStack, start: Pointer) void {
+        call_stack.reset(start);
+        call_stack.thread_counter = 0;
+        assert(call_stack.depth() == 1);
     }
 
     pub fn current_thread(call_stack: *CallStack) *Thread {

@@ -1,7 +1,8 @@
 //! `zig build simulate -- [--seed 1] [--seeds 10] [--case <id> | --json <path>]
-//! [--compact-always on] [--fit on]`: plays every ground-truth case (or one, or a story's
-//! JSON file) with seeded random choices for each seed and reports failures with the
-//! command that reproduces them. Exits with 1 if any run failed.
+//! [--compact-always on] [--fit on] [--swarm on | --swarm-config <hex>]`: plays every
+//! ground-truth case (or one, or a story's JSON file) with seeded random choices for each
+//! seed and reports failures with the command that reproduces them. Exits with 1 if any run
+//! failed.
 //!
 //! `--fit on` measures each story's peak usage over the seeds, prints `Limits.fitted(usage,
 //! 2)` as Zig source with its byte budget, then plays the same seeds again within those
@@ -10,6 +11,10 @@
 //! The runtime runs in process with the full action mix (save and load points, flow switches,
 //! evaluate_function, set_variable) and State.check after every cont; `--compact-always on`
 //! compacts the heap before every allocation.
+//!
+//! `--swarm on` draws an action mix per seed (`simulation.Mix.draw`): which actions run and
+//! how often, choose_path_string among them, and compact-always. A failure prints the
+//! mix's `--swarm-config <hex>`, which replays it.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -23,6 +28,18 @@ const Options = struct {
     json: ?[]const u8 = null,
     compact_always: bool = false,
     fit: bool = false,
+    swarm: bool = false,
+    /// One mix for every seed, from a failure report.
+    swarm_config: ?u64 = null,
+
+    /// The mix for `seed`.
+    fn mix(options: *const Options, seed: i32) !simulation.Mix {
+        if (options.swarm_config) |code| return simulation.Mix.decode(code);
+        if (options.swarm) return simulation.Mix.draw(seed);
+        var mix_full = simulation.Mix.full;
+        mix_full.compact_always = options.compact_always;
+        return mix_full;
+    }
 };
 
 fn parse_options(arguments: []const [:0]const u8) !Options {
@@ -44,6 +61,10 @@ fn parse_options(arguments: []const [:0]const u8) !Options {
             options.fit = std.mem.eql(u8, value, "on");
         } else if (std.mem.eql(u8, name, "--compact-always")) {
             options.compact_always = std.mem.eql(u8, value, "on");
+        } else if (std.mem.eql(u8, name, "--swarm")) {
+            options.swarm = std.mem.eql(u8, value, "on");
+        } else if (std.mem.eql(u8, name, "--swarm-config")) {
+            options.swarm_config = try std.fmt.parseInt(u64, value, 16);
         } else return error.UnknownOption;
     }
     if (index != arguments.len) return error.MissingOptionValue;
@@ -91,7 +112,7 @@ fn simulate(
         _ = try run.play(gpa, limits, options, &totals);
     }
     std.debug.print("simulate ({s}{s}): {d} runs over {d} seeds, {d} failures\n", .{
-        if (options.compact_always) "compact always" else "plain",
+        if (options.swarm) "swarm" else if (options.compact_always) "compact always" else "plain",
         if (options.fit) ", fitted limits" else "",
         totals.runs,
         options.seeds_count,
@@ -124,7 +145,9 @@ const Run = struct {
         for (0..options.seeds_count) |offset| {
             const seed = options.seed_first +% @as(i32, @intCast(offset));
             totals.runs += 1;
-            const result = simulation.simulate(&story, seed, run.save_buffer);
+            const mix = try options.mix(seed);
+            story.state.compact_always = mix.compact_always;
+            const result = simulation.simulate_mix(&story, seed, mix, run.save_buffer, null);
             const finding = result catch |err| switch (err) {
                 error.StepLimit => simulation.Finding.ok,
                 else => if (options.fit) {
@@ -136,8 +159,8 @@ const Run = struct {
             if (finding == .ok) continue;
             totals.failures += 1;
             std.debug.print("{t}: seed {d}, case {s}; reproduce with: zig build simulate -- " ++
-                "--seed {d} --seeds 1 --case {s} --compact-always {s}\n", .{
-                finding, seed, run.id, seed, run.id, if (options.compact_always) "on" else "off",
+                "--seed {d} --seeds 1 --case {s} --swarm-config {x}\n", .{
+                finding, seed, run.id, seed, run.id, mix.encode(),
             });
         }
         assert(totals.failures <= totals.runs);

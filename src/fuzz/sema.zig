@@ -10,6 +10,7 @@ const sema = @import("../compiler/sema.zig");
 const resolve = @import("../compiler/resolve.zig");
 const compile = @import("../compiler/compile.zig");
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
+const lower_target = @import("lower.zig");
 const Tree = sema.Tree;
 const ObjectIndex = sema.ObjectIndex;
 
@@ -39,6 +40,8 @@ fn check_source(source: []const u8) !bool {
     var resolution = try resolve.resolve(gpa, &parsed, &tree);
     defer resolution.deinit(gpa);
     check_resolution(&resolution, &tree);
+    // A story with reference errors is also lowered for its diagnostics.
+    if (resolution.failed()) try lower_target.check_failure(source);
     return true;
 }
 

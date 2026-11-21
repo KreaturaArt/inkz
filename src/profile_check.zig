@@ -82,6 +82,32 @@ fn check_rate(io: std.Io) !void {
     assert(around >= 20_000_000);
 }
 
+/// The zones the F15 and F18 decisions read (docs/benchmarks.md): a play with arithmetic
+/// records `call_native`, and loading a save records both of its passes.
+fn check_runtime_zones() !void {
+    assert(!profile.active);
+    const api = @import("runtime/api.zig");
+    const gpa = std.heap.page_allocator;
+    var story: api.Story = undefined;
+    const json = "{\"inkVersion\":21,\"root\":[[\"ev\",1,2,\"+\",\"out\",\"/ev\",\"\\n\"," ++
+        "[\"done\",{\"#n\":\"g-0\"}],null],\"done\",null],\"listDefs\":{}}";
+    try story.init_from_json(gpa, json, .{});
+    defer story.deinit(gpa);
+    profile.active = true;
+    defer profile.active = false;
+    profile.reset();
+    try std.testing.expectEqualStrings("3\n", (try story.cont()).get());
+    var save: std.Io.Writer.Allocating = .init(gpa);
+    defer save.deinit();
+    try story.to_json(&save.writer);
+    try story.load_json(save.written());
+    const totals = profile.totals();
+    for ([_]profile.Zone{ .call_native, .load_validate, .load_commit }) |zone| {
+        try std.testing.expect(totals.calls[@backingInt(zone)] > 0);
+    }
+    assert(profile.active);
+}
+
 pub fn main(init: std.process.Init) !void {
     comptime assert(profile.enabled);
     assert(!profile.active);
@@ -89,5 +115,6 @@ pub fn main(init: std.process.Init) !void {
     try check_nesting();
     try check_inactive();
     try check_rate(init.io);
-    std.debug.print("profile zones: nesting, inactive and rate checks pass\n", .{});
+    try check_runtime_zones();
+    std.debug.print("profile zones: nesting, inactive, rate and runtime zone checks pass\n", .{});
 }
