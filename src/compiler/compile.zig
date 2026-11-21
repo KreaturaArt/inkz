@@ -146,6 +146,7 @@ pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options)
         break :parsed grammar.parse(gpa, text, .{}) catch |err| switch (err) {
             // The parser gave up on the story.
             error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
+                if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, "");
                 return error.CompileFailed;
             },
             else => |other| return other,
@@ -163,36 +164,10 @@ pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options)
     } else null;
     // There is no directory to INCLUDE from: inklecate's "Failed to load: 'name'" error.
     if (std.mem.indexOfScalar(ast.Tag, parsed.tree.tags, .include) != null) {
-        if (report) |into| try report_includes(into, &parsed);
+        if (report) |into| try messages.collect_includes(into.collector, into.locator);
         return error.CompileFailed;
     }
     return compile_parsed(gpa, &parsed, null, options, report);
-}
-
-/// Every INCLUDE of a story compiled from text, which can't be loaded.
-fn report_includes(report: Report, parsed: *const grammar.Parsed) !void {
-    assert(parsed.tree.tags.len > 0);
-    const collector = report.collector;
-    for (parsed.tree.tags, 0..) |tag, at| {
-        if (tag != .include) continue;
-        const token = parsed.tree.data[at];
-        const offset = parsed.workspace.token_starts[token];
-        const before = parsed.source[0..offset];
-        const newline = std.mem.lastIndexOfScalar(u8, before, '\n');
-        const line_start = if (newline) |position| position + 1 else 0;
-        const name = messages.include_name(parsed.source, @intCast(line_start));
-        const arena = collector.arena.allocator();
-        const text = try std.fmt.allocPrint(arena, "Failed to load: '{s}'", .{name});
-        const position = @import("lexical.zig").line_and_column(parsed.source, offset);
-        try collector.entries.append(collector.arena.allocator(), .{
-            .severity = .@"error",
-            .code = "include_not_found",
-            .file = report.locator.file,
-            .line = position.line,
-            .column = position.column,
-            .message = text,
-        });
-    }
 }
 
 /// Compiles `path` (in `directory`) and the files it includes.
@@ -213,6 +188,7 @@ pub fn compile_file_with(
     var space = source_space.load(gpa, io, directory, path, .{}) catch |err| switch (err) {
         // The parser gave up on a file or on the space.
         error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
+            if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, path);
             return error.CompileFailed;
         },
         else => |other| return other,
@@ -625,4 +601,44 @@ test "errors past the diagnostics cap are reported once, last" {
     try std.testing.expect(recorded.count < recorded.codes.len);
     try std.testing.expectEqual(@as(u32, 1), dropped);
     try std.testing.expectEqualStrings("diagnostics_dropped", recorded.codes[recorded.count - 1]);
+}
+
+test "a story the parser gives up on still delivers why" {
+    // Braces nested deeper than parse_depth_max, and a source over source_bytes_max: no
+    // tree, so one error at the start of the story instead of none (PR #2 review).
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendNTimes(gpa, '{', 300);
+    try text.append(gpa, 'x');
+    try text.appendNTimes(gpa, '}', 300);
+    try text.append(gpa, '\n');
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    const options: Options = .{ .diagnostics = sink };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, text.items, options));
+    try std.testing.expectEqual(@as(u32, 1), recorded.count);
+    try std.testing.expectEqual(messages.Severity.@"error", recorded.severities[0]);
+    try std.testing.expectEqualStrings("too_deep", recorded.codes[0]);
+    const large = try gpa.alloc(u8, (limits.CompilerLimits{}).source_bytes_max + 1);
+    defer gpa.free(large);
+    @memset(large, 'a');
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, large, options));
+    try std.testing.expectEqual(@as(u32, 2), recorded.count);
+    try std.testing.expectEqualStrings("source_too_large", recorded.codes[1]);
+}
+
+test "a back reference without a file name is 'line N', as ink's DebugMetadata prints it" {
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var printer: Printer = .{ .out = &out };
+    const sink: messages.Sink = .{ .context = &printer, .function = Printer.print };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(
+        gpa,
+        "VAR x = 1\nVAR x = 2\n-> END\n",
+        .{ .diagnostics = sink },
+    ));
+    try std.testing.expectEqualStrings("ERROR: '' line 2: found declaration variable 'x' that " ++
+        "was already declared (line 1)\n", out.written());
 }
