@@ -108,10 +108,11 @@ fn lower_parsed(
         .tree = &tree,
         .locator = into.locator,
     } else null;
-    if (report) |into| {
-        try messages.collect_resolve(into.collector, &story.?, resolution.diagnostics);
-    }
-    if (resolution.diagnostics.len > 0) return error.CompileFailed;
+    const resolved = !resolution.failed();
+    // ink generates code (and checks termination) before it resolves references, so a
+    // story with reference errors still gets lowering's diagnostics: lowered for them
+    // alone, then dropped.
+    if (!resolved and report == null) return error.CompileFailed;
     const lower_zone = profile.begin(.compile_lower);
     var lowering = try lower.Lowering.init(gpa, parsed, &tree, &resolution);
     errdefer lowering.deinit();
@@ -119,10 +120,13 @@ fn lower_parsed(
     try lowering.generate_all();
     try lowering.finish_story();
     lower_zone.end();
-    if (report) |into| {
-        try messages.collect_resolve(into.collector, &story.?, lowering.diagnostics.items);
-    }
-    if (lowering.failed()) return error.CompileFailed;
+    if (report) |into| try messages.collect_resolve(
+        into.collector,
+        &story.?,
+        resolution.diagnostics,
+        lowering.diagnostics.items,
+    );
+    if (!resolved or lowering.failed()) return error.CompileFailed;
     const flatten_zone = profile.begin(.compile_flatten);
     defer flatten_zone.end();
     layout_module.set_count_flags(&lowering);

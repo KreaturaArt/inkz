@@ -339,6 +339,10 @@ pub fn object_offset(
         if (first_token(parsed, tree.node(object))) |token| {
             return parsed.workspace.token_starts[token];
         }
+        // A return without a value keeps its rule's start in its `none`.
+        if (tree.kind(object) == .@"return") return parsed.tree.data[
+            parsed.tree.slot(tree.node(object), .inner).to_int()
+        ];
     }
     return 0;
 }

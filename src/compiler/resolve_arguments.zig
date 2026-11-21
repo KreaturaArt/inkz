@@ -38,53 +38,76 @@ pub fn check_divert(context: *Context, divert: ObjectIndex) !void {
     // From here on, a target that isn't a flow, or has no parameter list, got arguments.
     if (!is_flow) return context.report(.arguments_to_non_flow, divert);
     if (!has_parameter_list(context, target)) {
-        return context.report(.flow_takes_no_parameters, divert);
+        return context.report_with(.flow_takes_no_parameters, divert, target);
     }
     if (tree.kind(tree.parent(divert)) == .divert_target) {
         if (arguments.len > 0) try context.report(.arguments_in_divert_target, divert);
         return;
     }
-    if (parameters.len != arguments.len) return context.report(.wrong_argument_count, divert);
-    for (arguments, parameters) |argument, parameter| {
-        if (parameter == .divert_parameter) try check_divert_target(context, divert, argument);
+    if (parameters.len != arguments.len) return context.report_details(
+        .wrong_argument_count,
+        divert,
+        .{ .other = target, .numbers = .{ @intCast(parameters.len), @intCast(arguments.len) } },
+    );
+    for (arguments, parameters, 0..) |argument, parameter, position| {
+        if (parameter != .divert_parameter) continue;
+        try check_divert_target(context, divert, argument, @intCast(position));
     }
-    for (arguments, parameters) |argument, parameter| {
+    for (arguments, parameters, 0..) |argument, parameter, position| {
         if (parameter != .reference_parameter) continue;
-        if (!try check_reference(context, divert, argument)) break;
+        if (!try check_reference(context, divert, argument, @intCast(position))) break;
     }
 }
 
 /// An argument for a `-> x` parameter: a divert target, or a variable that holds one (not
 /// the name of a knot, stitch or label: that would pass its read count).
-fn check_divert_target(context: *Context, divert: ObjectIndex, argument: ObjectIndex) !void {
+fn check_divert_target(
+    context: *Context,
+    divert: ObjectIndex,
+    argument: ObjectIndex,
+    position: u32,
+) !void {
     const tree = context.tree;
     assert(tree.kind(divert) == .divert);
     assert(tree.parent(argument) == divert);
+    const target = context.targets[divert.to_int()];
     switch (tree.kind(argument)) {
         .divert_target => {},
         .variable_reference => {
             const path = context.path_of(context.ast().slot(tree.node(argument), .path));
             if (try lookups.resolve_path(context, &path, argument) != null) {
-                try context.report(.read_count_instead_of_divert_target, divert);
+                try context.report_with(.read_count_instead_of_divert_target, divert, argument);
             }
         },
-        else => try context.report(.divert_target_argument_expected, argument),
+        // ink reports this one on the argument, naming the target and the parameter.
+        else => try context.report_details(.divert_target_argument_expected, argument, .{
+            .other = target,
+            .name = context.parameter_name(target, position),
+        }),
     }
 }
 
 /// An argument for a `ref x` parameter: a variable's name, not a read count's. False if it
 /// isn't (ink stops checking at the first).
-fn check_reference(context: *Context, divert: ObjectIndex, argument: ObjectIndex) !bool {
+fn check_reference(
+    context: *Context,
+    divert: ObjectIndex,
+    argument: ObjectIndex,
+    position: u32,
+) !bool {
     const tree = context.tree;
     assert(tree.kind(divert) == .divert);
     assert(tree.parent(argument) == divert);
     if (tree.kind(argument) != .variable_reference) {
-        try context.report(.reference_argument_not_variable, divert);
+        try context.report_details(.reference_argument_not_variable, divert, .{
+            .other = argument,
+            .name = context.parameter_name(context.targets[divert.to_int()], position),
+        });
         return false;
     }
     const path = context.path_of(context.ast().slot(tree.node(argument), .path));
     if (try lookups.resolve_path(context, &path, divert) != null) {
-        try context.report(.read_count_by_reference, divert);
+        try context.report_with(.read_count_by_reference, divert, argument);
         return false;
     }
     return true;
@@ -99,7 +122,11 @@ pub fn check_divert_parameter(context: *Context, divert: ObjectIndex, name: []co
     const parameters = context.parameters(owner);
     for (parameters, 0..) |parameter, position| {
         if (!std.mem.eql(u8, name, context.parameter_name(owner, @intCast(position)))) continue;
-        if (parameter != .divert_parameter) try context.report(.divert_parameter_unmarked, owner);
+        if (parameter != .divert_parameter) try context.report_details(
+            .divert_parameter_unmarked,
+            owner,
+            .{ .other = divert, .name = name },
+        );
         return;
     }
 }
@@ -112,9 +139,10 @@ pub fn check_external(context: *Context, divert: ObjectIndex, external: ObjectIn
     assert(tree.kind(external) == .external_declaration);
     const ast = context.ast();
     const declared = ast.list(ast.slot(tree.node(external), .parameters)).count;
-    if (declared != tree.children_of(divert).len) {
-        try context.report(.external_argument_count, divert);
-    }
+    const given: u32 = @intCast(tree.children_of(divert).len);
+    if (declared != given) try context.report_details(.external_argument_count, divert, .{
+        .numbers = .{ declared, given },
+    });
 }
 
 /// The number of parameters of Runtime.NativeFunctionCall's functions that can be called
@@ -162,19 +190,26 @@ pub fn check_call(context: *Context, call: ObjectIndex, is_list: bool) !void {
         }
         return;
     };
-    if (arguments.len != expected) return context.report(.builtin_argument_count, call);
+    // `numbers`: the parameters it takes, for the message.
+    const count_error: resolve.Details = .{ .numbers = .{ expected, 0 } };
+    if (arguments.len != expected) {
+        return context.report_details(.builtin_argument_count, call, count_error);
+    }
     const is_count = std.mem.eql(u8, name, "TURNS_SINCE") or std.mem.eql(u8, name, "READ_COUNT");
     if (is_count) {
         const kind = tree.kind(arguments[0]);
         if (kind != .divert_target and kind != .variable_reference) {
-            try context.report(.builtin_argument_count, call);
+            try context.report_details(.builtin_argument_count, call, count_error);
         }
         return;
     }
     if (std.mem.eql(u8, name, "RANDOM") or std.mem.eql(u8, name, "SEED_RANDOM")) {
-        for (arguments) |argument| {
+        // `numbers`: which argument (RANDOM's minimum or maximum).
+        for (arguments, 0..) |argument, position| {
             if (is_non_integer_number(context, argument)) {
-                return context.report(.builtin_argument_not_integer, call);
+                return context.report_details(.builtin_argument_not_integer, call, .{
+                    .numbers = .{ @intCast(position), 0 },
+                });
             }
         }
     }

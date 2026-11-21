@@ -26,18 +26,32 @@ pub const Symbol = enum(u8) {
     temporary,
 };
 
+/// What a collision's message says about the objects: the colliding name, the object that
+/// already has it, and whether the name is a parameter's (ink's "argument" type override,
+/// `numbers[0]` 1).
+fn conflict(name: []const u8, existing: ObjectIndex, symbol: Symbol) resolve.Details {
+    assert(name.len > 0);
+    const as_argument: u32 = @intFromBool(symbol == .argument);
+    return .{ .other = existing, .name = name, .numbers = .{ as_argument, 0 } };
+}
+
 /// Story.CheckForNamingCollisions for `name` on `object`.
 pub fn check(context: *Context, object: ObjectIndex, name: []const u8, symbol: Symbol) !void {
     assert(object.to_int() < context.tree.count());
     if (name.len == 0) return;
-    if (grammar.is_reserved_keyword(name)) return context.report(.reserved_name, object);
-    if (passes.is_builtin(name)) return context.report(.builtin_name, object);
+    const as_type = conflict(name, .none, symbol);
+    if (grammar.is_reserved_keyword(name)) {
+        return context.report_details(.reserved_name, object, as_type);
+    }
+    if (passes.is_builtin(name)) return context.report_details(.builtin_name, object, as_type);
     const found = try lookups.content_with_name_at_level(context, Tree.root, name, .knot, false);
     if (found) |knot| {
-        if (knot != object or symbol == .argument) return context.report(.name_conflict, object);
+        if (knot != object or symbol == .argument) {
+            return context.report_details(.name_conflict, object, conflict(name, knot, symbol));
+        }
     }
     if (@backingInt(symbol) < @backingInt(Symbol.list)) return;
-    try check_lists(context, object, name);
+    try check_lists(context, object, name, symbol);
     if (@backingInt(symbol) <= @backingInt(Symbol.variable)) return;
     if (context.lookup(&context.declarations, Tree.root, name)) |declaration| {
         const tree = context.tree;
@@ -45,25 +59,29 @@ pub fn check(context: *Context, object: ObjectIndex, name: []const u8, symbol: S
             declaration,
             Flags.list,
         );
-        if (declaration != object and is_global) try context.report(.name_conflict, object);
+        if (declaration != object and is_global) {
+            try context.report_details(.name_conflict, object, conflict(name, declaration, symbol));
+        }
     }
     if (@backingInt(symbol) < @backingInt(Symbol.sub_flow_and_weave)) return;
     var path: Path = .{ .count = 1 };
     path.components[0] = name;
     if (try lookups.resolve_path(context, &path, object)) |target| {
-        if (target != object) return context.report(.name_conflict, object);
+        if (target != object) {
+            return context.report_details(.name_conflict, object, conflict(name, target, symbol));
+        }
     }
     if (@backingInt(symbol) < @backingInt(Symbol.argument) or symbol == .argument) return;
     const flow = context.tree.closest_flow(object);
     for (0..context.parameters(flow).len) |position| {
         if (std.mem.eql(u8, name, context.parameter_name(flow, @intCast(position)))) {
-            return context.report(.name_conflict, object);
+            return context.report_with(.argument_name_conflict, object, flow);
         }
     }
 }
 
 /// The list part: a list's name, and (except for list items) the names of every item.
-fn check_lists(context: *Context, object: ObjectIndex, name: []const u8) !void {
+fn check_lists(context: *Context, object: ObjectIndex, name: []const u8, symbol: Symbol) !void {
     const tree = context.tree;
     assert(name.len > 0);
     for (context.list_order.items) |definition| {
@@ -72,14 +90,15 @@ fn check_lists(context: *Context, object: ObjectIndex, name: []const u8) !void {
         assert(tree.kind(declaration) == .variable_assignment);
         const list_name = context.slot_name(declaration, .name);
         const is_own = object == definition or object == declaration;
-        if (std.mem.eql(u8, name, list_name) and !is_own) try context.report(
-            .name_conflict,
-            object,
-        );
+        if (std.mem.eql(u8, name, list_name) and !is_own) {
+            try context.report_details(.name_conflict, object, conflict(name, definition, symbol));
+        }
         if (tree.kind(object) == .list_element) continue;
         for (tree.children_of(definition)) |element| {
             const item = context.slot_name(element, .name);
-            if (std.mem.eql(u8, name, item)) try context.report(.name_conflict, object);
+            if (std.mem.eql(u8, name, item)) {
+                try context.report_details(.name_conflict, object, conflict(name, element, symbol));
+            }
         }
     }
 }
@@ -95,7 +114,9 @@ pub fn check_flow(context: *Context, flow: ObjectIndex) !void {
         for (first + 1..count) |second| {
             const a = context.parameter_name(flow, @intCast(first));
             const b = context.parameter_name(flow, @intCast(second));
-            if (std.mem.eql(u8, a, b)) try context.report(.duplicate_argument, flow);
+            if (std.mem.eql(u8, a, b)) {
+                try context.report_details(.duplicate_argument, flow, .{ .name = a });
+            }
         }
     }
     const level = context.level(flow);
@@ -151,6 +172,10 @@ fn check_label(
             null,
             false,
         );
-        if (other != null and other.? != object) try context.report(.name_conflict, object);
+        if (other != null and other.? != object) try context.report_details(
+            .name_conflict,
+            object,
+            conflict(name, other.?, .sub_flow_and_weave),
+        );
     }
 }
