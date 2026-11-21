@@ -126,7 +126,8 @@ pub const Code = enum(u8) {
     /// DivertTarget.ResolveReferences, on `-> x` for a variable `x`: "Since 'x' is a
     /// variable, it shouldn't be preceded by '->' here."
     variable_divert_target,
-    /// FunctionCall.ResolveReferences, on the call `TURNS_SINCE(-> x)` for a variable `x`: "When
+    /// FunctionCall.ResolveReferences, on the call `TURNS_SINCE(-> x)` or `READ_COUNT(-> x)`
+    /// for a variable `x` (ink names TURNS_SINCE in both): "When
     /// getting the TURNS_SINCE() of a variable target, remove the '->' - i.e. it should just
     /// be TURNS_SINCE(x)".
     turns_since_variable_target,
