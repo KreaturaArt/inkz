@@ -190,6 +190,11 @@ test "a negated left operand of '?' is an error, as in ink" {
         .{ .code = .negated_has_operand, .line = 5 },
         .{ .code = .negated_has_operand, .line = 6 },
     });
+    // ink's parser folds `not` of a literal into a Number first (WithInner), so a negated
+    // literal is no negated operand: these compile in inklecate (PR #2 review).
+    const literals = "LIST l = a, b\n{not true ? 1}\n{!1 ? 0}\n~ temp y = !0.5 has a\n{y}\n";
+    var program = try compile.compile_source(std.testing.allocator, literals);
+    program.deinit(std.testing.allocator);
 }
 
 test "a divert target of a variable is an error, as in ink" {
