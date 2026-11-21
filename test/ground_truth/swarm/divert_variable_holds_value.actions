@@ -1,0 +1,14 @@
+choose_path by_string
+play
+reset
+choose_path by_list
+play
+reset
+choose_path by_empty_list
+play
+reset
+choose_path by_bool
+play
+reset
+choose_path by_float
+play
