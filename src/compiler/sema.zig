@@ -339,6 +339,10 @@ pub fn object_offset(
         if (first_token(parsed, tree.node(object))) |token| {
             return parsed.workspace.token_starts[token];
         }
+        // A return without a value keeps its rule's start in its `none`.
+        if (tree.kind(object) == .@"return") return parsed.tree.data[
+            parsed.tree.slot(tree.node(object), .inner).to_int()
+        ];
     }
     return 0;
 }
@@ -455,9 +459,9 @@ fn render_label(
     if (node.is_none()) return;
     const ast = &parsed.tree;
     const token_node: ?NodeIndex = switch (ast.tag(node)) {
-        .knot, .function, .stitch, .function_stitch => ast.child(node, 0),
+        .knot, .function, .stitch, .function_stitch => ast.slot(node, .name),
         .text, .text_space, .glue => node,
-        .choice, .sticky_choice, .gather => ast.child(node, 1),
+        .choice, .sticky_choice, .gather => ast.slot(node, .label),
         else => null,
     };
     const leaf = token_node orelse return;

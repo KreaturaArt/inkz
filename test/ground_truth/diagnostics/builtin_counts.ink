@@ -1,0 +1,6 @@
+{POW(1)}
+{FLOOR(1, 2)}
+{TURNS(1)}
+{SEED_RANDOM(1, 2)}
+{RANDOM(1)}
+-> END

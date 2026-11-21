@@ -110,7 +110,7 @@ resolution and the syntax tree are freed once lowering is done, before layout an
 ```mermaid
 flowchart TD
     subgraph parse["Parse (core.zig, grammar*.zig)"]
-        source["one source buffer<br/>+ file table"] --> tokens["tokens on demand<br/>{tag, start, end}"]
+        source["one source buffer<br/>+ file table"] --> tokens["tokens on demand<br/>{start, end}, 8 B, no tag"]
         tokens --> ast["syntax tree (ast.zig)<br/>tag u8 + word u32 per node,<br/>children contiguous"]
     end
     subgraph middle["Object tree and resolution"]

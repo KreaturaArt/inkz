@@ -31,9 +31,10 @@ higher; its last measurement, before P9.2 deleted it:
 ## Memory budget sizing (P4.12)
 
 A story's runtime state is one allocation of exactly `Limits.bytes_total(shape)` bytes, made by
-`Story.init` (tested with a counting allocator in `src/runtime/state.zig`, "init allocates exactly the byte
-budget, once"). Nothing allocates after
-that. The total has three parts:
+`Story.init`. It is tested with a counting allocator in `src/runtime/state.zig` ("init
+allocates exactly the byte budget, once") and, with externals, in
+`src/testing/zero_allocation.zig`. Until P16.10 the external bindings were a second
+allocation; they are now carved from the same block. Nothing allocates after that. The total has three parts:
 
 - **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
   `str` marks, and the choices with their tags and thread snapshots.
@@ -41,7 +42,7 @@ that. The total has three parts:
   plus the undo log (`patch_entries_max` × 16 bytes) and its bitset of logged slots (one bit
   per global, visit count and turn index).
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
-  (8 bytes per counted container), the line buffer (`output_bytes_max`), the tag scratch
+  (8 bytes per counted container), the external bindings (24 bytes per EXTERNAL), the line buffer (`output_bytes_max`), the tag scratch
   (`tag_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
   list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
@@ -70,11 +71,11 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copy + undo log) | 197,896 | 31,952 |
-| Shared | 1,856,896 | 196,144 |
-| **Total per story** | **2,235,528** (2.13 MiB) | **255,872** (250 KiB) |
+| Shared | 1,857,152 | 196,208 |
+| **Total per story** | **2,235,784** (2.13 MiB) | **255,936** (250 KiB) |
 
-The whole game, one main story and four side stories, needs 2,235,528 + 4 × 255,872 =
-3,259,016 bytes (3.11 MiB), fixed at load time. In the main story the 1 MiB string heap is
+The whole game, one main story and four side stories, needs 2,235,784 + 4 × 255,936 =
+3,259,528 bytes (3.11 MiB), fixed at load time. In the main story the 1 MiB string heap is
 about half of the total.
 
 ### Fitted limits (P10.2)
@@ -156,12 +157,12 @@ Peak RSS of the whole run: 27776 KiB. Plays use seeded random choices (.NET Rand
 
 | Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|---|---|
-| crime_scene | 625.9 | 241.3 | 101617 | 130947 | 13230307 | 2254334 | 39536 | 1513 | 1490.0 |
-| crime_scene, fitted limits | 389.4 | 63.4 | 101971 | 131403 | 13276340 | 86494 | 39536 | 1513 | 57.2 |
-| generated (1000 knots) | 5756.4 | 1000.7 | 464247 | 464247 | 12543958 | 2916047 | 505080 | 32010 | 91.1 |
-| generated, fitted limits | 5605.3 | 764.3 | 470560 | 470560 | 12714540 | 738199 | 505080 | 32010 | 23.1 |
+| crime_scene | 655.6 | 283.8 | 105686 | 136191 | 13760069 | 2259389 | 38696 | 1513 | 1493.3 |
+| crime_scene, fitted limits | 392.8 | 34.1 | 104981 | 135282 | 13668298 | 87973 | 38696 | 1513 | 58.1 |
+| generated (1000 knots) | 5830.6 | 594.3 | 469897 | 469897 | 12696616 | 2940683 | 505056 | 32010 | 91.9 |
+| generated, fitted limits | 5632.0 | 368.2 | 474929 | 474929 | 12832587 | 758827 | 505056 | 32010 | 23.7 |
 
-The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
+The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2.
 <!-- bench-runtime:safe:end -->
 
 <!-- bench-runtime:fast:start -->
@@ -169,21 +170,21 @@ The state is the limits' fixed budget, allocated once: the defaults, or limits f
 
 | Story | Load (µs) | Image load (µs) | Turns/s | Lines/s | Instructions/s | Bytes (program + state) | Image bytes | Instructions | Bytes/instruction |
 |---|---|---|---|---|---|---|---|---|---|
-| crime_scene | 304.4 | 44.1 | 216102 | 278477 | 28135949 | 2254334 | 39536 | 1513 | 1490.0 |
-| crime_scene, fitted limits | 267.8 | 43.7 | 218298 | 281307 | 28421902 | 86494 | 39536 | 1513 | 57.2 |
-| generated (1000 knots) | 4295.5 | 665.2 | 1100289 | 1100289 | 29729811 | 2916047 | 505080 | 32010 | 91.1 |
-| generated, fitted limits | 4272.9 | 648.1 | 1103084 | 1103084 | 29805340 | 738199 | 505080 | 32010 | 23.1 |
+| crime_scene | 300.7 | 25.8 | 243974 | 314393 | 31764792 | 2259389 | 38696 | 1513 | 1493.3 |
+| crime_scene, fitted limits | 272.2 | 17.6 | 245305 | 316109 | 31938165 | 87973 | 38696 | 1513 | 58.1 |
+| generated (1000 knots) | 4556.0 | 280.5 | 1124131 | 1124131 | 30374019 | 2940683 | 505056 | 32010 | 91.9 |
+| generated, fitted limits | 4566.4 | 265.5 | 1109315 | 1109315 | 29973688 | 758827 | 505056 | 32010 | 23.7 |
 
-The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2 (P10.2).
+The state is the limits' fixed budget, allocated once: the defaults, or limits fitted to the bench's own play with margin 2.
 <!-- bench-runtime:fast:end -->
 
 <!-- bench-compile:safe:start -->
 ### Compiler, safe
 
-| Story | Compile (ms) | Peak bytes |
-|---|---|---|
-| crime_scene | 1.56 | 246873 |
-| generated (1000 knots) | 26.38 | 4753137 |
+| Story | Compile (ms) | Peak bytes | Workspace retries |
+|---|---|---|---|
+| crime_scene | 1.33 | 245284 | 0 |
+| generated (1000 knots) | 19.30 | 4742829 | 0 |
 
 Source to JSON; the time is the mean of 20 compiles.
 <!-- bench-compile:safe:end -->
@@ -191,10 +192,10 @@ Source to JSON; the time is the mean of 20 compiles.
 <!-- bench-compile:fast:start -->
 ### Compiler, fast
 
-| Story | Compile (ms) | Peak bytes |
-|---|---|---|
-| crime_scene | 0.87 | 223231 |
-| generated (1000 knots) | 14.78 | 4292970 |
+| Story | Compile (ms) | Peak bytes | Workspace retries |
+|---|---|---|---|
+| crime_scene | 0.83 | 230257 | 0 |
+| generated (1000 knots) | 12.24 | 4292974 | 0 |
 
 Source to JSON; the time is the mean of 20 compiles.
 <!-- bench-compile:fast:end -->
@@ -244,9 +245,9 @@ The same comparisons in ReleaseFast:
 | 0 allocations after init in `cont`, `choose_choice_index`, `evaluate_function`, `set_variable`, `switch_flow`, `load_json` | Test-enforced in `src/testing/zero_allocation.zig`. The `load_json` test was added in P9.4. |
 | `Story.init` allocates exactly `Limits.bytes_total()` | Test-enforced (`src/runtime/state.zig`) |
 | No recursion, functions ≤ 70 lines, lines ≤ 100 columns, ≥ 2 asserts per function; `zig build lint` passes with an empty allowlist | Met. The allowlist was removed in P9.1. |
-| No path resolution, string hashing or `mem.eql` in the VM hot path | Lint gate on `src/runtime/vm.zig`, added in P9.4 |
+| No path resolution, string hashing or `mem.eql` in the VM hot path | Lint gate since P9.4. It covered only `src/runtime/vm.zig` until P16.7, while `ops.zig` scanned globals by name and hashed list item names on every temp read. Since P16.7 the gate covers every runtime file the step reaches (`hot_path_files` in `tools/lint.zig`) and also forbids `strings.find`, `_by_name(` and `global_slot(`. The resolution functions in `ops.zig` carry the temporary suppression `P16 F1/F2`, which P16.8 and P16.9 remove. |
 | Memory bounded over 10k turns | Test-enforced: heap compaction over 10,000 rounds, and flow switching |
-| Size guards: `Value` 12 B, `Frame` ≤ 24 B, `Instruction` and `Node` 5 B SoA, `Token` 9 B SoA | Comptime asserts and size tests |
+| Size guards: `Value` 12 B, `Frame` ≤ 24 B, `Instruction` and `Node` 5 B SoA, a token 8 B SoA (`token_starts` and `token_ends`; no tag, P16.20 corrected the 9 B claim) | Comptime asserts and size tests |
 | Simulation, 10k seeds, including compact-always | Met. `zig build simulate -Doptimize=ReleaseSafe -- --seeds 10000`, plain and with `--compact-always on`: 1,830,000 runs each (183 cases × 10,000 seeds), 0 failures |
 
 ## Phase 10: option 3 (P10.1–P10.3)
@@ -346,6 +347,62 @@ For example, to show the median load times of the latest ReleaseFast run:
 ```sh
 tail -n 8 bench/load_store.jsonl | jq -r 'select(.operation == "load") | [.story, .format, .median_ns] | @tsv'
 ```
+
+## Variable resolution by slot and name class (P16.8, P16.9)
+
+Before Phase 16, every global read or write found its slot again by name (a scan over the
+globals), and every temp read first scanned the globals, then hashed the name to look for a
+list item, before it reached the temps. Now globals are read and written through their
+resolved slot (F2), and `Program.name_classes` (4 bytes per string, rebuilt on image load)
+answers "global, list item or temp" with one read (F1). The VM looks no name up by its text
+while it plays (tests count `FrozenStringPool.find` calls).
+
+`zig build bench`, turns/s, Apple M3 (the bench stories have few globals, so this is the
+floor of the gain; a story with hundreds of globals and temps gains more):
+
+| Story | Mode | Before (d7e324e) | After F2 (70e746f) | After F1 |
+|---|---|---:|---:|---:|
+| crime_scene | ReleaseSafe | 101,798 | 102,877 | 105,821 (+4.0%) |
+| crime_scene | ReleaseFast | 228,622 | 233,280 | 240,688 (+5.3%) |
+| generated (1000 knots) | ReleaseSafe | 477,556 | 464,849 | 474,997 (noise) |
+| generated (1000 knots) | ReleaseFast | 1,117,463 | 1,109,337 | 1,127,830 (noise) |
+
+The program grows by 4 bytes per string (crime_scene: 1,788 bytes).
+
+## Native dispatch and save load, measured and decided (P16.18, F15, F18)
+
+`zig build bench-profile`, ReleaseFast, Apple M3, after the name classes (P16.9):
+
+| Zone | crime_scene | generated (1000 knots) |
+|---|---:|---:|
+| `call_native` in one play | 8.35 µs, 10.1% (288 calls) | 4.25 µs, 2.3% (200 calls) |
+| `load_validate` in one save load | 5.97 µs, 43.9% | 62.0 µs, 47.9% |
+| `load_commit` in one save load | 6.23 µs, 45.8% | 62.9 µs, 48.5% |
+
+- **F15, native dispatch: kept as a runtime switch.** The rule was to build comptime-opcode
+  prongs (fino's dispatch) if `call_native` passes 5% of play on a bench story. It does on
+  crime_scene, so they were built: one `inline else` prong per native opcode, with
+  `native.binary`/`unary` taking the opcode at compile time. Play was no faster (crime_scene
+  81.3–83.0 µs with them against 79.4 µs without; the generated story 182.7–184.8 against
+  182.8 µs), so they were taken out again. The zone's time is the operations themselves
+  (popping the operands, reserving room, the arithmetic, pushing the result), not the
+  switch.
+- **F18, save load: two passes kept.** The rule was to switch to one pass if a single pass
+  into the idle lookahead buffers stayed atomic and saved more than 30%. The passes are
+  about even, so one pass could save up to 45%, but it can't stay atomic: a save sets the
+  globals, the visit counts, the heap, the lists and the parked flows, and only the live
+  flow has a second (lookahead) copy to stage into. A failed load must leave the story as it
+  was (D15), so the validating pass stays.
+
+## Resolve keys, measured and decided (P16.16, F13)
+
+Finding F13 proposed interning names at sema so that resolve's tables key on `{ObjectIndex,
+StringId}` instead of hashing name slices. Measured on the bench's 1,000-knot story
+(ReleaseFast, M3): resolve takes 0.95–1.8 ms, and its tables hash 23,252 keys over 154 KB
+of names, which is about 32 µs of Wyhash, plus 6,081 short compares. That is 2–3% of
+resolve and well under 1% of a compile. Integer keys would still hash (a smaller key), and
+interning every identifier once costs about as many hashes as the lookups save. **Decision:
+keys stay `{scope, []const u8}`.** The win isn't there to take.
 
 ## Profile per pipeline stage (TASK-153)
 

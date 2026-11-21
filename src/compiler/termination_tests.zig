@@ -177,3 +177,48 @@ test "a tunnel can't return onwards to END or DONE" {
     var program = try compile.compile_source(gpa, valid);
     program.deinit(gpa);
 }
+
+test "a negated left operand of '?' is an error, as in ink" {
+    // ERROR: line 3: Using 'not' or '!' here negates 'v' rather than the result of the '?'
+    // or 'has' operator. You need to add parentheses around the (A ? B) expression.
+    // (also lines 5 and 6: parentheses around `not v` don't count; `-v`, `not (v ? 1)` and
+    // `!?` are fine.) Found by the differential swarm run (P16.3).
+    const source = "VAR v = true\nLIST l = a, b\n{not v ? 1}\n{not (v ? 1)}\n{(not v) ? 1}\n" ++
+        "~ temp x = !v has a\n{-v ? 1}\n{not v !? 1}\n";
+    try expect_diagnostics(source, &.{
+        .{ .code = .negated_has_operand, .line = 3 },
+        .{ .code = .negated_has_operand, .line = 5 },
+        .{ .code = .negated_has_operand, .line = 6 },
+    });
+    // ink's parser folds `not` of a literal into a Number first (WithInner), so a negated
+    // literal is no negated operand: these compile in inklecate (PR #2 review).
+    const literals = "LIST l = a, b\n{not true ? 1}\n{!1 ? 0}\n~ temp y = !0.5 has a\n{y}\n";
+    var program = try compile.compile_source(std.testing.allocator, literals);
+    program.deinit(std.testing.allocator);
+}
+
+test "a divert target of a variable is an error, as in ink" {
+    // ERROR: line 3: Since 'k0' is a variable, it shouldn't be preceded by '->' here.
+    // ERROR: line 3: When getting the TURNS_SINCE() of a variable target, remove the '->' -
+    // i.e. it should just be TURNS_SINCE(k0)
+    // ERROR: line 4: Since 'k0' is a variable, it shouldn't be preceded by '->' here.
+    // Found by the limits swarm fuzz target, where lowering reached `unreachable` (P16.4).
+    const source = "=== function f(y) ===\n~ temp k0 = 1\n~ temp t = TURNS_SINCE(-> k0)\n" ++
+        "~ temp u = -> k0\n~ return t\n";
+    try expect_diagnostics(source, &.{
+        .{ .code = .variable_divert_target, .line = 3 },
+        .{ .code = .turns_since_variable_target, .line = 3 },
+        .{ .code = .variable_divert_target, .line = 4 },
+    });
+    try std.testing.expectError(error.CompileFailed, compile.compile_source(
+        std.testing.allocator,
+        source,
+    ));
+    // READ_COUNT counts its target as TURNS_SINCE does, so it gets the same second error
+    // (PR #2 review).
+    try expect_diagnostics("=== function f(y) ===\n~ temp k0 = 1\n" ++
+        "~ temp t = READ_COUNT(-> k0)\n~ return t\n", &.{
+        .{ .code = .variable_divert_target, .line = 3 },
+        .{ .code = .turns_since_variable_target, .line = 3 },
+    });
+}

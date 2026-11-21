@@ -45,9 +45,7 @@ fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Write
             "doesn't exist in the save state.", .{argument}),
         .divert_variable_not_found => return writer.print("Tried to divert using a target from " ++
             "a variable that could not be found ({s})", .{argument}),
-        .divert_variable_not_target => return writer.print("Tried to divert to a target from a " ++
-            "variable, but the variable ({s}) didn't contain a divert target, it was " ++
-            "empty/null (the value 0).", .{argument}),
+        .divert_variable_not_target => return write_not_target(story, diagnostic, argument, writer),
         .random_range_empty => return writer.print("RANDOM was called with minimum as {d} and " ++
             "maximum as {d}. The maximum must be larger", .{
             diagnostic.number,
@@ -77,9 +75,55 @@ fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Write
             type_name(diagnostic.other_number >> 8),
             type_name(diagnostic.other_number & 0xff),
         }),
+        .operation_not_for_type => return writer.print("Cannot perform operation '{s}' on {s}", .{
+            opcode_word(diagnostic.number),
+            rank_name(diagnostic.other_number),
+        }),
+        .pop_unexpected => return writer.print("Found {s}, when expected {s}", .{
+            pop_name(diagnostic.number),
+            pop_name(diagnostic.other_number),
+        }),
         else => fixed_text(diagnostic.code),
     };
     try writer.writeAll(text);
+}
+
+/// What ink calls a function return, a tunnel onwards, or the end of a flow (a FrameKind
+/// number, or 2 for the end).
+fn pop_name(number: i32) []const u8 {
+    assert(number >= 0 and number <= 2);
+    return switch (number) {
+        0 => "tunnel onwards statement (->->)",
+        1 => "function return statement (~ return)",
+        else => "end of flow (-> END or choice)",
+    };
+}
+
+/// ink's ValueType name for a `Value.rank`.
+fn rank_name(rank: i32) []const u8 {
+    assert(rank >= 0 and rank <= 5);
+    const names = [_][]const u8{
+        "Int", "Float", "List", "String", "DivertTarget", "VariablePointer",
+    };
+    return names[@intCast(rank)];
+}
+
+/// ink's "didn't contain a divert target": `was empty/null (the value 0).` for an integer
+/// 0, else `contained '<value>'.` with the value's ToString, which the failure stored as
+/// `detail`.
+fn write_not_target(
+    story: *const Story,
+    diagnostic: Diagnostic,
+    name: []const u8,
+    writer: *std.Io.Writer,
+) !void {
+    assert(diagnostic.code == .divert_variable_not_target);
+    try writer.print("Tried to divert to a target from a variable, but the variable ({s}) " ++
+        "didn't contain a divert target, it ", .{name});
+    if (diagnostic.detail == value_module.StringReference.none) {
+        return writer.writeAll("was empty/null (the value 0).");
+    }
+    try writer.print("contained '{s}'.", .{ops.strings_of(story).get(diagnostic.detail)});
 }
 
 /// The native function's name as ink spells it (its JSON word), from an opcode number.

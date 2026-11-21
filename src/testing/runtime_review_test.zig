@@ -7,6 +7,7 @@ const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
 const api = @import("../runtime/api.zig");
 const Program = @import("../core/program.zig").Program;
+const string_pool = @import("../core/string_pool.zig");
 
 /// A story on `program` with `limits`, owned by the caller.
 fn start(gpa: std.mem.Allocator, program: *const Program, limits: api.Limits) !*api.Story {
@@ -253,4 +254,109 @@ test "lists meet ints only through + and -, as in ink" {
         "RUNTIME ERROR: (0.3): Can not call use '+' operation on Int and List",
         try list_error_of(gpa, "LIST l = a, b, c\nVAR x = (b)\n{2 + x}\n-> END\n", &buffer),
     );
+}
+
+test "global reads and writes go through the slot, without a scan by name" {
+    // 64 globals read and written by a story: `global_slot` never scans (P16.8, F2). A
+    // write in the newline lookahead is undone with it, and a ref parameter passed a global
+    // still assigns the global.
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    for (0..64) |index| try source.writer.print("VAR g{d} = {d}\n", .{ index, index });
+    for (0..63) |index| try source.writer.print("~ g{d} = g{d} + 1\n", .{ index, index + 1 });
+    try source.writer.writeAll("{g0} {g62}\n~ g1 = 100\nNext\n-> END\n");
+    var program = try compile.compile_source(gpa, source.written());
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    // No name lookup by text while playing (get_variable, the host's, looks one up).
+    const finds_before = string_pool.finds_for_tests;
+    try std.testing.expectEqualStrings("2 64\n", (try story.cont()).get());
+    try std.testing.expectEqual(finds_before, string_pool.finds_for_tests);
+    // The lookahead ran `~ g1 = 100` and saw "Next": it restored g1.
+    try std.testing.expectEqual(@as(i32, 3), story.get_variable("g1").?.get().integer);
+    const finds_next = string_pool.finds_for_tests;
+    try std.testing.expectEqualStrings("Next\n", (try story.cont()).get());
+    try std.testing.expectEqual(finds_next, string_pool.finds_for_tests);
+    try std.testing.expectEqual(@as(i32, 100), story.get_variable("g1").?.get().integer);
+
+    var ref_program = try compile.compile_source(gpa,
+        \\VAR g = 1
+        \\~ add(g)
+        \\~ add(g)
+        \\{g}
+        \\=== function add(ref x) ===
+        \\~ x = x + 10
+        \\
+    );
+    defer ref_program.deinit(gpa);
+    var ref_story: api.Story = undefined;
+    try ref_story.init(gpa, &ref_program, .{});
+    defer ref_story.deinit(gpa);
+    try std.testing.expectEqualStrings("21\n", (try ref_story.cont()).get());
+}
+
+test "temps and list items resolve without a lookup by name" {
+    // A temp-heavy story with 200 globals and 200 list items: playing it looks no name up
+    // by its text (the name-class table answers), and the values are ink's (P16.9, F1).
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    for (0..200) |index| try source.writer.print("VAR g{d} = {d}\n", .{ index, index });
+    try source.writer.writeAll("LIST big = ");
+    for (0..200) |index| {
+        try source.writer.print("{s}i{d}", .{ if (index > 0) ", " else "", index });
+    }
+    try source.writer.writeAll("\n~ temp t = 0\n");
+    for (0..50) |index| try source.writer.print("~ t = t + g{d}\n", .{index * 4});
+    try source.writer.writeAll("~ temp item = i150\n");
+    try source.writer.writeAll("{t} {item} {big.i3} {LIST_COUNT(item)}\n-> END\n");
+    var program = try compile.compile_source(gpa, source.written());
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    const finds_before = string_pool.finds_for_tests;
+    // 0 + 4 + ... + 196 = 4,900.
+    try std.testing.expectEqualStrings("4900 i150 i3 1\n", (try story.cont()).get());
+    try std.testing.expectEqual(finds_before, string_pool.finds_for_tests);
+}
+
+test "name classes from the builder equal the ones an image load rebuilds" {
+    // Every ground-truth case's program, through the binary image: the rebuilt table is
+    // the builder's; a corrupted entry fails Program.check.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const io = std.testing.io;
+    const ink_json = @import("../core/ink_json.zig");
+    const program_image = @import("../core/program_image.zig");
+    const cases = @import("cases.zig");
+    var checked: u32 = 0;
+    for (try cases.ids(arena, io)) |id| {
+        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
+        const cwd = std.Io.Dir.cwd();
+        const json = cwd.readFileAlloc(io, path, arena, .limited(16 << 20)) catch continue;
+        var program = ink_json.load(arena, json) catch continue;
+        var image: std.Io.Writer.Allocating = .init(arena);
+        try program_image.write(&program, &image.writer);
+        var loaded = try program_image.load(arena, image.written());
+        try std.testing.expectEqualSlices(
+            u32,
+            @ptrCast(program.name_classes),
+            @ptrCast(loaded.name_classes),
+        );
+        checked += 1;
+        if (program.globals.len == 0) continue;
+        // A global's entry pointing at the wrong slot is caught.
+        const classes: []@import("../core/program.zig").NameClass = @constCast(loaded.name_classes);
+        const name = loaded.globals[0].name.to_int();
+        classes[name] = .{ .kind = .list_item, .index = 0 };
+        if (loaded.list_items.len > 0 and (loaded.list_items[0].name.to_int() == name or
+            loaded.list_items[0].full_name.to_int() == name)) continue;
+        try std.testing.expectEqual(Program.Fault.name_classes_mismatch, loaded.check());
+    }
+    try std.testing.expect(checked > 100);
 }

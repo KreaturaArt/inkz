@@ -5,6 +5,10 @@ diagrams; `docs/Guidelines.md` has the rules every change follows; `docs/Running
 is the host API guide. Each source file starts with a `//!` comment that says what it does
 and which part of `docs/DODMigrationPlan.md` it implements; read those next.
 
+`docs/DODReferenceComparison.md` compares the design, choice by choice, with the two
+reference projects (fino and zirp) and lists the findings that led to Phase 16;
+`docs/Phase16Plan.md` is the plan for them and for swarm testing (`docs/fuzzing.md`).
+
 The ```zig blocks in this file are compiled by `zig build doctest`. Excerpts of internal
 code are ```text blocks, because the library doesn't export those modules.
 

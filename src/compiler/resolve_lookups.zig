@@ -36,6 +36,7 @@ pub fn prepare(context: *Context) !void {
     context.variable_diverts = try .initEmpty(gpa, count);
     context.skipped = try .initEmpty(gpa, count);
     context.had_error = try .initEmpty(gpa, count);
+    context.had_warning = try .initEmpty(gpa, count);
     // ink's FindAll order: pre-order (objects are numbered in creation order).
     var objects = context.tree.walk(gpa, Tree.root, .pre);
     defer objects.deinit();
@@ -66,7 +67,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
             // The name is the LIST declaration's.
             assert(tree.kind(tree.parent(object)) == .variable_assignment);
             const declaration = tree.node(tree.parent(object));
-            const name = context.parsed.child_text(declaration, 0);
+            const name = context.parsed.slot_text(declaration, .name);
             try context.lists.put(context.gpa, .{ .scope = Tree.root, .name = name }, object);
             try context.list_order.append(context.gpa, object);
             values.number_list(context.parsed, tree, object, context.item_values);
@@ -80,7 +81,7 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
 /// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
 fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
     assert(context.tree.kind(constant) == .constant_declaration);
-    const name = context.child_name(constant, 0);
+    const name = context.slot_name(constant, .name);
     const entry = try context.constants.getOrPut(context.gpa, .{
         .scope = Tree.root,
         .name = name,
@@ -92,7 +93,7 @@ fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
         return context.report(.unsupported_fold, constant);
     };
     if (earlier == null or later == null or !values.equal(earlier.?, later.?)) {
-        try context.report(.constant_redefined, constant);
+        try context.report_with(.constant_redefined, constant, entry.value_ptr.*);
     }
 }
 
@@ -109,12 +110,13 @@ fn check_duplicate_items(context: *Context, definition: ObjectIndex) !void {
     const elements = context.tree.children_of(definition);
     for (elements, 0..) |element, position| {
         assert(context.tree.kind(element) == .list_element);
-        const name = context.child_name(element, 0);
+        const name = context.slot_name(element, .name);
         for (elements[position + 1 ..]) |later| {
-            const other = context.child_name(later, 0);
-            if (std.mem.eql(u8, name, other)) return context.report(
+            const other = context.slot_name(later, .name);
+            if (std.mem.eql(u8, name, other)) return context.report_details(
                 .duplicate_list_item,
                 definition,
+                .{ .name = name },
             );
         }
     }
@@ -132,7 +134,9 @@ fn name_weave_points(context: *Context, weave: ObjectIndex) !void {
             const name = context.label(object);
             if (name.len > 0) {
                 const entry = try context.labels.getOrPut(gpa, .{ .scope = weave, .name = name });
-                if (entry.found_existing) try context.report(.duplicate_label, object);
+                if (entry.found_existing) {
+                    try context.report_with(.duplicate_label, object, entry.value_ptr.*);
+                }
                 entry.value_ptr.* = object;
             }
         }
@@ -266,6 +270,22 @@ pub fn resolve_variable(context: *const Context, name: []const u8, from: ObjectI
     return null;
 }
 
+/// The item `list.item` or `item` names, without reporting an ambiguity: the first list's.
+pub fn find_list_item(
+    context: *const Context,
+    list_name: ?[]const u8,
+    item: []const u8,
+) ?ObjectIndex {
+    if (list_name) |name| {
+        const definition = context.lookup(&context.lists, Tree.root, name) orelse return null;
+        return list_item_named(context, definition, item);
+    }
+    for (context.list_order.items) |definition| {
+        if (list_item_named(context, definition, item)) |element| return element;
+    }
+    return null;
+}
+
 /// Story.ResolveListItem: `list.item`, or an item of any list (ambiguity is an error).
 pub fn resolve_list_item(
     context: *Context,
@@ -280,8 +300,13 @@ pub fn resolve_list_item(
     var found: ?ObjectIndex = null;
     for (context.list_order.items) |definition| {
         if (list_item_named(context, definition, item)) |element| {
-            if (found != null) {
-                try context.report(.ambiguous_list_item, from);
+            // `numbers[0]`: the other list, as an object index.
+            if (found) |first| {
+                try context.report_details(.ambiguous_list_item, from, .{
+                    .other = context.tree.parent(first),
+                    .name = item,
+                    .numbers = .{ definition.to_int(), 0 },
+                });
             } else found = element;
         }
     }
@@ -296,7 +321,7 @@ fn list_item_named(
 ) ?ObjectIndex {
     assert(context.tree.kind(definition) == .list_definition);
     for (context.tree.children_of(definition)) |element| {
-        const name = context.child_name(element, 0);
+        const name = context.slot_name(element, .name);
         if (std.mem.eql(u8, name, item)) return element;
     }
     return null;

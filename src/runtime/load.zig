@@ -117,7 +117,7 @@ const Loader = struct {
         assert(loader.commit);
         const s = loader.state();
         s.evaluation.clear();
-        s.call_stack.reset(.start_of(loader.story.program.root_container()));
+        s.call_stack.fresh(.start_of(loader.story.program.root_container()));
         s.output.clear();
         s.choices.clear();
         flows.reset(s);
@@ -139,8 +139,14 @@ const Loader = struct {
         const s = loader.state();
         var retained: Retained = .{ .strings = &s.strings, .lists = &s.lists };
         for (s.global_defaults) |*item| retained.add_value(item);
-        for (s.errors.slice()) |*diagnostic| retained.string(&diagnostic.argument);
-        for (s.warnings.slice()) |*diagnostic| retained.string(&diagnostic.argument);
+        for (s.errors.slice()) |*diagnostic| {
+            retained.string(&diagnostic.argument);
+            retained.string(&diagnostic.detail);
+        }
+        for (s.warnings.slice()) |*diagnostic| {
+            retained.string(&diagnostic.argument);
+            retained.string(&diagnostic.detail);
+        }
         if (loader.string_bytes + retained.bytes > s.strings.bytes.len) return error.SaveTooLarge;
         if (loader.list_words + retained.words > s.lists.words.len) return error.SaveTooLarge;
         if (loader.parking_words > s.parking.len) return error.SaveTooLarge;

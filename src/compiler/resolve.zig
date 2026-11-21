@@ -114,6 +114,23 @@ pub const Code = enum(u8) {
     duplicate_list_item,
     list_item_not_found,
     constant_redefined,
+    /// BinaryExpression.ResolveReferences, on `not A ? B` (parentheses don't count): "Using
+    /// 'not' or '!' here negates 'A' rather than the result of the '?' or 'has' operator. You
+    /// need to add parentheses around the (A ? B) expression."
+    negated_has_operand,
+    /// DivertTarget.ResolveReferences, a divert-target value used other than as a value, a
+    /// compared operand or TURNS_SINCE's argument: "Can't use a divert target like that. Did
+    /// you intend to call '-> k' as a function: likeThis(), or check the read count:
+    /// likeThis, with no arrows?"
+    divert_target_misused,
+    /// DivertTarget.ResolveReferences, on `-> x` for a variable `x`: "Since 'x' is a
+    /// variable, it shouldn't be preceded by '->' here."
+    variable_divert_target,
+    /// FunctionCall.ResolveReferences, on the call `TURNS_SINCE(-> x)` or `READ_COUNT(-> x)`
+    /// for a variable `x` (ink names TURNS_SINCE in both): "When
+    /// getting the TURNS_SINCE() of a variable target, remove the '->' - i.e. it should just
+    /// be TURNS_SINCE(x)".
+    turns_since_variable_target,
     /// UnaryExpression.WithInner on a literal it can't fold, `- true` (inklecate throws
     /// "Unexpected operation or number type").
     unsupported_fold,
@@ -130,17 +147,62 @@ pub const Code = enum(u8) {
     conditional_choice_syntax,
     /// A warning: "Apparent loose end exists where the flow runs out...".
     loose_end,
+    /// FlowBase.GenerateRuntimeObject, on the later of two flows with one name: "Story
+    /// already contains flow named 'k' (at line 2 of f.ink)".
+    duplicate_flow,
+    /// Story.CheckForNamingCollisions, a temp named like its flow's parameter: "temp '': Name
+    /// has already been used for a argument to f on line 3 of f.ink" (ink prints the story's
+    /// empty name).
+    argument_name_conflict,
+    /// FunctionCall.ResolveReferences, on TURNS_SINCE(-> x) or READ_COUNT(-> x) whose target
+    /// isn't found: "Failed to find target for TURNS_SINCE: '-> x'".
+    turns_since_target_not_found,
+    /// FunctionCall.ResolveReferences, on READ_COUNT(k) of a knot, stitch or label: "Should be
+    /// READ_COUNT(-> k). Usage without the '->' only makes sense for variable targets."
+    count_without_arrow,
+    /// IncDecExpression.ResolveReferences, `x++` inside an expression: "Can't use increment
+    /// as sub-expression".
+    increment_as_sub_expression,
+    /// DivertTarget.ResolveReferences, `-> f` of a flow with a `ref` parameter: "Can't store a
+    /// divert target to a knot or function that has by-reference arguments ('f' has 'ref x')."
+    divert_target_to_reference_flow,
+    /// A warning from List.GenerateIntoContainer: "Duplicate of item 'a' in list."
+    duplicate_list_literal_item,
 
     pub fn is_warning(code: Code) bool {
         assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
         assert(@sizeOf(Code) == 1);
-        return code == .loose_end;
+        return code == .loose_end or code == .duplicate_list_literal_item;
+    }
+
+    /// Whether ink reports it through Story.Error, which keeps no one-error-per-object rule:
+    /// it neither checks nor marks the object.
+    pub fn reported_by_story(code: Code) bool {
+        assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
+        return switch (code) {
+            .constant_redefined, .ambiguous_list_item, .duplicate_external => true,
+            else => false,
+        };
     }
 };
 
 pub const Diagnostic = struct {
     code: Code,
     object: ObjectIndex,
+    /// The object a message points back to (the first declaration of a duplicate), or none.
+    other: ObjectIndex = .none,
+    /// A name the message prints that isn't the object's own (a repeated parameter's, a
+    /// list item's), as a slice of the parsed source; empty if none.
+    name: []const u8 = "",
+    /// Counts the message prints (parameters expected and arguments given).
+    numbers: [2]u32 = .{ 0, 0 },
+};
+
+/// What a diagnostic carries besides its code and object.
+pub const Details = struct {
+    other: ObjectIndex = .none,
+    name: []const u8 = "",
+    numbers: [2]u32 = .{ 0, 0 },
 };
 
 pub const Resolution = struct {
@@ -157,6 +219,14 @@ pub const Resolution = struct {
     /// The EXTERNAL declarations, by name (at the root scope).
     externals: Table,
     diagnostics: []Diagnostic,
+
+    /// Whether resolution found an error (warnings don't stop compilation).
+    pub fn failed(resolution: *const Resolution) bool {
+        for (resolution.diagnostics) |diagnostic| {
+            if (!diagnostic.code.is_warning()) return true;
+        }
+        return false;
+    }
 
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
         assert(resolution.targets.len == resolution.references.len);
@@ -232,8 +302,10 @@ pub const Context = struct {
     variable_diverts: std.DynamicBitSetUnmanaged = .{},
     /// Proxy diverts of built-in calls: ink never generates or resolves them.
     skipped: std.DynamicBitSetUnmanaged = .{},
-    /// Objects that already have an error (ink's _alreadyHadError).
+    /// Objects that already have an error or a warning (ink's _alreadyHadError and
+    /// _alreadyHadWarning).
     had_error: std.DynamicBitSetUnmanaged = .{},
+    had_warning: std.DynamicBitSetUnmanaged = .{},
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
     pub fn deinit(context: *Context) void {
@@ -257,6 +329,7 @@ pub const Context = struct {
         context.variable_diverts.deinit(gpa);
         context.skipped.deinit(gpa);
         context.had_error.deinit(gpa);
+        context.had_warning.deinit(gpa);
         context.diagnostics.deinit(gpa);
     }
 
@@ -266,16 +339,56 @@ pub const Context = struct {
     }
 
     /// The name in an object's syntax node child `position` (an identifier leaf).
-    pub fn child_name(context: *const Context, object: ObjectIndex, position: u32) []const u8 {
-        return context.parsed.child_text(context.tree.node(object), position);
+    /// The text of slot `which` of the object's node (its name, mostly).
+    pub fn slot_name(
+        context: *const Context,
+        object: ObjectIndex,
+        comptime which: ast_module.Slot,
+    ) []const u8 {
+        return context.parsed.slot_text(context.tree.node(object), which);
     }
 
     /// Records an error on `object`; as in ink, an object gets at most one.
     pub fn report(context: *Context, code: Code, object: ObjectIndex) !void {
+        return context.report_with(code, object, .none);
+    }
+
+    /// `report`, with the object the message points back to.
+    pub fn report_with(
+        context: *Context,
+        code: Code,
+        object: ObjectIndex,
+        other: ObjectIndex,
+    ) !void {
+        return context.report_details(code, object, .{ .other = other });
+    }
+
+    /// `report`, with what the message prints besides the object. As ink's Object.Error,
+    /// an object gets one error at most.
+    pub fn report_details(
+        context: *Context,
+        code: Code,
+        object: ObjectIndex,
+        details: Details,
+    ) !void {
         assert(object.to_int() < context.tree.count());
-        if (context.had_error.isSet(object.to_int())) return;
-        context.had_error.set(object.to_int());
-        try context.diagnostics.append(context.gpa, .{ .code = code, .object = object });
+        // A global VAR's duplicate goes through Story.Error too (its scope is the story).
+        const by_story = code.reported_by_story() or (code == .duplicate_declaration and
+            context.tree.has(object, sema.Flags.global));
+        if (code.is_warning()) {
+            if (context.had_warning.isSet(object.to_int())) return;
+            context.had_warning.set(object.to_int());
+        } else if (!by_story) {
+            if (context.had_error.isSet(object.to_int())) return;
+            context.had_error.set(object.to_int());
+        }
+        try context.diagnostics.append(context.gpa, .{
+            .code = code,
+            .object = object,
+            .other = details.other,
+            .name = details.name,
+            .numbers = details.numbers,
+        });
     }
 
     pub fn level(context: *const Context, flow: ObjectIndex) FlowLevel {
@@ -291,7 +404,7 @@ pub const Context = struct {
     pub fn flow_name(context: *const Context, flow: ObjectIndex) []const u8 {
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return "";
-        return context.child_name(flow, 0);
+        return context.slot_name(flow, .name);
     }
 
     /// A choice's or gather's label (empty if it has none).
@@ -300,14 +413,14 @@ pub const Context = struct {
         assert(kind == .choice or kind == .gather);
         const node = context.tree.node(point);
         if (node.is_none()) return "";
-        return context.parsed.child_text(node, 1);
+        return context.parsed.slot_text(node, .label);
     }
 
     /// The flow's parameters, as their identifier leaves.
     pub fn parameters(context: *const Context, flow: ObjectIndex) []const ast_module.Tag {
         assert(context.tree.is_flow(flow));
         if (context.tree.kind(flow) == .story) return &.{};
-        const list_node = context.ast().child(context.tree.node(flow), 1);
+        const list_node = context.ast().slot(context.tree.node(flow), .parameters);
         if (context.ast().tag(list_node) == .none) return &.{};
         const listed = context.ast().list(list_node);
         return context.ast().tags[listed.first.to_int()..][0..listed.count];
@@ -315,7 +428,7 @@ pub const Context = struct {
 
     /// The name of parameter `position` of `flow`.
     pub fn parameter_name(context: *const Context, flow: ObjectIndex, position: u32) []const u8 {
-        const list_node = context.ast().child(context.tree.node(flow), 1);
+        const list_node = context.ast().slot(context.tree.node(flow), .parameters);
         const listed = context.ast().list(list_node);
         assert(position < listed.count);
         return context.parsed.leaf_text(.from_int(listed.first.to_int() + position));
@@ -607,7 +720,8 @@ test "simple_taster_tutorial.ink resolves without diagnostics, as inklecate comp
 }
 
 test "naming collisions, as ink's CheckForNamingCollisions" {
-    // The six errors inklecate reports for this source, in its order (one per object).
+    // The six errors inklecate reports for this source, in its order (one per object). The
+    // temp named like its knot's parameter is ink's argument variant.
     var fixture: Fixture = undefined;
     try fixture.init(
         \\VAR k = 1
@@ -627,7 +741,7 @@ test "naming collisions, as ink's CheckForNamingCollisions" {
     const expected = [_]Expected{
         .{ .code = .name_conflict, .kind = .variable_assignment },
         .{ .code = .name_conflict, .kind = .variable_assignment },
-        .{ .code = .name_conflict, .kind = .variable_assignment },
+        .{ .code = .argument_name_conflict, .kind = .variable_assignment },
         .{ .code = .name_conflict, .kind = .gather },
         .{ .code = .duplicate_argument, .kind = .knot },
         .{ .code = .builtin_name, .kind = .knot },
@@ -659,7 +773,8 @@ test "a resolve error in an included file reports that file's line and column" {
     try std.testing.expectEqual(@as(usize, 1), resolution.diagnostics.len);
     const diagnostic = resolution.diagnostics[0];
     try std.testing.expectEqual(Code.target_not_found, diagnostic.code);
-    const where = space.location(sema.object_offset(&space.parsed, &tree, diagnostic.object));
+    const offset = sema.object_offset(&space.parsed, &tree, diagnostic.object);
+    const where = try space.locate(gpa, offset);
     try std.testing.expectEqualStrings("other.ink", where.path);
     try std.testing.expectEqual(@as(u32, 3), where.line);
     try std.testing.expectEqual(@as(u32, 6), where.column);

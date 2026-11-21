@@ -65,6 +65,8 @@ pub const Zone = enum(u8) {
     lookahead_take,
     lookahead_restore,
     choose_choice,
+    /// A native operation (arithmetic, comparison, list and string ops): finding F15.
+    call_native,
     // Saves.
     save_write,
     load_parse,

@@ -639,7 +639,9 @@ pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
         else => {
             assert(frame.phase == 1);
             assert(machine.outcome != .none);
-            if (machine.outcome == .failed) try grammar.push_none(machine);
+            // A return without a value has no token: its `none` holds where the rule started,
+            // for the return's position in messages.
+            if (machine.outcome == .failed) try machine.push_node(.none, frame.checkpoint.at);
             try machine.wrap(.@"return", frame.checkpoint.scratch);
             return .succeed;
         },

@@ -2,7 +2,8 @@
 //! JSON, so the raw target stops in the tokenizer; here every input starts as a valid ink
 //! JSON (a generated story, compiled and serialized), and the fuzzer edits its tokens:
 //! replaces a number or a string (with ink's control words among the choices), deletes or
-//! duplicates a token, swaps a bracket, or cuts the text short.
+//! duplicates a token, swaps a bracket, or cuts the text short. Each input first draws its
+//! operators (a swarm over operators, plan §3.6); the save target uses the same ones.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -50,7 +51,32 @@ fn is_delimiter(byte: u8) bool {
     return std.mem.indexOfScalar(u8, delimiters, byte) != null;
 }
 
-const Mutation = enum { number, string, word, delete, duplicate, bracket, truncate };
+pub const Mutation = enum {
+    number,
+    string,
+    word,
+    delete,
+    duplicate,
+    bracket,
+    truncate,
+    /// A token replaced by a boundary number: 0, -1, the extremes of i32 and u32.
+    number_boundary,
+    /// A token replaced by a name the stories use (a variable, knot, list item or flow).
+    pool_name,
+    /// An object key (a string before `:`) replaced by another key or name.
+    key_rename,
+};
+
+pub const Mutations = std.EnumSet(Mutation);
+
+const numbers_boundary = [_][]const u8{
+    "0", "-1", "2147483647", "-2147483648", "4294967295", "4294967296", "1e40",
+};
+const names = [_][]const u8{
+    "\"v0\"",  "\"k0\"",  "\"k0.s0\"", "\"l0\"",        "\"a\"",            "\"l0.a\"", "\"c-0\"",
+    "\"g-0\"", "\"0\"",   "\"s0\"",    "\"f0\"",        "\"DEFAULT_FLOW\"", "\"x\"",    "\"$r\"",
+    "\"$r1\"", "\"one\"", "\"flows\"", "\"callstack\"",
+};
 
 /// ink's control words and keys, so replaced strings often still mean something.
 const strings = [_][]const u8{
@@ -63,21 +89,41 @@ const strings = [_][]const u8{
 };
 const words = [_][]const u8{ "null", "true", "false", "0", "-1", "1.5", "4294967295", "21" };
 
-pub fn mutate(smith: *Smith, gpa: Allocator, json: *std.ArrayList(u8), spans: []const Span) !void {
-    const span = spans[smith.index(spans.len)];
+/// Applies one operator from `allowed` to a token of `json`; returns it.
+pub fn mutate(
+    choices: fuzz_ink.Choices,
+    gpa: Allocator,
+    json: *std.ArrayList(u8),
+    spans: []const Span,
+    allowed: Mutations,
+) !Mutation {
+    const mutation = fuzz_ink.pick_from(choices, Mutation, allowed);
+    const span = if (mutation == .key_rename)
+        key_span(choices, json.items, spans) orelse return mutation
+    else
+        spans[choices.below(spans.len)];
     assert(span.end <= json.items.len);
     const range = .{ span.start, span.end - span.start };
-    switch (smith.value(Mutation)) {
+    switch (mutation) {
         .number => {
             var text: [16]u8 = undefined;
-            const number = std.fmt.bufPrint(&text, "{d}", .{smith.value(i32)}) catch unreachable;
+            const value = choices.choose(i32);
+            const number = std.fmt.bufPrint(&text, "{d}", .{value}) catch unreachable;
             try json.replaceRange(gpa, range[0], range[1], number);
         },
         .string => {
-            const string = strings[smith.index(strings.len)];
+            const string = strings[choices.below(strings.len)];
             try json.replaceRange(gpa, range[0], range[1], string);
         },
-        .word => try json.replaceRange(gpa, range[0], range[1], words[smith.index(words.len)]),
+        .word => try json.replaceRange(gpa, range[0], range[1], words[choices.below(words.len)]),
+        .number_boundary => {
+            const number = numbers_boundary[choices.below(numbers_boundary.len)];
+            try json.replaceRange(gpa, range[0], range[1], number);
+        },
+        .pool_name, .key_rename => {
+            const pool = if (choices.choose(bool)) &names else &strings;
+            try json.replaceRange(gpa, range[0], range[1], pool[choices.below(pool.len)]);
+        },
         .delete => try json.replaceRange(gpa, range[0], range[1], ""),
         .duplicate => {
             var copy: [64]u8 = undefined;
@@ -87,29 +133,68 @@ pub fn mutate(smith: *Smith, gpa: Allocator, json: *std.ArrayList(u8), spans: []
         },
         .bracket => {
             const brackets = "{}[]";
-            json.items[range[0]] = brackets[smith.index(brackets.len)];
+            json.items[range[0]] = brackets[choices.below(brackets.len)];
         },
         .truncate => json.shrinkRetainingCapacity(range[0]),
     }
+    return mutation;
 }
 
-fn load_mutated_json(base: []const u8, smith: *Smith) anyerror!void {
+/// One of the object keys (a string token followed by `:`), or null when there is none.
+fn key_span(choices: fuzz_ink.Choices, json: []const u8, spans: []const Span) ?Span {
+    var count: usize = 0;
+    for (spans[0..spans.len -| 1], spans[1..]) |span, next| {
+        if (json[span.start] == '"' and json[next.start] == ':') count += 1;
+    }
+    if (count == 0) return null;
+    var skip = choices.below(count);
+    for (spans[0 .. spans.len - 1], spans[1..]) |span, next| {
+        if (json[span.start] != '"' or json[next.start] != ':') continue;
+        if (skip == 0) return span;
+        skip -= 1;
+    }
+    unreachable;
+}
+
+/// Applies up to `count_max` operators from `allowed` (drawn when null) to `json`; returns
+/// the operators applied.
+pub fn mutate_all(
+    choices: fuzz_ink.Choices,
+    gpa: Allocator,
+    json: *std.ArrayList(u8),
+    allowed_given: ?Mutations,
+    count_max: u32,
+) !Mutations {
+    const allowed = allowed_given orelse fuzz_ink.draw_subset(choices, Mutation);
+    var spans: std.ArrayList(Span) = .empty;
+    defer spans.deinit(gpa);
+    var applied: Mutations = .empty;
+    var count: u32 = 0;
+    while (count < count_max and choices.more(1, 1)) : (count += 1) {
+        try token_spans(gpa, json.items, &spans);
+        if (spans.items.len == 0) break;
+        applied.insert(try mutate(choices, gpa, json, spans.items, allowed));
+    }
+    assert(applied.subsetOf(allowed));
+    return applied;
+}
+
+/// Mutates a copy of `base`, loads it, and returns the operators applied. A load returns
+/// a checked program or an error.
+fn check_mutated(choices: fuzz_ink.Choices, base: []const u8, allowed: ?Mutations) !Mutations {
     const gpa = std.testing.allocator;
     var json: std.ArrayList(u8) = .empty;
     defer json.deinit(gpa);
     try json.appendSlice(gpa, base);
-    var spans: std.ArrayList(Span) = .empty;
-    defer spans.deinit(gpa);
-    var count: u32 = 0;
-    while (count < mutations_max and !smith.eosWeightedSimple(1, 1)) : (count += 1) {
-        try token_spans(gpa, json.items, &spans);
-        if (spans.items.len == 0) break;
-        try mutate(smith, gpa, &json, spans.items);
-    }
-    assert(count <= mutations_max);
-    var program = ink_json.load(gpa, json.items) catch return;
+    const applied = try mutate_all(choices, gpa, &json, allowed, mutations_max);
+    var program = ink_json.load(gpa, json.items) catch return applied;
     defer program.deinit(gpa);
     assert(program.check() == .ok);
+    return applied;
+}
+
+fn load_mutated_json(base: []const u8, smith: *Smith) anyerror!void {
+    _ = try check_mutated(.{ .smith = smith }, base, null);
 }
 
 test "fuzz: a mutated ink JSON loads or is rejected" {
@@ -125,4 +210,29 @@ test "fuzz: a mutated ink JSON loads or is rejected" {
     var program = try ink_json.load(gpa, json);
     program.deinit(gpa);
     try std.testing.fuzz(@as([]const u8, json), load_mutated_json, .{ .corpus = &.{""} });
+}
+
+test "fuzz: a mutated JSON applies only the operators it drew" {
+    // 1,000 seeded inputs: the operators applied are in the drawn set; then each operator
+    // alone, on 16 seeds, gives a checked program or an error.
+    const gpa = std.testing.allocator;
+    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
+    const source = fuzz_ink.generate_seeded(1, &buffer, .{ .swarm = .classic });
+    const json = try compile.compile_to_json(gpa, source);
+    defer gpa.free(json);
+    for (0..1000) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        var draw_prng = prng;
+        const allowed = fuzz_ink.draw_subset(.{ .random = draw_prng.random() }, Mutation);
+        const applied = try check_mutated(.{ .random = prng.random() }, json, null);
+        try std.testing.expect(applied.subsetOf(allowed));
+    }
+    for (std.enums.values(Mutation)) |mutation| {
+        for (0..16) |seed| {
+            var prng: std.Random.DefaultPrng = .init(seed);
+            const only: Mutations = .initOne(mutation);
+            const applied = try check_mutated(.{ .random = prng.random() }, json, only);
+            try std.testing.expect(applied.subsetOf(only));
+        }
+    }
 }

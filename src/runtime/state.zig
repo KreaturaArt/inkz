@@ -12,6 +12,7 @@ const Allocator = std.mem.Allocator;
 const index = @import("../core/index.zig");
 const limits_module = @import("../core/limits.zig");
 const fault = @import("../core/fault.zig");
+const pointer_free = @import("../core/pointer_free.zig");
 const BoundedStack = @import("../core/bounded_stack.zig").BoundedStack;
 const Program = @import("../core/program.zig").Program;
 const value_module = @import("value.zig");
@@ -41,6 +42,8 @@ const Choices = choices_module.Choices;
 pub const Diagnostic = struct {
     /// A string argument, such as a variable name, or a reference to nothing.
     argument: StringReference,
+    /// A second string the message prints, such as the value a divert variable held.
+    detail: StringReference = .none,
     /// Numbers the message prints, such as RANDOM's bounds.
     number: i32 = 0,
     other_number: i32 = 0,
@@ -60,6 +63,9 @@ pub const Diagnostic = struct {
         turns_since_expected_target,
         tunnel_return_not_target,
         pop_mismatch,
+        /// ink's "Found <popped>, when expected <current>": `number` the popped FrameKind,
+        /// `other_number` the current frame's, or 2 when the stack can't pop.
+        pop_unexpected,
         unmatched_end_string,
         unexpected_command_in_tag,
         no_truth_value,
@@ -68,6 +74,9 @@ pub const Diagnostic = struct {
         float_to_integer_out_of_range,
         void_operand,
         unsupported_operation,
+        /// ink's "Cannot perform operation": `number` the opcode, `other_number` the rank
+        /// (`Value.rank`) of the type the operands were coerced to.
+        operation_not_for_type,
         /// `number`: the opcode; `other_number`: the operands' Value tags, left << 8 | right.
         list_operand_types,
         variable_not_found,
@@ -124,6 +133,14 @@ pub const FlowRecord = struct {
 
 pub const flow_name_bytes_max = 50;
 
+/// The words of one external's binding (`story.Binding`, `element_bytes.binding`), which the
+/// story keeps in this block, so `Story.init` makes one allocation.
+pub const binding_words_each = element_bytes.binding / 8;
+
+comptime {
+    assert(element_bytes.binding % 8 == 0);
+}
+
 pub const output_stashes_max = 8;
 
 /// A parked output stream: `items` items then `marks` string marks, from word `first`.
@@ -135,6 +152,17 @@ pub const OutputStash = struct {
 
 /// A turn index for a container that has never been visited.
 pub const never_visited: i32 = std.math.minInt(i32);
+
+comptime {
+    // What flows park, the lookahead snapshots and saves rebuild is copied by value: no
+    // pointers (F11, docs/Guidelines.md).
+    for (flow_buffers) |buffer| assert(pointer_free.has_no_pointers(FlowElement(buffer)));
+    assert(pointer_free.has_no_pointers(PatchEntry));
+    assert(pointer_free.has_no_pointers(Value));
+    assert(pointer_free.has_no_pointers(Diagnostic));
+    assert(pointer_free.has_no_pointers(FlowRecord));
+    assert(pointer_free.has_no_pointers(GlobalSlot));
+}
 
 comptime {
     assert(@sizeOf(Diagnostic) == element_bytes.diagnostic);
@@ -230,6 +258,8 @@ pub const State = struct {
     /// The current line's cleaned text, kept between calls.
     text_cache: text_cache_module.TextCache,
     observers: []Observer,
+    /// The story's external bindings, as raw words (`Story.bindings` views them).
+    binding_words: []u64,
     observer_events: BoundedStack(GlobalSlot),
     /// ink's currentErrors and currentWarnings. They are not saved (ink doesn't
     /// save them), the lookahead restore drops ones added since its snapshot, and
@@ -295,6 +325,7 @@ pub const State = struct {
         return .{
             .count_slots = program.count_slots_count,
             .globals_count = @intCast(program.globals.len),
+            .externals_count = @intCast(program.externals.len),
         };
     }
 
@@ -358,7 +389,7 @@ pub const State = struct {
     /// counts, globals undefined until the global declaration has run.
     pub fn reset(state: *State) void {
         state.evaluation.clear();
-        state.call_stack.reset(.start_of(Program.root));
+        state.call_stack.fresh(.start_of(Program.root));
         state.output.clear();
         state.choices.clear();
         @memset(state.globals, .null);
@@ -420,8 +451,14 @@ pub const State = struct {
         visit_flow(state.live_flow(), visitor);
         visit_values(state.globals, visitor);
         visit_values(state.global_defaults, visitor);
-        for (state.errors.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
-        for (state.warnings.slice()) |*diagnostic| visitor.string(&diagnostic.argument);
+        for (state.errors.slice()) |*diagnostic| {
+            visitor.string(&diagnostic.argument);
+            visitor.string(&diagnostic.detail);
+        }
+        for (state.warnings.slice()) |*diagnostic| {
+            visitor.string(&diagnostic.argument);
+            visitor.string(&diagnostic.detail);
+        }
         flows.visit_parked(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
             const words = state.parking[stash.first..][0 .. stash.items * 3];
@@ -525,6 +562,7 @@ pub const State = struct {
         return reference;
     }
 
+    // lint: allow hot_path: tests and fuzz targets compare states; the step never hashes
     /// A hash of everything a story can observe or that later steps depend on: the live
     /// flow, the shared arrays and scalars, and the used heap. Values hash by tag and payload,
     /// so padding never counts. For tests of take and restore, and of determinism.
@@ -619,11 +657,13 @@ pub fn visit_temps(temps: []Temp, visitor: anytype) void {
     }
 }
 
+// lint: allow hot_path: State.hash, for tests
 fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
     for (values) |value| hash_value(hasher, value);
     assert(@typeInfo(@TypeOf(hasher)) == .pointer);
 }
 
+// lint: allow hot_path: State.hash, for tests
 fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
     hasher.update(&.{@backingInt(value)});
     switch (value) {
@@ -636,6 +676,7 @@ fn hash_value(hasher: *std.hash.Wyhash, value: Value) void {
     }
 }
 
+// lint: allow hot_path: State.hash, for tests
 fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
     for (temps) |temp| {
         std.hash.autoHash(hasher, temp.name);
@@ -644,6 +685,7 @@ fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
 }
 
 /// Field by field, so struct padding never counts.
+// lint: allow hot_path: State.hash, for tests
 fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
     for (records) |record| std.hash.autoHash(hasher, record);
     assert(@typeInfo(@TypeOf(records)) == .pointer);
@@ -716,6 +758,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     const shape = State.shape_of(program);
     // 8-byte aligned first.
     const observers = carver.take(Observer, limits.observers_max);
+    const binding_words = carver.take(u64, shape.externals_count * binding_words_each);
     const live = carve_flow(carver, limits);
     const lookahead = carve_flow(carver, limits);
     var result: State = .{
@@ -756,6 +799,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .line_bytes = carver.take(u8, limits.output_bytes_max),
         .tag_bytes = carver.take(u8, limits.tag_bytes_max),
         .observers = observers,
+        .binding_words = binding_words,
     };
     result.text_cache.text = carver.take(u8, limits.output_bytes_max);
     assert(result.text_cache.check() == .ok);

@@ -15,6 +15,7 @@ const lower = @import("lower.zig");
 const layout_module = @import("lower_layout.zig");
 const emit = @import("lower_emit.zig");
 const ink_json = @import("../core/ink_json.zig");
+pub const messages = @import("messages.zig");
 const limits = @import("../core/limits.zig");
 const Program = @import("../core/program.zig").Program;
 
@@ -31,6 +32,23 @@ pub const is_warning = grammar.Grammar.is_warning;
 pub const Options = struct {
     /// ink's countAllVisits: count the visits of every knot, stitch, gather and choice.
     count_all_visits: bool = false,
+    /// Filled in with what the compile did, for tests and the bench.
+    statistics: ?*Statistics = null,
+    /// Receives every error, warning and author note, as inklecate words them, when the
+    /// compile ends (failed or not): author notes first, then warnings, then errors.
+    diagnostics: ?messages.Sink = null,
+};
+
+/// Where the stages render their diagnostics, when the caller asked for them.
+const Report = struct {
+    collector: *messages.Collector,
+    locator: *const messages.Locator,
+};
+
+pub const Statistics = struct {
+    /// Whole parses after the first: the workspace estimate was too small (T15). The corpus
+    /// keeps this at 0 (finding F14).
+    workspace_retries: u32 = 0,
 };
 
 /// The stages after parsing, on a parsed story (one file, or a space's). The object tree,
@@ -40,15 +58,17 @@ fn compile_parsed(
     parsed: *grammar.Parsed,
     space: ?*const source_space.Space,
     options: Options,
+    report: ?Report,
 ) !Program {
     assert(parsed.tree.tags.len > 0);
     assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
+    if (report) |into| try messages.collect_parse(into.collector, into.locator);
     // An error past the full diagnostics wasn't recorded, but still fails the story.
     if (parsed.errors_dropped) return error.CompileFailed;
     for (parsed.diagnostics()) |diagnostic| {
         if (!is_warning(diagnostic)) return error.CompileFailed;
     }
-    var lowered = try lower_parsed(gpa, parsed, space, options);
+    var lowered = try lower_parsed(gpa, parsed, space, options, report);
     defer lowered.deinit();
     parsed.release_syntax(gpa);
     var layout = layout: {
@@ -68,6 +88,7 @@ fn lower_parsed(
     parsed: *const grammar.Parsed,
     space: ?*const source_space.Space,
     options: Options,
+    report: ?Report,
 ) !lower.Lowered {
     assert(parsed.tree.tags.len > 0);
     assert(space == null or space.?.files.len > 0);
@@ -82,7 +103,16 @@ fn lower_parsed(
     var resolution = try resolve.resolve(gpa, parsed, &tree);
     resolve_zone.end();
     defer resolution.deinit(gpa);
-    if (resolution.diagnostics.len > 0) return error.CompileFailed;
+    const story: ?messages.Story = if (report) |into| .{
+        .parsed = parsed,
+        .tree = &tree,
+        .locator = into.locator,
+    } else null;
+    const resolved = !resolution.failed();
+    // ink generates code (and checks termination) before it resolves references, so a
+    // story with reference errors still gets lowering's diagnostics: lowered for them
+    // alone, then dropped.
+    if (!resolved and report == null) return error.CompileFailed;
     const lower_zone = profile.begin(.compile_lower);
     var lowering = try lower.Lowering.init(gpa, parsed, &tree, &resolution);
     errdefer lowering.deinit();
@@ -90,7 +120,13 @@ fn lower_parsed(
     try lowering.generate_all();
     try lowering.finish_story();
     lower_zone.end();
-    if (lowering.failed()) return error.CompileFailed;
+    if (report) |into| try messages.collect_resolve(
+        into.collector,
+        &story.?,
+        resolution.diagnostics,
+        lowering.diagnostics.items,
+    );
+    if (!resolved or lowering.failed()) return error.CompileFailed;
     const flatten_zone = profile.begin(.compile_flatten);
     defer flatten_zone.end();
     layout_module.set_count_flags(&lowering);
@@ -101,6 +137,11 @@ fn lower_parsed(
 /// Compiles one ink file's text. It reads no files: a story with an INCLUDE is CompileFailed
 /// (use `compile_file`).
 pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
+    return compile_source_with(gpa, source, .{});
+}
+
+/// `compile_source` with options.
+pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options) !Program {
     assert(@TypeOf(gpa) == Allocator);
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
@@ -109,17 +150,28 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
         break :parsed grammar.parse(gpa, text, .{}) catch |err| switch (err) {
             // The parser gave up on the story.
             error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
+                if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, "");
                 return error.CompileFailed;
             },
             else => |other| return other,
         };
     };
     defer parsed.deinit(gpa);
+    if (options.statistics) |statistics| statistics.workspace_retries = parsed.attempts - 1;
+    var collector = messages.Collector.init(gpa);
+    defer collector.deinit();
+    defer if (options.diagnostics) |sink| collector.deliver(sink);
+    const locator: messages.Locator = .{ .gpa = gpa, .parsed = &parsed, .space = null };
+    const report: ?Report = if (options.diagnostics != null) .{
+        .collector = &collector,
+        .locator = &locator,
+    } else null;
     // There is no directory to INCLUDE from: inklecate's "Failed to load: 'name'" error.
     if (std.mem.indexOfScalar(ast.Tag, parsed.tree.tags, .include) != null) {
+        if (report) |into| try messages.collect_includes(into.collector, into.locator);
         return error.CompileFailed;
     }
-    return compile_parsed(gpa, &parsed, null, .{});
+    return compile_parsed(gpa, &parsed, null, options, report);
 }
 
 /// Compiles `path` (in `directory`) and the files it includes.
@@ -140,13 +192,26 @@ pub fn compile_file_with(
     var space = source_space.load(gpa, io, directory, path, .{}) catch |err| switch (err) {
         // The parser gave up on a file or on the space.
         error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
+            if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, path);
             return error.CompileFailed;
         },
         else => |other| return other,
     };
     defer space.deinit(gpa);
-    if (space.problems.len > 0) return error.CompileFailed;
-    return compile_parsed(gpa, &space.parsed, &space, options);
+    if (options.statistics) |statistics| statistics.workspace_retries = space.parsed.attempts - 1;
+    var collector = messages.Collector.init(gpa);
+    defer collector.deinit();
+    defer if (options.diagnostics) |sink| collector.deliver(sink);
+    const locator: messages.Locator = .{ .gpa = gpa, .parsed = &space.parsed, .space = &space };
+    const report: ?Report = if (options.diagnostics != null) .{
+        .collector = &collector,
+        .locator = &locator,
+    } else null;
+    if (space.problems.len > 0) {
+        if (report) |into| try messages.collect_problems(into.collector, into.locator, &space);
+        return error.CompileFailed;
+    }
+    return compile_parsed(gpa, &space.parsed, &space, options, report);
 }
 
 /// A story compiled and serialized as ink's JSON (for comparing with inklecate's). A story
@@ -407,4 +472,177 @@ test "compile_to_json: weaves nested deeper than the JSON paths allow are Compil
     var program = try compile_source(gpa, text.items);
     program.deinit(gpa);
     try std.testing.expectError(error.CompileFailed, compile_to_json(gpa, text.items));
+}
+
+test "a source denser than the workspace estimate retries, and says so" {
+    // A story of short knots with nothing but diverts is far denser in nodes per byte than
+    // the estimate: the parse retries with a doubled workspace, the compile succeeds, and
+    // the statistics count the retries (P16.17, F14).
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    for (0..400) |index| {
+        try source.writer.print("==k{d}\n->k{d}\n", .{ index, (index + 1) % 400 });
+    }
+    var statistics: Statistics = .{};
+    var program = try compile_source_with(gpa, source.written(), .{ .statistics = &statistics });
+    defer program.deinit(gpa);
+    try std.testing.expect(statistics.workspace_retries > 0);
+    var plain: Statistics = .{};
+    var hello = try compile_source_with(gpa, "Hello, world.\n", .{ .statistics = &plain });
+    defer hello.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 0), plain.workspace_retries);
+}
+
+/// Writes each diagnostic as inklecate prints it: `ERROR: 'file' line N: message`.
+const Printer = struct {
+    out: *std.Io.Writer.Allocating,
+
+    fn print(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
+        assert(diagnostic.line > 0);
+        const printer: *Printer = @ptrCast(@alignCast(context.?));
+        const kind = switch (diagnostic.severity) {
+            .@"error" => "ERROR",
+            .warning => "WARNING",
+            .author => "TODO",
+        };
+        printer.out.writer.print("{s}: '{s}' line {d}: {s}\n", .{
+            kind,
+            diagnostic.file,
+            diagnostic.line,
+            diagnostic.message,
+        }) catch {};
+    }
+};
+
+test "diagnostics reach the caller as inklecate prints them" {
+    // test/ground_truth/diagnostics: each story's messages, lines and severities equal
+    // inklecate's (`mise run reference:diagnostics`), in its order (P16.12, F5).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    const path = "test/ground_truth/diagnostics";
+    var directory = try std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true });
+    defer directory.close(io);
+    var iterator = directory.iterate();
+    var checked: u32 = 0;
+    var mismatches: u32 = 0;
+    while (try iterator.next(io)) |entry| {
+        if (!std.mem.endsWith(u8, entry.name, ".ink")) continue;
+        var out: std.Io.Writer.Allocating = .init(gpa);
+        defer out.deinit();
+        var printer: Printer = .{ .out = &out };
+        const sink: messages.Sink = .{ .context = &printer, .function = Printer.print };
+        if (compile_file_with(gpa, io, directory, entry.name, .{ .diagnostics = sink })) |program| {
+            var compiled = program;
+            compiled.deinit(gpa);
+        } else |_| {}
+        const stem = entry.name[0 .. entry.name.len - ".ink".len];
+        const expected_name = try std.fmt.allocPrint(gpa, "{s}.expected", .{stem});
+        defer gpa.free(expected_name);
+        const file = try directory.readFileAlloc(io, expected_name, gpa, .limited(1 << 20));
+        defer gpa.free(file);
+        // The first line is the provenance header the mise task writes.
+        const header_end = std.mem.indexOfScalar(u8, file, '\n') orelse return error.MissingHeader;
+        const expected = file[header_end + 1 ..];
+        checked += 1;
+        if (!std.mem.eql(u8, expected, out.written())) {
+            mismatches += 1;
+            const shown = "{s}:\nexpected:\n{s}got:\n{s}\n";
+            std.debug.print(shown, .{ entry.name, expected, out.written() });
+        }
+    }
+    try std.testing.expect(checked >= 8);
+    try std.testing.expectEqual(@as(u32, 0), mismatches);
+}
+
+const Recorded = struct {
+    severities: [1024]messages.Severity = undefined,
+    codes: [1024][]const u8 = undefined,
+    count: u32 = 0,
+
+    fn record(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
+        assert(diagnostic.line > 0);
+        const recorded: *Recorded = @ptrCast(@alignCast(context.?));
+        if (recorded.count == recorded.severities.len) return;
+        recorded.severities[recorded.count] = diagnostic.severity;
+        // Code names are static strings, valid after the call.
+        recorded.codes[recorded.count] = diagnostic.code;
+        recorded.count += 1;
+    }
+};
+
+test "a story with only warnings compiles and still delivers them" {
+    const gpa = std.testing.allocator;
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    var program = try compile_source_with(gpa, "TODO: tidy this\n=== k ===\n* choice\n  text\n", .{
+        .diagnostics = sink,
+    });
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 2), recorded.count);
+    try std.testing.expectEqual(messages.Severity.author, recorded.severities[0]);
+    try std.testing.expectEqual(messages.Severity.warning, recorded.severities[1]);
+    try std.testing.expectEqualStrings("loose_end", recorded.codes[1]);
+}
+
+test "errors past the diagnostics cap are reported once, last" {
+    // More broken lines than the parser keeps diagnostics for: the kept ones arrive, then
+    // one `diagnostics_dropped`.
+    const gpa = std.testing.allocator;
+    var source: std.Io.Writer.Allocating = .init(gpa);
+    defer source.deinit();
+    for (0..400) |_| try source.writer.writeAll("~ temp = 1\n");
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, source.written(), .{
+        .diagnostics = sink,
+    }));
+    try std.testing.expect(recorded.count > 1);
+    var dropped: u32 = 0;
+    for (recorded.codes[0..recorded.count]) |code| {
+        if (std.mem.eql(u8, code, "diagnostics_dropped")) dropped += 1;
+    }
+    try std.testing.expect(recorded.count < recorded.codes.len);
+    try std.testing.expectEqual(@as(u32, 1), dropped);
+    try std.testing.expectEqualStrings("diagnostics_dropped", recorded.codes[recorded.count - 1]);
+}
+
+test "a story the parser gives up on still delivers why" {
+    // Braces nested deeper than parse_depth_max, and a source over source_bytes_max: no
+    // tree, so one error at the start of the story instead of none (PR #2 review).
+    const gpa = std.testing.allocator;
+    var text: std.ArrayList(u8) = .empty;
+    defer text.deinit(gpa);
+    try text.appendNTimes(gpa, '{', 300);
+    try text.append(gpa, 'x');
+    try text.appendNTimes(gpa, '}', 300);
+    try text.append(gpa, '\n');
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    const options: Options = .{ .diagnostics = sink };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, text.items, options));
+    try std.testing.expectEqual(@as(u32, 1), recorded.count);
+    try std.testing.expectEqual(messages.Severity.@"error", recorded.severities[0]);
+    try std.testing.expectEqualStrings("too_deep", recorded.codes[0]);
+    const large = try gpa.alloc(u8, (limits.CompilerLimits{}).source_bytes_max + 1);
+    defer gpa.free(large);
+    @memset(large, 'a');
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, large, options));
+    try std.testing.expectEqual(@as(u32, 2), recorded.count);
+    try std.testing.expectEqualStrings("source_too_large", recorded.codes[1]);
+}
+
+test "a back reference without a file name is 'line N', as ink's DebugMetadata prints it" {
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var printer: Printer = .{ .out = &out };
+    const sink: messages.Sink = .{ .context = &printer, .function = Printer.print };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(
+        gpa,
+        "VAR x = 1\nVAR x = 2\n-> END\n",
+        .{ .diagnostics = sink },
+    ));
+    try std.testing.expectEqualStrings("ERROR: '' line 2: found declaration variable 'x' that " ++
+        "was already declared (line 1)\n", out.written());
 }

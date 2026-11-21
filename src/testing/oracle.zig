@@ -255,7 +255,7 @@ fn equal_ignoring_spaces(a: []const u8, b: []const u8) bool {
     }
 }
 
-fn json_equivalent(arena: std.mem.Allocator, a: []const u8, b: []const u8) !bool {
+pub fn json_equivalent(arena: std.mem.Allocator, a: []const u8, b: []const u8) !bool {
     assert(a.len < file_bytes_max);
     assert(b.len < file_bytes_max);
     const value_a = std.json.parseFromSliceLeaky(std.json.Value, arena, a, .{}) catch return false;

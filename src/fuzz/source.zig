@@ -99,10 +99,14 @@ fn discover(context: Context, smith: *Smith) anyerror!void {
     const gpa = std.testing.allocator;
     var space = source_space.load(gpa, io, context.directory, "a.ink", bounds) catch return;
     defer space.deinit(gpa);
-    check_space(&space, bounds);
+    try check_space(gpa, &space, bounds);
 }
 
-fn check_space(space: *const source_space.Space, bounds: limits.CompilerLimits) void {
+fn check_space(
+    gpa: std.mem.Allocator,
+    space: *source_space.Space,
+    bounds: limits.CompilerLimits,
+) !void {
     assert(space.files.len <= bounds.include_files_max);
     assert(space.files[0].parent == source_space.no_file);
     var end: u32 = 0;
@@ -111,7 +115,13 @@ fn check_space(space: *const source_space.Space, bounds: limits.CompilerLimits) 
         assert(index == 0 or file.parent < index);
         assert(file.start >= end and file.start <= file.end);
         end = file.end;
-        _ = space.location(file.end);
+        // The newline table and the scan agree on every file's bounds.
+        for ([_]u32{ file.start, file.end }) |offset| {
+            const table = try space.locate(gpa, offset);
+            const scan = space.location_scan(offset);
+            assert(table.line == scan.line and table.column == scan.column);
+            assert(std.mem.eql(u8, table.path, scan.path));
+        }
     }
     assert(end <= space.parsed.source.len);
     for (space.problems) |problem| assert(problem.offset <= space.parsed.source.len);

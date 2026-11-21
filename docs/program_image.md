@@ -8,8 +8,18 @@ copies and checks them. Only the string table's hash index is rebuilt.
 ```text
 program_image.write(&program, writer)      // the image, deterministic
 program_image.load(gpa, bytes) !Program    // checked; the bytes are copied
+program_image.load_trusted(gpa, bytes) !Program  // header and layout checked; records trusted
 program_image.image_bytes(&program)        // the size write produces
 ```
+
+`load_trusted` (P16.19) is for images this binary built itself, for example at build time
+and embedded in the executable. It checks the header, the format version, the endianness
+and the section layout as `load` does, and keeps every copy in bounds. It trusts the
+records: the opcodes, the flags, the references and `Program.check`. Safe builds still
+verify them and panic on a bad one; ReleaseFast skips that, which makes a load about 3×
+faster (`zig build bench-io`, ReleaseFast, Apple M3: crime_scene 14.7 → 4.6 µs, the
+generated story 257 → 80 µs). Use `load` for any image from outside the build: a file a
+player can edit, a download, a save directory.
 
 A typical use: compile ink, or load inklecate's JSON, at build time, and write the image.
 At run time, load the image instead of the JSON.

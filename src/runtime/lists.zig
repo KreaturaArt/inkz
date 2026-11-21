@@ -75,6 +75,13 @@ pub const ListSlab = struct {
         return @fromBackingInt(@intCast(at));
     }
 
+    /// Records that `words` more must fit now (a reservation before an operation), as
+    /// `StringHeap.note_need` does.
+    pub fn note_need(slab: *ListSlab, words: u32) void {
+        assert(slab.used <= slab.words.len);
+        slab.peak = @max(slab.peak, slab.used +| words);
+    }
+
     /// Drops every list from `top` on; `top` must be an object boundary.
     pub fn truncate(slab: *ListSlab, top: u32) void {
         assert(top <= slab.used);
@@ -251,6 +258,7 @@ pub const Lists = struct {
         return builder.finish(lists.slab);
     }
 
+    // lint: allow hot_path: ink's ListFromInt names the origin with a runtime string
     /// The list item of origin `origin_name` with value `value` as a one-item list, an
     /// empty list if the origin has no such item, or null if there is no such origin
     /// (ink's ListFromInt).

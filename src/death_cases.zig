@@ -15,10 +15,30 @@ const fault = @import("core/fault.zig");
 const index = @import("core/index.zig");
 const string_pool = @import("core/string_pool.zig");
 const api = @import("runtime/api.zig");
+const ink_json = @import("core/ink_json.zig");
+const program_image = @import("core/program_image.zig");
+const program_module = @import("core/program.zig");
 
 pub const did_not_die_exit_code = 3;
 
 pub const must_panic = struct {
+    /// A trusted image load (P16.19) still verifies its records in safe builds: a list
+    /// item whose origin is another list panics instead of loading.
+    pub fn trusted_image_with_a_bad_record_panics() void {
+        assert(std.debug.runtime_safety);
+        const gpa = std.heap.page_allocator;
+        const json = "{\"inkVersion\":21,\"root\":[[\"done\",{\"#n\":\"g-0\"}],null]," ++
+            "\"listDefs\":{\"a\":{\"x\":1},\"b\":{\"y\":1}}}";
+        var program = ink_json.load(gpa, json) catch unreachable;
+        assert(program.list_items.len == 2);
+        const items: []program_module.ListItem = @constCast(program.list_items);
+        items[0].origin = items[1].origin;
+        assert(program.check() != .ok);
+        var image: std.Io.Writer.Allocating = .init(gpa);
+        program_image.write(&program, &image.writer) catch unreachable;
+        _ = program_image.load_trusted(gpa, image.written()) catch unreachable;
+    }
+
     pub fn verify_panics_on_a_fault() void {
         const Fault = enum { ok, broken };
         const result: Fault = .broken;

@@ -25,7 +25,7 @@ fn end_or_done(lowering: *const Lowering, divert: ObjectIndex) ?ir_module.Comman
     if (node.is_none()) return if (lowering.tree.has(divert, Flags.done)) .done else null;
     const ast = lowering.ast();
     if (ast.tag(node) == .function_call or ast.tag(node) == .empty_divert) return null;
-    const path = ast.child(node, 0);
+    const path = ast.slot(node, .path);
     if (ast.tag(path) != .path or ast.list(path).count != 1) return null;
     const name = lowering.parsed.leaf_text(ast.item(path, 0));
     if (std.mem.eql(u8, name, "END")) return .end;
@@ -59,8 +59,8 @@ fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
     const ast = lowering.ast();
     const node = lowering.tree.node(divert);
     assert(!node.is_none());
-    if (ast.tag(node) == .function_call) return lowering.parsed.child_text(node, 0);
-    const path = ast.child(node, 0);
+    if (ast.tag(node) == .function_call) return lowering.parsed.slot_text(node, .name);
+    const path = ast.slot(node, .path);
     if (ast.tag(path) != .path) return "";
     return lowering.parsed.leaf_text(ast.item(path, 0));
 }
@@ -117,7 +117,7 @@ fn is_reference_parameter(lowering: *const Lowering, flow: ObjectIndex, position
     assert(lowering.tree.is_flow(flow));
     assert(lowering.tree.kind(flow) != .story);
     const ast = lowering.ast();
-    const parameters = ast.child(lowering.tree.node(flow), 1);
+    const parameters = ast.slot(lowering.tree.node(flow), .parameters);
     if (ast.tag(parameters) == .none or position >= ast.list(parameters).count) return false;
     return ast.tag(ast.item(parameters, position)) == .reference_parameter;
 }
@@ -275,7 +275,7 @@ const once: u32 = 8;
 pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
     const ir = &lowering.ir;
     assert(lowering.tree.kind(sequence) == .sequence);
-    const kind_leaf = lowering.ast().child(lowering.tree.node(sequence), 0);
+    const kind_leaf = lowering.ast().slot(lowering.tree.node(sequence), .kind);
     assert(lowering.ast().tag(kind_leaf) == .sequence_kind);
     const kind = lowering.ast().data[kind_leaf.to_int()];
     // The parser stores one of ink's flag combinations (stopping by default).
@@ -366,7 +366,7 @@ pub fn generate_assignment(lowering: *Lowering, assignment: ObjectIndex) !Result
     if (children.len > 0) try lowering.add_content(container, children[0]);
     const is_new = tree.has(assignment, Flags.new_temporary);
     const global = !is_new and lowering.resolution.references[assignment.to_int()] == .global;
-    const name = lowering.child_name(assignment, 0);
+    const name = lowering.slot_name(assignment, .name);
     _ = try ir.add(
         container,
         .{ .assignment = .{ .name = name, .global = global, .new = is_new } },
