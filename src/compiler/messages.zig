@@ -117,6 +117,17 @@ pub const Locator = struct {
         const position = lexical.line_and_column(locator.parsed.source, offset);
         return .{ .path = locator.file, .line = position.line, .column = position.column };
     }
+
+    /// The parsed text up to the end of the file `offset` is in: a file's last line doesn't
+    /// run on into the next file of the space.
+    fn text_of_file(locator: *const Locator, offset: u32) []const u8 {
+        const source = locator.parsed.source;
+        assert(offset <= source.len);
+        const space = locator.space orelse return source;
+        const file = space.files[space.file_at(offset)];
+        assert(offset <= file.end and file.end <= source.len);
+        return source[0..file.end];
+    }
 };
 
 // Parse diagnostics.
@@ -136,7 +147,11 @@ pub fn collect_parse(collector: *Collector, locator: *const Locator) !void {
             .file = where.path,
             .line = where.line,
             .column = where.column,
-            .message = try parse_message(arena, parsed.source, diagnostic),
+            .message = try parse_message(
+                arena,
+                locator.text_of_file(diagnostic.offset),
+                diagnostic,
+            ),
         });
     }
     if (parsed.errors_dropped) {
@@ -398,10 +413,11 @@ pub const Story = struct {
         return story.locator.position_of(sema.object_offset(story.parsed, story.tree, object));
     }
 
-    /// ink's DebugMetadata text: `line N of file`.
+    /// ink's DebugMetadata text: `line N of file`, or `line N` without a file name.
     fn debug_metadata(story: *const Story, arena: Allocator, object: sema.ObjectIndex) ![]const u8 {
         assert(!object.is_none());
         const where = try story.location(object);
+        if (where.path.len == 0) return std.fmt.allocPrint(arena, "line {d}", .{where.line});
         return std.fmt.allocPrint(arena, "line {d} of {s}", .{ where.line, where.path });
     }
 };
@@ -599,7 +615,7 @@ pub fn collect_problems(
     const arena = collector.arena.allocator();
     for (space.problems) |problem| {
         const where = try locator.position_of(problem.offset);
-        const name = include_name(space.parsed.source, problem.offset);
+        const name = include_name(locator.text_of_file(problem.offset), problem.offset);
         const message = switch (problem.code) {
             .include_not_found => try std.fmt.allocPrint(arena, "Failed to load: '{s}'", .{name}),
             .include_cycle => try std.fmt.allocPrint(arena, "Recursive INCLUDE detected: " ++
@@ -616,6 +632,61 @@ pub fn collect_problems(
             .message = message,
         });
     }
+}
+
+/// Every INCLUDE of a story compiled from text, which has no directory to load from:
+/// inklecate's "Failed to load: 'name'".
+pub fn collect_includes(collector: *Collector, locator: *const Locator) !void {
+    assert(locator.space == null);
+    const parsed = locator.parsed;
+    const arena = collector.arena.allocator();
+    for (parsed.tree.tags, 0..) |tag, at| {
+        if (tag != .include) continue;
+        const offset = parsed.workspace.token_starts[parsed.tree.data[at]];
+        const newline = std.mem.lastIndexOfScalar(u8, parsed.source[0..offset], '\n');
+        const line_start: u32 = if (newline) |position| @intCast(position + 1) else 0;
+        const where = try locator.position_of(offset);
+        try collector.add(.{
+            .severity = .@"error",
+            .code = "include_not_found",
+            .file = where.path,
+            .line = where.line,
+            .column = where.column,
+            .message = try std.fmt.allocPrint(arena, "Failed to load: '{s}'", .{
+                include_name(parsed.source, line_start),
+            }),
+        });
+    }
+}
+
+/// Why the parser gave up on a story, which then has no tree to point into: one error at
+/// the start of the root file, delivered at once.
+pub fn deliver_give_up(sink: Sink, err: anyerror, file: []const u8) void {
+    sink.function(sink.context, give_up(err, file));
+}
+
+fn give_up(err: anyerror, file: []const u8) Diagnostic {
+    const code: []const u8, const message: []const u8 = switch (err) {
+        error.SourceTooLarge => .{
+            "source_too_large",
+            "The story is larger than the compiler's source limit",
+        },
+        error.ParseFailed => .{ "too_deep", "The story nests too deeply for the parser" },
+        error.WorkspaceFull => .{
+            "workspace_full",
+            "The story needs more parser workspace than the compiler's limit",
+        },
+        else => unreachable,
+    };
+    assert(message.len > 0);
+    return .{
+        .severity = .@"error",
+        .code = code,
+        .file = file,
+        .line = 1,
+        .column = 1,
+        .message = message,
+    };
 }
 
 /// The name after `INCLUDE` on the line at `offset`, its trailing spaces and tabs trimmed.
