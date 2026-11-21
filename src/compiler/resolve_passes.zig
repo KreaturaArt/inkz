@@ -9,6 +9,7 @@ const lookups = @import("resolve_lookups.zig");
 const collisions = @import("resolve_collisions.zig");
 const argument_checks = @import("resolve_arguments.zig");
 const sema = @import("sema.zig");
+const values = @import("values.zig");
 const ast_module = @import("ast.zig");
 const Context = resolve.Context;
 const Path = resolve.Path;
@@ -197,19 +198,28 @@ pub fn references_pass(context: *Context) !void {
     while (try objects.next()) |object| try check(context, object);
 }
 
+/// ink's `not A ? B` check: a negated left operand of `?` (or `has`). ink's parser folds
+/// `not` of a number or bool literal into a Number (WithInner), so that one isn't negated.
+fn negates_has_operand(context: *const Context, object: ObjectIndex) bool {
+    assert(context.tree.kind(object) == .binary);
+    const ast = context.ast();
+    const node = context.tree.node(object);
+    if (ast.tag(node) != .has or ast.tag(ast.slot(node, .left)) != .not) return false;
+    const left = context.tree.children_of(object)[0];
+    assert(context.tree.kind(left) == .unary);
+    // A fold ink throws on (`not -true`) is reported where the expression is generated.
+    const folded = values.literal(context.parsed, context.tree, left) catch return false;
+    return folded == null;
+}
+
 fn check(context: *Context, object: ObjectIndex) !void {
     switch (context.tree.kind(object)) {
         .divert => try check_divert(context, object),
         .variable_reference => try check_variable_reference(context, object),
         .list_literal => try check_list_literal(context, object),
         .divert_target => try check_divert_target_usage(context, object),
-        .binary => {
-            // ink's `not A ? B` check: a negated left operand of `?` (or `has`).
-            const ast = context.ast();
-            const node = context.tree.node(object);
-            if (ast.tag(node) == .has and ast.tag(ast.slot(node, .left)) == .not) {
-                try context.report(.negated_has_operand, object);
-            }
+        .binary => if (negates_has_operand(context, object)) {
+            try context.report(.negated_has_operand, object);
         },
         .function_call => {
             // A list's name called as a function makes a list (ink's ResolveList).
