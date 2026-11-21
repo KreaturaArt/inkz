@@ -159,7 +159,9 @@ test "Story.init makes one allocation, bindings included, and binding allocates 
     var counting = CountingAllocator.init(gpa);
     var story: Story = undefined;
     try story.init(counting.allocator(), &program, .{});
-    errdefer story.deinit(counting.allocator());
+    // Freed by hand below to count its frees; until then, a failure frees it here.
+    var live = true;
+    errdefer if (live) story.deinit(counting.allocator());
     const limits: @import("../core/limits.zig").Limits = .{};
     const shape = state_module.State.shape_of(&program);
     try std.testing.expectEqual(@as(u32, 2), shape.externals_count);
@@ -174,6 +176,7 @@ test "Story.init makes one allocation, bindings included, and binding allocates 
     try std.testing.expectEqualStrings("4 6\n", text);
     try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
     story.deinit(counting.allocator());
+    live = false;
     try std.testing.expectEqual(@as(u64, 0), counting.bytes_live);
     try std.testing.expectEqual(@as(u64, 1), counting.frees_count);
 }
