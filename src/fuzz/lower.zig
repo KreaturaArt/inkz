@@ -6,6 +6,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const Smith = std.testing.Smith;
 const compile = @import("../compiler/compile.zig");
+const messages = @import("../compiler/messages.zig");
 const ink_json = @import("../core/ink_json.zig");
 const program_image = @import("../core/program_image.zig");
 const Program = @import("../core/program.zig").Program;
@@ -29,12 +30,46 @@ fn image_of(gpa: Allocator, program: *const Program) ![]u8 {
     return image.toOwnedSlice();
 }
 
+/// Counts the errors a compile delivers.
+const Errors = struct {
+    count: u32 = 0,
+
+    fn add(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
+        assert(diagnostic.line > 0 and diagnostic.message.len > 0);
+        const errors: *Errors = @ptrCast(@alignCast(context.?));
+        if (diagnostic.severity == .@"error") errors.count += 1;
+    }
+};
+
+/// A story that fails to compile does so with diagnostics too, and says why: at least one
+/// error. With a sink, lowering runs even after reference errors, for its own
+/// diagnostics (as ink generates before it resolves), so this lowers broken stories.
+pub fn check_failure(source: []const u8) !void {
+    assert(source.len <= fuzz_ink.source_bytes_max);
+    const gpa = std.testing.allocator;
+    var errors: Errors = .{};
+    const sink: messages.Sink = .{ .context = &errors, .function = Errors.add };
+    var program = compile.compile_source_with(gpa, source, .{ .diagnostics = sink }) catch |err|
+        switch (err) {
+            error.CompileFailed => {
+                assert(errors.count > 0);
+                return;
+            },
+            else => return err,
+        };
+    program.deinit(gpa);
+    unreachable; // It failed without a sink.
+}
+
 /// Compiles `source` twice and through JSON; whether it compiled.
 fn check_source(source: []const u8) !bool {
     assert(source.len <= fuzz_ink.source_bytes_max);
     const gpa = std.testing.allocator;
     var program = compile.compile_source(gpa, source) catch |err| switch (err) {
-        error.CompileFailed => return false,
+        error.CompileFailed => {
+            try check_failure(source);
+            return false;
+        },
         else => return err,
     };
     defer program.deinit(gpa);
