@@ -24,10 +24,20 @@ const Opcode = instruction_module.Opcode;
 
 const components_max = 64;
 
-/// A runtime path: container names (or content positions), then maybe an item position.
+/// A runtime path split at its dots: container names (or content positions), then maybe an
+/// item position.
 const Components = struct {
     texts: [components_max][]const u8 = undefined,
     count: u32 = 0,
+
+    fn split(path: []const u8) !Components {
+        var components: Components = .{};
+        if (path.len == 0) return components;
+        var parts = std.mem.splitScalar(u8, path, '.');
+        while (parts.next()) |text| try components.append(text);
+        assert(components.count > 0);
+        return components;
+    }
 
     fn append(components: *Components, text: []const u8) !void {
         assert(components.count <= components_max);
@@ -48,45 +58,15 @@ const Writer = struct {
         return writer.program.strings.get(id);
     }
 
-    fn container_components(
-        writer: *Writer,
-        container: ContainerIndex,
-        components: *Components,
-    ) !void {
-        const program = writer.program;
-        assert(container.to_int() < program.containers.len);
-        var chain: [components_max]ContainerIndex = undefined;
-        var depth: u32 = 0;
-        var current = container;
-        while (!program.parent(current).is_none()) : (current = program.parent(current)) {
-            if (depth == chain.len) return error.PathTooDeep;
-            chain[depth] = current;
-            depth += 1;
-        }
-        while (depth > 0) {
-            depth -= 1;
-            const link = chain[depth];
-            const name = program.container_field(link, .name);
-            if (!name.is_none()) {
-                try components.append(writer.string(name));
-            } else {
-                const position = program.container_field(link, .index_in_parent);
-                try components.append(try std.fmt.allocPrint(writer.arena, "{d}", .{position}));
-            }
-        }
-    }
-
-    fn target_components(
-        writer: *Writer,
-        container: ContainerIndex,
-        position: u32,
-        components: *Components,
-    ) !void {
+    /// The absolute path of item `position` of `container`, or of the container itself at
+    /// 0: the container's stored path, then the position.
+    fn absolute(writer: *Writer, container: ContainerIndex, position: u32) ![]const u8 {
         // A target is an item of the container or its end (a rejoin point).
         assert(position <= writer.program.content_count(container));
-        try writer.container_components(container, components);
-        if (position == 0) return;
-        try components.append(try std.fmt.allocPrint(writer.arena, "{d}", .{position}));
+        const path = writer.string(writer.program.container_field(container, .path));
+        if (position == 0) return path;
+        const separator: []const u8 = if (path.len > 0) "." else "";
+        return std.fmt.allocPrint(writer.arena, "{s}{s}{d}", .{ path, separator, position });
     }
 
     /// Object.CompactPathString, from the item at (`from`, `from_position`).
@@ -98,12 +78,11 @@ const Writer = struct {
         position: u32,
     ) ![]const u8 {
         assert(from_position < writer.program.content_count(from));
-        var own: Components = .{};
-        try writer.container_components(from, &own);
+        const from_path = writer.program.container_field(from, .path);
+        var own: Components = try .split(writer.string(from_path));
         try own.append(try std.fmt.allocPrint(writer.arena, "{d}", .{from_position}));
-        var other: Components = .{};
-        try writer.target_components(target, position, &other);
-        const global = try std.mem.join(writer.arena, ".", other.texts[0..other.count]);
+        const global = try writer.absolute(target, position);
+        const other: Components = try .split(global);
         var shared: ?u32 = null;
         for (0..@min(own.count, other.count)) |at| {
             if (!std.mem.eql(u8, own.texts[at], other.texts[at])) break;
@@ -119,13 +98,6 @@ const Writer = struct {
         return if (relative.items.len < global.len) relative.items else global;
     }
 
-    fn absolute(writer: *Writer, target: ContainerIndex, position: u32) ![]const u8 {
-        assert(target.to_int() < writer.program.containers.len);
-        var components: Components = .{};
-        try writer.target_components(target, position, &components);
-        return std.mem.join(writer.arena, ".", components.texts[0..components.count]);
-    }
-
     fn json_string(writer: *Writer, text: []const u8) !void {
         try std.json.Stringify.encodeJsonString(text, .{}, writer.out);
     }
@@ -136,6 +108,12 @@ const Writer = struct {
         try writer.json_string(key);
         try writer.out.writeByte(':');
         try writer.json_string(value);
+    }
+
+    /// `{"key":"value"}`
+    fn object(writer: *Writer, key: []const u8, value: []const u8) !void {
+        try writer.property(key, value);
+        try writer.out.writeByte('}');
     }
 };
 
@@ -292,10 +270,7 @@ fn write_instruction(
         .integer => try out.print("{d}", .{instruction.get(.integer)}),
         .float => try write_float(out, instruction.get(.float)),
         .bool => try out.writeAll(if (instruction.get(.bool)) "true" else "false"),
-        .tag => {
-            try writer.property("#", writer.string(instruction.get(.tag)));
-            try out.writeByte('}');
-        },
+        .tag => try writer.object("#", writer.string(instruction.get(.tag))),
         else => try write_operand_instruction(writer, container, position, instruction),
     }
 }
@@ -309,17 +284,14 @@ fn write_operand_instruction(
     const program = writer.program;
     const out = writer.out;
     switch (instruction.opcode) {
-        .divert_target => {
-            try writer.property("^->", try writer.absolute(instruction.get(.divert_target), 0));
-            try out.writeByte('}');
-        },
-        .read_count => {
-            try writer.property(
-                "CNT?",
-                try writer.compact(container, position, instruction.get(.read_count), 0),
-            );
-            try out.writeByte('}');
-        },
+        .divert_target => try writer.object(
+            "^->",
+            try writer.absolute(instruction.get(.divert_target), 0),
+        ),
+        .read_count => try writer.object(
+            "CNT?",
+            try writer.compact(container, position, instruction.get(.read_count), 0),
+        ),
         .global_get, .global_declare, .global_assign => {
             const slot: index.GlobalSlot = @fromBackingInt(@intCast(instruction.operand));
             const key = if (instruction.opcode == .global_get) "VAR?" else "VAR=";
@@ -426,8 +398,7 @@ fn write_list(writer: *Writer, at: u32) !void {
         // A list item read as a variable: ink's `VAR?` with the name as written.
         assert(tail_at + 2 < program.extra.len);
         const name: index.StringId = @fromBackingInt(@intCast(program.extra[tail_at + 2]));
-        try writer.property("VAR?", writer.string(name));
-        return out.writeByte('}');
+        return writer.object("VAR?", writer.string(name));
     }
     try out.writeAll("{\"list\":{");
     for (0..literal.items_count) |position| {
