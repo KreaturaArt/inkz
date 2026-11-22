@@ -449,8 +449,8 @@ pub const State = struct {
     pub fn visit(state: *State, visitor: anytype) void {
         assert(@TypeOf(visitor) != void);
         visit_flow(state.live_flow(), visitor);
-        visit_values(state.globals, visitor);
-        visit_values(state.global_defaults, visitor);
+        for (state.globals) |*value| visit_value(value, visitor);
+        for (state.global_defaults) |*value| visit_value(value, visitor);
         for (state.errors.slice()) |*diagnostic| {
             visitor.string(&diagnostic.argument);
             visitor.string(&diagnostic.detail);
@@ -619,12 +619,12 @@ pub const State = struct {
 /// Visits the heap references in one flow's buffers, live, copied or parked.
 pub fn visit_flow(buffers: FlowBuffers, visitor: anytype) void {
     assert(buffers.snapshots.len <= buffers.choices.len);
-    visit_values(buffers.evaluation, visitor);
-    visit_temps(buffers.temps, visitor);
+    for (buffers.evaluation) |*value| visit_value(value, visitor);
+    for (buffers.temps) |*temp| visit_value(&temp.value, visitor);
     visit_items(buffers.items, visitor);
     for (buffers.choices) |*choice| visitor.string(&choice.text);
     for (buffers.tags) |*tag| visitor.string(tag);
-    visit_temps(buffers.snapshot_temps, visitor);
+    for (buffers.snapshot_temps) |*temp| visit_value(&temp.value, visitor);
 }
 
 fn visit_items(items: []output_module.Item, visitor: anytype) void {
@@ -633,27 +633,14 @@ fn visit_items(items: []output_module.Item, visitor: anytype) void {
     }
 }
 
-pub fn visit_values(values: []Value, visitor: anytype) void {
+/// Calls `visitor.string` or `visitor.list` for the heap reference `value` holds, if any.
+pub fn visit_value(value: *Value, visitor: anytype) void {
     assert(@TypeOf(visitor) != void);
-    for (values) |*value| {
-        switch (value.*) {
-            .string => |*reference| visitor.string(reference),
-            .tag => |*reference| visitor.string(reference),
-            .list => |*reference| visitor.list(reference),
-            else => {},
-        }
-    }
-}
-
-pub fn visit_temps(temps: []Temp, visitor: anytype) void {
-    assert(@TypeOf(visitor) != void);
-    for (temps) |*temp| {
-        switch (temp.value) {
-            .string => |*reference| visitor.string(reference),
-            .tag => |*reference| visitor.string(reference),
-            .list => |*reference| visitor.list(reference),
-            else => {},
-        }
+    switch (value.*) {
+        .string => |*reference| visitor.string(reference),
+        .tag => |*reference| visitor.string(reference),
+        .list => |*reference| visitor.list(reference),
+        else => {},
     }
 }
 
@@ -700,7 +687,7 @@ const KeepingRoots = struct {
         assert(roots.keep.len < std.math.maxInt(u16));
         assert(@typeInfo(@TypeOf(visitor)) == .pointer);
         roots.state.visit(visitor);
-        visit_values(roots.keep, visitor);
+        for (roots.keep) |*value| visit_value(value, visitor);
     }
 };
 

@@ -274,7 +274,7 @@ pub fn visit(state: *State, visitor: anytype) void {
     state_module.visit_flow(state.lookahead.prefix(&snapshot.counts), visitor);
     for (state.patch[0..snapshot.patch_count]) |*entry| {
         if (kind_of(entry.target) != .global) continue;
-        state_module.visit_values((&entry.old)[0..1], visitor);
+        state_module.visit_value(&entry.old, visitor);
     }
 }
 
