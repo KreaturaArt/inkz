@@ -20,7 +20,6 @@ pub const evaluate = @import("evaluate.zig");
 pub const save = @import("save.zig");
 pub const json_tree = @import("json_tree.zig");
 pub const load = @import("load.zig");
-pub const api = @import("api.zig");
 const api_test = @import("api_test.zig");
 const state_test = @import("state_test.zig");
 
@@ -45,7 +44,6 @@ test {
     _ = save;
     _ = json_tree;
     _ = load;
-    _ = api;
     _ = api_test;
     _ = state_test;
 }

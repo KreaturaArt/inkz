@@ -28,7 +28,7 @@ const program_image = @import("core/program_image.zig");
 const limits_module = @import("core/limits.zig");
 const Limits = limits_module.Limits;
 const Program = @import("core/program.zig").Program;
-const api = @import("runtime/api.zig");
+const api = @import("runtime/story.zig");
 const State = @import("runtime/state.zig").State;
 const DotnetRandom = @import("core/dotnet_random.zig").DotnetRandom;
 
@@ -707,10 +707,10 @@ fn runtime_story(
     const image_open = try measure(inputs, .image_open, loads);
     inputs.turns = 0;
     inputs.lines = 0;
-    const steps_before = inputs.played.core.steps_total;
+    const steps_before = inputs.played.steps_total;
     const plays = try measure(inputs, .play, .exactly(runtime_counts.plays));
     const seconds = @as(f64, @floatFromInt(plays.total)) / 1e9;
-    const steps = inputs.played.core.steps_total - steps_before;
+    const steps = inputs.played.steps_total - steps_before;
     const state_bytes = inputs.limits.bytes_total(State.shape_of(&inputs.program));
     const loaded_bytes = program_bytes + state_bytes;
     const instructions = inputs.program.instructions_count();

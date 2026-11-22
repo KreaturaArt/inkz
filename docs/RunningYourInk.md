@@ -369,7 +369,7 @@ EXTERNAL play_sound(name)
 ```
 
 and bind a Zig function to it before the first `cont()`. An external function receives its
-`context`, the runtime's story and the arguments, and returns a `Value` (`.null` for none).
+`context`, the story and the arguments, and returns a `Value` (`.null` for none).
 
 ```zig
 const Audio = struct {
@@ -377,10 +377,10 @@ const Audio = struct {
 
     fn play_sound(
         context: ?*anyopaque,
-        runtime_story: *inkz.runtime.story.Story,
+        calling_story: *inkz.Story,
         arguments: []const inkz.Value,
     ) anyerror!inkz.Value {
-        _ = runtime_story;
+        _ = calling_story;
         const audio: *@This() = @ptrCast(@alignCast(context.?));
         std.debug.print("play {s}\n", .{arguments[0].string});
         audio.played += 1;
@@ -395,10 +395,9 @@ try story.bind_external_function("play_sound", .{ .lookahead_safe = false }, &au
 - Argument strings are valid only during the call. A returned string is copied into the
   story before it continues.
 - Calling a mutating story method from inside a callback returns `error.Reentrant`; so do
-  `reset_errors` and `to_json`. The one exception is
-  `inkz.runtime.evaluate.evaluate_function(runtime_story, ...)` called directly in an
-  external function, which may nest up to `Limits.evaluate_depth_max` deep, as in ink.
-  From a variable observer, the error handler or a host event it returns
+  `reset_errors` and `to_json`. The one exception is `calling_story.evaluate_function(...)`
+  called directly in an external function, which may nest up to `Limits.evaluate_depth_max`
+  deep, as in ink. From a variable observer, the error handler or a host event it returns
   `error.Reentrant` too: those run in the middle of a call (an observer after `cont()` has
   written its line) whose result it would overwrite. Record what you need there and call
   `evaluate_function` after the call returns.
@@ -744,7 +743,7 @@ The runtime was rewritten (plan `docs/DODMigrationPlan.md`). Three decisions cha
 | `story.state.loadJson(json)` | `story.load_json(json)` |
 | `story.observeVariable(name, callback)` | `story.observe_variable(name, context, observer)` |
 | `story.bindExternalFunction(name, fn, options)` | `story.bind_external_function(name, options, context, function)` |
-| `fn([]const ink.Value) ?ink.Value` | `fn(?*anyopaque, *inkz.runtime.story.Story, []const inkz.Value) anyerror!inkz.Value` |
+| `fn([]const ink.Value) ?ink.Value` | `fn(?*anyopaque, *inkz.Story, []const inkz.Value) anyerror!inkz.Value` |
 | `BindOptions.lookahead_safe = false` by default | `BindOptions.lookahead_safe = true` by default, as in ink |
 | `story.evaluateFunction(name, text_out, params)` | `story.evaluate_function(name, arguments, text_writer)` |
 | `story.on_error = fn([]const u8, ink.ErrorType) void` | `Options.on_error = fn(?*anyopaque, []const u8, inkz.Severity) void` |

@@ -86,7 +86,7 @@ fn check_rate(io: std.Io) !void {
 /// records `call_native`, and loading a save records both of its passes.
 fn check_runtime_zones() !void {
     assert(!profile.active);
-    const api = @import("runtime/api.zig");
+    const api = @import("runtime/story.zig");
     const gpa = std.heap.page_allocator;
     var story: api.Story = undefined;
     const json = "{\"inkVersion\":21,\"root\":[[\"ev\",1,2,\"+\",\"out\",\"/ev\",\"\\n\"," ++

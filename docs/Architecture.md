@@ -26,7 +26,7 @@ flowchart LR
 
     program --> story1["Story A<br/>State + Continue loop"]
     program --> story2["Story B"]
-    story1 <--> host["host via inkz.Story<br/>(runtime/api.zig)"]
+    story1 <--> host["host via inkz.Story<br/>(runtime/story.zig)"]
     story1 <--> save["save format v10<br/>to_json / load_json"]
 ```
 

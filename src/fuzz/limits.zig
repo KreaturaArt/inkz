@@ -95,7 +95,7 @@ fn session(choices: fuzz_ink.Choices, limits: Limits, compact_always: bool) !?Se
             else => return null,
         };
     defer story.deinit(gpa);
-    story.core.state.compact_always = compact_always;
+    story.state.compact_always = compact_always;
     const calls = host.draw_calls(choices);
     var kept: ?play.Value = null;
     var result: Session = .{};
@@ -104,11 +104,11 @@ fn session(choices: fuzz_ink.Choices, limits: Limits, compact_always: bool) !?Se
         _ = host.call(&story, choices, &kept, calls) catch |err| {
             result.errors.add(err);
             // A story that failed in the middle of a step stays failed.
-            if (story.core.failed) assert(story.cont() == error.StoryFailed);
+            if (story.failed) assert(story.cont() == error.StoryFailed);
         };
-        assert(story.core.state.check() == .ok);
+        assert(story.state.check() == .ok);
     }
-    result.usage = story.core.usage();
+    result.usage = story.usage();
     return result;
 }
 

@@ -5,10 +5,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const support = @import("support.zig");
-const vm = @import("../runtime/api.zig");
+const vm = @import("../runtime/story.zig");
 const Program = @import("../core/program.zig").Program;
 const Value = vm.Value;
-const VmStory = @import("../runtime/story.zig").Story;
 
 const fixtures = "test/fixture/original/";
 
@@ -128,7 +127,7 @@ test "player/flow.ink" {
 
 /// The old tests' external functions.
 const Externals = struct {
-    fn count(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
+    fn count(_: ?*anyopaque, _: *vm.Story, arguments: []const Value) anyerror!Value {
         if (arguments.len == 0) return .{ .integer = 3 };
         return switch (arguments[0]) {
             .integer => |value| .{ .integer = value + 3 },
@@ -136,11 +135,11 @@ const Externals = struct {
         };
     }
 
-    fn nothing(_: ?*anyopaque, _: *VmStory, _: []const Value) anyerror!Value {
+    fn nothing(_: ?*anyopaque, _: *vm.Story, _: []const Value) anyerror!Value {
         return .null;
     }
 
-    fn multiply(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
+    fn multiply(_: ?*anyopaque, _: *vm.Story, arguments: []const Value) anyerror!Value {
         assert(arguments.len == 2);
         return .{ .float = as_float(arguments[0]) * as_float(arguments[1]) };
     }
@@ -153,11 +152,11 @@ const Externals = struct {
         };
     }
 
-    fn times(_: ?*anyopaque, _: *VmStory, _: []const Value) anyerror!Value {
+    fn times(_: ?*anyopaque, _: *vm.Story, _: []const Value) anyerror!Value {
         return .{ .string = "knock knock knock " };
     }
 
-    fn increment(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
+    fn increment(_: ?*anyopaque, _: *vm.Story, arguments: []const Value) anyerror!Value {
         assert(arguments.len == 1);
         const value: i32 = if (arguments[0] == .integer) arguments[0].integer else 0;
         return .{ .integer = value + 1 };

@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const api = @import("api.zig");
+const api = @import("story.zig");
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const Story = api.Story;
@@ -32,7 +32,7 @@ const Recorder = struct {
 
     fn greet(
         context: ?*anyopaque,
-        story: *@import("story.zig").Story,
+        story: *api.Story,
         arguments: []const Value,
     ) anyerror!Value {
         assert(context != null);
@@ -172,7 +172,7 @@ test "the public API, method by method" {
 }
 
 fn exercise_flows_and_saves(story: *Story, recorder: *Recorder, gpa: std.mem.Allocator) !void {
-    assert(story.core.state.memory.len > 0);
+    assert(story.state.memory.len > 0);
     assert(story.can_continue() == false);
     try story.switch_flow("side");
     try std.testing.expectEqualStrings("side", story.current_flow_name().get());
@@ -302,8 +302,8 @@ fn drop(gpa: std.mem.Allocator, story: *Story) void {
 }
 
 fn play_until_error(story: *Story) !void {
-    assert(story.core.state.memory.len > 0);
-    assert(story.core.program.containers.len > 0);
+    assert(story.state.memory.len > 0);
+    assert(story.program.containers.len > 0);
     var lines: u32 = 0;
     while (story.can_continue()) : (lines += 1) {
         if (lines == 1000) return error.NoLimitHit;

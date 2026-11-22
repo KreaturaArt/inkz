@@ -8,8 +8,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
-const Story = @import("../runtime/story.zig").Story;
-const api = @import("../runtime/api.zig");
+const story_module = @import("../runtime/story.zig");
+const Story = story_module.Story;
+const api = @import("../runtime/story.zig");
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
 const cases = @import("cases.zig");
@@ -27,7 +28,7 @@ fn play(
     var story: api.Story = undefined;
     try story.init(gpa, program, .{});
     defer story.deinit(gpa);
-    support.quiet(&story.core);
+    support.quiet(&story);
     for (0..30) |_| {
         // A failed line ends the turn, as it would end the run.
         _ = support.play(&story, .{ .list = &.{} }, transcript) catch {};
@@ -36,13 +37,13 @@ fn play(
         if (count == 0) return;
         // ink doesn't save isInvisibleDefault, so a hidden fallback choice shows after a
         // load, in C# too; turns holding one aren't round-tripped.
-        if (round_trip and !has_invisible_default(&story.core)) {
+        if (round_trip and !has_invisible_default(&story)) {
             var writer: std.Io.Writer = .fixed(save_buffer);
             try story.to_json(&writer);
             const json = writer.buffered();
             story.deinit(gpa);
             try story.init(gpa, program, .{});
-            support.quiet(&story.core);
+            support.quiet(&story);
             try story.load_json(json);
             try std.testing.expectEqual(count, story.current_choices_count());
         }
@@ -129,7 +130,7 @@ test "a corrupted save leaves the story unchanged" {
     var story: Story = undefined;
     try story.init(std.testing.allocator, &program, .{});
     defer story.deinit(std.testing.allocator);
-    story.set_random_seed(5);
+    story_module.set_random_seed(&story, 5);
     while (story.can_continue()) _ = try story.cont();
     var saved: std.Io.Writer.Allocating = .init(arena);
     try save.to_json(&story, &saved.writer);
@@ -176,7 +177,7 @@ test "a cont that fails in the newline lookahead leaves a state that saves" {
         .evaluate_depth_max = 4,
     };
     var story: Story = undefined;
-    try story.init(gpa, &program, limits);
+    try story.init(gpa, &program, .{ .limits = limits });
     defer story.deinit(gpa);
     story.on_error = support.ignore_message;
     try std.testing.expectError(error.FrameLimit, story.cont());
@@ -185,7 +186,7 @@ test "a cont that fails in the newline lookahead leaves a state that saves" {
     var writer: std.Io.Writer = .fixed(&buffer);
     try save.to_json(&story, &writer);
     var loaded: Story = undefined;
-    try loaded.init(gpa, &program, limits);
+    try loaded.init(gpa, &program, .{ .limits = limits });
     defer loaded.deinit(gpa);
     try load.load_json(&loaded, writer.buffered());
     try std.testing.expect(loaded.state.check() == .ok);
@@ -212,7 +213,7 @@ test "a cont that fails in the middle of a step fails closed until reset or load
         .evaluate_depth_max = 4,
     };
     var story: Story = undefined;
-    try story.init(gpa, &program, limits);
+    try story.init(gpa, &program, .{ .limits = limits });
     defer story.deinit(gpa);
     story.on_error = support.ignore_message;
     var buffer: [4096]u8 = undefined;
@@ -221,7 +222,7 @@ test "a cont that fails in the middle of a step fails closed until reset or load
     try std.testing.expectError(error.FrameLimit, story.cont());
     try std.testing.expect(!story.can_continue());
     try std.testing.expectError(error.StoryFailed, story.cont());
-    try std.testing.expectEqual(@as(u32, 0), story.visible_choices_count());
+    try std.testing.expectEqual(@as(u32, 0), story.current_choices_count());
     try std.testing.expectError(error.StoryFailed, story.choose_choice_index(0));
     try load.load_json(&story, writer.buffered());
     try std.testing.expect(story.can_continue());
@@ -246,7 +247,7 @@ test "a step budget that runs out in the newline lookahead leaves a state that s
     var program = try compile.compile_source(gpa, source);
     defer program.deinit(gpa);
     var story: Story = undefined;
-    try story.init(gpa, &program, .{ .steps_per_continue_max = 100 });
+    try story.init(gpa, &program, .{ .limits = .{ .steps_per_continue_max = 100 } });
     defer story.deinit(gpa);
     try std.testing.expectError(error.StepLimit, story.cont());
     try std.testing.expect(!story.failed);
@@ -329,7 +330,7 @@ test "a saved variable pointer's context is checked on load and when followed" {
     defer story.deinit(gpa);
     support.quiet(&story);
     while (story.can_continue()) _ = try story.cont();
-    try std.testing.expectEqual(@as(u32, 1), story.visible_choices_count());
+    try std.testing.expectEqual(@as(u32, 1), story.current_choices_count());
     var saved: std.Io.Writer.Allocating = .init(gpa);
     defer saved.deinit();
     try save.to_json(&story, &saved.writer);
@@ -351,6 +352,6 @@ test "a saved variable pointer's context is checked on load and when followed" {
     try story.choose_choice_index(0);
     var text: std.Io.Writer.Allocating = .init(gpa);
     defer text.deinit();
-    while (story.can_continue()) try text.writer.writeAll(try story.cont());
+    while (story.can_continue()) try text.writer.writeAll((try story.cont()).get());
     try std.testing.expectEqualStrings("Done 2.\n", text.written());
 }

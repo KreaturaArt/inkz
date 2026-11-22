@@ -10,6 +10,7 @@ const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllo
 const Story = @import("../runtime/story.zig").Story;
 const state_module = @import("../runtime/state.zig");
 const flows = @import("../runtime/flows.zig");
+const ops = @import("../runtime/ops.zig");
 const evaluate = @import("../runtime/evaluate.zig");
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
@@ -46,11 +47,12 @@ fn exercise(story: *Story) !void {
         for (story.program.globals, 0..) |global, slot| {
             const value = story.state.globals[slot];
             if (value == .null or value == .variable_pointer) continue;
-            try story.set_variable(story.program.strings.get(global.name), value);
+            const name = story.program.strings.get(global.name);
+            try story.set_variable(name, ops.host_value(story, value));
         }
         try flows.switch_flow(&story.state, "gate");
         try flows.switch_flow(&story.state, flows.default_name);
-        if (story.visible_choices_count() == 0) break;
+        if (story.current_choices_count() == 0) break;
         try story.choose_choice_index(0);
     }
 }
@@ -163,11 +165,11 @@ test "Story.init makes one allocation, bindings included, and binding allocates 
     try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
     try std.testing.expectEqual(limits.bytes_total(shape), counting.bytes_live);
     story.on_error = support.ignore_message;
-    try story.bind_external_function("e", twice, null, true);
-    try story.bind_external_function("f", twice, null, true);
+    try story.bind_external_function("e", .{}, null, twice);
+    try story.bind_external_function("f", .{}, null, twice);
     try story.unbind_external_function("f");
-    try story.bind_external_function("f", twice, null, true);
-    const text = try story.cont();
+    try story.bind_external_function("f", .{}, null, twice);
+    const text = (try story.cont()).get();
     try std.testing.expectEqualStrings("4 6\n", text);
     try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
     story.deinit(counting.allocator());

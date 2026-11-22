@@ -18,9 +18,9 @@ fn check_play(choices: fuzz_ink.Choices) !bool {
     var story: play.Story = undefined;
     try play.init_story(&story, gpa, &program, .pick(choices));
     defer story.deinit(gpa);
-    assert(story.core.program == &program);
+    assert(story.program == &program);
     _ = play.play(&story, choices, play.steps_max);
-    assert(story.core.state.check() == .ok);
+    assert(story.state.check() == .ok);
     return true;
 }
 

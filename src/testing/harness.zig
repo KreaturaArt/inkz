@@ -102,7 +102,7 @@ pub const Harness = struct {
         const story = &harness.story;
         const argument = action.argument;
         switch (action.kind) {
-            .seed => story.set_random_seed(try std.fmt.parseInt(i32, argument, 10)),
+            .seed => story_module.set_random_seed(story, try std.fmt.parseInt(i32, argument, 10)),
             .@"continue" => try harness.continue_once(writer),
             .continue_maximally => try harness.continue_maximally(writer),
             .choices => try harness.write_choices(writer),
@@ -121,7 +121,7 @@ pub const Harness = struct {
                 try writer.writeByte('\n');
             },
             .set => try harness.set(argument),
-            .observe => try story.observe_variable(argument, observed, harness),
+            .observe => try story.observe_variable(argument, harness, observed),
             .bind => try harness.bind(argument),
             .unbind => try story.unbind_external_function(argument),
             .fallbacks => story.allow_external_function_fallbacks = std.mem.eql(u8, argument, "on"),
@@ -130,7 +130,7 @@ pub const Harness = struct {
             .load_fresh => try harness.load_fresh(),
             .current_text => {
                 try writer.writeAll("current_text: ");
-                try write_json_string(writer, try story.current_text());
+                try write_json_string(writer, (try story.current_text()).get());
                 try writer.writeByte('\n');
             },
             .reset => try story.reset_state(),
@@ -157,10 +157,11 @@ pub const Harness = struct {
     fn continue_once(harness: *Harness, writer: *std.Io.Writer) !void {
         const story = &harness.story;
         if (!story.can_continue()) return writer.writeAll("can_continue: false\n");
-        const text = story.cont() catch |err| {
+        const line = story.cont() catch |err| {
             if (err == error.MissingExternalBinding) try harness.missing_binding_exception();
             return err;
         };
+        const text = line.get();
         try writer.writeAll("text: ");
         try write_json_string(writer, text);
         try writer.writeByte('\n');
@@ -187,16 +188,16 @@ pub const Harness = struct {
 
     fn write_choices(harness: *Harness, writer: *std.Io.Writer) !void {
         const story = &harness.story;
-        const count = story.visible_choices_count();
+        const count = story.current_choices_count();
         try writer.print("choices: {d}\n", .{count});
         for (0..count) |position| {
-            const choice = story.visible_choice(@intCast(position));
+            const choice = story_module.visible_choice(story, @intCast(position));
             try writer.print("  {d}: ", .{position});
-            try write_json_string(writer, story.text_of(choice.text));
+            try write_json_string(writer, story_module.text_of(story, choice.text));
             const all = story.state.choices.tags.slice();
             harness.clear_tags();
             for (all[choice.tags_first..][0..choice.tags_count]) |reference| {
-                try harness.tag(story.text_of(reference));
+                try harness.tag(story_module.text_of(story, reference));
             }
             if (choice.tags_count > 0) {
                 try writer.writeAll(" tags ");
@@ -212,7 +213,7 @@ pub const Harness = struct {
         for (0..transcript.turns_max) |_| {
             try harness.continue_maximally(writer);
             try harness.write_choices(writer);
-            const count = harness.story.visible_choices_count();
+            const count = harness.story.current_choices_count();
             if (count == 0) return writer.writeAll("end\n");
             const index = if (random) |generator| pick(generator, count) else 0;
             try writer.print("choose: {d}\n", .{index});
@@ -274,7 +275,7 @@ pub const Harness = struct {
     fn missing_binding_exception(harness: *Harness) !void {
         var names: NameList = .{ .gpa = harness.gpa };
         defer names.list.deinit(harness.gpa);
-        try harness.story.missing_externals(&names);
+        try story_module.missing_externals(&harness.story, &names);
         assert(names.count > 0);
         const suffix = if (harness.story.allow_external_function_fallbacks)
             ", and no fallback ink function found."
@@ -296,7 +297,7 @@ pub const Harness = struct {
             .integer => |number| story.set_variable(name, .{ .integer = number }),
             .float => |number| story.set_variable(name, .{ .float = number }),
             .bool => |flag| story.set_variable(name, .{ .bool = flag }),
-            .string => |text| story.set_variable_text(name, text),
+            .string => |text| story.set_variable(name, .{ .string = text }),
             else => unreachable,
         };
         result catch |err| {
@@ -312,7 +313,7 @@ pub const Harness = struct {
     fn write_variable(harness: *Harness, writer: *std.Io.Writer, name: []const u8) !void {
         const story = &harness.story;
         const value = story.get_variable(name) orelse return writer.writeAll("null");
-        try write_host_value(harness.gpa, story, writer, ops.host_value(story, value));
+        try write_host_value(harness.gpa, story, writer, value.get());
     }
 
     /// Every global, sorted by name.
@@ -410,7 +411,12 @@ pub const Harness = struct {
             rest = function_words.rest();
         }
         const lookahead_safe = !std.mem.eql(u8, std.mem.trim(u8, rest, " "), "lookahead_unsafe");
-        try harness.story.bind_external_function(name, Bound.call, bound, lookahead_safe);
+        try harness.story.bind_external_function(
+            name,
+            .{ .lookahead_safe = lookahead_safe },
+            bound,
+            Bound.call,
+        );
     }
 
     fn write_messages(harness: *Harness, writer: *std.Io.Writer) !void {
@@ -656,13 +662,13 @@ fn write_host_value(
         .list => |list| {
             var text: std.Io.Writer.Allocating = .init(gpa);
             defer text.deinit();
-            try story.write_list(list, &text.writer);
+            try story_module.write_list(story, list, &text.writer);
             try writer.writeAll("list ");
             try write_json_string(writer, text.written());
         },
         .divert_target => |target| {
             try writer.writeAll("other ");
-            try write_json_string(writer, story.path_of(target));
+            try write_json_string(writer, story_module.path_of(story, target));
         },
     }
 }

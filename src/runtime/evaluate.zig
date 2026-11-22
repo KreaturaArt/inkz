@@ -42,8 +42,8 @@ pub fn evaluate_function(
     text_writer: *std.Io.Writer,
 ) Error!HostValue {
     assert(name.len > 0);
-    story.invalidate_views();
-    if (!story.may_evaluate()) return error.Reentrant;
+    story_module.invalidate_views(story);
+    if (!story_module.may_evaluate(story)) return error.Reentrant;
     if (story.failed) return error.StoryFailed;
     // Kept errors stop the story from continuing, so the function couldn't run.
     if (story.state.has_error()) return error.StoryError;
@@ -147,7 +147,7 @@ fn run_evaluation(story: *Story, text_writer: *std.Io.Writer, stepping: *bool) E
     }
     while (story.can_continue()) {
         stepping.* = true;
-        const line = try story.next_line();
+        const line = try story_module.next_line(story);
         stepping.* = false;
         text_writer.writeAll(line) catch return error.OutputLimit;
     }
@@ -203,7 +203,7 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
     assert(state.evaluation.count == height);
     const value = returned orelse return .null;
     return switch (value) {
-        .divert_target => |target| .{ .string = story.path_of(target) },
+        .divert_target => |target| .{ .string = story_module.path_of(story, target) },
         else => ops.host_value(story, value),
     };
 }
@@ -316,10 +316,10 @@ test "evaluate_function nests from an external up to evaluate_depth_max" {
     var program = try external_program(gpa);
     defer program.deinit(gpa);
     var story: Story = undefined;
-    try story.init(gpa, &program, .{ .evaluate_depth_max = 3 });
+    try story.init(gpa, &program, .{ .limits = .{ .evaluate_depth_max = 3 } });
     defer story.deinit(gpa);
     var probe: Probe = .{};
-    try story.bind_external_function("ext", Probe.call, &probe, true);
+    try story.bind_external_function("ext", .{}, &probe, Probe.call);
     try std.testing.expectError(error.ExternalFunctionFailed, story.cont());
     // The root's call and one per nested evaluation; the fourth evaluation is refused.
     try std.testing.expectEqual(@as(u32, 4), probe.calls);
@@ -336,7 +336,7 @@ test "other mutating calls from a callback are reentrant" {
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
     var probe: Probe = .{ .reenter = true };
-    try story.bind_external_function("ext", Probe.call, &probe, true);
+    try story.bind_external_function("ext", .{}, &probe, Probe.call);
     _ = try story.cont();
     try std.testing.expect(probe.reentrant_error);
     try std.testing.expectEqual(@as(u32, 0), story.callback_depth);

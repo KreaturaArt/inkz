@@ -16,6 +16,8 @@ const lookahead = @import("lookahead.zig");
 const ops = @import("ops.zig");
 const story_module = @import("story.zig");
 const Story = story_module.Story;
+const text_of = story_module.text_of;
+const path_of = story_module.path_of;
 const Value = value_module.Value;
 const Pointer = call_stack_module.Pointer;
 const Program = @import("../core/program.zig").Program;
@@ -27,6 +29,7 @@ const Temp = call_stack_module.Temp;
 const Item = output_module.Item;
 const Choice = choices_module.Choice;
 const Writer = std.Io.Writer;
+const ListItemIndex = @import("../core/index.zig").ListItemIndex;
 
 pub const save_version = 10;
 pub const format_version = 21;
@@ -180,7 +183,7 @@ fn write_thread(
         try writer.writeByte('{');
         if (!frame.pointer.is_null()) {
             try writer.writeAll("\"cPath\":");
-            try write_json_string(writer, story.path_of(frame.pointer.container));
+            try write_json_string(writer, path_of(story, frame.pointer.container));
             try writer.print(",\"idx\":{d},", .{frame.pointer.index});
         }
         try writer.print("\"exp\":{s},\"type\":{d}", .{
@@ -217,15 +220,15 @@ fn write_object_path(story: *Story, writer: *Writer, pointer: Pointer) Writer.Er
     // container.
     const empty = program.content_count(pointer.container) == 0;
     if (pointer.index == Pointer.container_self or empty) {
-        return write_json_string(writer, story.path_of(pointer.container));
+        return write_json_string(writer, path_of(story, pointer.container));
     }
     if (pointer.index < program.content_count(pointer.container)) {
         if (program.container_at(pointer.container, pointer.index)) |child| {
-            return write_json_string(writer, story.path_of(child));
+            return write_json_string(writer, path_of(story, child));
         }
     }
     const index = ink_content_index(program, pointer);
-    const path = story.path_of(pointer.container);
+    const path = path_of(story, pointer.container);
     if (path.len == 0) return writer.print("\"{d}\"", .{index});
     try writer.writeByte('"');
     try write_escaped(writer, path);
@@ -291,7 +294,7 @@ fn write_choice(
 ) Writer.Error!void {
     assert(choice.tags_first + choice.tags_count <= view.buffers.tags.len);
     try writer.writeAll("{\"text\":");
-    try write_json_string(writer, story.text_of(choice.text));
+    try write_json_string(writer, text_of(story, choice.text));
     try writer.print(",\"index\":{d},\"originalChoicePath\":", .{choice_index});
     try write_object_path(story, writer, choice.source);
     try writer.print(",\"originalThreadIndex\":{d},\"targetPath\":", .{choice.thread_counter});
@@ -300,7 +303,7 @@ fn write_choice(
         try writer.writeAll(",\"tags\":[");
         for (view.buffers.tags[choice.tags_first..][0..choice.tags_count], 0..) |tag, position| {
             if (position > 0) try writer.writeByte(',');
-            try write_json_string(writer, story.text_of(tag));
+            try write_json_string(writer, text_of(story, tag));
         }
         try writer.writeByte(']');
     }
@@ -311,7 +314,7 @@ fn write_choice(
 fn write_target_path(story: *Story, writer: *Writer, target: Pointer) Writer.Error!void {
     assert(target.container.to_int() < story.program.containers.len);
     assert(!target.is_null());
-    if (target.index == 0) return write_json_string(writer, story.path_of(target.container));
+    if (target.index == 0) return write_json_string(writer, path_of(story, target.container));
     try write_object_path(story, writer, target);
 }
 
@@ -323,7 +326,7 @@ fn write_variables(story: *Story, writer: *Writer) Writer.Error!void {
     try writer.writeByte('{');
     var written = false;
     for (story.program.globals, state.globals, state.global_defaults) |global, value, default| {
-        if (value == .null or story.values_equal(value, default)) continue;
+        if (value == .null or values_equal(story, value, default)) continue;
         if (written) try writer.writeByte(',');
         written = true;
         try write_json_string(writer, story.program.strings.get(global.name));
@@ -331,6 +334,41 @@ fn write_variables(story: *Story, writer: *Writer) Writer.Error!void {
         try write_value(story, writer, value);
     }
     try writer.writeByte('}');
+}
+
+/// ink's RuntimeObjectsEqual (for saving only non-default globals): same type, then the
+/// same value; strings by text, lists by their items (unlike `Value.identical`, which
+/// compares references and float bits).
+fn values_equal(story: *Story, a: Value, b: Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .string => |text| std.mem.eql(u8, text_of(story, text), text_of(story, b.string)),
+        .list => |list| list_items_equal(story, list, b.list),
+        .null => true,
+        .integer => |number| number == b.integer,
+        .float => |number| number == b.float,
+        .bool => |flag| flag == b.bool,
+        .divert_target => |target| target == b.divert_target,
+        .variable_pointer => |pointer| pointer.name == b.variable_pointer.name and
+            pointer.context == b.variable_pointer.context,
+        .tag => |text| std.mem.eql(u8, text_of(story, text), text_of(story, b.tag)),
+    };
+}
+
+fn list_items_equal(
+    story: *Story,
+    a: value_module.ListReference,
+    b: value_module.ListReference,
+) bool {
+    assert(story.state.lists.check_reference(a) and story.state.lists.check_reference(b));
+    const items_a = story.state.lists.view(a).items;
+    const items_b = story.state.lists.view(b).items;
+    if (items_a.len != items_b.len) return false;
+    for (items_a) |item| {
+        if (std.mem.indexOfScalar(ListItemIndex, items_b, item) == null) return false;
+    }
+    assert(items_a.len == items_b.len);
+    return true;
 }
 
 const Counts = enum { visits, turns };
@@ -370,7 +408,7 @@ fn write_value(story: *Story, writer: *Writer, value: Value) Writer.Error!void {
         .float => |number| try write_float(writer, number),
         .bool => |flag| try writer.writeAll(if (flag) "true" else "false"),
         .string => |reference| {
-            const text = story.text_of(reference);
+            const text = text_of(story, reference);
             if (std.mem.eql(u8, text, "\n")) return writer.writeAll("\"\\n\"");
             try writer.writeAll("\"^");
             try write_escaped(writer, text);
@@ -378,7 +416,7 @@ fn write_value(story: *Story, writer: *Writer, value: Value) Writer.Error!void {
         },
         .divert_target => |target| {
             try writer.writeAll("{\"^->\":");
-            try write_json_string(writer, story.path_of(target));
+            try write_json_string(writer, path_of(story, target));
             try writer.writeByte('}');
         },
         .variable_pointer => |pointer| {
@@ -389,7 +427,7 @@ fn write_value(story: *Story, writer: *Writer, value: Value) Writer.Error!void {
         .list => |list| try write_list(story, writer, list),
         .tag => |reference| {
             try writer.writeAll("{\"#\":");
-            try write_json_string(writer, story.text_of(reference));
+            try write_json_string(writer, text_of(story, reference));
             try writer.writeByte('}');
         },
     }

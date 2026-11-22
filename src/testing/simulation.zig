@@ -39,7 +39,9 @@ test "a simulation run is reproducible by seed" {
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
-const Story = @import("../runtime/story.zig").Story;
+const story_module = @import("../runtime/story.zig");
+const Story = story_module.Story;
+const ops = @import("../runtime/ops.zig");
 const state_module = @import("../runtime/state.zig");
 const flows_module = @import("../runtime/flows.zig");
 const save_module = @import("../runtime/save.zig");
@@ -139,7 +141,7 @@ pub fn simulate_mix(
 ) !Finding {
     var random = DotnetRandom.init(seed);
     try story.reset_state();
-    story.set_random_seed(seed);
+    story_module.set_random_seed(story, seed);
     var turn: u32 = 0;
     while (turn < 50) : (turn += 1) {
         var lines: u32 = 0;
@@ -164,7 +166,7 @@ pub fn simulate_mix(
             }
         }
         if (story.state.check() != .ok) return .check_failed;
-        const count = story.visible_choices_count();
+        const count = story.current_choices_count();
         if (count == 0) return .ok;
         const pick: u32 = @intCast(@rem(random.next(), @as(i32, @intCast(count))));
         try story.choose_choice_index(pick);
@@ -213,12 +215,12 @@ fn set_some_variable(story: *Story, random: *DotnetRandom) !void {
     const slot: usize = @intCast(@rem(random.next(), @as(i32, @intCast(globals.len))));
     const value = story.state.globals[slot];
     const name = story.program.strings.get(globals[slot].name);
-    const changed: @import("../runtime/value.zig").Value = switch (value) {
+    const changed: story_module.HostValue = switch (value) {
         .integer => |number| .{ .integer = number +% 1 },
         .bool => |flag| .{ .bool = !flag },
         .float => |number| .{ .float = number + 0.5 },
         .null, .variable_pointer, .tag => return,
-        else => value,
+        else => ops.host_value(story, value),
     };
     try story.set_variable(name, changed);
 }

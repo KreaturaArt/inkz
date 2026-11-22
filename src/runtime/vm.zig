@@ -368,7 +368,7 @@ fn content_text(story: *Story, instruction: Instruction) Error!Signal {
         return switch (opcode) {
             .text => push_content(story, .{ .string = .program(instruction.get(.text)) }),
             .tag => push_content(story, .{ .tag = .program(instruction.get(.tag)) }),
-            .newline => push_content(story, .{ .string = story.program_newline() }),
+            .newline => push_content(story, .{ .string = story_module.program_newline(story) }),
             else => ops.fail(story, .glue_in_expression, .{}),
         };
     }
@@ -378,7 +378,7 @@ fn content_text(story: *Story, instruction: Instruction) Error!Signal {
             const length: u32 = @intCast(story.program.strings.get(id).len);
             try ops.push_text(story, .program(id), 0, length);
         },
-        .newline => try ops.push_text(story, story.program_newline(), 0, 1),
+        .newline => try ops.push_text(story, story_module.program_newline(story), 0, 1),
         .glue => story.state.output.push_glue() catch return error.OutputLimit,
         .tag => {
             const id = instruction.get(.tag);

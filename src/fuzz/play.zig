@@ -6,13 +6,12 @@ const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
 const Program = @import("../core/program.zig").Program;
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const support = @import("../testing/support.zig");
 
 pub const Story = api.Story;
 pub const Value = api.Value;
-const CoreStory = @import("../runtime/story.zig").Story;
 const Allocator = std.mem.Allocator;
 const Limits = @import("../core/limits.zig").Limits;
 
@@ -32,7 +31,7 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
 }
 
 /// The external `e0(x)`: returns its argument.
-fn echo(context: ?*anyopaque, _: *CoreStory, arguments: []const Value) anyerror!Value {
+fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Value {
     assert(context == null);
     return if (arguments.len > 0) arguments[0] else .null;
 }
@@ -79,7 +78,7 @@ pub fn init_story_with(
         .on_error = support.ignore_message,
     });
     if (setup.bind_external) try story.bind_external_function("e0", .{}, null, echo);
-    assert(story.core.state.check() == .ok);
+    assert(story.state.check() == .ok);
 }
 
 /// Continues and chooses until the story ends, `steps` run out, or a call fails; the state
@@ -96,7 +95,7 @@ pub fn play(story: *Story, choices: fuzz_ink.Choices, steps: u32) bool {
             if (count == 0) return true;
             story.choose_choice_index(@intCast(choices.below(count))) catch return false;
         }
-        assert(story.core.state.check() == .ok);
+        assert(story.state.check() == .ok);
     }
     assert(taken == steps);
     return true;

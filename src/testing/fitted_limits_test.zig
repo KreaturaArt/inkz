@@ -6,7 +6,7 @@ const assert = std.debug.assert;
 const ink_json = @import("../core/ink_json.zig");
 const limits_module = @import("../core/limits.zig");
 const Program = @import("../core/program.zig").Program;
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const State = @import("../runtime/state.zig").State;
 const cases = @import("cases.zig");
 const support = @import("support.zig");
@@ -39,7 +39,7 @@ test "fitted limits play crime_scene the same in under 64 KiB" {
     defer gpa.free(expected);
     const usage = measured.usage();
     try std.testing.expect(usage.frames > 0 and usage.choices > 0 and usage.output_items > 0);
-    try std.testing.expect(usage.frames <= measured.core.state.limits.frames_max);
+    try std.testing.expect(usage.frames <= measured.state.limits.frames_max);
     const limits = limits_module.fitted(usage, 2);
     try std.testing.expect(limits.bytes_total(State.shape_of(&program)) < 64 * 1024);
     var fitted: api.Story = undefined;

@@ -46,7 +46,7 @@ pub fn choose_path_string(
     arguments: []const story_module.HostValue,
 ) (PathError || story_module.Error)!void {
     assert(text.len > 0);
-    story.invalidate_views();
+    story_module.invalidate_views(story);
     if (story.callback_depth > 0) return error.Reentrant;
     if (story.failed) return error.StoryFailed;
     if (story.events.on_choose_path_string) |event| {
@@ -67,7 +67,7 @@ pub fn choose_path_string(
     if (arguments.len > evaluation.capacity() - evaluation.count) return error.EvaluationLimit;
     if (reset_callstack) ops.force_end(story);
     evaluation.push_slice(values[0..arguments.len]) catch unreachable;
-    story.choose_pointer(target, true) catch |err| {
+    story_module.choose_pointer(story, target, true) catch |err| {
         story.failed = true;
         return err;
     };

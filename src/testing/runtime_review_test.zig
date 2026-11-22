@@ -5,7 +5,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const Program = @import("../core/program.zig").Program;
 const string_pool = @import("../core/string_pool.zig");
 const support = @import("support.zig");
@@ -149,12 +149,12 @@ test "assigning a popped string to a temp named like a list item allocates nothi
     defer gpa.destroy(story);
     try story.init_from_json(gpa, renamed, .{});
     defer story.deinit(gpa);
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     const text = try play(gpa, story);
     defer gpa.free(text);
     // `{a}` reads the list item, as ink's GetRawVariableWithName looks for one before temps.
     try std.testing.expectEqualStrings("a\n", text);
-    story.core.state.verify();
+    story.state.verify();
 }
 
 /// A line with one shuffle of `elements` alternatives, owned by the caller.

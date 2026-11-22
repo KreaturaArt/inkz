@@ -675,8 +675,8 @@ pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored));
     // ink compares the old and new value objects by reference; identical values are the
     // closest a value representation gets (a reassigned literal is the same object in ink too).
-    if (old.identical(stored) or !story.is_observed(slot)) return;
-    if (!story.batching_observers) return story.notify_global(slot);
+    if (old.identical(stored) or !story_module.is_observed(story, slot)) return;
+    if (!story.batching_observers) return story_module.notify_global(story, slot);
     const queue = &story.state.observer_events;
     if (std.mem.indexOfScalar(GlobalSlot, queue.slice(), slot) != null) return;
     queue.push(slot) catch return error.ObserverQueueLimit;
@@ -1025,7 +1025,7 @@ pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {
         }
         // Under an outer level's snapshot (a function evaluated from a lookahead-safe
         // external), the call runs now; RunningYourInk.md says why that can repeat.
-        if (story.owns_lookahead()) {
+        if (story_module.owns_lookahead(story)) {
             // The line ends at the snapshot; the call runs on the next `cont`.
             story.saw_lookahead_unsafe_function_after_newline = true;
             return .output;

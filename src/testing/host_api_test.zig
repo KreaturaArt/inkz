@@ -7,9 +7,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const evaluate = @import("../runtime/evaluate.zig");
-const RuntimeStory = @import("../runtime/story.zig").Story;
+
 const Value = api.Value;
 const support = @import("support.zig");
 
@@ -44,7 +44,7 @@ const start = support.start;
 const stop = support.stop;
 
 fn heap_offset(story: *api.Story, name: []const u8) u32 {
-    const value = story.core.get_variable(name).?;
+    const value = story.state.globals[story.program.global_by_name(name).?.to_int()];
     assert(value == .string);
     return value.string.heap_offset();
 }
@@ -77,7 +77,7 @@ test "evaluate_function and choose_path_string keep every heap string argument" 
     defer program.deinit(gpa);
     const story = try start(gpa, &program, .{ .heap_bytes_max = 256 });
     defer stop(gpa, story);
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     try story.set_variable("b", .{ .string = "garbage text" });
     try story.set_variable("a", .{ .string = "first string" });
     try story.set_variable("b", .{ .string = "other string" });
@@ -122,7 +122,7 @@ test "a list argument after a string argument survives the string's compaction" 
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
     _ = try story.cont();
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     const arguments = [_]Value{
         .{ .string = "a fairly long string argument" },
         story.get_variable("y").?.get(),
@@ -134,7 +134,7 @@ test "a list argument after a string argument survives the string's compaction" 
     try story.set_variable("x", result);
     var written: std.Io.Writer.Allocating = .init(gpa);
     defer written.deinit();
-    try story.core.write_list(story.get_variable("x").?.get().list, &written.writer);
+    try api.write_list(&story, story.get_variable("x").?.get().list, &written.writer);
     try std.testing.expectEqualStrings("a, c", written.written());
 }
 
@@ -180,7 +180,7 @@ test "on_complete_evaluate_function gets its arguments after the run compacts th
         },
     });
     defer story.deinit(gpa);
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     try story.set_variable("a", .{ .string = "first string" });
     try story.set_variable("b", .{ .string = "other string" });
     const arguments = [_]Value{
@@ -195,8 +195,8 @@ test "on_complete_evaluate_function gets its arguments after the run compacts th
     const lengths = completion.lengths;
     try std.testing.expectEqualStrings("first string", completion.texts[0][0..lengths[0]]);
     try std.testing.expectEqualStrings("other string", completion.texts[1][0..lengths[1]]);
-    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
-    try std.testing.expectEqual(@as(u32, 0), story.core.state.evaluation.count);
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 0), story.state.evaluation.count);
 }
 
 test "evaluate_function fails closed and refuses to run while errors are kept" {
@@ -225,7 +225,7 @@ test "evaluate_function fails closed and refuses to run while errors are kept" {
     );
     var full: std.Io.Writer = .fixed(&.{});
     try std.testing.expectError(error.OutputLimit, story.evaluate_function("shout", &.{}, &full));
-    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
     try std.testing.expectEqualStrings("Hello\n", (try story.cont()).get());
     // A story error ends the flow, as in cont (ink's ForceEnd): nothing of the function
     // runs later.
@@ -242,7 +242,7 @@ test "evaluate_function fails closed and refuses to run while errors are kept" {
     try std.testing.expect(!story.can_continue());
     const doubled = try story.evaluate_function("double", &.{.{ .integer = 2 }}, &text.writer);
     try std.testing.expectEqual(@as(i32, 4), doubled.get().integer);
-    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
     try std.testing.expect(!story.can_continue());
     try std.testing.expectEqual(@as(usize, 0), text.written().len);
 }
@@ -286,7 +286,7 @@ const Nester = struct {
     text: [64]u8 = undefined,
     length: u32 = 0,
 
-    fn call(context: ?*anyopaque, story: *RuntimeStory, arguments: []const Value) anyerror!Value {
+    fn call(context: ?*anyopaque, story: *api.Story, arguments: []const Value) anyerror!Value {
         assert(arguments.len == 0);
         const nester: *Nester = @ptrCast(@alignCast(context.?));
         nester.calls += 1;

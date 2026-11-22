@@ -6,7 +6,7 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 
 const source =
     \\VAR x = "y"

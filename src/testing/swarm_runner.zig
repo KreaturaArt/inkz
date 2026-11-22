@@ -8,7 +8,7 @@ const assert = std.debug.assert;
 const fuzz_ink = @import("fuzz_ink.zig");
 const triage_module = @import("swarm_triage.zig");
 const compile = @import("../compiler/compile.zig");
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const Swarm = fuzz_ink.Swarm;
 
 pub const Target = enum {
@@ -93,7 +93,7 @@ fn play(gpa: std.mem.Allocator, program: *const Program, seed: u64, round_trip: 
     var story: api.Story = undefined;
     try story.init(gpa, program, .{ .limits = .{ .steps_per_continue_max = 10_000 } });
     defer story.deinit(gpa);
-    story.core.on_error = @import("support.zig").ignore_message;
+    story.on_error = @import("support.zig").ignore_message;
     var prng: std.Random.DefaultPrng = .init(seed);
     const random = prng.random();
     for (0..64) |_| {
@@ -104,9 +104,9 @@ fn play(gpa: std.mem.Allocator, program: *const Program, seed: u64, round_trip: 
             if (count == 0) break;
             story.choose_choice_index(random.uintLessThan(u32, @intCast(count))) catch return null;
         }
-        if (story.core.state.check() != .ok) return "State.check";
+        if (story.state.check() != .ok) return "State.check";
     }
-    if (!round_trip or story.core.failed) return null;
+    if (!round_trip or story.failed) return null;
     var first: std.Io.Writer.Allocating = .init(gpa);
     defer first.deinit();
     try story.to_json(&first.writer);

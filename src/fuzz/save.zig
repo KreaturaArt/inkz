@@ -39,7 +39,7 @@ fn play_scripted(story: *play.Story, script: []const u8, transcript: *std.Io.Wri
 }
 
 fn save_of(gpa: Allocator, story: *play.Story) ![]u8 {
-    assert(story.core.state.check() == .ok);
+    assert(story.state.check() == .ok);
     var save: std.Io.Writer.Allocating = .init(gpa);
     errdefer save.deinit();
     try story.to_json(&save.writer);
@@ -59,7 +59,7 @@ fn check_save_load(choices: fuzz_ink.Choices) !bool {
     defer original.deinit(gpa);
     const clean = play.play(&original, choices, @intCast(choices.below(play.steps_max)));
     // A story that failed in the middle of a step is half done and doesn't save.
-    if (original.core.failed) return true;
+    if (original.failed) return true;
     const save = try save_of(gpa, &original);
     defer gpa.free(save);
 
@@ -67,7 +67,7 @@ fn check_save_load(choices: fuzz_ink.Choices) !bool {
     try play.init_story(&loaded, gpa, &program, setup);
     defer loaded.deinit(gpa);
     try loaded.load_json(save);
-    assert(loaded.core.state.check() == .ok);
+    assert(loaded.state.check() == .ok);
     const save_again = try save_of(gpa, &loaded);
     defer gpa.free(save_again);
     assert(std.mem.eql(u8, save, save_again));
@@ -76,7 +76,7 @@ fn check_save_load(choices: fuzz_ink.Choices) !bool {
     // ink's save doesn't keep a choice's isInvisibleDefault (JsonSerialisation's
     // JObjectToChoice), so a loaded fallback choice is visible, in ink and here: a save with
     // one isn't compared either.
-    const all_choices = original.core.state.choices.records.slice().len;
+    const all_choices = original.state.choices.records.slice().len;
     const invisible = all_choices > original.current_choices_count();
     var script: [script_max]u8 = undefined;
     for (&script) |*byte| byte.* = choices.choose(u8);
@@ -119,12 +119,12 @@ fn load_mutated(
     var story: play.Story = undefined;
     try play.init_story(&story, gpa, program, setup);
     defer story.deinit(gpa);
-    const before = story.core.state.hash();
+    const before = story.state.hash();
     story.load_json(json.items) catch {
-        assert(story.core.state.hash() == before);
+        assert(story.state.hash() == before);
         return applied;
     };
-    assert(story.core.state.check() == .ok);
+    assert(story.state.check() == .ok);
     _ = play.play(&story, choices, 32);
     return applied;
 }

@@ -5,7 +5,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
 const Program = @import("../core/program.zig").Program;
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const story_module = @import("../runtime/story.zig");
 const HostValue = story_module.HostValue;
 const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
@@ -28,7 +28,7 @@ pub fn noop_external(
 pub fn quiet(story: *story_module.Story) void {
     for (story.program.externals) |external| {
         const name = story.program.strings.get(external.name);
-        story.bind_external_function(name, noop_external, null, true) catch {};
+        story.bind_external_function(name, .{}, null, noop_external) catch {};
     }
     story.on_error = ignore_message;
 }

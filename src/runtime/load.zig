@@ -47,7 +47,7 @@ pub const save_version_min = 8;
 
 /// Loads `json` into the story; on any error the story is unchanged.
 pub fn load_json(story: *Story, json: []const u8) Error!void {
-    story.invalidate_views();
+    story_module.invalidate_views(story);
     if (story.callback_depth > 0) return error.Reentrant;
     assert(!lookahead.active(&story.state));
     const parse_zone = profile.begin(.load_parse);
@@ -451,13 +451,13 @@ const Loader = struct {
             null;
         if (command) |kind| return Item.command(kind);
         if (std.mem.eql(u8, raw, "\\n")) {
-            return text_item(loader.story.program_newline(), 1, .text, .newline);
+            return text_item(story_module.program_newline(loader.story), 1, .text, .newline);
         }
         if (raw.len == 0 or raw[0] != '^') return error.InvalidSave;
         const reference = try loader.string(node, 1);
         const length = try loader.decoded_length(node) - 1;
         const class: output_module.Class = if (loader.commit)
-            .of(loader.story.text_of(reference))
+            .of(story_module.text_of(loader.story, reference))
         else
             .non_whitespace;
         return text_item(reference, length, .text, class);
@@ -660,7 +660,7 @@ const Loader = struct {
             .string => {
                 const raw = tree.raw(node);
                 if (std.mem.eql(u8, raw, "void")) return .null;
-                const newline = loader.story.program_newline();
+                const newline = story_module.program_newline(loader.story);
                 if (std.mem.eql(u8, raw, "\\n")) return .{ .string = newline };
                 if (raw.len == 0 or raw[0] != '^') return error.InvalidSave;
                 return .{ .string = try loader.string(node, 1) };

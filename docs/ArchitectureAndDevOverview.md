@@ -17,7 +17,7 @@ code are ```text blocks, because the library doesn't export those modules.
 | Directory | What it holds |
 |---|---|
 | `src/core/` | The program image both halves share: `Program`, `ProgramBuilder`, the string pool, index newtypes, limits, `BoundedStack`, ink path strings, .NET's seeded random, and ink's JSON (`ink_json.load`, `ink_json.serialize`). |
-| `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public API (`api.zig`). |
+| `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public `Story` (`story.zig`). |
 | `src/compiler/` | The compiler: parser, object tree, name resolution and lowering to a `Program`. Entry points in `compile.zig`. |
 | `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle, end-to-end tests, the simulator and the zero-allocation gate. |
 | `tools/` | Lint, doctest, snapshot files, ground-truth file checks, the death-test runner, and the C# reference harness (`tools/ink_harness/`). |
@@ -134,9 +134,10 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
 
 ## The runtime
 
-`Story` (`src/runtime/story.zig`) is a borrowed `*const Program`, one `State`, and ink's
-Continue loop. The public `inkz.Story` (`api.zig`) wraps it with the host calls and the
-borrowed-view checks.
+`Story` (`src/runtime/story.zig`), the public `inkz.Story`, is a borrowed
+`*const Program`, one `State`, and ink's Continue loop, with the host calls and the
+borrowed-view checks. Its `pub` methods are the host API; the runtime's own helpers are the
+functions after it in `story.zig`, which take the story first.
 
 - **State** (`state.zig`) is carved out of one allocation of exactly
   `Limits.bytes_total()` bytes, made in `init`. Nothing allocates afterwards; the

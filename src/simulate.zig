@@ -137,7 +137,7 @@ const Run = struct {
     ) !limits_module.Usage {
         assert(options.seeds_count > 0);
         var story: Story = undefined;
-        try story.init(gpa, run.program, limits);
+        try story.init(gpa, run.program, .{ .limits = limits });
         defer story.deinit(gpa);
         simulation.prepare(&story, options.compact_always);
         for (0..options.seeds_count) |offset| {
