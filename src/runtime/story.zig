@@ -932,7 +932,7 @@ test "a step budget stops a story that loops without output" {
     try builder.add(.newline, {});
     _ = try builder.begin_container(.{ .name = "spin" });
     try builder.add(.nop, {});
-    try builder.add_divert("spin", .{ .kind = .plain, .conditional = false, .variable = false });
+    try builder.add_divert("spin", .{});
     try builder.end_container();
     try builder.end_container();
     var program = try builder.finish();

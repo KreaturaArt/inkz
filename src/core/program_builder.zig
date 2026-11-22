@@ -50,12 +50,6 @@ fn OperandOf(comptime opcode: Opcode) type {
     return instruction_module.Operand(instruction_module.operand_kind(opcode));
 }
 
-const plain_divert: instruction_module.DivertFlags = .{
-    .kind = .plain,
-    .conditional = false,
-    .variable = false,
-};
-
 pub const Diagnostic = struct {
     kind: enum { unresolved_path, divert_target_not_a_container },
     /// The path text: `diagnostic_bytes[path_first..][0..path_count]`.
@@ -485,18 +479,23 @@ pub const ProgramBuilder = struct {
         try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
     }
 
+    /// What kind of divert, and whether it is taken only if the popped value is true.
+    pub const DivertOptions = struct {
+        kind: instruction_module.DivertKind = .plain,
+        conditional: bool = false,
+    };
+
     /// A divert to `target`, a path (`[]const u8`) or a `KeyTarget`, resolved in `finish`.
-    pub fn add_divert(
-        builder: *ProgramBuilder,
-        target: anytype,
-        flags: instruction_module.DivertFlags,
-    ) !void {
-        assert(!flags.variable);
+    pub fn add_divert(builder: *ProgramBuilder, target: anytype, options: DivertOptions) !void {
         const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
             .target_container = .none,
             .target_index = 0,
             .name = .none,
-            .flags = flags,
+            .flags = .{
+                .kind = options.kind,
+                .conditional = options.conditional,
+                .variable = false,
+            },
         });
         try builder.add_fixup(.divert, target_of(target), at);
         try builder.add(.divert, @fromBackingInt(@intCast(at)));
@@ -506,16 +505,36 @@ pub const ProgramBuilder = struct {
     pub fn add_divert_variable(
         builder: *ProgramBuilder,
         name: []const u8,
-        flags: instruction_module.DivertFlags,
+        options: DivertOptions,
     ) !void {
-        assert(flags.variable);
+        assert(name.len > 0);
         const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
             .target_container = .none,
             .target_index = 0,
             .name = try builder.intern(name),
-            .flags = flags,
+            .flags = .{
+                .kind = options.kind,
+                .conditional = options.conditional,
+                .variable = true,
+            },
         });
         try builder.add(.divert, @fromBackingInt(@intCast(at)));
+    }
+
+    /// A call of external function `name` with `arguments_count` arguments.
+    pub fn add_external_call(
+        builder: *ProgramBuilder,
+        name: []const u8,
+        arguments_count: u32,
+        conditional: bool,
+    ) !void {
+        assert(name.len > 0);
+        const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
+            .external = try builder.external(name),
+            .arguments_count = arguments_count,
+            .conditional = conditional,
+        });
+        try builder.add(.call_external, @fromBackingInt(@intCast(at)));
     }
 
     /// A choice point to `target`, a path or a `KeyTarget`.
@@ -904,12 +923,12 @@ fn build_sample(builder: *ProgramBuilder) !void {
     try builder.add(.newline, {});
     try builder.end_container();
     try builder.add(.text, try builder.intern("C"));
-    try builder.add_divert("knot.stitch", plain_divert);
+    try builder.add_divert("knot.stitch", .{});
     const counted: ContainerFlags = .{ .visits_counted = true };
     _ = try builder.begin_container(.{ .name = "knot", .named_only = true, .flags = counted });
     try builder.add_container_operand(.read_count, ".^.stitch");
     _ = try builder.begin_container(.{ .name = "stitch", .named_only = true });
-    try builder.add_divert(".^.^", plain_divert);
+    try builder.add_divert(".^.^", .{});
     try builder.add_container_operand(.divert_target, "knot");
     try builder.end_container();
     try builder.end_container();
@@ -979,12 +998,59 @@ test "path fixups resolve to containers and positions" {
     try std.testing.expectEqual(knot, program.instruction_at(stitch, 1).get(.divert_target));
 }
 
+test "each divert kind, a variable divert and an external call become their records" {
+    // The JSON loader and the compiler pass kinds, not JSON keys: emit one of each and
+    // read the instructions back.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add_divert("k", .{});
+    try builder.add_divert("k", .{ .kind = .function });
+    try builder.add_divert("k", .{ .kind = .tunnel, .conditional = true });
+    try builder.add_divert_variable("x", .{ .kind = .tunnel });
+    try builder.add_external_call("f", 2, true);
+    try builder.add_variable_pointer("x", 0);
+    _ = try builder.begin_container(.{ .name = "k", .named_only = true });
+    try builder.add(.done, {});
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    const knot: ContainerIndex = .from_int(1);
+    const expected = [_]instruction_module.DivertFlags{
+        .{ .kind = .plain, .conditional = false, .variable = false },
+        .{ .kind = .function, .conditional = false, .variable = false },
+        .{ .kind = .tunnel, .conditional = true, .variable = false },
+        .{ .kind = .tunnel, .conditional = false, .variable = true },
+    };
+    for (expected, 0..) |flags, position| {
+        const instruction = program.instruction_at(Program.root, @intCast(position));
+        const at = @backingInt(instruction.get(.divert));
+        const divert = extra_module.get(instruction_module.Divert, program.extra, at).data;
+        try std.testing.expectEqual(flags, divert.flags);
+        if (flags.variable) {
+            try std.testing.expectEqualStrings("x", program.strings.get(divert.name));
+        } else try std.testing.expectEqual(knot, divert.target_container);
+    }
+    const call_at = @backingInt(program.instruction_at(Program.root, 4).get(.call_external));
+    const call = extra_module.get(instruction_module.ExternalCall, program.extra, call_at).data;
+    try std.testing.expectEqual(@as(u32, 2), call.arguments_count);
+    try std.testing.expect(call.conditional);
+    const external = program.externals[call.external.to_int()];
+    try std.testing.expectEqualStrings("f", program.strings.get(external.name));
+    const pointer_at = @backingInt(program.instruction_at(Program.root, 5).get(.variable_pointer));
+    const pointer = extra_module.get(instruction_module.VariablePointer, program.extra, pointer_at);
+    try std.testing.expectEqualStrings("x", program.strings.get(pointer.data.name));
+    try std.testing.expectEqual(@as(i32, 0), pointer.data.context);
+}
+
 test "an unresolved path is a diagnostic" {
     // Negative space: divert to a knot that doesn't exist.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
     _ = try builder.begin_container(.{});
-    try builder.add_divert("nowhere.at_all", plain_divert);
+    try builder.add_divert("nowhere.at_all", .{});
     try builder.end_container();
     try std.testing.expectError(error.UnresolvedPaths, builder.finish());
     try std.testing.expectEqual(@as(usize, 1), builder.diagnostics.items.len);

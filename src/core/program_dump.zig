@@ -157,7 +157,7 @@ test "dump snapshot of a small program" {
     try builder.add(.text, try builder.intern("Hello \"you\""));
     try builder.add(.integer, -3);
     try builder.add(.global_get, try builder.global("mood"));
-    try builder.add_divert("knot", .{ .kind = .tunnel, .conditional = true, .variable = false });
+    try builder.add_divert("knot", .{ .kind = .tunnel, .conditional = true });
     const counted: container_module.ContainerFlags = .{ .visits_counted = true };
     _ = try builder.begin_container(.{ .name = "knot", .named_only = true, .flags = counted });
     try builder.add_choice_point(".^", .{

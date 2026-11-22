@@ -124,7 +124,7 @@ fn build_records(gpa: std.mem.Allocator) !Program {
     _ = try builder.begin_container(.{});
     try builder.add_list_literal(&.{ "letters.a", "letters.b" }, &.{});
     try builder.add_variable_pointer("x", 0);
-    try builder.add_divert("k", .{ .kind = .plain, .conditional = false, .variable = false });
+    try builder.add_divert("k", .{});
     try builder.add(.text, try builder.intern("A"));
     _ = try builder.list_origin("letters", &.{
         .{ .name = "a", .value = 1 },

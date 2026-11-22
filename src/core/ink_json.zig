@@ -325,9 +325,12 @@ const Loader = struct {
         try add_word_to(&loader.builder, word);
     }
 
+    /// The keys of a divert-like content object: a divert of each kind, an external call.
+    const DivertKey = enum { @"->", @"f()", @"->t->", @"x()" };
+
     /// The fields of a content object; ink defines which keys appear together.
     const Fields = struct {
-        divert_key: ?[]const u8 = null,
+        divert: ?DivertKey = null,
         target: ?[]const u8 = null,
         variable: bool = false,
         conditional: bool = false,
@@ -364,20 +367,16 @@ const Loader = struct {
             };
         }
         try loader.add_object(&fields);
-        assert(fields.key.len > 0);
+        assert(fields.key.len > 0 or fields.divert != null);
     }
 
     fn content_field(loader: *Loader, fields: *Fields, key: []const u8) Error!void {
         assert(loader.builder.frames.items.len > 0);
         assert(key.len > 0);
-        const divert_keys = [_][]const u8{ "->", "f()", "->t->", "x()" };
-        for (divert_keys) |divert_key| {
-            if (std.mem.eql(u8, key, divert_key)) {
-                fields.divert_key = divert_key;
-                fields.target = try loader.nonempty_string();
-                fields.key = divert_key;
-                return;
-            }
+        if (std.meta.stringToEnum(DivertKey, key)) |divert| {
+            fields.divert = divert;
+            fields.target = try loader.nonempty_string();
+            return;
         }
         if (std.mem.eql(u8, key, "var")) return loader.flag(&fields.variable);
         if (std.mem.eql(u8, key, "c")) return loader.flag(&fields.conditional);
@@ -457,7 +456,24 @@ const Loader = struct {
     fn add_object(loader: *Loader, fields: *Fields) Error!void {
         assert(loader.builder.frames.items.len > 0);
         const builder = &loader.builder;
-        if (fields.divert_key != null) return loader.add_divert_object(fields);
+        if (fields.divert) |divert| {
+            const target = fields.target.?;
+            const options: ProgramBuilder.DivertOptions = .{
+                .kind = switch (divert) {
+                    .@"->" => .plain,
+                    .@"f()" => .function,
+                    .@"->t->" => .tunnel,
+                    .@"x()" => return builder.add_external_call(
+                        target,
+                        fields.external_arguments,
+                        fields.conditional,
+                    ),
+                },
+                .conditional = fields.conditional,
+            };
+            if (fields.variable) return builder.add_divert_variable(target, options);
+            return builder.add_divert(target, options);
+        }
         const key = fields.key;
         if (std.mem.eql(u8, key, "list")) {
             return builder.add_list_literal(fields.list_items.items, fields.list_origins.items);
@@ -491,18 +507,6 @@ const Loader = struct {
         assert(key.len > 0);
         std.log.debug("unknown content object key: {s}", .{key});
         return error.UnknownContent;
-    }
-
-    fn add_divert_object(loader: *Loader, fields: *const Fields) Error!void {
-        assert(fields.target != null);
-        assert(fields.divert_key != null);
-        try add_divert_object_to(&loader.builder, .{
-            .key = fields.divert_key.?,
-            .target = fields.target.?,
-            .conditional = fields.conditional,
-            .variable = fields.variable,
-            .external_arguments = fields.external_arguments,
-        });
     }
 
     /// `"listDefs": {"origin": {"item": value, ...}, ...}`
@@ -550,43 +554,6 @@ pub fn add_word_to(builder: *ProgramBuilder, word: []const u8) Error!void {
     const count_before = builder.scratch.len;
     try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
     assert(builder.scratch.len == count_before + 1);
-}
-
-/// A divert-like content object: `->`, `f()`, `->t->` or `x()` with its fields.
-pub const DivertObject = struct {
-    key: []const u8,
-    target: []const u8,
-    conditional: bool = false,
-    variable: bool = false,
-    external_arguments: u32 = 0,
-};
-
-pub fn add_divert_object_to(builder: *ProgramBuilder, object: DivertObject) Error!void {
-    assert(object.target.len > 0);
-    assert(builder.frames.items.len > 0);
-    const key = object.key;
-    const target = object.target;
-    if (std.mem.eql(u8, key, "x()")) {
-        const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
-            .external = try builder.external(target),
-            .arguments_count = object.external_arguments,
-            .conditional = object.conditional,
-        });
-        return builder.add(.call_external, @fromBackingInt(@intCast(at)));
-    }
-    const kind: instruction_module.DivertKind = if (std.mem.eql(u8, key, "f()"))
-        .function
-    else if (std.mem.eql(u8, key, "->t->"))
-        .tunnel
-    else
-        .plain;
-    const flags: instruction_module.DivertFlags = .{
-        .kind = kind,
-        .conditional = object.conditional,
-        .variable = object.variable,
-    };
-    if (object.variable) return builder.add_divert_variable(target, flags);
-    try builder.add_divert(target, flags);
 }
 
 fn load_file(gpa: Allocator, path: []const u8) !Program {

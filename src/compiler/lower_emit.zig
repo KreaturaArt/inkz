@@ -168,36 +168,15 @@ fn add_item(lowered: *Lowered, layout: *const Layout, builder: *ProgramBuilder, 
 
 fn emit_divert(layout: *const Layout, builder: *ProgramBuilder, divert: ir_module.Divert) !void {
     assert(divert.external == null or divert.variable == null);
-    var object: ink_json.DivertObject = .{
-        .key = "->",
-        .target = "",
-        .conditional = divert.conditional,
-    };
     if (divert.external) |name| {
-        object.key = "x()";
-        object.target = name;
-        object.external_arguments = divert.external_arguments;
-        return ink_json.add_divert_object_to(builder, object);
+        return builder.add_external_call(name, divert.external_arguments, divert.conditional);
     }
-    object.key = switch (divert.kind) {
-        .plain => "->",
-        .function => "f()",
-        .tunnel => "->t->",
-    };
-    if (divert.variable) |name| {
-        object.target = name;
-        object.variable = true;
-        return ink_json.add_divert_object_to(builder, object);
-    }
-    try builder.add_divert(key_of(layout, divert.target), .{
-        .kind = switch (divert.kind) {
-            .plain => .plain,
-            .function => .function,
-            .tunnel => .tunnel,
-        },
+    const options: ProgramBuilder.DivertOptions = .{
+        .kind = divert.kind,
         .conditional = divert.conditional,
-        .variable = false,
-    });
+    };
+    if (divert.variable) |name| return builder.add_divert_variable(name, options);
+    try builder.add_divert(key_of(layout, divert.target), options);
 }
 
 /// A target as the builder's key: the IR container, or an item's container and position.

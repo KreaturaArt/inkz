@@ -69,7 +69,7 @@ pub const Target = union(enum) {
     object: ObjectIndex,
 };
 
-pub const DivertKind = enum { plain, function, tunnel };
+pub const DivertKind = @import("../core/instruction.zig").DivertKind;
 
 pub const Divert = struct {
     target: Target = .none,
