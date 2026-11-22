@@ -6,7 +6,7 @@
 //! indices are given out when a container begins, so parents come before their children.
 //!
 //! Paths in operands are fixups: they are resolved in `finish`, once every container exists,
-//! with ink's own rules (`path.zig`). A path that doesn't resolve is a diagnostic.
+//! with ink's own rules (`path.zig`). A path that doesn't resolve fails `finish`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -49,15 +49,6 @@ fn OperandOf(comptime opcode: Opcode) type {
     comptime assert(@typeInfo(Opcode).@"enum".field_names.len > 0);
     return instruction_module.Operand(instruction_module.operand_kind(opcode));
 }
-
-pub const Diagnostic = struct {
-    kind: enum { unresolved_path, divert_target_not_a_container },
-    /// The path text: `diagnostic_bytes[path_first..][0..path_count]`.
-    path_first: u32,
-    path_count: u32,
-    /// The container holding the instruction with the path.
-    container: ContainerIndex,
-};
 
 const Fixup = struct {
     kind: enum { divert, choice_point, container_operand },
@@ -168,9 +159,6 @@ pub const ProgramBuilder = struct {
     list_origins: std.ArrayList(program_module.ListOrigin) = .empty,
     list_items: std.ArrayList(program_module.ListItem) = .empty,
     externals: std.ArrayList(program_module.ExternalInfo) = .empty,
-    diagnostics: std.ArrayList(Diagnostic) = .empty,
-    /// The path texts of `diagnostics`, which outlive the strings of a failed `finish`.
-    diagnostic_bytes: std.ArrayList(u8) = .empty,
     ink_version: u32 = 21,
 
     pub fn init(gpa: Allocator) Allocator.Error!ProgramBuilder {
@@ -185,7 +173,6 @@ pub const ProgramBuilder = struct {
         assert(builder.frames.items.len < 1 << 16);
         const gpa = builder.gpa;
         // After `finish` the containers have moved into the program.
-        assert(builder.diagnostics.items.len <= builder.fixups.items.len);
         builder.strings.deinit(gpa);
         builder.extra.deinit(gpa);
         builder.containers.deinit(gpa);
@@ -201,8 +188,6 @@ pub const ProgramBuilder = struct {
         builder.variable_fixups.deinit(gpa);
         builder.list_fixups.deinit(gpa);
         builder.list_names.deinit(gpa);
-        builder.diagnostics.deinit(gpa);
-        builder.diagnostic_bytes.deinit(gpa);
         builder.globals.deinit(gpa);
         builder.list_origins.deinit(gpa);
         builder.list_items.deinit(gpa);
@@ -587,8 +572,9 @@ pub const ProgramBuilder = struct {
         try builder.fixups.append(builder.gpa, fixup);
     }
 
-    /// Lays out every container, resolves the fixups and checks the result. On
-    /// `error.UnresolvedPaths`, `diagnostics` says which paths failed.
+    /// Lays out every container, resolves the fixups and checks the result. A target that
+    /// doesn't resolve, or a container operand's target that is not a container, is
+    /// `error.UnresolvedPaths`.
     pub fn finish(builder: *ProgramBuilder) !Program {
         assert(builder.frames.items.len == 0);
         assert(builder.staged.items.len == builder.containers.len);
@@ -605,7 +591,6 @@ pub const ProgramBuilder = struct {
         const fixups_zone = profile.begin(.builder_fixups);
         try builder.resolve_fixups(&program);
         fixups_zone.end();
-        if (builder.diagnostics.items.len > 0) return error.UnresolvedPaths;
         resolve_root_names(&program);
         program.verify();
         return program;
@@ -704,13 +689,6 @@ pub const ProgramBuilder = struct {
         return program;
     }
 
-    pub fn diagnostic_path(builder: *const ProgramBuilder, diagnostic: Diagnostic) []const u8 {
-        const end = diagnostic.path_first + diagnostic.path_count;
-        assert(end <= builder.diagnostic_bytes.items.len);
-        assert(diagnostic.path_count > 0);
-        return builder.diagnostic_bytes.items[diagnostic.path_first..end];
-    }
-
     /// A list item by its full name (`origin.item`) or bare name.
     fn find_list_item(builder: *const ProgramBuilder, name: StringId) ?index.ListItemIndex {
         assert(!name.is_none());
@@ -805,11 +783,14 @@ pub const ProgramBuilder = struct {
                 builder.resolve_key(program, fixup)
             else
                 builder.resolve_path(program, fixup);
-            if (resolved) |target| {
-                try builder.apply(program, extra, fixup, target);
-            } else try builder.report(.unresolved_path, fixup, builder.fixup_text(fixup));
+            const target = resolved orelse {
+                if (fixup.key == no_key) std.log.debug("unresolved path: {s}", .{
+                    builder.fixup_text(fixup),
+                });
+                return error.UnresolvedPaths;
+            };
+            try apply(program, extra, fixup, target);
         }
-        assert(builder.diagnostics.items.len <= builder.fixups.items.len);
     }
 
     /// A path target, resolved with ink's rules; an approximate target doesn't resolve.
@@ -849,15 +830,14 @@ pub const ProgramBuilder = struct {
         return target;
     }
 
-    /// A fixup's path, or a placeholder for a keyed one (for diagnostics).
+    /// A path fixup's path.
     fn fixup_text(builder: *const ProgramBuilder, fixup: Fixup) []const u8 {
         assert(fixup.path_first + fixup.path_length <= builder.path_bytes.items.len);
-        if (fixup.key != no_key) return "(keyed target)";
+        assert(fixup.key == no_key);
         return builder.path_bytes.items[fixup.path_first..][0..fixup.path_length];
     }
 
     fn apply(
-        builder: *ProgramBuilder,
         program: *Program,
         extra: []u32,
         fixup: Fixup,
@@ -872,35 +852,13 @@ pub const ProgramBuilder = struct {
                 extra[fixup.at + 1] = position;
             },
             .container_operand => {
-                if (target.content_index != null) {
-                    const text = builder.fixup_text(fixup);
-                    try builder.report(.divert_target_not_a_container, fixup, text);
-                    return;
-                }
+                if (target.content_index != null) return error.UnresolvedPaths;
                 const info = program.table().get(fixup.container);
                 const at = info.instruction_first.to_int() + fixup.at;
                 program.instructions.items(.operand)[at] = @backingInt(target.container);
             },
         }
         assert(!target.container.is_none());
-    }
-
-    fn report(
-        builder: *ProgramBuilder,
-        kind: @FieldType(Diagnostic, "kind"),
-        fixup: Fixup,
-        text: []const u8,
-    ) !void {
-        assert(text.len > 0);
-        const first: u32 = @intCast(builder.diagnostic_bytes.items.len);
-        try builder.diagnostic_bytes.appendSlice(builder.gpa, text);
-        try builder.diagnostics.append(builder.gpa, .{
-            .kind = kind,
-            .path_first = first,
-            .path_count = @intCast(text.len),
-            .container = fixup.container,
-        });
-        assert(builder.diagnostics.items.len > 0);
     }
 };
 
@@ -1045,7 +1003,7 @@ test "each divert kind, a variable divert and an external call become their reco
     try std.testing.expectEqual(@as(i32, 0), pointer.data.context);
 }
 
-test "an unresolved path is a diagnostic" {
+test "an unresolved path fails finish" {
     // Negative space: divert to a knot that doesn't exist.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
@@ -1053,9 +1011,17 @@ test "an unresolved path is a diagnostic" {
     try builder.add_divert("nowhere.at_all", .{});
     try builder.end_container();
     try std.testing.expectError(error.UnresolvedPaths, builder.finish());
-    try std.testing.expectEqual(@as(usize, 1), builder.diagnostics.items.len);
-    const diagnostic = builder.diagnostics.items[0];
-    try std.testing.expectEqualStrings("nowhere.at_all", builder.diagnostic_path(diagnostic));
+}
+
+test "a divert target at content that is not a container fails finish" {
+    // Negative space: `^->` to the root's first content item, a text.
+    var builder = try ProgramBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.text, try builder.intern("A"));
+    try builder.add_container_operand(.divert_target, ".^.0");
+    try builder.end_container();
+    try std.testing.expectError(error.UnresolvedPaths, builder.finish());
 }
 
 test "check catches a corrupted program" {
