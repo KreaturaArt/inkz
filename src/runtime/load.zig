@@ -871,14 +871,12 @@ const Retained = struct {
 
     fn add_value(retained: *Retained, item: *const Value) void {
         switch (item.*) {
-            .string, .tag => |reference| retained.string(&reference),
+            .string, .tag => |reference| if (reference.is_heap()) {
+                const length = retained.strings.get(reference).len;
+                retained.bytes += std.mem.alignForward(u64, 8 + length, 4);
+            },
             .list => |list| retained.words += retained.lists.object_words(@backingInt(list)),
             else => {},
         }
-    }
-
-    fn string(retained: *Retained, reference: *const value_module.StringReference) void {
-        if (reference.* == value_module.StringReference.none or !reference.is_heap()) return;
-        retained.bytes += std.mem.alignForward(u64, 8 + retained.strings.get(reference.*).len, 4);
     }
 };
