@@ -858,7 +858,7 @@ test "tests, harnesses and tools have no density rule" {
     const bare = "fn a() void {}\nfn b() void {}\n";
     const paths = [_][:0]const u8{
         "src/testing/oracle.zig", "src/fuzz/vm.zig",          "tools/doctest.zig",
-        "src/bench_io.zig",       "src/runtime/api_test.zig", "src/compiler/lowering_tests.zig",
+        "src/bench.zig",          "src/runtime/api_test.zig", "src/compiler/lowering_tests.zig",
     };
     for (paths) |path| {
         const diagnostics = try lint_samples(arena.allocator(), &.{.{ path, bare }});

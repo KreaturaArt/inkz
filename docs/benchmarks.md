@@ -314,11 +314,13 @@ old-runtime load (440 µs and 9,049 µs in ReleaseSafe), an image with fitted li
 
 ## Load and store (TASK-152)
 
-`zig build bench-io` times loading and storing a `Program` in both formats, on crime_scene
-and on the generated 1000-knot story, in ReleaseSafe and then ReleaseFast:
+`zig build bench-io` (`bench io` of `src/bench.zig`, the program that runs every benchmark
+over one table of workloads) times loading and storing a `Program` in both formats, on
+crime_scene and on the generated 1000-knot story, in ReleaseSafe and then ReleaseFast:
 
 - ink's JSON: `ink_json.load` and `ink_json.serialize`;
-- the binary program image: `program_image.load` and `program_image.write`.
+- the binary program image: `program_image.load` and `program_image.write`, and
+  `program_image.load_trusted` (format `image_trusted`).
 
 Before timing, it checks that both formats round-trip. Each measurement times one operation
 per sample: 3 warm-up runs, then samples until at least 10 have been taken and either 1 s has
@@ -337,7 +339,7 @@ sends `zig build bench-profile`'s records to `bench/profile.jsonl`.
 | `commit`, `dirty` | `git rev-parse --short=12 HEAD`; whether tracked files had changes |
 | `zig`, `mode`, `target`, `cpu` | compiler version, `safe` or `fast`, arch-os, CPU model |
 | `story` | `crime_scene` or `generated_1000_knots` |
-| `format`, `operation` | `json` or `image`; `load` or `store` |
+| `format`, `operation` | `json`, `image` or `image_trusted`; `load` or `store` |
 | `bytes` | the input of a load (inklecate's JSON, or the image); the output of a store |
 | `samples`, `min_ns`, `median_ns`, `mean_ns`, `max_ns` | the timings |
 | `megabytes_per_second` | `bytes` over the median time |
@@ -421,6 +423,8 @@ per read. On Apple silicon it ticks at 24 MHz, so a single zone is resolved to a
 totals over many calls average this out.
 
 Each workload runs once with the zones off and once with them on, for 1 s each (ReleaseFast).
+A load's time leaves out freeing the program, as in `bench-io` (before P17.2 the profile's
+loads included it).
 The workloads, on crime_scene and on the generated 1000-knot story, are:
 
 - compile;

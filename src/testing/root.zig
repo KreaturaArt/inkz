@@ -20,6 +20,5 @@ test {
     _ = @import("differential.zig");
     _ = @import("swarm_triage.zig");
     _ = @import("swarm_runner.zig");
-    _ = @import("bench_io_test.zig");
-    _ = @import("bench_profile_test.zig");
+    _ = @import("bench_test.zig");
 }
