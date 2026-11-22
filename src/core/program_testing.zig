@@ -9,8 +9,8 @@ pub fn expect_same_program(expected: *const Program, actual: *const Program) !vo
     const testing = std.testing;
     assert(expected.containers.len > 0);
     assert(actual.containers.len > 0);
-    try testing.expectEqualSlices(u8, expected.strings.strings.bytes, actual.strings.strings.bytes);
-    try testing.expectEqualSlices(u32, expected.strings.strings.ends, actual.strings.strings.ends);
+    try testing.expectEqualSlices(u8, expected.strings.bytes.items, actual.strings.bytes.items);
+    try testing.expectEqualSlices(u32, expected.strings.ends.items, actual.strings.ends.items);
     try expect_same_columns(expected.instructions, actual.instructions);
     try expect_same_columns(expected.containers, actual.containers);
     try testing.expectEqualSlices(u32, expected.extra, actual.extra);

@@ -1,9 +1,8 @@
 //! Interned strings. All bytes live in one buffer. `StringId`s are dense, so side
 //! tables can be indexed by them, and `get` is O(1). Id 0 is always the empty string.
 //!
-//! A `StringPool` grows while a program is built (control plane). `freeze` turns it into an
-//! exact-size `FrozenStringPool`, which never allocates again: `get` and `find` are lookups
-//! only.
+//! A pool grows while a program is built (control plane); a built `Program` holds it const,
+//! so it never allocates again: `get` and `find` are lookups only.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -14,7 +13,7 @@ const StringId = @import("index.zig").StringId;
 /// How many times the table hashed a string: tests check that `intern` hashes once.
 var hashes_for_tests: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
 
-/// How many times a frozen pool looked a string up: tests check the VM never does.
+/// How many times a pool looked a string up: tests check the VM never does.
 pub var finds_for_tests: if (builtin.is_test) u64 else void = if (builtin.is_test) 0 else {};
 
 fn count_hash() void {
@@ -78,14 +77,6 @@ const BytesAdapter = struct {
 
 const Table = std.HashMapUnmanaged(u32, void, IdContext, std.hash_map.default_max_load_percentage);
 
-fn table_find(table: *const Table, strings: *const Strings, bytes: []const u8) ?StringId {
-    assert(strings.ends.len > 0);
-    const adapter: BytesAdapter = .{ .strings = strings };
-    const key = table.getKeyAdapted(bytes, adapter) orelse return null;
-    assert(key < strings.ends.len);
-    return @fromBackingInt(@intCast(key));
-}
-
 pub const StringPool = struct {
     bytes: std.ArrayList(u8),
     ends: std.ArrayList(u32),
@@ -105,6 +96,35 @@ pub const StringPool = struct {
         try pool.table.putNoClobberContext(gpa, 0, {}, pool.id_context());
         assert(pool.count() == 1);
         assert(pool.get(empty_id).len == 0);
+        return pool;
+    }
+
+    /// A pool over `bytes` and `ends` (taken on success), with its hash index rebuilt; two
+    /// equal strings are an error (program images). `ends` must be valid: `ends[0] == 0`,
+    /// never decreasing, the last `bytes.len`.
+    pub fn init_unique(
+        gpa: Allocator,
+        bytes: []u8,
+        ends: []u32,
+    ) (Allocator.Error || error{DuplicateString})!StringPool {
+        assert(ends.len > 0 and ends[0] == 0);
+        assert(ends[ends.len - 1] == bytes.len);
+        var pool: StringPool = .{
+            .bytes = .fromOwnedSlice(bytes),
+            .ends = .fromOwnedSlice(ends),
+            .table = .empty,
+        };
+        errdefer pool.table.deinit(gpa);
+        try pool.table.ensureTotalCapacityContext(gpa, @intCast(ends.len), pool.id_context());
+        const view = pool.strings();
+        const adapter: BytesAdapter = .{ .strings = &view };
+        for (0..ends.len) |position| {
+            const text = view.get(@fromBackingInt(@intCast(position)));
+            const entry = pool.table.getOrPutAssumeCapacityAdapted(text, adapter);
+            if (entry.found_existing) return error.DuplicateString;
+            entry.key_ptr.* = @intCast(position);
+        }
+        assert(pool.count() == ends.len);
         return pool;
     }
 
@@ -151,10 +171,15 @@ pub const StringPool = struct {
 
     /// The id of `bytes` if it is interned. Never inserts and never allocates.
     pub fn find(pool: *const StringPool, bytes: []const u8) ?StringId {
+        if (builtin.is_test) finds_for_tests += 1;
         const view = pool.strings();
-        const id = table_find(&pool.table, &view, bytes);
-        if (id) |found| assert(std.mem.eql(u8, pool.get(found), bytes));
-        if (bytes.len == 0) assert(id.? == empty_id);
+        assert(view.ends.len > 0);
+        const adapter: BytesAdapter = .{ .strings = &view };
+        const key = pool.table.getKeyAdapted(bytes, adapter) orelse return null;
+        assert(key < view.ends.len);
+        const id: StringId = @fromBackingInt(@intCast(key));
+        assert(std.mem.eql(u8, pool.get(id), bytes));
+        if (bytes.len == 0) assert(id == empty_id);
         return id;
     }
 
@@ -164,22 +189,6 @@ pub const StringPool = struct {
         const bytes = pool.strings().get(id);
         assert(bytes.len <= pool.bytes.items.len);
         return bytes;
-    }
-
-    /// Moves the strings into an exact-size frozen pool. `pool` is invalid afterwards.
-    pub fn freeze(pool: *StringPool, gpa: Allocator) Allocator.Error!FrozenStringPool {
-        const strings_count = pool.count();
-        const bytes = try pool.bytes.toOwnedSlice(gpa);
-        errdefer gpa.free(bytes);
-        const ends = try pool.ends.toOwnedSlice(gpa);
-        var frozen: FrozenStringPool = .{
-            .strings = .{ .bytes = bytes, .ends = ends },
-            .table = pool.table.move(),
-        };
-        pool.* = undefined;
-        assert(frozen.count() == strings_count);
-        assert(frozen.get(empty_id).len == 0);
-        return frozen;
     }
 
     fn strings(pool: *const StringPool) Strings {
@@ -196,70 +205,6 @@ pub const StringPool = struct {
         assert(pool.context_strings.ends.len == pool.ends.items.len);
         assert(pool.context_strings.bytes.len == pool.bytes.items.len);
         return .{ .strings = &pool.context_strings };
-    }
-};
-
-pub const FrozenStringPool = struct {
-    strings: Strings,
-    table: Table,
-
-    pub fn deinit(frozen: *FrozenStringPool, gpa: Allocator) void {
-        assert(frozen.strings.ends.len > 0);
-        assert(frozen.table.count() == frozen.strings.ends.len);
-        frozen.table.deinit(gpa);
-        gpa.free(frozen.strings.ends);
-        gpa.free(frozen.strings.bytes);
-        frozen.* = undefined;
-    }
-
-    pub fn count(frozen: *const FrozenStringPool) u32 {
-        assert(frozen.strings.ends.len > 0);
-        assert(frozen.table.count() == frozen.strings.ends.len);
-        return @intCast(frozen.strings.ends.len);
-    }
-
-    pub fn get(frozen: *const FrozenStringPool, id: StringId) []const u8 {
-        assert(!id.is_none());
-        const bytes = frozen.strings.get(id);
-        assert(bytes.len <= frozen.strings.bytes.len);
-        return bytes;
-    }
-
-    /// A frozen pool over `bytes` and `ends` (taken on success, as from `freeze`), with its
-    /// hash index rebuilt; two equal strings are an error (program images). `ends`
-    /// must be valid: `ends[0] == 0`, never decreasing, the last `bytes.len`.
-    pub fn init_unique(
-        gpa: Allocator,
-        bytes: []const u8,
-        ends: []const u32,
-    ) (Allocator.Error || error{DuplicateString})!FrozenStringPool {
-        assert(ends.len > 0 and ends[0] == 0);
-        assert(ends[ends.len - 1] == bytes.len);
-        var frozen: FrozenStringPool = .{
-            .strings = .{ .bytes = bytes, .ends = ends },
-            .table = .empty,
-        };
-        errdefer frozen.table.deinit(gpa);
-        const context: IdContext = .{ .strings = &frozen.strings };
-        try frozen.table.ensureTotalCapacityContext(gpa, @intCast(ends.len), context);
-        const adapter: BytesAdapter = .{ .strings = &frozen.strings };
-        for (0..ends.len) |position| {
-            const text = frozen.strings.get(@fromBackingInt(@intCast(position)));
-            const entry = frozen.table.getOrPutAssumeCapacityAdapted(text, adapter);
-            if (entry.found_existing) return error.DuplicateString;
-            entry.key_ptr.* = @intCast(position);
-        }
-        assert(frozen.table.count() == ends.len);
-        return frozen;
-    }
-
-    /// The id of `bytes` if it is interned. Never allocates.
-    pub fn find(frozen: *const FrozenStringPool, bytes: []const u8) ?StringId {
-        if (builtin.is_test) finds_for_tests += 1;
-        const id = table_find(&frozen.table, &frozen.strings, bytes);
-        if (id) |found| assert(std.mem.eql(u8, frozen.get(found), bytes));
-        if (bytes.len == 0) assert(id.? == empty_id);
-        return id;
     }
 };
 
@@ -289,11 +234,12 @@ test "find never inserts" {
     try std.testing.expect(pool.find("present") != null);
 }
 
-test "100k strings round-trip through a frozen pool without allocating on lookup" {
-    // Scale, freezing, and allocation-free lookups: intern 100k distinct strings,
-    // freeze, then look each one up with a failing allocator in scope (lookups take none).
+test "100k strings round-trip, and a pool rebuilt from their bytes finds them all" {
+    // Scale and the image loader's path: intern 100k distinct strings, rebuild a pool from
+    // copies of the bytes and ends, then look each one up in both.
     const gpa = std.testing.allocator;
     var pool = try StringPool.init(gpa);
+    defer pool.deinit(gpa);
     var ids: std.ArrayList(StringId) = .empty;
     defer ids.deinit(gpa);
     var buffer: [32]u8 = undefined;
@@ -301,15 +247,30 @@ test "100k strings round-trip through a frozen pool without allocating on lookup
         const text = try std.fmt.bufPrint(&buffer, "string {d}", .{number});
         try ids.append(gpa, try pool.intern(gpa, text));
     }
-    var frozen = try pool.freeze(gpa);
-    defer frozen.deinit(gpa);
-    try std.testing.expectEqual(@as(u32, 100_001), frozen.count());
+    var loaded = try StringPool.init_unique(
+        gpa,
+        try gpa.dupe(u8, pool.bytes.items),
+        try gpa.dupe(u32, pool.ends.items),
+    );
+    defer loaded.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 100_001), loaded.count());
     for (ids.items, 0..) |id, number| {
         const text = try std.fmt.bufPrint(&buffer, "string {d}", .{number});
-        try std.testing.expectEqualStrings(text, frozen.get(id));
-        try std.testing.expectEqual(id, frozen.find(text).?);
+        try std.testing.expectEqualStrings(text, loaded.get(id));
+        try std.testing.expectEqual(id, loaded.find(text).?);
+        try std.testing.expectEqual(id, pool.find(text).?);
     }
-    try std.testing.expectEqual(@as(?StringId, null), frozen.find("string 100000"));
+    try std.testing.expectEqual(@as(?StringId, null), loaded.find("string 100000"));
+}
+
+test "a pool rebuilt from bytes with two equal strings is rejected" {
+    // Program images are untrusted: "a" twice is DuplicateString, and nothing leaks.
+    const gpa = std.testing.allocator;
+    const bytes = try gpa.dupe(u8, "aa");
+    defer gpa.free(bytes);
+    const ends = try gpa.dupe(u32, &.{ 0, 1, 2 });
+    defer gpa.free(ends);
+    try std.testing.expectError(error.DuplicateString, StringPool.init_unique(gpa, bytes, ends));
 }
 
 test "bytes may contain zeros and look alike" {

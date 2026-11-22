@@ -38,7 +38,7 @@ nothing is a pointer, and every target is resolved when the program is built.
 ```mermaid
 classDiagram
     class Program {
-        strings: FrozenStringPool
+        strings: StringPool
         instructions: MultiArrayList~Instruction~
         containers: MultiArrayList~ContainerInfo~
         named: []NamedEntry

@@ -94,7 +94,7 @@ pub fn build_name_classes(
 }
 
 pub const Program = struct {
-    strings: string_pool.FrozenStringPool,
+    strings: string_pool.StringPool,
     /// What each string names as a variable (`build_name_classes`), so the VM resolves a
     /// name with one read instead of scanning the globals and hashing for list items.
     name_classes: []const NameClass,

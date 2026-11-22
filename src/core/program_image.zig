@@ -164,10 +164,9 @@ fn column_of(comptime section: Section) std.meta.FieldEnum(ContainerInfo) {
 /// The bytes of `section` in `program`.
 fn section_bytes(program: *const Program, comptime section: Section) []const u8 {
     assert(program.containers.len > 0);
-    const strings = program.strings.strings;
     const items: []const section.Element() = switch (section) {
-        .string_bytes => strings.bytes,
-        .string_ends => strings.ends,
+        .string_bytes => program.strings.bytes.items,
+        .string_ends => program.strings.ends.items,
         .opcodes => program.instructions.items(.opcode),
         .operands => program.instructions.items(.operand),
         .extra => program.extra,
@@ -427,14 +426,14 @@ fn check_columns(layout: *const Layout) Error!void {
     assert(containers > 0);
 }
 
-fn load_strings(gpa: Allocator, layout: *const Layout) Error!string_pool.FrozenStringPool {
+fn load_strings(gpa: Allocator, layout: *const Layout) Error!string_pool.StringPool {
     assert(layout.header.sections_count == sections_count);
     const string_bytes = try copy_section(gpa, layout, .string_bytes);
     errdefer gpa.free(string_bytes);
     const ends = try copy_section(gpa, layout, .string_ends);
     errdefer gpa.free(ends);
     try check_string_ends(ends, string_bytes.len);
-    const strings = string_pool.FrozenStringPool.init_unique(gpa, string_bytes, ends) catch |err|
+    const strings = string_pool.StringPool.init_unique(gpa, string_bytes, ends) catch |err|
         return switch (err) {
             error.DuplicateString => error.InvalidImage,
             error.OutOfMemory => error.OutOfMemory,
@@ -447,7 +446,7 @@ fn load_strings(gpa: Allocator, layout: *const Layout) Error!string_pool.FrozenS
 fn load_arrays(
     gpa: Allocator,
     layout: *const Layout,
-    strings: string_pool.FrozenStringPool,
+    strings: string_pool.StringPool,
 ) Allocator.Error!Program {
     assert(layout.count(.opcodes) == layout.count(.operands));
     assert(strings.count() > 0);

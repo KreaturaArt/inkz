@@ -653,7 +653,7 @@ pub const ProgramBuilder = struct {
             list_items,
         );
         errdefer gpa.free(name_classes);
-        const strings = try builder.strings.freeze(gpa);
+        const strings = builder.strings;
         builder.strings = fresh_strings;
         var containers = builder.containers;
         builder.containers = .empty;

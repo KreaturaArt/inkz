@@ -357,7 +357,7 @@ globals), and every temp read first scanned the globals, then hashed the name to
 list item, before it reached the temps. Now globals are read and written through their
 resolved slot (F2), and `Program.name_classes` (4 bytes per string, rebuilt on image load)
 answers "global, list item or temp" with one read (F1). The VM looks no name up by its text
-while it plays (tests count `FrozenStringPool.find` calls).
+while it plays (tests count `StringPool.find` calls).
 
 `zig build bench`, turns/s, Apple M3 (the bench stories have few globals, so this is the
 floor of the gain; a story with hundreds of globals and temps gains more):

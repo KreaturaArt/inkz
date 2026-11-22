@@ -52,7 +52,7 @@ A `Program` is struct-of-arrays data addressed by `u32` index newtypes, with no 
   instruction array, plus its parent, depth, name, path, counting flags and a range of the
   `named` table (knots, stitches, labelled gathers). A nested container appears as an
   `enter_container` instruction at its position in the parent.
-- **Strings:** one frozen `StringPool`; instructions hold `StringId`s.
+- **Strings:** one `StringPool`, held const; instructions hold `StringId`s.
 - **Globals, list origins, list items, externals:** small tables indexed by their newtypes.
 
 Every target is resolved to a container index or a `{container, index}` pair when the

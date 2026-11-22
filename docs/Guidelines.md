@@ -61,8 +61,8 @@ test "index newtypes are distinct one-word types" {
 
 ### Strings go through `string_pool`
 
-Strings in a program are interned once into a `StringPool` while it is built, then frozen
-into an exact-size `FrozenStringPool`. Code holds `StringId`s and compares them as integers;
+Strings in a program are interned once into a `StringPool` while it is built; the built
+`Program` holds the pool const, so it only looks strings up. Code holds `StringId`s and compares them as integers;
 id 0 is the empty string. Runtime strings live in the state's fixed heap, referenced by
 `StringReference`, whose high bit selects the program pool or the heap.
 
@@ -73,14 +73,14 @@ const inkz = @import("inkz");
 test "interning gives one id per distinct string" {
     const gpa = std.testing.allocator;
     var pool = try inkz.core.string_pool.StringPool.init(gpa);
+    defer pool.deinit(gpa);
     const knot = try pool.intern(gpa, "knot");
     try std.testing.expectEqual(knot, try pool.intern(gpa, "knot"));
 
-    var frozen = try pool.freeze(gpa); // `pool` is invalid from here on.
-    defer frozen.deinit(gpa);
-    try std.testing.expectEqualStrings("knot", frozen.get(knot));
-    try std.testing.expectEqual(knot, frozen.find("knot").?);
-    try std.testing.expect(frozen.find("stitch") == null);
+    const program_strings: *const inkz.core.string_pool.StringPool = &pool;
+    try std.testing.expectEqualStrings("knot", program_strings.get(knot));
+    try std.testing.expectEqual(knot, program_strings.find("knot").?);
+    try std.testing.expect(program_strings.find("stitch") == null);
 }
 ```
 
