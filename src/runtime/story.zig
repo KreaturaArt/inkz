@@ -842,17 +842,17 @@ pub const Story = struct {
     }
 
     /// ink's `variablesState[name] = value`, type-checked as in ink: only declared globals;
-    /// strings are copied into the story (`value_of_host` copies a string from
-    /// `get_variable` out of the heap before the allocation can compact it).
+    /// strings are copied into the story (a string from `get_variable` too).
     pub fn set_variable(story: *Story, name: []const u8, value: Value) SetError!void {
         assert(name.len > 0);
         if (value == .null) return error.VariableNotDeclared;
         const slot = story.program.global_by_name(name) orelse return error.VariableNotDeclared;
         try begin_mutation(story);
-        const stored = try ops.value_of_host(story, value);
-        try ops.set_global(story, slot, stored);
-        assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored) or
-            stored == .list);
+        var stored: [1]value_module.Value = undefined;
+        try ops.values_of_host(story, &.{value}, &stored);
+        try ops.set_global(story, slot, stored[0]);
+        assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored[0]) or
+            stored[0] == .list);
     }
 
     pub fn global_variable_count(story: *const Story) u32 {

@@ -1139,7 +1139,9 @@ fn call_bound(
         return error.ExternalFunctionFailed;
     assert(state.evaluation.count >= first + count);
     state.evaluation.count = first;
-    try vm.push_evaluation(story, try value_of_host(story, result));
+    var value: [1]Value = undefined;
+    try values_of_host(story, &.{result}, &value);
+    try vm.push_evaluation(story, value[0]);
 }
 
 /// A value as the host sees it (ink's valueObject).
@@ -1155,56 +1157,52 @@ pub fn host_value(story: *Story, value: Value) story_module.HostValue {
     };
 }
 
-/// Host values as ink values, with strings copied into the heap. Each allocation may
-/// compact the heap, which would move a later argument's text if it is in the heap (a
-/// string from `get_variable`, say), so all such texts are copied out into the line buffer
-/// before the first allocation; the other values are kept through compaction.
+/// Host values as ink values, with strings copied into the heap. A host string or list may
+/// be a view into the heap (a string from `get_variable`, say) that making room would move,
+/// so such texts are copied out into the line buffer first, and the values wait on the
+/// evaluation stack, a root, while room is made for the strings.
 pub fn values_of_host(
     story: *Story,
     hosts: []const story_module.HostValue,
     values: []Value,
 ) Error!void {
     assert(hosts.len == values.len);
-    var copies: [story_module.external_arguments_max]story_module.HostValue = undefined;
-    assert(hosts.len <= copies.len);
-    const line_bytes = story.state.line_bytes;
+    var texts: [story_module.external_arguments_max][]const u8 = undefined;
+    assert(hosts.len <= texts.len);
+    const state = &story.state;
+    var string_bytes: u32 = 0;
     var used: u32 = 0;
-    for (hosts, 0..) |host, position| {
-        copies[position] = host;
-        if (host != .string or !in_heap(story, host.string)) continue;
-        const text = host.string;
-        if (text.len > line_bytes.len - used) return error.OutputLimit;
-        const copy = line_bytes[used..][0..text.len];
-        @memcpy(copy, text);
-        copies[position] = .{ .string = copy };
-        used += @intCast(text.len);
-    }
-    note_line_bytes(&story.state, used);
-    // Every other value first (a list reference moves with the heap too), then each
-    // string, keeping all of them through the compaction it may cause.
-    for (copies[0..hosts.len], values) |host, *value| {
-        value.* = if (host == .string) .null else try value_of_host(story, host);
-    }
-    for (copies[0..hosts.len], values) |host, *value| {
+    for (hosts, values, 0..) |host, *value, position| {
+        value.* = switch (host) {
+            .null, .string => .null,
+            .integer => |number| .{ .integer = number },
+            .float => |number| .{ .float = number },
+            .bool => |flag| .{ .bool = flag },
+            .list => |list| .{ .list = list },
+            .divert_target => |target| .{ .divert_target = target },
+        };
         if (host != .string) continue;
-        assert(!in_heap(story, host.string));
-        // Into a local first: assigning the call's result straight into `value.*` may set
-        // its tag to `.string` before the call, and the call keeps `values`, so a
-        // compaction would visit a garbage reference.
-        const reference = try store_string(story, host.string, values);
+        texts[position] = host.string;
+        string_bytes +|= @intCast(host.string.len + 8 + 3);
+        if (!in_heap(story, host.string)) continue;
+        if (host.string.len > state.line_bytes.len - used) return error.OutputLimit;
+        const copy = state.line_bytes[used..][0..host.string.len];
+        @memcpy(copy, host.string);
+        texts[position] = copy;
+        used += @intCast(copy.len);
+    }
+    note_line_bytes(state, used);
+    const first = state.evaluation.count;
+    state.evaluation.push_slice(values) catch return error.EvaluationLimit;
+    const reserved = state.reserve(string_bytes, 0);
+    @memcpy(values, state.evaluation.slice()[first..]);
+    state.evaluation.count = first;
+    try reserved;
+    for (hosts, values, 0..) |host, *value, position| {
+        if (host != .string) continue;
+        const text = texts[position];
+        const reference = state.strings.try_allocate(@intCast(text.len)) orelse unreachable;
+        @memcpy(state.strings.get(reference), text);
         value.* = .{ .string = reference };
     }
-}
-
-/// A host value as an ink value; strings are copied into the heap.
-pub fn value_of_host(story: *Story, host: story_module.HostValue) Error!Value {
-    return switch (host) {
-        .null => .null,
-        .integer => |number| .{ .integer = number },
-        .float => |number| .{ .float = number },
-        .bool => |flag| .{ .bool = flag },
-        .string => |text| .{ .string = try store_string(story, text, &.{}) },
-        .list => |list| .{ .list = list },
-        .divert_target => |target| .{ .divert_target = target },
-    };
 }
