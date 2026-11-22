@@ -38,9 +38,10 @@ allocation; they are now carved from the same block. Nothing allocates after tha
 
 - **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
   `str` marks, and the choices with their tags and thread snapshots.
-- **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6),
-  plus the undo log (`patch_entries_max` × 16 bytes) and its bitset of logged slots (one bit
-  per global, visit count and turn index).
+- **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6)
+  and of the globals (12 bytes each), visit counts and turn indices (8 bytes per counted
+  container), which it copies out 64 slots at a time before their first write, plus its
+  bitset of copied chunks.
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
   (8 bytes per counted container), the external bindings (24 bytes per EXTERNAL), the line buffer (`output_bytes_max`), the tag scratch
   (`tag_bytes_max`), the cleaned-text
@@ -70,12 +71,12 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 | Part | Main story | Side story |
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
-| Lookahead (copy + undo log) | 197,896 | 31,952 |
+| Lookahead (copies) | 207,144 | 30,540 |
 | Shared | 1,872,256 | 199,984 |
-| **Total per story** | **2,250,888** (2.15 MiB) | **259,712** (254 KiB) |
+| **Total per story** | **2,260,136** (2.16 MiB) | **258,300** (252 KiB) |
 
-The whole game, one main story and four side stories, needs 2,250,888 + 4 × 259,712 =
-3,289,736 bytes (3.14 MiB), fixed at load time. In the main story the 1 MiB string heap is
+The whole game, one main story and four side stories, needs 2,260,136 + 4 × 258,300 =
+3,293,336 bytes (3.14 MiB), fixed at load time. In the main story the 1 MiB string heap is
 about half of the total.
 
 ### Fitted limits (P10.2)

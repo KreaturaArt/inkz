@@ -153,8 +153,8 @@ functions after it in `story.zig`, which take the story first.
   instruction are in `ops.zig` (variables, strings, tags, choices, randomness) and
   `native.zig` (ink's operators).
 - **The Continue loop** (`story.zig`, `lookahead.zig`) is ink's `ContinueInternal`. When the
-  output ends in a newline it takes a snapshot of the live flow and starts an undo log of
-  shared values. If new text or tags then extend the line, it restores the snapshot and
+  output ends in a newline it takes a snapshot of the live flow, and copies out each chunk
+  of the shared values before the lookahead first writes it. If new text or tags then extend the line, it restores the snapshot and
   returns the line. That is how `cont()` returns one line and still joins glue.
 - **The heap** (`heap.zig`) holds runtime strings and lists in fixed buffers, reclaimed by
   sliding mark-compact only when an instruction reserves room that isn't free, before it

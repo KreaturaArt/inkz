@@ -373,11 +373,6 @@ test "every limit error of cont" {
             .expected = error.ListLimit,
         },
         .{
-            .knot = "globals_after_newline",
-            .limits = .{ .patch_entries_max = 1 },
-            .expected = error.LookaheadLogLimit,
-        },
-        .{
             .knot = "two_globals",
             .limits = .{ .observer_events_max = 1 },
             .expected = error.ObserverQueueLimit,

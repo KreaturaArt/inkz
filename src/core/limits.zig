@@ -19,7 +19,6 @@ pub const element_bytes = struct {
     pub const choice = 40; // text, target, source, threads, tags, snapshot, flags
     pub const tag = 4; // StringReference
     pub const list_word = 4;
-    pub const patch_entry = 16;
     pub const flow = 64; // name, directory ranges into the parking region
     pub const observer = 24; // global slot, callback, context
     pub const observer_event = 4; // GlobalSlot
@@ -33,6 +32,9 @@ pub const element_bytes = struct {
     pub const load_node = 16; // a token of a save being loaded (vm/json_tree.zig)
     pub const binding = 24; // an external's function, context and lookahead flag
 };
+
+/// Slots per chunk the lookahead copies out of a shared array before its first write.
+pub const lookahead_chunk_slots = 64;
 
 /// Bounds for one story instance. Every field is a maximum count unless its name says bytes.
 pub const Limits = struct {
@@ -54,7 +56,6 @@ pub const Limits = struct {
     flow_parking_bytes_max: u32 = 256 * 1024,
     choice_snapshot_frames_max: u32 = 256,
     choice_snapshot_temps_max: u32 = 1024,
-    patch_entries_max: u32 = 1024,
     observers_max: u32 = 64,
     observer_events_max: u32 = 256,
     errors_max: u32 = 32,
@@ -84,13 +85,14 @@ pub const Limits = struct {
         /// The story's bindings, one per EXTERNAL, live in the same block.
         externals_count: u32 = 0,
 
-        /// The words of the lookahead's "logged" bitset: one bit per slot the undo log can
-        /// target (each global, each visit count, each turn index), so a slot is logged at
-        /// most once per snapshot.
-        pub fn patch_logged_words(shape: ProgramShape) u32 {
-            const bits = @as(u64, shape.globals_count) + 2 * @as(u64, shape.count_slots);
-            const words = (bits + 31) / 32; // rounded up
-            assert(words * 32 >= bits);
+        /// The words of the lookahead's bitset of copied chunks: one bit per
+        /// `lookahead_chunk_slots` globals, and per as many visit counts and turn indices.
+        pub fn lookahead_copied_words(shape: ProgramShape) u32 {
+            const slots = lookahead_chunk_slots;
+            const globals = (@as(u64, shape.globals_count) + slots - 1) / slots; // rounded up
+            const counts = (@as(u64, shape.count_slots) + slots - 1) / slots;
+            const words = (globals + counts + 31) / 32;
+            assert(words * 32 >= globals + counts);
             return @intCast(words);
         }
     };
@@ -133,10 +135,11 @@ pub const Limits = struct {
 
     fn bytes_total_checked(limits: *const Limits, shape: ProgramShape) ?u64 {
         const live = limits.live_flow_bytes();
-        // The lookahead snapshot is a second copy of the live-flow buffers, plus the undo log
-        // and its bitset of logged slots.
-        const lookahead = live + @as(u64, limits.patch_entries_max) * element_bytes.patch_entry +
-            @as(u64, shape.patch_logged_words()) * 4;
+        // The lookahead snapshot is a second copy of the live-flow buffers and of the globals,
+        // visit counts and turn indices, with its bitset of copied chunks.
+        const lookahead = live + @as(u64, shape.globals_count) * element_bytes.value +
+            @as(u64, shape.count_slots) * element_bytes.count_slot +
+            @as(u64, shape.lookahead_copied_words()) * 4;
         const shared = limits.shared_bytes(shape);
         const total = std.math.add(u64, live, lookahead) catch return null;
         const result = std.math.add(u64, total, shared) catch return null;
@@ -244,7 +247,6 @@ pub const Usage = struct {
     flow_parking_bytes: u32 = 0,
     choice_snapshot_frames: u32 = 0,
     choice_snapshot_temps: u32 = 0,
-    patch_entries: u32 = 0,
     observers: u32 = 0,
     observer_events: u32 = 0,
     errors: u32 = 0,
@@ -352,7 +354,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 2_222_876), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 2_207_508), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -374,7 +376,6 @@ pub const small_story_limits: Limits = .{
     .flow_parking_bytes_max = 32 * 1024,
     .choice_snapshot_frames_max = 64,
     .choice_snapshot_temps_max = 256,
-    .patch_entries_max = 256,
     .observers_max = 16,
     .observer_events_max = 64,
     .errors_max = 8,
@@ -391,12 +392,12 @@ test "the sizing example in docs/benchmarks.md" {
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
     try std.testing.expectEqual(@as(u64, 1_872_256), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 2_250_888), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_260_136), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
     try std.testing.expectEqual(@as(u64, 199_984), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 259_712), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 258_300), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {

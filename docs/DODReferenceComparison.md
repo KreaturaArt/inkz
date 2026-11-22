@@ -599,14 +599,13 @@ Measured densities:
 
 Neither reference has these. They are listed because they shape choices made elsewhere.
 
-- **Lookahead snapshot plus undo log (D12).**
+- **Lookahead snapshot (D12).**
   - `cont()` must return exactly one line, which requires running ahead to see whether more
     text glues on.
-  - The snapshot memcpys the *used prefix* of 11 live-flow buffers. Writes to shared arrays
-    (globals, visit counts, turn indices) are logged at most once per slot, through a
-    `patch_logged` bitset, as `PatchEntry{target u32 (2-bit kind + 30-bit slot), old Value}`
-    at 16 B each.
-  - Restore copies the buffers back, undoes newest-first, and truncates the heap.
+  - The snapshot memcpys the *used prefix* of 11 live-flow buffers. The shared arrays
+    (globals, visit counts, turn indices) are copied on write, 64 slots at a time, through a
+    bitset of copied chunks (P17.13 replaced the undo log of 16 B `PatchEntry` records).
+  - Restore copies the buffers and the written chunks back, and truncates the heap.
   - *It is why* values are pointer-free (§10), the compactor preserves order (§11), and the
     budget contains a second copy of the live-flow buffers (§12).
 - **Flow parking.** Only the current flow is live. Parked flows are packed as `u32` words with an

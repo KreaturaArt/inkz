@@ -17,6 +17,7 @@ const extra = @import("../core/extra.zig");
 const container_module = @import("../core/container.zig");
 const Program = @import("../core/program.zig").Program;
 const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
+const lookahead = @import("lookahead.zig");
 const value_module = @import("value.zig");
 const native = @import("native.zig");
 const lists_module = @import("lists.zig");
@@ -24,7 +25,6 @@ const heap = @import("heap.zig");
 const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
-const lookahead = @import("lookahead.zig");
 const state_module = @import("state.zig");
 const story_module = @import("story.zig");
 const vm = @import("vm.zig");
@@ -637,7 +637,7 @@ pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
 }
 
 /// A re-assignment of the global in `slot`, through the slot (`set_global` keeps the
-/// lookahead's undo log). Only a variable pointer stored there follows ink's pointer rules,
+/// lookahead's copy). Only a variable pointer stored there follows ink's pointer rules,
 /// by name.
 pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.program.globals.len);
@@ -701,7 +701,7 @@ pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     const old = story.state.globals[slot.to_int()];
     const made = try retain_list_origins(story, old, value);
     const stored = made orelse value;
-    lookahead.set_global(&story.state, slot, stored) catch return error.LookaheadLogLimit;
+    lookahead.set_global(&story.state, slot, stored);
     assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored));
     // ink compares the old and new value objects by reference; identical values are the
     // closest a value representation gets (a reassigned literal is the same object in ink too).

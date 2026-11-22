@@ -57,7 +57,6 @@ pub const Error = error{
     /// A tag of the current line is longer than `Limits.tag_bytes_max` after cleaning.
     TagBytesLimit,
     SnapshotLimit,
-    LookaheadLogLimit,
     /// A shuffle sequence (`{~a|b}`) has more than `ops.shuffle_elements_max` (1024) elements.
     ShuffleLimit,
     StepLimit,

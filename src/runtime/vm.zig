@@ -170,11 +170,10 @@ pub fn visit_container(story: *Story, container: ContainerIndex, at_start: bool)
     assert(slot < story.state.visit_counts.len);
     const state = &story.state;
     if (flags.visits_counted) {
-        const count = state.visit_counts[slot] +% 1;
-        try lookahead.set_visit_count(state, slot, count);
+        lookahead.set_visit_count(state, slot, state.visit_counts[slot] +% 1);
     }
     if (flags.turns_counted) {
-        try lookahead.set_turn_index(state, slot, state.turn_index);
+        lookahead.set_turn_index(state, slot, state.turn_index);
     }
 }
 

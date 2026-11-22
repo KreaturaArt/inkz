@@ -47,13 +47,6 @@ pub const Diagnostic = struct {
     pub const Severity = enum(u8) { @"error", warning };
 };
 
-/// One undo record of the lookahead change log: what a shared value was before.
-pub const PatchEntry = struct {
-    /// What changed; see lookahead.zig.
-    target: u32,
-    old: Value,
-};
-
 /// A variable observer registered by the host.
 pub const Observer = struct {
     callback: ?*const anyopaque,
@@ -97,7 +90,6 @@ comptime {
     // What flows park, the lookahead snapshots and saves rebuild is copied by value: no
     // pointers (F11, docs/Guidelines.md).
     for (flow_buffers) |buffer| assert(pointer_free.has_no_pointers(FlowElement(buffer)));
-    assert(pointer_free.has_no_pointers(PatchEntry));
     assert(pointer_free.has_no_pointers(Value));
     assert(pointer_free.has_no_pointers(Diagnostic));
     assert(pointer_free.has_no_pointers(FlowRecord));
@@ -106,7 +98,6 @@ comptime {
 
 comptime {
     assert(@sizeOf(Diagnostic) == element_bytes.diagnostic);
-    assert(@sizeOf(PatchEntry) == element_bytes.patch_entry);
     assert(@sizeOf(Observer) == element_bytes.observer);
     assert(@sizeOf(FlowRecord) == element_bytes.flow);
     assert(@sizeOf(choices_module.Snapshot) == element_bytes.snapshot);
@@ -218,11 +209,14 @@ pub const State = struct {
 
     // The lookahead snapshot and parked flows.
     lookahead: FlowBuffers,
-    patch: []PatchEntry,
-    /// One bit per slot the undo log can target (globals, then visit counts, then turn
-    /// indices): set while the active snapshot has logged that slot, so it logs each slot
-    /// once (the first old value is the one restore needs). Clear when no snapshot is active.
-    patch_logged: []u32,
+    /// The snapshot's copies of the shared arrays, as they were at `take`.
+    lookahead_globals: []Value,
+    lookahead_visit_counts: []u32,
+    lookahead_turn_indices: []i32,
+    /// One bit per chunk of the shared arrays (`lookahead.chunk_slots` globals, or visit
+    /// counts and turn indices): set once the active snapshot has copied that chunk. Clear
+    /// when no snapshot is active.
+    lookahead_copied: []u32,
     flows: []FlowRecord,
     parking: []u32,
     current_flow: u32 = 0,
@@ -242,7 +236,6 @@ pub const State = struct {
 
     pub const Peaks = struct {
         parking_words: u32 = 0,
-        patch_entries: u32 = 0,
         line_bytes: u32 = 0,
         tag_bytes: u32 = 0,
         load_nodes: u32 = 0,
@@ -317,7 +310,6 @@ pub const State = struct {
             .flow_parking_bytes = state.peaks.parking_words * 4,
             .choice_snapshot_frames = choices.frames.peak,
             .choice_snapshot_temps = choices.temps.peak,
-            .patch_entries = state.peaks.patch_entries,
             .observer_events = state.observer_events.peak,
             .errors = state.errors.peak,
             .warnings = state.warnings.peak,
@@ -351,7 +343,7 @@ pub const State = struct {
         state.did_safe_exit = false;
         state.output_stashes_count = 0;
         state.snapshot = .{};
-        @memset(state.patch_logged, 0);
+        @memset(state.lookahead_copied, 0);
         flows.reset(state);
         state.verify();
     }
@@ -714,7 +706,10 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .global_defaults = carver.take(Value, shape.globals_count),
         .visit_counts = carver.take(u32, shape.count_slots),
         .turn_indices = carver.take(i32, shape.count_slots),
-        .patch_logged = carver.take(u32, shape.patch_logged_words()),
+        .lookahead_globals = carver.take(Value, shape.globals_count),
+        .lookahead_visit_counts = carver.take(u32, shape.count_slots),
+        .lookahead_turn_indices = carver.take(i32, shape.count_slots),
+        .lookahead_copied = carver.take(u32, shape.lookahead_copied_words()),
         .lists = .init(carver.take(u32, limits.list_words_max)),
         .observer_events = .init(carver.take(GlobalSlot, limits.observer_events_max)),
         .errors = .init(carver.take(Diagnostic, limits.errors_max)),
@@ -722,7 +717,6 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .ancestors = carver.take(ContainerIndex, limits.container_depth_max),
         .load_nodes = carver.take(json_tree.Node, limits.load_nodes_max),
         .lookahead = lookahead,
-        .patch = carver.take(PatchEntry, limits.patch_entries_max),
         .flows = carver.take(FlowRecord, limits.flows_max),
         .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
         // The cache's items here, for alignment; its bytes after `line_bytes`.

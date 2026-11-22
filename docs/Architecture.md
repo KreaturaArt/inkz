@@ -191,13 +191,13 @@ stateDiagram-v2
     Running --> Check: vm.run returns (output changed, choice, ended)
     Check --> Running: in string evaluation, or nothing new
     Check --> Snapshot: output ends in newline<br/>and can continue
-    Snapshot --> Lookahead: copy live-flow prefixes,<br/>start the undo log
+    Snapshot --> Lookahead: copy live-flow prefixes
     Lookahead --> Check2: vm.run returns
     Check2 --> Lookahead: only whitespace after the newline
     Check2 --> Restore: new text or tags,<br/>or an unsafe external function
     Check2 --> Discard: glue removed the newline
     Discard --> Running
-    Restore --> Finish: copy buffers back, undo the log,<br/>truncate the heap
+    Restore --> Finish: copy buffers and written chunks back,<br/>truncate the heap
     Check --> Finish: can't continue (choices, DONE, END,<br/>or out of content)
     Finish --> [*]: the cleaned line, report errors,<br/>notify queued observers
 ```
@@ -210,8 +210,9 @@ cleans from the start: glue, trimming, `/str`, a restore, a flow switch, a load,
 truncation or compaction. Debug builds compare every cached line with a full clean. Before
 the cache, cleaning took about half of play time; with it, play is 1.5–1.8× faster.
 
-While a snapshot is active, writes to shared arrays (globals, visit counts, turn indices,
-the random state) go through the undo log, so a restore needs no copy of them. When the
+While a snapshot is active, the first write to a chunk of 64 slots of a shared array
+(globals, or visit counts and turn indices) copies that chunk out, and a restore copies the
+written chunks back, so a line pays only for the chunks its lookahead writes. When the
 pointer runs out, an all-invisible default choice is followed automatically; otherwise ink's
 end-of-content errors and warnings are raised.
 
@@ -238,7 +239,7 @@ flowchart TB
             diagnostics["errors, warnings,<br/>observers, observer queue"]
             line["text cache: cleaned line (the cont() view)<br/>+ its items; line bytes (scratch)"]
         end
-        lookahead["lookahead copy of the live flow<br/>+ undo log (patch entries)"]
+        lookahead["lookahead copy of the live flow,<br/>globals and counts"]
         parking["flow parking region<br/>(inactive flows, set-aside output)"]
         scratch["load scratch (save tokens),<br/>ancestor scratch"]
     end
