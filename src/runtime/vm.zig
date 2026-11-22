@@ -307,11 +307,8 @@ pub fn push_evaluation(story: *Story, value: Value) Error!void {
 }
 
 pub fn pop_evaluation(story: *Story) Error!Value {
-    const value = story.state.evaluation.pop() orelse return ops.fail(
-        story,
-        .evaluation_stack_empty,
-        .{},
-    );
+    const value = story.state.evaluation.pop() orelse
+        return ops.fail(story, ops.evaluation_stack_empty, .{});
     return value;
 }
 
@@ -369,7 +366,7 @@ fn content_text(story: *Story, instruction: Instruction) Error!Signal {
             .text => push_content(story, .{ .string = .program(instruction.get(.text)) }),
             .tag => push_content(story, .{ .tag = .program(instruction.get(.tag)) }),
             .newline => push_content(story, .{ .string = story_module.program_newline(story) }),
-            else => ops.fail(story, .glue_in_expression, .{}),
+            else => ops.fail(story, ops.story_error, .{}),
         };
     }
     switch (opcode) {
@@ -412,16 +409,20 @@ fn divert(story: *Story, instruction: Instruction) Error!Signal {
         if (!try ops.truth_of(story, condition)) return .none;
     }
     if (record.flags.variable) {
+        const name = story.program.strings.get(record.name);
         const target = try ops.variable_value(story, record.name, -1) orelse
-            return ops.fail(story, .divert_variable_not_found, .{ .name = record.name });
+            return ops.fail(story, "Tried to divert using a target from a variable that " ++
+                "could not be found ({s})", .{name});
         if (target != .divert_target) {
-            // ink's message says what the variable held (its ToString as `detail`), except
-            // for the integer 0, which is "empty/null".
-            const empty = target == .integer and target.integer == 0;
-            return ops.fail(story, .divert_variable_not_target, .{
-                .name = record.name,
-                .detail = if (empty) .none else try ops.value_string(story, target),
-            });
+            // ink's message says what the variable held (its ToString), except for the
+            // integer 0, which is "empty/null".
+            const not_target = "Tried to divert to a target from a variable, but the " ++
+                "variable ({s}) didn't contain a divert target, it ";
+            if (target == .integer and target.integer == 0) {
+                return ops.fail(story, not_target ++ "was empty/null (the value 0).", .{name});
+            }
+            const held = try ops.value_text(story, target);
+            return ops.fail(story, not_target ++ "contained '{s}'.", .{ name, held });
         }
         story.diverted_pointer = .start_of(target.divert_target);
     } else {
@@ -493,11 +494,8 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
         .eval_output => return ops.eval_output(story),
         .nop, .start_thread => {},
         .duplicate => {
-            const top = state.evaluation.peek() orelse return ops.fail(
-                story,
-                .evaluation_stack_empty,
-                .{},
-            );
+            const top = state.evaluation.peek() orelse
+                return ops.fail(story, ops.evaluation_stack_empty, .{});
             try push_evaluation(story, top);
         },
         .pop => _ = try pop_evaluation(story),
@@ -537,7 +535,11 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
 fn count_of_target(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .turns_since or opcode == .read_count_of_target);
     const target = try pop_evaluation(story);
-    if (target != .divert_target) return ops.fail(story, .turns_since_expected_target, .{});
+    if (target != .divert_target) return ops.fail(
+        story,
+        "TURNS_SINCE expected a divert target (knot, stitch, label name)",
+        .{},
+    );
     const container = target.divert_target;
     const count: i32 = if (opcode == .turns_since)
         ops.turns_since(story, container)

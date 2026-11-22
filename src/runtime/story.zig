@@ -28,7 +28,6 @@ const value_module = @import("value.zig");
 const lookahead = @import("lookahead.zig");
 const vm = @import("vm.zig");
 const ops = @import("ops.zig");
-const messages = @import("messages.zig");
 const flows = @import("flows.zig");
 const ink_json = @import("../core/ink_json.zig");
 const story_paths = @import("story_paths.zig");
@@ -727,18 +726,21 @@ pub const Story = struct {
         assert(story.state.call_stack.depth() > 0);
         const state = &story.state;
         if (state.call_stack.can_pop_thread()) {
-            ops.fail(story, .thread_left_to_pop, .{}) catch {};
+            ops.fail(story, "Thread available to pop, threads should always be flat by the " ++
+                "end of evaluation?", .{}) catch {};
         }
         if (state.choices.count() != 0 or state.did_safe_exit) return;
-        const code: messages.Code = if (state.call_stack.can_pop(.tunnel))
-            .unexpected_end_of_tunnel
-        else if (state.call_stack.can_pop(.function))
-            .unexpected_end_of_function
-        else if (!state.call_stack.can_pop(null))
-            .ran_out_of_content
-        else
-            .unexpected_end_unknown;
-        ops.fail(story, code, .{}) catch {};
+        const end = "unexpectedly reached end of content";
+        if (state.call_stack.can_pop(.tunnel)) {
+            ops.fail(story, end ++ ". Do you need a '->->' to return from a tunnel?", .{}) catch {};
+        } else if (state.call_stack.can_pop(.function)) {
+            ops.fail(story, end ++ ". Do you need a '~ return'?", .{}) catch {};
+        } else if (!state.call_stack.can_pop(null)) {
+            const text = "ran out of content. Do you need a '-> DONE' or '-> END'?";
+            ops.fail(story, text, .{}) catch {};
+        } else {
+            ops.fail(story, end ++ " for unknown reason. Please debug compiler!", .{}) catch {};
+        }
     }
 
     /// ink's TryFollowDefaultInvisibleChoice.
