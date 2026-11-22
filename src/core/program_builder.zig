@@ -653,6 +653,9 @@ pub const ProgramBuilder = struct {
             list_items,
         );
         errdefer gpa.free(name_classes);
+        // Exact size, as the program never interns again; a failure leaves the lists whole.
+        builder.strings.bytes = .fromOwnedSlice(try builder.strings.bytes.toOwnedSlice(gpa));
+        builder.strings.ends = .fromOwnedSlice(try builder.strings.ends.toOwnedSlice(gpa));
         const strings = builder.strings;
         builder.strings = fresh_strings;
         var containers = builder.containers;
