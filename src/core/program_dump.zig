@@ -109,13 +109,11 @@ fn write_operand(
 /// The extra record of type `T` at `at`.
 fn record(comptime T: type, program: *const Program, at: u32) T {
     assert(at < program.extra.len);
-    const result = extra_module.get(T, program.extra, at);
-    assert(result.end <= program.extra.len);
-    return result.data;
+    return extra_module.get(T, program.extra, at);
 }
 
 fn write_divert(program: *const Program, writer: *std.Io.Writer, at: u32) !void {
-    const divert = extra_module.get(instruction_module.Divert, program.extra, at).data;
+    const divert = extra_module.get(instruction_module.Divert, program.extra, at);
     assert(at < program.extra.len);
     try writer.print(" {t}", .{divert.flags.kind});
     if (divert.flags.conditional) try writer.writeAll(" if");

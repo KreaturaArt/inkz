@@ -393,7 +393,7 @@ fn content_text(story: *Story, instruction: Instruction) Error!Signal {
 fn variable_pointer(story: *Story, instruction: Instruction) Error!Signal {
     assert(instruction.opcode == .variable_pointer);
     const at = @backingInt(instruction.get(.variable_pointer));
-    const record = extra.get(instruction_module.VariablePointer, story.program.extra, at).data;
+    const record = extra.get(instruction_module.VariablePointer, story.program.extra, at);
     var context = record.context;
     if (context == -1) context = story.state.call_stack.context_for(record.name);
     assert(context >= 0);
@@ -406,7 +406,7 @@ fn variable_pointer(story: *Story, instruction: Instruction) Error!Signal {
 fn divert(story: *Story, instruction: Instruction) Error!Signal {
     assert(instruction.opcode == .divert);
     const at = @backingInt(instruction.get(.divert));
-    const record = extra.get(instruction_module.Divert, story.program.extra, at).data;
+    const record = extra.get(instruction_module.Divert, story.program.extra, at);
     if (record.flags.conditional) {
         const condition = try pop_evaluation(story);
         if (!try ops.truth_of(story, condition)) return .none;
@@ -449,7 +449,7 @@ fn choice_point(story: *Story, instruction: Instruction, pointer: Pointer) Error
     assert(instruction.opcode == .choice_point);
     assert(!pointer.is_null());
     const at = @backingInt(instruction.get(.choice_point));
-    const record = extra.get(instruction_module.ChoicePoint, story.program.extra, at).data;
+    const record = extra.get(instruction_module.ChoicePoint, story.program.extra, at);
     try ops.process_choice(story, record, pointer);
     return .choice;
 }

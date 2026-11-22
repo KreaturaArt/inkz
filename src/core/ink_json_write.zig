@@ -348,7 +348,7 @@ fn write_operand_instruction(
                 "x()",
                 writer.string(program.externals[call.external.to_int()].name),
             );
-            if (call.conditional) try out.writeAll(",\"c\":true");
+            if (call.flags.conditional) try out.writeAll(",\"c\":true");
             if (call.arguments_count > 0) try out.print(",\"exArgs\":{d}", .{call.arguments_count});
             try out.writeByte('}');
         },
@@ -372,7 +372,7 @@ fn write_operand_instruction(
 fn record(comptime T: type, program: *const Program, instruction: Instruction) T {
     assert(instruction.operand < program.extra.len);
     assert(@typeInfo(T) == .@"struct");
-    return extra.get(T, program.extra, instruction.operand).data;
+    return extra.get(T, program.extra, instruction.operand);
 }
 
 fn global_name(writer: *const Writer, slot: index.GlobalSlot) []const u8 {
@@ -417,21 +417,21 @@ fn write_list(writer: *Writer, at: u32) !void {
     const program = writer.program;
     const out = writer.out;
     assert(at < program.extra.len);
-    const decoded = extra.get(instruction_module.ListLiteral, program.extra, at);
-    const literal = decoded.data;
+    const literal = extra.get(instruction_module.ListLiteral, program.extra, at);
+    const tail_at = at + extra.words(instruction_module.ListLiteral);
     // The record is followed by its item indices, its origin indices and (for a list item
     // read as a variable) the name.
-    assert(decoded.end + literal.items_count + literal.origins_count <= program.extra.len);
+    assert(tail_at + literal.items_count + literal.origins_count <= program.extra.len);
     if (literal.items_count == 1 and literal.origins_count == 1) {
         // A list item read as a variable: ink's `VAR?` with the name as written.
-        assert(decoded.end + 2 < program.extra.len);
-        const name: index.StringId = @fromBackingInt(@intCast(program.extra[decoded.end + 2]));
+        assert(tail_at + 2 < program.extra.len);
+        const name: index.StringId = @fromBackingInt(@intCast(program.extra[tail_at + 2]));
         try writer.property("VAR?", writer.string(name));
         return out.writeByte('}');
     }
     try out.writeAll("{\"list\":{");
     for (0..literal.items_count) |position| {
-        const item = program.list_items[program.extra[decoded.end + position]];
+        const item = program.list_items[program.extra[tail_at + position]];
         if (position > 0) try out.writeByte(',');
         try writer.json_string(writer.string(item.full_name));
         try out.print(":{d}", .{item.value});
@@ -440,7 +440,7 @@ fn write_list(writer: *Writer, at: u32) !void {
     if (literal.items_count == 0 and literal.origins_count > 0) {
         try out.writeAll(",\"origins\":[");
         for (0..literal.origins_count) |position| {
-            const at_origin = decoded.end + literal.items_count + @as(u32, @intCast(position));
+            const at_origin = tail_at + literal.items_count + @as(u32, @intCast(position));
             const origin = program.list_origins[program.extra[at_origin]];
             if (position > 0) try out.writeByte(',');
             try writer.json_string(writer.string(origin.name));

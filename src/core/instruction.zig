@@ -144,7 +144,7 @@ pub const DivertFlags = packed struct(u32) {
     padding: u28 = 0,
 };
 
-pub const Divert = struct {
+pub const Divert = extern struct {
     target_container: ContainerIndex,
     target_index: u32,
     /// The variable holding the target, for `variable` diverts; otherwise `.none`.
@@ -152,10 +152,15 @@ pub const Divert = struct {
     flags: DivertFlags,
 };
 
-pub const ExternalCall = struct {
+pub const ExternalCallFlags = packed struct(u32) {
+    conditional: bool,
+    padding: u31 = 0,
+};
+
+pub const ExternalCall = extern struct {
     external: ExternalIndex,
     arguments_count: u32,
-    conditional: bool,
+    flags: ExternalCallFlags,
 };
 
 pub const ChoiceFlags = packed struct(u32) {
@@ -167,13 +172,13 @@ pub const ChoiceFlags = packed struct(u32) {
     padding: u27 = 0,
 };
 
-pub const ChoicePoint = struct {
+pub const ChoicePoint = extern struct {
     target_container: ContainerIndex,
     target_index: u32,
     flags: ChoiceFlags,
 };
 
-pub const VariablePointer = struct {
+pub const VariablePointer = extern struct {
     name: StringId,
     /// ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
     context: i32,
@@ -183,7 +188,7 @@ pub const VariablePointer = struct {
 /// follow it in `extra`. A list item read as a variable (`{"VAR?": "item"}`, resolved by the
 /// builder) is one item and one origin, followed by the name it was written with; a literal
 /// with one item never has origins, as ink writes them only for empty lists.
-pub const ListLiteral = struct {
+pub const ListLiteral = extern struct {
     items_count: u32,
     origins_count: u32,
 };

@@ -427,16 +427,14 @@ pub const Program = struct {
         program: *const Program,
         comptime Data: type,
         at: u32,
-    ) ?extra_module.Decoded(Data) {
+    ) ?Data {
         if (!extra_module.decodable(Data, program.extra, at)) return null;
-        const decoded = extra_module.get(Data, program.extra, at);
-        assert(decoded.end <= program.extra.len);
-        return decoded;
+        return extra_module.get(Data, program.extra, at);
     }
 
     fn check_variable_pointer(program: *const Program, at: u32) Fault {
         const Data = instruction_module.VariablePointer;
-        const pointer = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        const pointer = program.record(Data, at) orelse return .extra_out_of_range;
         if (!program.is_string(pointer.name)) return .string_out_of_range;
         // ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
         if (pointer.context < -1) return .variable_pointer_context_out_of_range;
@@ -447,24 +445,24 @@ pub const Program = struct {
     /// the VM slices and stores without further checks.
     fn check_list_literal(program: *const Program, at: u32) Fault {
         const Data = instruction_module.ListLiteral;
-        const decoded = program.record(Data, at) orelse return .extra_out_of_range;
-        const literal = decoded.data;
+        const literal = program.record(Data, at) orelse return .extra_out_of_range;
+        const tail_at = at + extra_module.words(Data);
         const tail_words = @as(u64, literal.items_count) + literal.origins_count;
-        if (tail_words > program.extra.len - decoded.end) return .extra_out_of_range;
-        const tail = program.extra[decoded.end..][0..@intCast(tail_words)];
+        if (tail_words > program.extra.len - tail_at) return .extra_out_of_range;
+        const tail = program.extra[tail_at..][0..@intCast(tail_words)];
         for (tail[0..literal.items_count]) |item| {
             if (item >= program.list_items.len) return .list_item_out_of_range;
         }
         for (tail[literal.items_count..]) |origin| {
             if (origin >= program.list_origins.len) return .list_origin_out_of_range;
         }
-        assert(decoded.end <= program.extra.len);
+        assert(tail_at <= program.extra.len);
         return .ok;
     }
 
     fn check_external_call(program: *const Program, at: u32) Fault {
         const Data = instruction_module.ExternalCall;
-        const call = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        const call = program.record(Data, at) orelse return .extra_out_of_range;
         if (@backingInt(call.external) >= program.externals.len) return .external_out_of_range;
         return .ok;
     }
@@ -569,7 +567,7 @@ pub const Program = struct {
 
     fn check_divert(program: *const Program, at: u32) Fault {
         const Data = instruction_module.Divert;
-        const divert = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        const divert = program.record(Data, at) orelse return .extra_out_of_range;
         if (!divert.flags.variable) {
             return program.check_target(divert.target_container, divert.target_index);
         }
@@ -579,7 +577,7 @@ pub const Program = struct {
 
     fn check_choice_point(program: *const Program, at: u32) Fault {
         const Data = instruction_module.ChoicePoint;
-        const choice = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        const choice = program.record(Data, at) orelse return .extra_out_of_range;
         return program.check_target(choice.target_container, choice.target_index);
     }
 };

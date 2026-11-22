@@ -715,9 +715,8 @@ fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!Value {
 pub fn list_literal(story: *Story, instruction: Instruction) Error!ListReference {
     assert(instruction.opcode == .list);
     const at = @backingInt(instruction.get(.list));
-    const decoded = extra.get(instruction_module.ListLiteral, story.program.extra, at);
-    const record = decoded.data;
-    const words = story.program.extra[decoded.end..];
+    const record = extra.get(instruction_module.ListLiteral, story.program.extra, at);
+    const words = story.program.extra[at + extra.words(instruction_module.ListLiteral) ..];
     const items: []const ListItemIndex = @ptrCast(words[0..record.items_count]);
     const origin_words = words[record.items_count..][0..record.origins_count];
     const origins: []const ListOriginIndex = @ptrCast(origin_words);
@@ -1028,8 +1027,8 @@ pub fn call_external(story: *Story, instruction: Instruction) Error!vm.Signal {
     assert(story.bindings.len == story.program.externals.len);
     assert(instruction.opcode == .call_external);
     const at = @backingInt(instruction.get(.call_external));
-    const record = extra.get(instruction_module.ExternalCall, story.program.extra, at).data;
-    if (record.conditional) {
+    const record = extra.get(instruction_module.ExternalCall, story.program.extra, at);
+    if (record.flags.conditional) {
         if (!try truth_of(story, try vm.pop_evaluation(story))) return .none;
     }
     const external = record.external.to_int();

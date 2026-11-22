@@ -505,7 +505,7 @@ pub const ProgramBuilder = struct {
         const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
             .external = try builder.external(name),
             .arguments_count = arguments_count,
-            .conditional = conditional,
+            .flags = .{ .conditional = conditional },
         });
         try builder.add(.call_external, @fromBackingInt(@intCast(at)));
     }
@@ -932,13 +932,13 @@ test "path fixups resolve to containers and positions" {
     var program = try builder.finish();
     defer program.deinit(std.testing.allocator);
     const divert_at = @backingInt(program.instruction_at(Program.root, 3).get(.divert));
-    const divert = extra_module.get(instruction_module.Divert, program.extra, divert_at).data;
+    const divert = extra_module.get(instruction_module.Divert, program.extra, divert_at);
     try std.testing.expectEqual(ContainerIndex.from_int(3), divert.target_container);
     const knot: ContainerIndex = .from_int(2);
     const stitch: ContainerIndex = .from_int(3);
     try std.testing.expectEqual(stitch, program.instruction_at(knot, 0).get(.read_count));
     const back_at = @backingInt(program.instruction_at(stitch, 0).get(.divert));
-    const back = extra_module.get(instruction_module.Divert, program.extra, back_at).data;
+    const back = extra_module.get(instruction_module.Divert, program.extra, back_at);
     // From the stitch's content, `.^` leaves the content item and `.^` again goes to the knot.
     try std.testing.expectEqual(knot, back.target_container);
     try std.testing.expectEqual(knot, program.instruction_at(stitch, 1).get(.divert_target));
@@ -973,22 +973,22 @@ test "each divert kind, a variable divert and an external call become their reco
     for (expected, 0..) |flags, position| {
         const instruction = program.instruction_at(Program.root, @intCast(position));
         const at = @backingInt(instruction.get(.divert));
-        const divert = extra_module.get(instruction_module.Divert, program.extra, at).data;
+        const divert = extra_module.get(instruction_module.Divert, program.extra, at);
         try std.testing.expectEqual(flags, divert.flags);
         if (flags.variable) {
             try std.testing.expectEqualStrings("x", program.strings.get(divert.name));
         } else try std.testing.expectEqual(knot, divert.target_container);
     }
     const call_at = @backingInt(program.instruction_at(Program.root, 4).get(.call_external));
-    const call = extra_module.get(instruction_module.ExternalCall, program.extra, call_at).data;
+    const call = extra_module.get(instruction_module.ExternalCall, program.extra, call_at);
     try std.testing.expectEqual(@as(u32, 2), call.arguments_count);
-    try std.testing.expect(call.conditional);
+    try std.testing.expect(call.flags.conditional);
     const external = program.externals[call.external.to_int()];
     try std.testing.expectEqualStrings("f", program.strings.get(external.name));
     const pointer_at = @backingInt(program.instruction_at(Program.root, 5).get(.variable_pointer));
     const pointer = extra_module.get(instruction_module.VariablePointer, program.extra, pointer_at);
-    try std.testing.expectEqualStrings("x", program.strings.get(pointer.data.name));
-    try std.testing.expectEqual(@as(i32, 0), pointer.data.context);
+    try std.testing.expectEqualStrings("x", program.strings.get(pointer.name));
+    try std.testing.expectEqual(@as(i32, 0), pointer.context);
 }
 
 test "an unresolved path fails finish" {
@@ -1107,7 +1107,7 @@ test "globals, lists, externals and the global declaration" {
     const call = try builder.extra.add(gpa, instruction_module.ExternalCall{
         .external = roll,
         .arguments_count = 0,
-        .conditional = false,
+        .flags = .{ .conditional = false },
     });
     try builder.add(.call_external, @fromBackingInt(@intCast(call)));
     _ = try builder.list_origin("colours", &.{
@@ -1182,8 +1182,9 @@ test "VAR? reads resolve to globals, list items or temps" {
     try std.testing.expectEqualSlices(Opcode, &.{ .global_get, .list, .temp_get, .list }, opcodes);
     const literal_at = program.instructions.items(.operand)[3];
     const literal = extra_module.get(instruction_module.ListLiteral, program.extra, literal_at);
-    try std.testing.expectEqual(@as(u32, 2), literal.data.items_count);
-    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 0 }, program.extra[literal.end..][0..3]);
+    try std.testing.expectEqual(@as(u32, 2), literal.items_count);
+    const tail_at = literal_at + extra_module.words(instruction_module.ListLiteral);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 0 }, program.extra[tail_at..][0..3]);
 }
 
 test "names and flags can arrive at a container's end" {

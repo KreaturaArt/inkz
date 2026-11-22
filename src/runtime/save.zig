@@ -259,7 +259,7 @@ fn ink_content_index(program: *const Program, pointer: Pointer) u32 {
 fn divert_of(program: *const Program, instruction: Instruction) instruction_module.Divert {
     assert(instruction.opcode == .divert);
     const at = @backingInt(instruction.get(.divert));
-    return extra.get(instruction_module.Divert, program.extra, at).data;
+    return extra.get(instruction_module.Divert, program.extra, at);
 }
 
 fn write_item(story: *Story, writer: *Writer, item: Item) Writer.Error!void {

@@ -268,7 +268,7 @@ fn external_program(gpa: std.mem.Allocator) !Program {
     const call = try builder.extra.add(gpa, instruction_module.ExternalCall{
         .external = external,
         .arguments_count = 0,
-        .conditional = false,
+        .flags = .{ .conditional = false },
     });
     _ = try builder.begin_container(.{});
     inline for (.{ true, false }) |is_root| {

@@ -1,9 +1,10 @@
-//! The `extra` side table: structs too wide for an instruction operand are stored
+//! The `extra` side table: records too wide for an instruction operand are stored
 //! as consecutive `u32` words, and the instruction keeps their index.
 //!
-//! A struct's fields must each fit one word: `u32`, `i32`, `f32`, `bool`, an enum whose tag
-//! fits 32 bits (index newtypes included), or a `packed struct(u32)`. A variable-length tail
-//! follows with `add_slice`; `get` returns where the struct ends so the reader finds it.
+//! A record is an `extern struct` whose fields are each one word: `u32`, `i32`, `f32`, an
+//! enum whose tag is 32 bits (index newtypes included), or a `packed struct(u32)` (flags), so
+//! it is stored and read back as its words, with one `@ptrCast`. A variable-length tail
+//! follows with `add_slice`, at `index + words(T)`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -23,35 +24,18 @@ pub const ExtraBuilder = struct {
         return words_count;
     }
 
-    /// Appends `value`'s fields and returns the index of the first word.
+    /// Appends `value` and returns the index of its first word.
     pub fn add(builder: *ExtraBuilder, gpa: Allocator, value: anytype) !u32 {
-        const T = @TypeOf(value);
-        const words_count = comptime fields_count(T);
-        const index = try builder.reserve(gpa, T);
-        builder.set(index, value);
-        assert(builder.count() == index + words_count);
-        assert(std.meta.eql(get(T, builder.words.items, index).data, value));
-        return index;
+        const record: *const [words(@TypeOf(value))]u32 = @ptrCast(&value);
+        return builder.add_slice(gpa, record);
     }
 
     /// Appends a variable-length tail of words and returns the index of the first one.
-    pub fn add_slice(builder: *ExtraBuilder, gpa: Allocator, words: []const u32) !u32 {
+    pub fn add_slice(builder: *ExtraBuilder, gpa: Allocator, tail: []const u32) !u32 {
         const index = builder.count();
-        if (words.len > std.math.maxInt(u32) - index) return error.ExtraFull;
-        try builder.words.appendSlice(gpa, words);
-        assert(builder.count() == index + words.len);
-        assert(std.mem.eql(u32, builder.words.items[index..], words));
-        return index;
-    }
-
-    /// Reserves room for one `T`, to be filled later with `set` (for forward references).
-    pub fn reserve(builder: *ExtraBuilder, gpa: Allocator, comptime T: type) !u32 {
-        const words_count = comptime fields_count(T);
-        const index = builder.count();
-        if (words_count > std.math.maxInt(u32) - index) return error.ExtraFull;
-        try builder.words.appendNTimes(gpa, 0, words_count);
-        assert(builder.count() == index + words_count);
-        assert(words_count > 0);
+        if (tail.len > std.math.maxInt(u32) - index) return error.ExtraFull;
+        try builder.words.appendSlice(gpa, tail);
+        assert(builder.count() == index + tail.len);
         return index;
     }
 
@@ -63,64 +47,47 @@ pub const ExtraBuilder = struct {
         assert(builder.count() == index + count_words);
         return index;
     }
-
-    /// Overwrites the `T` stored at `index`.
-    pub fn set(builder: *ExtraBuilder, index: u32, value: anytype) void {
-        const T = @TypeOf(value);
-        const info = @typeInfo(T).@"struct";
-        assert(index + info.field_names.len <= builder.count());
-        inline for (info.field_names, 0..) |name, offset| {
-            builder.words.items[index + offset] = to_word(@field(value, name));
-        }
-        assert(std.meta.eql(get(T, builder.words.items, index).data, value));
-    }
 };
 
-pub fn Decoded(comptime T: type) type {
-    comptime assert(@typeInfo(T) == .@"struct");
-    comptime assert(@typeInfo(T).@"struct".field_names.len > 0);
-    return struct {
-        data: T,
-        /// The index just past the struct: where a tail written with `add_slice` starts.
-        end: u32,
+/// How many words a `T` takes: one per field.
+pub fn words(comptime T: type) u32 {
+    return comptime count: {
+        const info = @typeInfo(T).@"struct";
+        assert(info.layout == .@"extern");
+        assert(info.field_names.len > 0);
+        for (info.field_types) |Field| {
+            assert(@sizeOf(Field) == 4);
+            const flags = @typeInfo(Field) == .@"struct";
+            assert(!flags or @typeInfo(Field).@"struct".layout == .@"packed");
+        }
+        assert(@sizeOf(T) == 4 * info.field_names.len);
+        break :count info.field_names.len;
     };
 }
 
-/// Reads a `T` stored at `index`.
-pub fn get(comptime T: type, words: []const u32, index: u32) Decoded(T) {
-    const info = @typeInfo(T).@"struct";
-    assert(index + info.field_names.len <= words.len);
-    var data: T = undefined;
-    inline for (info.field_names, info.field_types, 0..) |name, Field, offset| {
-        @field(data, name) = from_word(Field, words[index + offset]);
-    }
-    const end: u32 = index + @as(u32, @intCast(info.field_names.len));
-    assert(end <= words.len);
-    return .{ .data = data, .end = end };
+/// Reads the `T` stored at `index`, which must be `decodable`.
+pub fn get(comptime T: type, extra: []const u32, index: u32) T {
+    assert(decodable(T, extra, index));
+    const record: *const T = @ptrCast(extra[index..][0..words(T)]);
+    return record.*;
 }
 
-/// Whether the words at `index` decode as a `T`: each bool word is 0 or 1, and each enum
-/// word fits its tag type and, for a closed enum, names a value. Checking untrusted data
+/// Whether the words at `index` decode as a `T`: each enum word fits its tag type and, for a
+/// closed enum, names a value, and each flags word's padding is zero. Checking untrusted data
 /// (program images) calls this before `get`, which asserts it.
-pub fn decodable(comptime T: type, words: []const u32, index: u32) bool {
+pub fn decodable(comptime T: type, extra: []const u32, index: u32) bool {
     const info = @typeInfo(T).@"struct";
-    if (index > words.len or info.field_names.len > words.len - index) return false;
+    if (index > extra.len or words(T) > extra.len - index) return false;
     inline for (info.field_types, 0..) |Field, offset| {
-        if (!word_decodes(Field, words[index + offset])) return false;
+        const word = extra[index + offset];
+        switch (@typeInfo(Field)) {
+            .int, .float => {},
+            .@"struct" => if (!flags_decode(Field, word)) return false,
+            .@"enum" => if (!enum_decodes(Field, word)) return false,
+            else => comptime unreachable,
+        }
     }
-    assert(index + info.field_names.len <= words.len);
     return true;
-}
-
-fn word_decodes(comptime Field: type, word: u32) bool {
-    comptime assert(fits_a_word(Field));
-    switch (@typeInfo(Field)) {
-        .int, .float => return true,
-        .@"struct" => return packed_decodes(Field, word),
-        .bool => return word <= 1,
-        .@"enum" => return enum_decodes(Field, word),
-        else => comptime unreachable,
-    }
 }
 
 fn enum_decodes(comptime Field: type, word: u32) bool {
@@ -131,87 +98,38 @@ fn enum_decodes(comptime Field: type, word: u32) bool {
 }
 
 /// A packed struct's bit fields: an enum field must name a value (a closed `enum(u2)` with
-/// three values has a fourth bit pattern), the rest are any bits.
-fn packed_decodes(comptime Field: type, word: u32) bool {
+/// three values has a fourth bit pattern), `padding` must be zero, the rest are any bits.
+fn flags_decode(comptime Field: type, word: u32) bool {
     const structure = @typeInfo(Field).@"struct";
     comptime assert(structure.layout == .@"packed");
     inline for (structure.field_names, structure.field_types) |name, Bits| {
+        comptime assert(@bitSizeOf(Bits) < 32);
+        const mask: u32 = (@as(u32, 1) << @bitSizeOf(Bits)) - 1;
+        const bits = (word >> @bitOffsetOf(Field, name)) & mask;
         if (@typeInfo(Bits) == .@"enum") {
-            const width = @bitSizeOf(Bits);
-            comptime assert(width < 32);
-            const mask: u32 = (@as(u32, 1) << width) - 1;
-            const bits = (word >> @bitOffsetOf(Field, name)) & mask;
             if (!enum_decodes(Bits, bits)) return false;
+        } else if (comptime std.mem.eql(u8, name, "padding")) {
+            if (bits != 0) return false;
         } else {
-            comptime assert(@typeInfo(Bits) != .@"struct");
+            comptime assert(@typeInfo(Bits) == .int or @typeInfo(Bits) == .bool);
         }
     }
     return true;
 }
 
-fn fields_count(comptime T: type) u32 {
-    const info = @typeInfo(T).@"struct";
-    comptime assert(info.layout != .@"packed");
-    inline for (info.field_types) |Field| comptime assert(fits_a_word(Field));
-    assert(info.field_names.len > 0);
-    return info.field_names.len;
-}
-
-fn fits_a_word(comptime Field: type) bool {
-    comptime assert(@sizeOf(Field) <= 4);
-    comptime assert(@bitSizeOf(Field) <= 32);
-    return switch (@typeInfo(Field)) {
-        .int => |int| int.bits == 32,
-        .float => |float| float.bits == 32,
-        .bool => true,
-        .@"enum" => |enumeration| @bitSizeOf(enumeration.tag_type) <= 32,
-        .@"struct" => |structure| structure.layout == .@"packed" and @bitSizeOf(Field) == 32,
-        else => false,
-    };
-}
-
-fn to_word(value: anytype) u32 {
-    const Field = @TypeOf(value);
-    comptime assert(fits_a_word(Field));
-    const word: u32 = switch (@typeInfo(Field)) {
-        .int, .float, .@"struct" => @bitCast(value),
-        .bool => @intFromBool(value),
-        .@"enum" => @intCast(@backingInt(value)),
-        else => comptime unreachable,
-    };
-    assert(std.meta.eql(from_word(Field, word), value));
-    return word;
-}
-
-fn from_word(comptime Field: type, word: u32) Field {
-    comptime assert(fits_a_word(Field));
-    switch (@typeInfo(Field)) {
-        .int, .float, .@"struct" => return @bitCast(word),
-        .bool => {
-            assert(word <= 1);
-            return word == 1;
-        },
-        .@"enum" => |enumeration| {
-            const tag: enumeration.tag_type = @intCast(word);
-            return @fromBackingInt(@intCast(tag));
-        },
-        else => comptime unreachable,
-    }
-}
-
 const StringId = @import("index.zig").StringId;
+const instruction = @import("instruction.zig");
 
-test "a struct with every field kind and a trailing slice round-trips" {
-    // Every supported field kind survives, and the tail is found through `end`.
-    // Store a struct, then a 3-word tail, and read both back.
+test "a record with every field kind and a trailing slice round-trips" {
+    // Every supported field kind survives, and the tail starts at `index + words(T)`.
+    // Store a record after unrelated words, then a 3-word tail, and read both back.
     const gpa = std.testing.allocator;
-    const Flags = packed struct(u32) { sticky: bool, invisible: bool, rest: u30 = 0 };
-    const Kind = enum(u8) { divert, call, tunnel };
-    const Record = struct {
+    const Flags = packed struct(u32) { sticky: bool, invisible: bool, padding: u30 = 0 };
+    const Kind = enum(u32) { divert, call, tunnel };
+    const Record = extern struct {
         target: u32,
         offset: i32,
         weight: f32,
-        once: bool,
         kind: Kind,
         name: StringId,
         flags: Flags,
@@ -219,48 +137,74 @@ test "a struct with every field kind and a trailing slice round-trips" {
     };
     var builder: ExtraBuilder = .{};
     defer builder.deinit(gpa);
-    _ = try builder.add_slice(gpa, &.{ 99, 98 }); // Unrelated words before the record.
+    _ = try builder.add_slice(gpa, &.{ 99, 98 });
     const record: Record = .{
         .target = 7,
         .offset = -3,
         .weight = 1.5,
-        .once = true,
         .kind = .tunnel,
         .name = StringId.from_int(42),
         .flags = .{ .sticky = true, .invisible = false },
         .tail_count = 3,
     };
     const index = try builder.add(gpa, record);
+    try std.testing.expectEqual(@as(u32, 2), index);
     _ = try builder.add_slice(gpa, &.{ 10, 20, 30 });
-    const decoded = get(Record, builder.words.items, index);
-    try std.testing.expectEqual(record, decoded.data);
-    const tail = builder.words.items[decoded.end..][0..decoded.data.tail_count];
+    try std.testing.expectEqual(record, get(Record, builder.words.items, index));
+    const tail = builder.words.items[index + words(Record) ..][0..record.tail_count];
     try std.testing.expectEqualSlices(u32, &.{ 10, 20, 30 }, tail);
+    const reserved = try builder.reserve_words(gpa, 2);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 0 }, builder.words.items[reserved..]);
 }
 
-test "reserve then set fills a forward reference" {
-    // A struct can be written before its contents are known: reserve, append
-    // more words, then set the reserved struct and read it back.
+test "every instruction record round-trips through its words" {
+    // Each record type the builder stores, with distinct field values, comes back equal.
     const gpa = std.testing.allocator;
-    const Jump = struct { target: u32, condition: bool };
     var builder: ExtraBuilder = .{};
     defer builder.deinit(gpa);
-    const index = try builder.reserve(gpa, Jump);
-    _ = try builder.add_slice(gpa, &.{ 1, 2, 3 });
-    builder.set(index, Jump{ .target = 5, .condition = true });
-    const decoded = get(Jump, builder.words.items, index);
-    try std.testing.expectEqual(Jump{ .target = 5, .condition = true }, decoded.data);
-    try std.testing.expectEqual(@as(u32, 5), builder.count());
+    const records = .{
+        instruction.Divert{
+            .target_container = .from_int(3),
+            .target_index = 4,
+            .name = .from_int(5),
+            .flags = .{ .kind = .tunnel, .conditional = true, .variable = false },
+        },
+        instruction.ExternalCall{
+            .external = .from_int(6),
+            .arguments_count = 2,
+            .flags = .{ .conditional = true },
+        },
+        instruction.ChoicePoint{
+            .target_container = .from_int(7),
+            .target_index = 8,
+            .flags = .{
+                .has_condition = true,
+                .has_start_content = false,
+                .has_choice_only_content = true,
+                .is_invisible_default = false,
+                .once_only = true,
+            },
+        },
+        instruction.VariablePointer{ .name = .from_int(9), .context = -1 },
+        instruction.ListLiteral{ .items_count = 10, .origins_count = 11 },
+    };
+    inline for (records) |record| {
+        const index = try builder.add(gpa, record);
+        try std.testing.expectEqual(builder.count(), index + words(@TypeOf(record)));
+        try std.testing.expectEqual(record, get(@TypeOf(record), builder.words.items, index));
+    }
 }
 
-test "decodable rejects an enum bit pattern that names no value, inside a packed struct too" {
+test "decodable rejects an enum bit pattern that names no value, and flags padding" {
     // Program images are untrusted: a closed enum(u2) with three values has a fourth
     // pattern, which `get` would turn into illegal behaviour. Check a plain enum word and the
-    // same enum as a packed field, with the bad pattern and with every good one.
+    // same enum as a packed field, with the bad pattern and with every good one; then set
+    // padding bits, and read past the end.
     const Kind = enum(u2) { plain, function, tunnel };
+    const Wide = enum(u32) { plain, function, tunnel };
     const Flags = packed struct(u32) { kind: Kind, conditional: bool, padding: u29 = 0 };
-    const Record = struct { flags: Flags };
-    const Plain = struct { kind: Kind };
+    const Record = extern struct { flags: Flags };
+    const Plain = extern struct { kind: Wide };
     for (0..4) |pattern| {
         const good = pattern < 3;
         const flag_word: u32 = @as(u32, @intCast(pattern)) | (1 << 2);
@@ -268,5 +212,6 @@ test "decodable rejects an enum bit pattern that names no value, inside a packed
         try std.testing.expectEqual(good, decodable(Plain, &.{@intCast(pattern)}, 0));
     }
     try std.testing.expect(!decodable(Plain, &.{1 << 8}, 0));
+    try std.testing.expect(!decodable(Record, &.{1 << 3}, 0));
     try std.testing.expect(!decodable(Record, &.{0}, 1));
 }

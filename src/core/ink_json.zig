@@ -768,14 +768,14 @@ fn count_resolved_targets(program: *const Program) !u32 {
     for (opcodes, program.instructions.items(.operand)) |opcode, operand| {
         switch (opcode) {
             .divert => {
-                const divert = extra.get(instruction_module.Divert, program.extra, operand).data;
+                const divert = extra.get(instruction_module.Divert, program.extra, operand);
                 if (divert.flags.variable) continue;
                 if (divert.target_container.is_none()) return error.UnresolvedTarget;
                 resolved += 1;
             },
             .choice_point => {
                 const Choice = instruction_module.ChoicePoint;
-                const choice = extra.get(Choice, program.extra, operand).data;
+                const choice = extra.get(Choice, program.extra, operand);
                 if (choice.target_container.is_none()) return error.UnresolvedTarget;
                 resolved += 1;
             },
