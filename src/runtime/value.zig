@@ -109,6 +109,18 @@ pub const Value = union(enum(u8)) {
             .null, .divert_target, .variable_pointer, .tag => error.NoTruthValue,
         };
     }
+
+    /// Same tag and same payload: strings and lists by reference, floats by their bits (0.0
+    /// and -0.0 differ, a NaN equals itself), so what is identical restores exactly. ink's
+    /// "same value object" test for observers; ink's value equality is `values_equal` in
+    /// story.zig, by text and by list items.
+    pub fn identical(a: Value, b: Value) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
+            else => std.meta.eql(a, b),
+        };
+    }
 };
 
 comptime {
@@ -224,4 +236,22 @@ test "a value is 12 bytes and string references keep their source" {
     const in_heap = StringReference.heap(1234);
     try std.testing.expect(in_heap.is_heap());
     try std.testing.expectEqual(@as(u32, 1234), in_heap.heap_offset());
+}
+
+test "identical values have the same tag and payload, floats by their bits" {
+    // Observers and shared choice snapshots compare by identity: -0.0 is not 0.0, a NaN is
+    // itself, strings compare by reference and an integer is never a float.
+    const nan = std.math.nan(f32);
+    try std.testing.expect((Value{ .float = nan }).identical(.{ .float = nan }));
+    try std.testing.expect(!(Value{ .float = 0.0 }).identical(.{ .float = -0.0 }));
+    try std.testing.expect(!(Value{ .integer = 1 }).identical(.{ .float = 1.0 }));
+    const text: Value = .{ .string = .heap(4) };
+    try std.testing.expect(text.identical(.{ .string = .heap(4) }));
+    try std.testing.expect(!text.identical(.{ .string = .heap(8) }));
+    const pointer: Value = .{ .variable_pointer = .{ .name = .from_int(3), .context = 0 } };
+    try std.testing.expect(pointer.identical(pointer));
+    try std.testing.expect(!pointer.identical(.{ .variable_pointer = .{
+        .name = .from_int(3),
+        .context = 1,
+    } }));
 }

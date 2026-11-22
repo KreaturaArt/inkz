@@ -253,22 +253,10 @@ fn temps_equal(a: []const Temp, b: []const Temp) bool {
     if (a.len != b.len) return false;
     for (a, b) |left, right| {
         if (left.name != right.name) return false;
-        if (!values_identical(left.value, right.value)) return false;
+        if (!left.value.identical(right.value)) return false;
     }
     assert(a.len == b.len);
     return true;
-}
-
-/// Same tag and same payload. Floats compare by their bits, so 0.0 and -0.0 differ and a
-/// NaN equals itself: a shared snapshot must restore exactly what was stored.
-fn values_identical(a: Value, b: Value) bool {
-    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
-    const result = switch (a) {
-        .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
-        else => std.meta.eql(a, b),
-    };
-    if (result) assert(std.meta.activeTag(a) == std.meta.activeTag(b));
-    return result;
 }
 
 const TestState = struct {
