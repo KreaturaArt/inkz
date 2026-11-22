@@ -33,10 +33,10 @@ by typed `u32` index, never by pointer. `inkz.core.index.Index(name)` makes a di
 so a container index can't be passed where a string id is expected. `.none` means "no
 index" and is never a valid position; `to_int` asserts on it.
 
-Without pointers, a structure can be copied with `@memcpy` (lookahead snapshots, parked
-flows), relocated (heap compaction), saved and checked by `check()`.
+Without pointers, a structure can be copied with `@memcpy` (lookahead snapshots),
+relocated (heap compaction), saved and checked by `check()`.
 
-The rule is strict for data that is copied, parked, saved or snapshotted by value: every
+The rule is strict for data that is copied, saved or snapshotted by value: every
 flow buffer's element, `Value`, diagnostics and flow records.
 `state.zig` checks them at compile time with `pointer_free.has_no_pointers(T)`
 (`src/core/pointer_free.zig`), which rejects any pointer, slice or function pointer

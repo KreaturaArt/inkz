@@ -1,5 +1,5 @@
 //! `has_no_pointers`: whether a type holds no pointer, slice or function pointer anywhere
-//! in it. Data that is copied, parked, saved or snapshotted by value (flow buffers, the
+//! in it. Data that is copied, saved or snapshotted by value (flow buffers, the
 //! lookahead's undo log, values) must not point into memory: a copy would alias it, and a
 //! moved heap or a loaded save would leave it dangling (docs/Guidelines.md).
 

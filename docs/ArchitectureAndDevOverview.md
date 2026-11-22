@@ -159,8 +159,9 @@ functions after it in `story.zig`, which take the story first.
 - **The heap** (`heap.zig`) holds runtime strings and lists in fixed buffers, reclaimed by
   sliding mark-compact only when an instruction reserves room that isn't free, before it
   pops its operands (`State.reserve`); an allocation never compacts.
-- **Flows** (`flows.zig`) park the used part of each live buffer in a bounded region on a
-  switch, so a switch costs a copy of what is used, not of the limits.
+- **Flows** (`flows.zig`) each own a full set of call stack, output and choice buffers; a
+  switch stores the live stacks' counts and points them at the target flow's set, copying
+  nothing.
 - **Saves** (`save.zig`, `load.zig`) stream ink's save format v10 with no allocation, and
   load by parsing with std.json into fixed scratch and reading it once into a reset state; a
   save that fails to load leaves the story as `reset_state` leaves it.

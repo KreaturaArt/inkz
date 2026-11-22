@@ -561,8 +561,9 @@ std.debug.print("now in {s}\n", .{story.current_flow_name().get()});
 ```
 
 The default flow is named `DEFAULT_FLOW`. `alive_flow_names(sink)` calls
-`sink.name(text)` for every flow except the default one. The number of flows and the room
-to park inactive ones are limits (`flows_max`, `flow_parking_bytes_max`).
+`sink.name(text)` for every flow except the default one. The number of flows is a limit
+(`flows_max`, 8 by default); each flow owns a full set of call stack, output and choice
+buffers, so a switch copies nothing, and a story that never switches can set it to 1.
 
 ## Lists
 

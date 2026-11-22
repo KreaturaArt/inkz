@@ -794,7 +794,7 @@ test "init allocates exactly the byte budget, once" {
 }
 
 test "the flow buffer table covers every FlowBuffers field, each with its own live stack" {
-    // Lookahead, parking, save and load iterate `flow_buffers`, so a buffer missing
+    // Lookahead, flows, save and load iterate `flow_buffers`, so a buffer missing
     // from it would silently not be copied. Every FlowBuffers field has a tag whose
     // live stack and lookahead copy are sized from its limit, and no two tags share a stack.
     const gpa = std.testing.allocator;

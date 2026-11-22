@@ -6,7 +6,7 @@
 //! The heap doesn't know where references live. `compact` takes `roots`, which must provide
 //! `visit(visitor: anytype)` and call `visitor.string(*StringReference)` and
 //! `visitor.list(*ListReference)` for every reference the state holds (globals, temps, the
-//! evaluation stack, output, choices, snapshots, parked flows, the lookahead snapshot, the
+//! evaluation stack, output, choices, snapshots, the other flows, the lookahead snapshot, the
 //! observer queue).
 //!
 //! A string is `[length | mark bit, forward, bytes..., padding to 4]`.

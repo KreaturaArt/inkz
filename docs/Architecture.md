@@ -226,8 +226,8 @@ the next mutating call.
 ```mermaid
 flowchart TB
     subgraph block["one allocation: Limits.bytes_total(shape)"]
-        subgraph live["live flow"]
-            evaluation["evaluation stack<br/>Value, 12 B"]
+        evaluation["evaluation stack<br/>Value, 12 B, shared by all flows"]
+        subgraph live["flows_max flow slots; the live stacks view the current one"]
             calls["call stack: threads,<br/>frames (24 B), temps (16 B)"]
             output["output items (12 B),<br/>string marks"]
             choices["choices, choice tags,<br/>thread snapshots"]
@@ -240,11 +240,11 @@ flowchart TB
             line["text cache: cleaned line (the cont() view)<br/>+ its items; line bytes (scratch)"]
         end
         lookahead["lookahead copy of the live flow,<br/>globals and counts"]
-        parking["flow parking region<br/>(inactive flows, set-aside output)"]
+        stash["output stash<br/>(output set aside by evaluate_function)"]
         scratch["load scratch (save tokens),<br/>ancestor scratch"]
     end
     live -- "take / restore" --> lookahead
-    live -- "switch_flow packs / unpacks used prefixes" --> parking
+    live -- "switch_flow stores the counts, points the stacks at another slot" --> live
     heap -. "compaction roots: values in every box above" .- live
 ```
 
