@@ -323,8 +323,7 @@ pub const Story = struct {
 
     /// ink's ResetState: a fresh state, with the global declaration run again.
     pub fn reset_state(story: *Story) Error!void {
-        invalidate_views(story);
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         story.state.reset();
         story.diverted_pointer = .null;
         story.failed = false;
@@ -334,8 +333,7 @@ pub const Story = struct {
 
     /// ink's ResetErrors: drops the kept errors and warnings, so the story can continue.
     pub fn reset_errors(story: *Story) error{Reentrant}!void {
-        invalidate_views(story);
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         story.state.reset_errors();
         assert(!story.state.has_error());
     }
@@ -343,8 +341,7 @@ pub const Story = struct {
     /// ink's SwitchFlow: makes flow `name` current, creating it at the root if it's new.
     pub fn switch_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
         assert(name.len > 0);
-        invalidate_views(story);
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         try flows.switch_flow(&story.state, name);
         assert(std.mem.eql(u8, flows.current_name(&story.state), name));
     }
@@ -359,8 +356,7 @@ pub const Story = struct {
     /// ink's RemoveFlow.
     pub fn remove_flow(story: *Story, name: []const u8) (Error || flows.Error)!void {
         assert(name.len > 0);
-        invalidate_views(story);
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         try flows.remove_flow(&story.state, name);
     }
 
@@ -432,8 +428,7 @@ pub const Story = struct {
         const profile_zone = profile.begin(.cont);
         defer profile_zone.end();
         assert(story.state.call_stack.depth() > 0);
-        invalidate_views(story);
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         if (story.failed) return error.StoryFailed;
         if (!story.can_continue()) return error.CannotContinue;
         return story.borrow([]const u8, try next_line(story));
@@ -811,8 +806,7 @@ pub const Story = struct {
     pub fn choose_choice_index(story: *Story, position: u32) Error!void {
         const profile_zone = profile.begin(.choose_choice);
         defer profile_zone.end();
-        invalidate_views(story);
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         if (story.failed) return error.StoryFailed;
         if (position >= story.current_choices_count()) return error.ChoiceLimit;
         if (story.events.on_make_choice) |event| {
@@ -850,9 +844,8 @@ pub const Story = struct {
     pub fn set_variable(story: *Story, name: []const u8, value: Value) SetError!void {
         assert(name.len > 0);
         if (value == .null) return error.VariableNotDeclared;
-        invalidate_views(story);
         const slot = story.program.global_by_name(name) orelse return error.VariableNotDeclared;
-        if (story.callback_depth > 0) return error.Reentrant;
+        try begin_mutation(story);
         const stored = try ops.value_of_host(story, value);
         try ops.set_global(story, slot, stored);
         assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored) or
@@ -949,9 +942,16 @@ pub const Story = struct {
 
 // The runtime's internals on a story.
 
-/// Makes every view handed out so far stale; called first by every mutating call.
+/// Makes every view handed out so far stale (`begin_mutation`, `evaluate_function`).
 pub fn invalidate_views(story: *Story) void {
     story.generation +%= 1;
+}
+
+/// The start of a mutating call: the views handed out so far go stale, and the call is
+/// refused from inside a callback.
+pub fn begin_mutation(story: *Story) error{Reentrant}!void {
+    invalidate_views(story);
+    if (story.callback_depth > 0) return error.Reentrant;
 }
 
 /// Seeds RANDOM and shuffles (`Options.random_seed`): ink's storySeed, with

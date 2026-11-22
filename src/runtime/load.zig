@@ -47,8 +47,7 @@ pub const save_version_min = 8;
 
 /// Loads `json` into the story; on any error the story is unchanged.
 pub fn load_json(story: *Story, json: []const u8) Error!void {
-    story_module.invalidate_views(story);
-    if (story.callback_depth > 0) return error.Reentrant;
+    try story_module.begin_mutation(story);
     assert(!lookahead.active(&story.state));
     const parse_zone = profile.begin(.load_parse);
     const tree = Tree.parse(json, story.state.load_nodes) catch |err| {

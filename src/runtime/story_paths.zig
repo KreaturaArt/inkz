@@ -46,8 +46,7 @@ pub fn choose_path_string(
     arguments: []const story_module.HostValue,
 ) (PathError || story_module.Error)!void {
     assert(text.len > 0);
-    story_module.invalidate_views(story);
-    if (story.callback_depth > 0) return error.Reentrant;
+    try story_module.begin_mutation(story);
     if (story.failed) return error.StoryFailed;
     if (story.events.on_choose_path_string) |event| {
         story.callback_depth += 1;
