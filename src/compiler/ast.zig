@@ -18,6 +18,12 @@ const index = @import("../core/index.zig");
 pub const NodeIndex = index.Index("node");
 pub const TokenIndex = index.Index("token");
 
+/// ink's SequenceType flags, which a `sequence_kind` leaf holds.
+pub const sequence_stopping: u32 = 1;
+pub const sequence_cycle: u32 = 2;
+pub const sequence_shuffle: u32 = 4;
+pub const sequence_once: u32 = 8;
+
 pub const Tag = enum(u8) {
     // Slots.
     /// An optional child that isn't there.

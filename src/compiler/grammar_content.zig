@@ -580,11 +580,10 @@ fn else_expression(machine: *Machine) bool {
 
 // Sequences.
 
-/// ink's SequenceType flags.
-const stopping: u32 = 1;
-const cycle: u32 = 2;
-const shuffle: u32 = 4;
-const once: u32 = 8;
+const stopping = ast.sequence_stopping;
+const cycle = ast.sequence_cycle;
+const shuffle = ast.sequence_shuffle;
+const once = ast.sequence_once;
 
 /// SequenceTypeAnnotation: symbols (`!&~$`) or words (`once cycle:`); null if neither.
 fn sequence_type_annotation(machine: *Machine) Error!?u32 {

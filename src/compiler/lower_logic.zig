@@ -253,11 +253,10 @@ pub fn generate_conditional(lowering: *Lowering, conditional: ObjectIndex) !Resu
     return .{ .container = container };
 }
 
-/// ink's SequenceType flags.
-const stopping: u32 = 1;
-const cycle: u32 = 2;
-const shuffle: u32 = 4;
-const once: u32 = 8;
+const stopping = ast_module.sequence_stopping;
+const cycle = ast_module.sequence_cycle;
+const shuffle = ast_module.sequence_shuffle;
+const once = ast_module.sequence_once;
 
 /// Sequence.GenerateRuntimeObject.
 pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
