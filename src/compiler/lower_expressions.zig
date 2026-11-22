@@ -287,50 +287,18 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
 
 /// List.GenerateIntoContainer: each item by its list and value.
 fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
-    const ast = lowering.ast();
-    const node = lowering.tree.node(literal);
-    assert(ast.tag(node) == .list_literal);
-    const arena = lowering.ir.arena.allocator();
-    var items: std.ArrayList(ir_module.ListItem) = .empty;
-    for (0..ast.list(node).count) |position| {
-        const text = lowering.parsed.leaf_text(ast.item(node, position));
-        const dot = std.mem.indexOfScalar(u8, text, '.');
-        const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
-        const item_name = if (dot) |at| text[at + 1 ..] else text;
-        const found = find_list_item(lowering, list_name, item_name) orelse continue;
-        const origin = lowering.slot_name(lowering.tree.parent(found.definition), .name);
-        // ink warns about a duplicate item and keeps the first.
-        if (contains_item(items.items, origin, item_name)) continue;
-        const value = lowering.resolution.item_values[found.element.to_int()];
-        try items.append(arena, .{ .origin = origin, .name = item_name, .value = value });
+    assert(lowering.tree.kind(literal) == .list_literal);
+    const elements = lowering.resolution.list_literal_items(literal);
+    const items = try lowering.ir.arena.allocator().alloc(ir_module.ListItem, elements.len);
+    for (elements, items) |element, *item| {
+        const definition = lowering.tree.parent(element);
+        item.* = .{
+            .origin = lowering.slot_name(lowering.tree.parent(definition), .name),
+            .name = lowering.slot_name(element, .name),
+            .value = lowering.resolution.item_values[element.to_int()],
+        };
     }
-    return .{ .list = .{ .items = items.items, .origins = &.{} } };
-}
-
-fn contains_item(items: []const ir_module.ListItem, origin: []const u8, name: []const u8) bool {
-    assert(origin.len > 0);
-    for (items) |item| {
-        if (std.mem.eql(u8, item.origin, origin) and std.mem.eql(u8, item.name, name)) return true;
-    }
-    return false;
-}
-
-const Found = struct { definition: ObjectIndex, element: ObjectIndex };
-
-/// Story.ResolveListItem (its ambiguity error was reported when resolving).
-fn find_list_item(lowering: *const Lowering, list_name: ?[]const u8, item: []const u8) ?Found {
-    assert(item.len > 0);
-    for (lowering.resolution.lists) |definition| {
-        if (list_name) |name| {
-            const own = lowering.slot_name(lowering.tree.parent(definition), .name);
-            if (!std.mem.eql(u8, name, own)) continue;
-        }
-        for (lowering.tree.children_of(definition)) |element| {
-            if (!std.mem.eql(u8, item, lowering.slot_name(element, .name))) continue;
-            return .{ .definition = definition, .element = element };
-        }
-    }
-    return null;
+    return .{ .list = .{ .items = items, .origins = &.{} } };
 }
 
 /// ListDefinition.GenerateRuntimeObject: the list's initial value (its selected items).

@@ -468,10 +468,13 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
 
 /// List.GenerateIntoContainer's lookups: each item of a list literal must exist, and once.
 fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
+    assert(context.tree.kind(literal) == .list_literal);
     const ast = context.ast();
     const node = context.tree.node(literal);
-    const count = ast.list(node).count;
-    for (0..count) |position| {
+    const items = &context.literal_items;
+    const start: u32 = @intCast(items.items.len);
+    context.literal_starts[literal.to_int()] = start;
+    for (0..ast.list(node).count) |position| {
         const text = context.parsed.leaf_text(ast.item(node, position));
         const dot = std.mem.indexOfScalar(u8, text, '.');
         const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
@@ -480,19 +483,12 @@ fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
             try context.report_details(.list_item_not_found, literal, .{ .name = text });
             continue;
         };
-        // An item an earlier position already named (quadratic, as literals are short).
-        for (0..position) |earlier| {
-            const earlier_text = context.parsed.leaf_text(ast.item(node, earlier));
-            const earlier_dot = std.mem.indexOfScalar(u8, earlier_text, '.');
-            const earlier_list: ?[]const u8 = if (earlier_dot) |at| earlier_text[0..at] else null;
-            const earlier_item = if (earlier_dot) |at| earlier_text[at + 1 ..] else earlier_text;
-            const element = lookups.find_list_item(context, earlier_list, earlier_item);
-            if (element != found) continue;
+        // ink warns about an item an earlier position already named, and keeps the first.
+        if (std.mem.indexOfScalar(ObjectIndex, items.items[start..], found) != null) {
             try context.report_details(.duplicate_list_literal_item, literal, .{ .name = text });
-            break;
-        }
+        } else try items.append(context.gpa, found);
     }
-    assert(context.tree.kind(literal) == .list_literal);
+    try items.append(context.gpa, .none);
 }
 
 /// VariableAssignment.ResolveReferences.

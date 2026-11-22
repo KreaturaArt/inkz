@@ -31,6 +31,8 @@ pub fn prepare(context: *Context) !void {
     @memset(context.references, .none);
     context.item_values = try gpa.alloc(i32, count);
     @memset(context.item_values, 0);
+    context.literal_starts = try gpa.alloc(u32, count);
+    @memset(context.literal_starts, 0);
     context.root_weaves = try gpa.alloc(ObjectIndex, count);
     @memset(context.root_weaves, .none);
     context.diverts = try gpa.alloc(resolve.DivertKind, count);
@@ -267,22 +269,6 @@ pub fn resolve_variable(context: *const Context, name: []const u8, from: ObjectI
         return .temporary;
     }
     if (context.lookup(&context.declarations, Tree.root, name) != null) return .global;
-    return null;
-}
-
-/// The item `list.item` or `item` names, without reporting an ambiguity: the first list's.
-pub fn find_list_item(
-    context: *const Context,
-    list_name: ?[]const u8,
-    item: []const u8,
-) ?ObjectIndex {
-    if (list_name) |name| {
-        const definition = context.lookup(&context.lists, Tree.root, name) orelse return null;
-        return list_item_named(context, definition, item);
-    }
-    for (context.list_order.items) |definition| {
-        if (list_item_named(context, definition, item)) |element| return element;
-    }
     return null;
 }
 

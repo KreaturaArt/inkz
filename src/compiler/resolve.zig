@@ -230,6 +230,10 @@ pub const Resolution = struct {
     diverts: []DivertKind,
     /// A list item's value (ink's seriesValue), by object; 0 for other objects.
     item_values: []i32,
+    /// Each list literal's items, in order and without repeats: its run in `literal_items`
+    /// starts at `literal_starts[literal]` and ends at a `.none`.
+    literal_items: []ObjectIndex,
+    literal_starts: []u32,
     /// The list definitions in declaration order (ink's _listDefs).
     lists: []ObjectIndex,
     /// The EXTERNAL declarations, by name (at the root scope).
@@ -244,6 +248,12 @@ pub const Resolution = struct {
         return false;
     }
 
+    /// The list items a list literal names.
+    pub fn list_literal_items(resolution: *const Resolution, literal: ObjectIndex) []ObjectIndex {
+        const run = resolution.literal_items[resolution.literal_starts[literal.to_int()]..];
+        return run[0..std.mem.indexOfScalar(ObjectIndex, run, .none).?];
+    }
+
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
         assert(resolution.targets.len == resolution.references.len);
         assert(resolution.diverts.len == resolution.targets.len);
@@ -251,6 +261,8 @@ pub const Resolution = struct {
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
         gpa.free(resolution.item_values);
+        gpa.free(resolution.literal_items);
+        gpa.free(resolution.literal_starts);
         gpa.free(resolution.lists);
         gpa.free(resolution.diverts);
         gpa.free(resolution.diagnostics);
@@ -315,6 +327,8 @@ pub const Context = struct {
     targets: []ObjectIndex = &.{},
     references: []Reference = &.{},
     item_values: []i32 = &.{},
+    literal_items: std.ArrayList(ObjectIndex) = .empty,
+    literal_starts: []u32 = &.{},
     diverts: []DivertKind = &.{},
     /// Objects that already have an error or a warning (ink's _alreadyHadError and
     /// _alreadyHadWarning).
@@ -340,6 +354,8 @@ pub const Context = struct {
         gpa.free(context.targets);
         gpa.free(context.references);
         gpa.free(context.item_values);
+        context.literal_items.deinit(gpa);
+        gpa.free(context.literal_starts);
         gpa.free(context.diverts);
         context.had_error.deinit(gpa);
         context.had_warning.deinit(gpa);
@@ -489,6 +505,8 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
         .references = context.references,
         .diverts = context.diverts,
         .item_values = context.item_values,
+        .literal_items = try context.literal_items.toOwnedSlice(gpa),
+        .literal_starts = context.literal_starts,
         .lists = try context.list_order.toOwnedSlice(gpa),
         .externals = context.externals,
         .diagnostics = try context.diagnostics.toOwnedSlice(gpa),
@@ -497,6 +515,7 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     context.targets = &.{};
     context.references = &.{};
     context.item_values = &.{};
+    context.literal_starts = &.{};
     context.diverts = &.{};
     assert(resolution.targets.len == tree.count());
     return resolution;
