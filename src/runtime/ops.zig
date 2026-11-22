@@ -757,6 +757,7 @@ pub fn process_choice(
 ) Error!void {
     assert(!pointer.is_null());
     assert(!record.target_container.is_none());
+    try story.state.reserve(choice_text_bytes(story, record), 0);
     var show = true;
     if (record.flags.has_condition) {
         if (!try truth_of(story, try vm.pop_evaluation(story))) show = false;
@@ -783,6 +784,25 @@ pub fn process_choice(
     const tags_count = popped.tag_references(&tags);
     story.state.choices.add(&story.state.call_stack, choice, tags[0..tags_count]) catch |err|
         return err;
+}
+
+/// Room for a choice's text, made before the choice point pops anything: its start and
+/// choice-only strings, the topmost one or two strings under the condition (tags between
+/// them are skipped), joined.
+fn choice_text_bytes(story: *const Story, record: instruction_module.ChoicePoint) u32 {
+    var strings_left = @as(u32, @intFromBool(record.flags.has_start_content)) +
+        @intFromBool(record.flags.has_choice_only_content);
+    var bytes: u32 = 8 + 3;
+    const stack = story.state.evaluation.slice();
+    var position: usize = stack.len -| @intFromBool(record.flags.has_condition);
+    while (strings_left > 0 and position > 0) {
+        position -= 1;
+        if (stack[position] != .string) continue;
+        bytes +|= @intCast(strings_of(story).get(stack[position].string).len);
+        strings_left -= 1;
+    }
+    assert(bytes >= 8 + 3);
+    return bytes;
 }
 
 /// The strings and tags a choice point pops, kept as values so compaction updates them.
