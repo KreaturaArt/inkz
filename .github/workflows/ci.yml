@@ -17,10 +17,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep in step with mise.toml (tools/ci_test.zig checks it).
-      - uses: mlugg/setup-zig@v2
+      # Zig at the version mise.toml pins (not dotnet: `zig build ci` never needs it).
+      - uses: jdx/mise-action@v2
         with:
-          version: 0.17.1
+          install_args: zig
 
       - name: zig build ci
         run: zig build ci --summary failures
