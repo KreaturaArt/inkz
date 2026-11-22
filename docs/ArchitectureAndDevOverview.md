@@ -59,20 +59,17 @@ Every target is resolved to a container index or a `{container, index}` pair whe
 program is built, so the VM never sees a path string. `Program.verify()` runs after every
 build and load.
 
-This dump shows the layout. `inkz.core.program_dump.dump` lists any program:
+To see a program, write it back as ink's JSON with `inkz.core.ink_json.serialize`, which
+lists every container's content in order (the same JSON as `inkz.compiler.compile_to_json`):
 
 ```zig
 var program = try inkz.compiler.compile_source(gpa, "Hello, world!\n");
 defer program.deinit(gpa);
 
-var listing: std.Io.Writer.Allocating = .init(gpa);
-defer listing.deinit();
-try inkz.core.program_dump.dump(&program, &listing.writer);
-std.debug.print("{s}", .{listing.written()});
-
-const json = try inkz.compiler.compile_to_json(gpa, "Hello, world!\n");
-defer gpa.free(json);
-std.debug.print("{s}\n", .{json});
+var json: std.Io.Writer.Allocating = .init(gpa);
+defer json.deinit();
+try inkz.core.ink_json.serialize(gpa, &program, &json.writer);
+std.debug.print("{s}\n", .{json.written()});
 ```
 
 ## The compiler
@@ -216,8 +213,8 @@ by line and reports the first differing turn; every case must match.
 
 ### Debugging tips
 
-- `inkz.core.program_dump.dump` (above) lists a program's containers and instructions in
-  layout order.
+- `inkz.core.ink_json.serialize` (above) writes any program, also a loaded image, as
+  ink's JSON.
 - `inkz.compiler.compile_to_json` shows what the compiler made, in a form you can compare
   with inklecate's output.
 - `zig build replay -- <case id>` replays a ground-truth case in its own process; the

@@ -447,3 +447,41 @@ fn write_lists(writer: *Writer) !void {
         try writer.out.writeByte('}');
     }
 }
+
+test "a built program with each kind of operand writes as ink's JSON" {
+    // Strings with escapes, an integer, a global, a conditional tunnel divert, a named-only
+    // child with a counting flag and a once-only choice point, each in ink's spelling.
+    const gpa = std.testing.allocator;
+    const Builder = @import("program_builder.zig").ProgramBuilder;
+    var builder = try Builder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.text, try builder.intern("Hello \"you\""));
+    try builder.add(.integer, -3);
+    try builder.add(.global_get, try builder.global("mood"));
+    try builder.add_divert("knot", .{ .kind = .tunnel, .conditional = true });
+    const counted: container_module.ContainerFlags = .{ .visits_counted = true };
+    _ = try builder.begin_container(.{ .name = "knot", .named_only = true, .flags = counted });
+    try builder.add_choice_point(".^", .{
+        .has_condition = false,
+        .has_start_content = true,
+        .has_choice_only_content = false,
+        .is_invisible_default = false,
+        .once_only = true,
+    });
+    try builder.add(.done, {});
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+    try serialize(gpa, &program, &output.writer);
+    try std.testing.expectEqualStrings(
+        \\{"inkVersion":21,"root":["^Hello \"you\"",-3,{"VAR?":"mood"},
+    ++
+        \\{"->t->":"knot","c":true},{"knot":[{"*":".^","flg":18},"done",{"#f":1}]}],
+    ++
+        \\"listDefs":{}}
+    , output.written());
+}

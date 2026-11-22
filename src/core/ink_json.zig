@@ -564,8 +564,8 @@ fn load_file(gpa: Allocator, path: []const u8) !Program {
 }
 
 test "hello world loads into the expected instructions" {
-    // The basic mapping of content items to instructions: load a tiny story and
-    // dump it.
+    // The basic mapping of content items to instructions: load a tiny story, check its
+    // layout, and write it back (the divert comes back in its shorter, absolute form).
     const gpa = std.testing.allocator;
     const json =
         \\{"inkVersion":21,"root":[["^Hello",{"->":".^.^.knot"},["done",{"#f":5,"#n":"g-0"}],null],
@@ -573,24 +573,27 @@ test "hello world loads into the expected instructions" {
     ;
     var program = try load(gpa, json);
     defer program.deinit(gpa);
+    // Containers in index order are the instruction layout: root, "0", "0.g-0", "knot".
+    try std.testing.expectEqual(4, program.containers.len);
+    const opcodes = program.instructions.items(.opcode);
+    try std.testing.expectEqualSlices(Opcode, &.{
+        .enter_container, .done, .text,    .divert, .enter_container,
+        .done,            .text, .newline, .end,
+    }, opcodes);
+    const gather = program.container_info(.from_int(2));
+    try std.testing.expectEqualStrings("0.g-0", program.strings.get(gather.path));
+    try std.testing.expect(gather.flags.visits_counted and gather.flags.count_start_only);
+    const divert = program.instruction_at(.from_int(1), 1);
+    const extra = @import("extra.zig");
+    const record = extra.get(instruction_module.Divert, program.extra, divert.operand);
+    try std.testing.expectEqual(3, record.target_container.to_int());
     var output: std.Io.Writer.Allocating = .init(gpa);
     defer output.deinit();
-    try @import("program_dump.zig").dump(&program, &output.writer);
+    try serialize(gpa, &program, &output.writer);
     try std.testing.expectEqualStrings(
-        \\container 0 "" depth 0
-        \\  0 enter_container 1
-        \\  1 done
-        \\container 1 "0" parent 0 depth 1
-        \\  0 text "Hello"
-        \\  1 divert plain -> 3:0
-        \\  2 enter_container 2
-        \\container 2 "0.g-0" parent 1 depth 2 visits start_only
-        \\  0 done
-        \\container 3 "knot" parent 0 depth 1 named
-        \\  0 text "K"
-        \\  1 newline
-        \\  2 end
-        \\
+        \\{"inkVersion":21,"root":[["^Hello",{"->":"knot"},["done",{"#f":5,"#n":"g-0"}],null],
+    ++
+        \\"done",{"knot":["^K","\n","end",null]}],"listDefs":{}}
     , output.written());
 }
 
