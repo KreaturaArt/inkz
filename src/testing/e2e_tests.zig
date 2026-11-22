@@ -967,46 +967,18 @@ test "weave trailing gather divert waits until after choice" {
     try std.testing.expectError(error.ChoiceLimit, result);
 }
 
-// ── Integration stories: the compiled program and its JSON round trip ────────
+// ── Integration stories ──────────────────────────────────────────────────────
+// structure_gate checks that each one's JSON loads back as the compiled program.
 
-/// A story's program as compiled, and the same program serialized to ink's JSON and loaded.
-const Pair = struct {
-    compiled: Program,
-    loaded: Program,
-
-    fn init(pair: *Pair, path: []const u8) !void {
-        const gpa = std.testing.allocator;
-        pair.compiled = try support.compile_fixture(gpa, std.testing.io, path);
-        errdefer pair.compiled.deinit(gpa);
-        var out: std.Io.Writer.Allocating = .init(gpa);
-        defer out.deinit();
-        try ink_json.serialize(gpa, &pair.compiled, &out.writer);
-        pair.loaded = try ink_json.load(gpa, out.written());
-    }
-
-    fn deinit(pair: *Pair) void {
-        pair.compiled.deinit(std.testing.allocator);
-        pair.loaded.deinit(std.testing.allocator);
-    }
-
-    /// Plays both programs through `choices`; their outputs and choices must agree.
-    fn play(pair: *const Pair, choices: []const u32) !support.PlayedProgram {
-        const gpa = std.testing.allocator;
-        const compiled = try support.play_program(gpa, &pair.compiled, choices);
-        defer gpa.free(compiled.output);
-        const loaded = try support.play_program(gpa, &pair.loaded, choices);
-        errdefer gpa.free(loaded.output);
-        try std.testing.expectEqualStrings(compiled.output, loaded.output);
-        try std.testing.expectEqual(compiled.choices_count, loaded.choices_count);
-        return loaded;
-    }
-};
-
-/// Plays `choices` on both programs of `pair` and checks the output.
-fn expect_pair(pair: *const Pair, choices: []const u32, expect: Expect) !void {
-    const played = try pair.play(choices);
+/// Plays `choices` on `program` and checks the output.
+fn expect_played(program: *const Program, choices: []const u32, expect: Expect) !void {
+    const played = try support.play_program(std.testing.allocator, program, choices);
     defer std.testing.allocator.free(played.output);
     try expect_output(played.output, expect);
+}
+
+fn compile_story(path: []const u8) !Program {
+    return support.compile_fixture(std.testing.allocator, std.testing.io, path);
 }
 
 test "simple_taster_tutorial.ink - all choice paths" {
@@ -1015,56 +987,53 @@ test "simple_taster_tutorial.ink - all choice paths" {
     //   [0,1]         the "Ah." branch
     //   [0,0,0,0..2]  "A wager!", "But surely", then post-gather choice 0, 1 or 2
     //   [0,0,1,0..2]  "A wager!", "Most serious", then post-gather choice 0, 1 or 2
-    var pair: Pair = undefined;
-    try pair.init("test/fixture/simple_taster_tutorial.ink");
-    defer pair.deinit();
+    var program = try compile_story("test/fixture/simple_taster_tutorial.ink");
+    defer program.deinit(std.testing.allocator);
     const foolish = "surely that is foolishness";
     const serious = "most serious matter";
-    try expect_taster(&pair, &.{1}, &.{"said nothing"});
-    try expect_taster(&pair, &.{ 0, 1 }, &.{"uncertain what I thought"});
-    try expect_taster(&pair, &.{ 0, 0, 0, 0 }, &.{ foolish, "endeavour to find out" });
-    try expect_taster(&pair, &.{ 0, 0, 0, 1 }, &.{ foolish, "Twenty thousand pounds" });
-    try expect_taster(&pair, &.{ 0, 0, 0, 2 }, &.{ foolish, "polite cough" });
-    try expect_taster(&pair, &.{ 0, 0, 1, 0 }, &.{ serious, "endeavour to find out" });
-    try expect_taster(&pair, &.{ 0, 0, 1, 1 }, &.{ serious, "Twenty thousand pounds" });
-    try expect_taster(&pair, &.{ 0, 0, 1, 2 }, &.{ serious, "polite cough" });
+    try expect_taster(&program, &.{1}, &.{"said nothing"});
+    try expect_taster(&program, &.{ 0, 1 }, &.{"uncertain what I thought"});
+    try expect_taster(&program, &.{ 0, 0, 0, 0 }, &.{ foolish, "endeavour to find out" });
+    try expect_taster(&program, &.{ 0, 0, 0, 1 }, &.{ foolish, "Twenty thousand pounds" });
+    try expect_taster(&program, &.{ 0, 0, 0, 2 }, &.{ foolish, "polite cough" });
+    try expect_taster(&program, &.{ 0, 0, 1, 0 }, &.{ serious, "endeavour to find out" });
+    try expect_taster(&program, &.{ 0, 0, 1, 1 }, &.{ serious, "Twenty thousand pounds" });
+    try expect_taster(&program, &.{ 0, 0, 1, 2 }, &.{ serious, "polite cough" });
 }
 
 /// A path through simple_taster_tutorial: its own phrases, then the common ending.
-fn expect_taster(pair: *const Pair, choices: []const u32, phrases: []const []const u8) !void {
-    try expect_pair(pair, choices, .{ .has = phrases });
-    try expect_pair(pair, choices, .{ .has = &.{"we passed the day in silence"} });
+fn expect_taster(program: *const Program, choices: []const u32, phrases: []const []const u8) !void {
+    const played = try support.play_program(std.testing.allocator, program, choices);
+    defer std.testing.allocator.free(played.output);
+    try expect_output(played.output, .{ .has = phrases });
+    try expect_output(played.output, .{ .has = &.{"we passed the day in silence"} });
 }
 
 const crime_scene = "test/fixture/crime_scene.ink";
 
 test "crime_scene.ink - initial scene loads" {
-    var pair: Pair = undefined;
-    try pair.init(crime_scene);
-    defer pair.deinit();
-    try expect_pair(&pair, &.{}, .{ .has = &.{"bedroom"} });
+    var program = try compile_story(crime_scene);
+    defer program.deinit(std.testing.allocator);
+    try expect_played(&program, &.{}, .{ .has = &.{"bedroom"} });
 }
 
 test "crime_scene.ink - examine desk and get cane" {
-    var pair: Pair = undefined;
-    try pair.init(crime_scene);
-    defer pair.deinit();
-    try expect_pair(&pair, &.{ 1, 0 }, .{ .has = &.{ "desk", "cane" } });
+    var program = try compile_story(crime_scene);
+    defer program.deinit(std.testing.allocator);
+    try expect_played(&program, &.{ 1, 0 }, .{ .has = &.{ "desk", "cane" } });
 }
 
 test "crime_scene.ink - examine bed fully" {
-    var pair: Pair = undefined;
-    try pair.init(crime_scene);
-    defer pair.deinit();
-    try expect_pair(&pair, &.{ 0, 0, 0, 0 }, .{ .has = &.{ "neatly made", "crumpled" } });
+    var program = try compile_story(crime_scene);
+    defer program.deinit(std.testing.allocator);
+    try expect_played(&program, &.{ 0, 0, 0, 0 }, .{ .has = &.{ "neatly made", "crumpled" } });
 }
 
 test "crime_scene.ink - examine window" {
     // The top, the window, look down, look at the glass.
-    var pair: Pair = undefined;
-    try pair.init(crime_scene);
-    defer pair.deinit();
-    try expect_pair(&pair, &.{ 2, 0 }, .{ .has = &.{ "window", "brook" } });
+    var program = try compile_story(crime_scene);
+    defer program.deinit(std.testing.allocator);
+    try expect_played(&program, &.{ 2, 0 }, .{ .has = &.{ "window", "brook" } });
 }
 
 const depth_max = 3;
@@ -1076,11 +1045,10 @@ const Path = struct {
 };
 
 test "crime_scene.ink - all states reachable within 3 choices" {
-    // Explores every choice sequence up to three choices deep, with an explicit stack. At
-    // each node both programs must play the same.
-    var pair: Pair = undefined;
-    try pair.init(crime_scene);
-    defer pair.deinit();
+    // Explores every choice sequence up to three choices deep, with an explicit stack; every
+    // node must play.
+    var program = try compile_story(crime_scene);
+    defer program.deinit(std.testing.allocator);
     const gpa = std.testing.allocator;
     var stack: std.ArrayList(Path) = .empty;
     defer stack.deinit(gpa);
@@ -1088,7 +1056,7 @@ test "crime_scene.ink - all states reachable within 3 choices" {
     var visited: u32 = 0;
     while (stack.pop()) |path| {
         visited += 1;
-        const played = try pair.play(path.choices[0..path.len]);
+        const played = try support.play_program(gpa, &program, path.choices[0..path.len]);
         gpa.free(played.output);
         if (path.len == depth_max) continue;
         for (0..played.choices_count) |choice| {
