@@ -39,7 +39,9 @@ pre-resolved story image. Two producers make one, and both drive the same
 `ink_json.serialize` writes a `Program` back as inklecate's JSON. The structural gate
 (`src/testing/structure_gate.zig`) checks that the compiler's JSON equals inklecate's for
 every ground-truth story, and that `load(serialize(compile(source)))` equals
-`compile(source)` field by field.
+`compile(source)` field by field for each of them. So the ground-truth gate, which plays
+inklecate's JSON, also covers the compiler end to end, and `src/testing/e2e_tests.zig` keeps
+only the stories and paths ground truth doesn't play.
 
 A `Program` is struct-of-arrays data addressed by `u32` index newtypes, with no pointers:
 

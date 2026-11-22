@@ -373,15 +373,12 @@ const source_rows = [_]SourceRow{
     },
 };
 
+/// The fixtures whose run here ground truth doesn't cover: test/ground_truth has no case
+/// for them (includes/ and player/), or its case plays another path or other host actions.
+/// Every other fixture's case plays it (structure_gate: the compiled program is the one
+/// ground truth plays) and checks the whole transcript.
 const fixture_rows = [_]FixtureRow{
-    // Basics
-    .{ .path = "runtime/misc/hello_world.ink", .expect = .{ .exact = "Hello world\n" } },
-    .{ .path = "runtime/misc/empty.ink", .expect = .{ .exact = "" } },
-    .{ .path = "runtime/misc/end.ink", .expect = .{ .exact = "hello\n" } },
-    .{ .path = "runtime/misc/end2.ink", .expect = .{ .exact = "hello\n" } },
-    // The story has a knot "test" but no root-level divert to it: the output is empty.
-    .{ .path = "runtime/misc/end_of_content.ink", .expect = .{ .exact = "" } },
-    .{ .path = "runtime/misc/whitespace.ink", .expect = .{ .exact = "Hello!\nWorld.\n" } },
+    // Includes
     .{
         .path = "runtime/misc/includes/included_file.ink",
         .expect = .{ .exact = "This is include 1.\n" },
@@ -392,448 +389,35 @@ const fixture_rows = [_]FixtureRow{
     },
     .{ .path = "runtime/misc/includes/included_file_4.ink", .expect = .{ .has = &.{"5"} } },
 
-    // Expressions
-    .{ .path = "runtime/evaluation/arithmetic.ink", .expect = .{
-        .exact = "36\n2\n3\n2\n2.3333333\n8\n8\n",
-    } },
-
-    // Variables
-    .{
-        .path = "runtime/variables/temporaries_at_global_scope.ink",
-        .expect = .{ .exact = "54\n" },
-    },
-    .{ .path = "runtime/variables/const.ink", .expect = .{ .exact = "5\n" } },
-
-    // Conditionals
-    .{ .path = "runtime/conditions/trivial_condition.ink", .expect = .{
-        .lacks = &.{"beep"},
-    } },
-    .{ .path = "runtime/conditions/else_branches.ink", .expect = .{
-        .has = &.{"other"},
-        .lacks = &.{ "one", "two" },
-    } },
-    .{ .path = "runtime/conditions/conditionals.ink", .expect = .{
-        .has = &.{ "true", "great" },
-        .lacks = &.{"not true"},
-    } },
-    .{
-        .path = "runtime/conditions/all_switch_branches_fail_is_clean.ink",
-        .expect = .{ .lacks = &.{ "x", "y" } },
-    },
-    .{
-        .path = "runtime/conditions/empty_multiline_conditional_branch.ink",
-        .expect = .{ .lacks = &.{"txt"} },
-    },
-
-    // Choices and weaves
-    .{ .path = "runtime/choices/default_simple_gather.ink", .expect = .{ .has = &.{"x"} } },
-    .{
-        .path = "runtime/choices/choice_with_brackets_only.ink",
-        .choices = &.{0},
-        .expect = .{ .has = &.{"Text"} },
-    },
-    .{
-        .path = "runtime/choices/choice_diverts_to_done.ink",
-        .choices = &.{0},
-        .expect = .{ .has = &.{"choice"} },
-    },
-    // Two sticky choices loop back to test; choose the first three times, then stop.
-    .{
-        .path = "runtime/choices/sticky_choices_stay_sticky.ink",
-        .choices = &.{ 0, 0, 0 },
-        .expect = .{ .has = &.{ "First line.", "Choice 1" } },
-    },
-    .{
-        .path = "runtime/weaves/weave_options.ink",
-        .choices = &.{0},
-        .expect = .{ .exact = "Hello, world.\n" },
-    },
-    .{
-        .path = "runtime/choices/non_text_in_choice_inner_content.ink",
-        .choices = &.{0},
-        .expect = .{ .has = &.{ "option text", "Next." } },
-    },
-    .{ .path = "runtime/choices/gather_choice_same_line.ink", .choices = &.{0}, .expect = .{
-        .has = &.{"hello"},
-    } },
     // ink offers "one", "two", "three", "four"; the second is "two".
     .{
         .path = "runtime/choices/conditional_choices.ink",
         .choices = &.{1},
         .expect = .{ .exact = "two\n" },
     },
-    .{ .path = "runtime/choices/has_read_on_choice.ink", .choices = &.{0}, .expect = .{
-        .has = &.{"visible choice"},
-    } },
-    .{ .path = "runtime/choices/logic_in_choices.ink", .choices = &.{0}, .expect = .{
-        .has = &.{ "Joe", "Hello" },
-    } },
-
-    // Functions
-    .{ .path = "runtime/callstack/callstack_evaluation.ink", .expect = .{ .exact = "8\n" } },
-    .{ .path = "runtime/variables/variable_swap_recurse.ink", .expect = .{ .has = &.{"2"} } },
-
-    // Glue and tags
-    .{ .path = "runtime/glue/simple_glue.ink", .expect = .{
-        .exact = "Some content with glue.\n",
-    } },
-
-    // Lists
-    // LIST list = a, (b), c, (d), e: b and d are selected.
-    .{ .path = "runtime/lists/list_basic_operations.ink", .expect = .{
-        .exact = "b, d\na, b, c, e\nb, c\nfalse\ntrue\ntrue\n",
-    } },
-    .{ .path = "runtime/lists/empty_list_origin.ink", .expect = .{ .exact = "a, b\n" } },
-    .{ .path = "runtime/lists/more_list_operations.ink", .expect = .{
-        .exact = "1\nl\nn\nl, m\nn\n",
-    } },
-    .{
-        .path = "runtime/lists/contains_empty_list_always_false.ink",
-        .expect = .{ .exact = "false\nfalse\nfalse\n" },
-    },
-    .{
-        .path = "runtime/lists/empty_list_origin_after_assignment.ink",
-        .expect = .{ .exact = "a, b, c\n" },
-    },
-    .{ .path = "runtime/lists/list_mixed_items.ink", .expect = .{ .exact = "a, y, c\n" } },
-    .{ .path = "runtime/lists/list_range.ink", .expect = .{
-        .has = &.{ "Two, Three, Four, Five, Six\n", "Pizza" },
-    } },
-    .{ .path = "runtime/lists/list_save_load.ink", .expect = .{ .exact = "a, x, c\n" } },
-
-    // Divert targets and standalone calls
-    .{ .path = "runtime/variables/variable_divert_target.ink", .expect = .{ .exact = "Here.\n" } },
-    .{
-        .path = "runtime/variables/multiple_constant_references.ink",
-        .expect = .{ .has = &.{"success"} },
-    },
-    .{
-        .path = "runtime/variables/variable_declaration_in_conditional.ink",
-        .expect = .{ .has = &.{"5"} },
-    },
-
-    // Named gathers, choice labels, nested choices
-    // The nested weave's choices are all filtered, so its invisible default goes to END and
-    // "gather" is never reached.
-    .{
-        .path = "runtime/choices/should_not_gather_due_to_choice.ink",
-        .choices = &.{0},
-        .expect = .{ .has = &.{"text"}, .lacks = &.{"gather"} },
-    },
-    // Choose "one", which has the nested choice "two" and the gather "three".
-    .{ .path = "runtime/weaves/weave_gathers.ink", .choices = &.{ 0, 0 }, .expect = .{
-        .has = &.{ "one", "two", "six" },
-    } },
-    .{ .path = "runtime/choices/default_choices.ink", .choices = &.{0}, .expect = .{
-        .has = &.{"After choice"},
-    } },
-    // A choice label, a condition on it and a named gather: it must just run.
-    .{
-        .path = "runtime/choices/once_only_choices_can_link_back_to_self.ink",
-        .choices = &.{ 0, 0 },
-        .expect = .{},
-    },
-
-    // Tunnels
-    .{ .path = "runtime/diverts/basic_tunnel.ink", .expect = .{ .exact = "Hello world\n" } },
-    .{ .path = "runtime/callstack/callstack_evaluation.ink", .expect = .{ .exact = "8\n" } },
-    .{ .path = "runtime/diverts/tunnel_onwards_after_tunnel.ink", .expect = .{
-        .exact = "Hello...\n...world.\nThe End.\n",
-    } },
-
-    // Sequences
-    .{ .path = "runtime/sequences/leading_newline_multiline_sequence.ink", .expect = .{} },
-    .{ .path = "runtime/sequences/empty_sequence_content.ink", .expect = .{} },
-
-    // Glue, newlines, strings, tags
-    .{ .path = "runtime/glue/left_right_glue_matching.ink", .expect = .{
-        .has = &.{ "A line.", "Another line." },
-    } },
-    .{ .path = "runtime/newlines/newline_consistency_1.ink", .expect = .{
-        .has = &.{ "hello", "world" },
-    } },
-    .{ .path = "runtime/newlines/newline_consistency_2.ink", .choices = &.{0}, .expect = .{
-        .has = &.{"world"},
-    } },
-    .{ .path = "runtime/strings/string_constants.ink", .expect = .{ .exact = "hi\n" } },
-    .{ .path = "runtime/tags/tags.ink", .expect = .{ .has = &.{"This is the content"} } },
-    .{
-        .path = "runtime/newlines/newline_at_start_of_multiline_conditional.ink",
-        .expect = .{ .exact = "X\nx\n" },
-    },
-
-    // Threads and built-ins
-    .{ .path = "runtime/builtins/turns.ink", .choices = &.{0}, .expect = .{ .exact = "0\n1\n" } },
-    .{ .path = "runtime/builtins/turns_since.ink", .choices = &.{ 0, 0 }, .expect = .{
-        .exact = "-1\n0\n1\n2\n",
-    } },
-    .{
-        .path = "runtime/choices/choice_count.ink",
-        .choices = &.{0},
-        .expect = .{ .has = &.{"2"} },
-    },
-    .{ .path = "runtime/builtins/read_count_across_callstack.ink", .expect = .{
-        .exact = "1) Seen first 1 times.\nIn second.\n2) Seen first 1 times.\n",
-    } },
-    .{ .path = "runtime/threads/thread_in_logic.ink", .expect = .{ .has = &.{"Content"} } },
-    .{ .path = "runtime/threads/thread_done.ink", .expect = .{} },
 
     // Evaluation
-    .{ .path = "runtime/evaluation/factorial_recursive.ink", .expect = .{ .exact = "120\n" } },
-    .{ .path = "runtime/evaluation/literal_unary.ink", .expect = .{
-        .exact = "-1\nfalse\ntrue\n",
-    } },
-    .{ .path = "runtime/evaluation/basic_string_literals.ink", .expect = .{
-        .exact = "Hello world 1\nHello world 2.\n",
-    } },
-    .{ .path = "runtime/evaluation/increment.ink", .expect = .{ .exact = "6\n5\n" } },
-    .{ .path = "runtime/evaluation/evaluation_stack_leaks.ink", .expect = .{
-        .exact = "else\nelse\nhi\n",
-    } },
     .{
         .path = "runtime/evaluation/evaluating_function_variable_state_bug.ink",
         .expect = .{ .exact = "Start\nIn tunnel.\nEnd\n" },
     },
-    .{ .path = "runtime/evaluation/factorial_by_reference.ink", .expect = .{ .exact = "120\n" } },
-
-    // Logic
-    .{ .path = "runtime/logic/logic_lines_with_newlines.ink", .expect = .{
-        .exact = "text1\ntext 2\ntext1\ntext 2\n",
-    } },
-    .{ .path = "runtime/logic/multiline_logic_with_glue.ink", .expect = .{
-        .exact = "a b\na b\n",
-    } },
-    .{ .path = "runtime/logic/nested_pass_by_reference.ink", .expect = .{
-        .exact = "5\n625\n",
-    } },
-    .{ .path = "runtime/logic/print_num.ink", .expect = .{
-        .has = &.{ "four", "fifteen", "thirty-seven" },
-    } },
-
-    // Extra
-    .{ .path = "runtime/extra/arithmetic_2.ink", .expect = .{
-        .exact = "2\n2.3333333\n2.3333333\n2.3333333\n2.3333333\n2.3333333\n",
-    } },
-    .{ .path = "runtime/extra/list_comparison.ink", .expect = .{
-        .has = &.{ "Philippe", "Andre" },
-    } },
-    .{ .path = "runtime/glue/implicit_inline_glue.ink", .expect = .{
-        .exact = "I have five eggs.\n",
-    } },
-    .{ .path = "runtime/glue/implicit_inline_glue_b.ink", .expect = .{ .exact = "A\nX\n" } },
-    .{ .path = "runtime/glue/implicit_inline_glue_c.ink", .expect = .{ .exact = "A\nC\n" } },
-
-    // Misc
-    .{ .path = "runtime/misc/escape_character.ink", .expect = .{
-        .exact = "this is a '|' character\n",
-    } },
-    .{ .path = "runtime/misc/identifiers_can_start_with_number.ink", .expect = .{
-        .exact = "512x2 = 1024\n512x2p2 = 1026\n",
-    } },
-    .{ .path = "runtime/misc/quote_character_significance.ink", .expect = .{
-        .has = &.{"Joe"},
-    } },
-    .{ .path = "runtime/strings/string_contains.ink", .expect = .{
-        .exact = "true\nfalse\ntrue\ntrue\n",
-    } },
-
-    // Newlines
-    .{ .path = "runtime/newlines/newline_consistency_3.ink", .choices = &.{0}, .expect = .{
-        .exact = "hello\nworld\n",
-    } },
-    .{ .path = "runtime/newlines/newlines_with_string_eval.ink", .expect = .{
-        .exact = "A\nB\nA\n3\nB\n",
-    } },
-
-    // Sequences
-    .{ .path = "runtime/sequences/all_sequence_types.ink", .expect = .{
-        .has = &.{ "Once:", "Stopping:", "Cycle:" },
-    } },
-    .{ .path = "runtime/sequences/blanks_in_inline_sequences.ink", .expect = .{
-        .has = &.{ "1. a", "3. b" },
-    } },
-    .{
-        .path = "runtime/sequences/gather_read_count_with_initial_sequence.ink",
-        .expect = .{ .exact = "seen test\n" },
-    },
-    .{ .path = "runtime/sequences/shuffle_stack_muddying.ink", .expect = .{ .exact = "" } },
-
-    // Strings
-    .{ .path = "runtime/strings/string_type_coercion.ink", .expect = .{
-        .exact = "same\ndifferent\n",
-    } },
-    .{ .path = "runtime/strings/strings_in_choices.ink", .choices = &.{0}, .expect = .{
-        .exact = "test1 test4\n",
-    } },
-
-    // Tags
-    .{ .path = "runtime/tags/tags_dynamic_content.ink", .expect = .{ .exact = "tag\n" } },
-    .{
-        .path = "runtime/tags/tags_in_choice.ink",
-        .choices = &.{0},
-        .expect = .{ .exact = "one three" },
-    },
-    .{ .path = "runtime/tags/tags_in_seq.ink", .expect = .{
-        .exact = "A red sequence.\nA white sequence.\n",
-    } },
 
     // Variables
-    .{
-        .path = "runtime/variables/variable_pointer_ref_from_knot.ink",
-        .expect = .{ .exact = "6\n" },
-    },
-    .{ .path = "runtime/variables/variable_tunnel.ink", .expect = .{ .exact = "STUFF\n" } },
-    .{ .path = "runtime/variables/temp_usage_in_options.ink", .choices = &.{0}, .expect = .{
-        .exact = "1\nEnd of choice\nthis another\n",
-    } },
     .{
         .path = "runtime/variables/set_non_existant_variable.ink",
         .expect = .{ .exact = "Hello world.\n" },
     },
-    .{ .path = "runtime/variables/temp_global_conflict.ink", .expect = .{ .exact = "0\n" } },
-    .{ .path = "runtime/variables/temp_not_found.ink", .expect = .{ .exact = "0\nhello\n" } },
-    .{
-        .path = "runtime/variables/warn_variable_not_found_1.ink",
-        .expect = .{ .exact = "Hello world!\n0\n" },
-    },
-    .{
-        .path = "runtime/variables/warn_variable_not_found_2.ink",
-        .expect = .{ .exact = "Hello world!\n0\n" },
-    },
-
-    // Weaves
-    .{ .path = "runtime/weaves/conditional_choice_in_weave.ink", .choices = &.{0}, .expect = .{
-        .exact = "start\ngather should be seen\nresult\n",
-    } },
-    .{ .path = "runtime/weaves/conditional_choice_in_weave_2.ink", .choices = &.{0}, .expect = .{
-        .exact = "first gather\nthe main gather\nbottom gather\n",
-    } },
-    .{ .path = "runtime/weaves/weave_within_sequence.ink", .choices = &.{0}, .expect = .{
-        .exact = "choice\nnextline\n",
-    } },
-    .{
-        .path = "runtime/weaves/unbalanced_weave_indentation.ink",
-        .choices = &.{ 0, 0 },
-        .expect = .{
-            .has = &.{"First"},
-        },
-    },
-
-    // Choices
-    .{
-        .path = "runtime/choices/once_only_choices_with_own_content.ink",
-        .choices = &.{ 0, 0, 0 },
-        .expect = .{ .has = &.{ "first time", "finished eating" } },
-    },
-    .{ .path = "runtime/choices/various_default_choices.ink", .expect = .{
-        .exact = "1\n2\n3\n",
-    } },
-    .{ .path = "runtime/choices/state_rollback_over_default_choice.ink", .expect = .{
-        .exact = "Text.\n5\n",
-    } },
 
     // Diverts
-    .{ .path = "runtime/diverts/same_line_divert_is_inline.ink", .expect = .{
-        .exact = "We hurried home to Savile Row as fast as we could.\n",
-    } },
-    .{ .path = "runtime/diverts/compare_divert_targets.ink", .expect = .{
-        .exact = "different knot\nsame knot\nsame knot\ndifferent knot\nsame knot\nsame knot\n",
-    } },
-    .{ .path = "runtime/diverts/complex_tunnels.ink", .expect = .{
-        .exact = "one (1)\none and a half (1.5)\ntwo (2)\nthree (3)\n",
-    } },
-    .{ .path = "runtime/diverts/divert_in_conditional.ink", .expect = .{ .exact = "" } },
-    .{
-        .path = "runtime/diverts/divert_targets_with_parameters.ink",
-        .expect = .{ .exact = "5\n" },
-    },
-    .{ .path = "runtime/diverts/divert_to_weave_points.ink", .expect = .{
-        .has = &.{ "gather", "second time round" },
-    } },
-    .{ .path = "runtime/diverts/done_stops_thread.ink", .expect = .{ .exact = "" } },
-    .{
-        .path = "runtime/diverts/tunnel_onwards_divert_after_with_arg.ink",
-        .expect = .{ .exact = "8\n" },
-    },
-    .{ .path = "runtime/diverts/tunnel_onwards_divert_override.ink", .expect = .{
-        .exact = "This is A\nNow in B.\n",
-    } },
-    .{
-        .path = "runtime/diverts/tunnel_onwards_to_variable_divert_target.ink",
-        .expect = .{ .exact = "This is outer\nThis is the_esc\n" },
-    },
-    .{
-        .path = "runtime/diverts/tunnel_onwards_with_param_default_choice.ink",
-        .expect = .{ .exact = "8\n" },
-    },
-    .{
-        .path = "runtime/diverts/path_to_self.ink",
-        .choices = &.{ 0, 0 },
-        .expect = .{ .has = &.{"A"} },
-    },
     .{ .path = "runtime/diverts/tunnel_vs_thread_behaviour.ink", .choices = &.{ 0, 2 }, .expect = .{
         .has = &.{"Done."},
     } },
 
-    // Knots
-    .{ .path = "runtime/knots/knot_do_not_gather.ink", .expect = .{ .exact = "g\n" } },
-    .{ .path = "runtime/knots/knot_stitch_gather_counts.ink", .expect = .{
-        .has = &.{ "1 1", "3" },
-    } },
-    .{ .path = "runtime/knots/knot_thread_interaction.ink", .choices = &.{ 0, 0 }, .expect = .{
-        .has = &.{"blah blah"},
-    } },
-    .{ .path = "runtime/knots/knot_thread_interaction_2.ink", .expect = .{
-        .has = &.{"tunnel"},
-    } },
-
-    // Threads
-    .{ .path = "runtime/threads/multi_thread.ink", .choices = &.{ 0, 0 }, .expect = .{
-        .has = &.{ "place 1", "The end" },
-    } },
-    .{
-        .path = "runtime/threads/top_flow_terminator_should_not_kill_thread_choices.ink",
-        .choices = &.{0},
-        .expect = .{ .nonempty = true },
-    },
-
     // Built-ins
-    .{ .path = "runtime/builtins/floor_ceiling_and_casts.ink", .expect = .{
-        .exact = "1\n1\n2\n0.6666667\n0\n1\n",
-    } },
-    .{
-        .path = "runtime/builtins/visit_count_bug_due_to_nested_containers.ink",
-        .choices = &.{0},
-        .expect = .{ .exact = "1\nchoice\n1\n" },
-    },
-    .{ .path = "runtime/builtins/read_count_dot_separated_path.ink", .expect = .{
-        .exact = "hi\nhi\nhi\n3\n",
-    } },
-    .{ .path = "runtime/builtins/turns_since_nested.ink", .choices = &.{ 0, 0 }, .expect = .{
-        .exact = "-1 = -1\nstuff\n0 = 0\nmore stuff\n1 = 1\n",
-    } },
-    .{ .path = "runtime/builtins/read_count_across_threads.ink", .choices = &.{0}, .expect = .{
-        .nonempty = true,
-    } },
-    .{ .path = "runtime/builtins/read_count_variable_target.ink", .expect = .{
-        .exact = "Count start: 0 0 0\n1\n2\n3\nCount end: 3 3 3\n",
-    } },
-    .{
-        .path = "runtime/builtins/turns_since_with_variable_target.ink",
-        .choices = &.{0},
-        .expect = .{ .exact = "0\n0\n1\n" },
-    },
-    .{ .path = "runtime/choices/fallback_choice_on_thread.ink", .expect = .{
-        .exact = "Should be 1 not 0: 1.\n",
-    } },
     .{
         .path = "runtime/evaluation/evaluating_ink_functions_from_game.ink",
         .choices = &.{0},
         .expect = .{ .has = &.{"Top level content"} },
-    },
-    .{
-        .path = "runtime/evaluation/evaluating_ink_functions_from_game_2.ink",
-        .expect = .{ .exact = "One\nTwo\nThree\n" },
     },
     .{
         .path = "runtime/callstack/clean_callstack_reset_on_path_choice.ink",
@@ -843,22 +427,10 @@ const fixture_rows = [_]FixtureRow{
     // Player
     .{ .path = "player/ink_error.ink", .expect = .{ .exact = "" } },
     .{ .path = "player/ink_list_roundtrip.ink", .expect = .{ .exact = "Hello World.\n" } },
-
-    // Booleans
-    .{ .path = "runtime/booleans/false_plus_false.ink", .expect = .{ .exact = "0\n" } },
-    .{ .path = "runtime/booleans/list_hasnt.ink", .expect = .{ .exact = "true\n" } },
-    .{ .path = "runtime/booleans/not_one.ink", .expect = .{ .exact = "false\n" } },
-    .{ .path = "runtime/booleans/not_true.ink", .expect = .{ .exact = "false\n" } },
-    .{ .path = "runtime/booleans/three_greater_than_one.ink", .expect = .{ .exact = "true\n" } },
-    .{ .path = "runtime/booleans/true.ink", .expect = .{ .exact = "true\n" } },
-    .{ .path = "runtime/booleans/true_equals_one.ink", .expect = .{ .exact = "true\n" } },
-    .{ .path = "runtime/booleans/true_plus_one.ink", .expect = .{ .exact = "2\n" } },
-    .{ .path = "runtime/booleans/true_plus_true.ink", .expect = .{ .exact = "2\n" } },
-    .{ .path = "runtime/booleans/two_plus_true.ink", .expect = .{ .exact = "3\n" } },
 };
 
 const source_rows_count = 32;
-const fixture_rows_count = 150;
+const fixture_rows_count = 11;
 
 // ── Compiler JSON ─────────────────────────────────────────────────────────────
 
