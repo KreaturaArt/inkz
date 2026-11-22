@@ -19,7 +19,7 @@ code are ```text blocks, because the library doesn't export those modules.
 | `src/core/` | The program image both halves share: `Program`, `ProgramBuilder`, the string pool, index newtypes, limits, `BoundedStack`, ink path strings, .NET's seeded random, and ink's JSON (`ink_json.load`, `ink_json.serialize`). |
 | `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public API (`api.zig`). |
 | `src/compiler/` | The compiler: parser, object tree, name resolution and lowering to a `Program`. Entry points in `compile.zig`. |
-| `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle and divergence ledger, end-to-end tests, the simulator and the zero-allocation gate. |
+| `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle, end-to-end tests, the simulator and the zero-allocation gate. |
 | `tools/` | Lint, doctest, snapshot files, ground-truth file checks, the death-test runner, and the C# reference harness (`tools/ink_harness/`). |
 
 `src/root.zig` is the library module, imported as `inkz`. It re-exports the runtime API at
@@ -205,9 +205,8 @@ mise (`mise run reference:setup`, `mise run reference:expected`) and is never pa
 `zig build`, so the Zig suite doesn't need .NET.
 
 Tests describe host actions once, as `.actions` lines, and replay them on the engine
-(`src/testing/transcript.zig`). The oracle compares the result with ink's transcript; every
-known difference must be listed, with a reason, in `test/divergence_ledger.zon`, and an
-entry whose case no longer differs fails too.
+(`src/testing/transcript.zig`). The oracle compares the result with ink's transcript line
+by line and reports the first differing turn; every case must match.
 
 ### Debugging tips
 

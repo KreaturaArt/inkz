@@ -8,11 +8,6 @@ pub fn build(b: *std.Build) void {
         "test-filter",
         "Only run tests whose names contain this text (repeatable)",
     ) orelse &.{};
-    const ledger_update = b.option(
-        bool,
-        "ledger-update",
-        "Rewrite test/divergence_ledger.zon from the ground-truth comparison",
-    ) orelse false;
     // Snapshot tests (tools/snapshot.zig) also read SNAP_UPDATE=1 when they run (reading
     // the environment here would defeat the configure cache).
     const snap_update = b.option(
@@ -33,7 +28,6 @@ pub fn build(b: *std.Build) void {
             "for measuring swarm against it",
     ) orelse true;
     const build_options = b.addOptions();
-    build_options.addOption(bool, "ledger_update", ledger_update);
     build_options.addOption(bool, "snap_update", snap_update);
     build_options.addOption(bool, "fuzz_swarm", fuzz_swarm);
     // The ground-truth gate replays each case in its own process (src/replay_case.zig).
@@ -368,7 +362,7 @@ fn add_test_suite(b: *std.Build, suite: TestSuite, options: TestOptions) *std.Bu
     tests.root_module.addOptions("build_options", options.build_options);
     tests.root_module.addAnonymousImport("snapshot", .{ .root_source_file = b.path("tools/snapshot.zig") });
     const run = b.addRunArtifact(tests);
-    // Tests read files under test/ (fixtures, ground truth, the ledger) that the build cache
+    // Tests read files under test/ (fixtures, ground truth, transcripts) that the build cache
     // doesn't track, so they run every time.
     run.has_side_effects = true;
     b.step(suite.step, suite.description).dependOn(&run.step);

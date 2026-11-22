@@ -1,13 +1,11 @@
 //! The structural gate: every ground-truth case (test/ground_truth, compiled by
 //! ink v1.2.1) is compiled from its `.ink` by the compiler, serialized with
 //! ink_json.serialize, and must equal inklecate's `.ink.json` exactly (which covers container
-//! names, nesting, flags and every instruction), or be in the divergence ledger (corpus
-//! `structure`). Also the verified pair:
+//! names, nesting, flags and every instruction). Also the verified pair:
 //! load(serialize(compile(source))) is compile(source).
 
 const std = @import("std");
 const assert = std.debug.assert;
-const oracle = @import("oracle.zig");
 const cases = @import("cases.zig");
 const compile = @import("../compiler/compile.zig");
 const ink_json = @import("../core/ink_json.zig");
@@ -72,12 +70,11 @@ fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const 
     });
 }
 
-test "every ground-truth case compiles to inklecate's JSON, or is ledgered" {
+test "every ground-truth case compiles to inklecate's JSON" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
-    const ledger = try oracle.read_ledger(arena, io);
     var problems: u32 = 0;
     var compared: u32 = 0;
     for (try cases.ids(arena, io)) |id| {
@@ -88,25 +85,13 @@ test "every ground-truth case compiles to inklecate's JSON, or is ledgered" {
         std.Io.Dir.cwd().access(io, json_path, .{}) catch continue;
         compared += 1;
         const difference = try compare_case(arena, io, id);
-        const ledgered = find(ledger, id) != null;
-        if (difference != null and !ledgered) {
-            std.debug.print("structure: new difference in {s}: {s}\n", .{ id, difference.? });
-            problems += 1;
-        } else if (difference == null and ledgered) {
-            std.debug.print("structure: stale ledger entry: {s} now matches\n", .{id});
+        if (difference) |text| {
+            std.debug.print("structure: difference in {s}: {s}\n", .{ id, text });
             problems += 1;
         }
     }
     assert(compared > 0);
     try std.testing.expectEqual(@as(u32, 0), problems);
-}
-
-fn find(ledger: []const oracle.Entry, id: []const u8) ?oracle.Entry {
-    for (ledger) |entry| {
-        if (entry.corpus != .structure) continue;
-        if (std.mem.eql(u8, entry.case, id)) return entry;
-    }
-    return null;
 }
 
 test "the verified pair: loading the serialized program gives the same program" {

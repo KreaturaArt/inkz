@@ -114,8 +114,9 @@ pub const Skip = enum {
 pub const Verdict = struct {
     skipped: ?Skip = null,
     acceptance: ?[]const u8 = null,
-    runtime: ?oracle.Mismatch = null,
-    pipeline: ?oracle.Mismatch = null,
+    /// The first difference from ink's transcript, as `oracle.compare` gives it.
+    runtime: ?[]const u8 = null,
+    pipeline: ?[]const u8 = null,
     structure: bool = false,
 
     pub fn diverges(verdict: Verdict) bool {
@@ -343,21 +344,13 @@ pub fn check_directory(
             summary.acceptance += 1;
             try writer.print("{s}: compile acceptance: {s}\n", .{ name, reason });
         }
-        if (verdict.runtime) |mismatch| {
+        if (verdict.runtime) |difference| {
             summary.runtime += 1;
-            try writer.print("{s}: runtime ({t}): {s}\n", .{
-                name,
-                mismatch.kind,
-                mismatch.reason,
-            });
+            try writer.print("{s}: runtime: {s}\n", .{ name, difference });
         }
-        if (verdict.pipeline) |mismatch| {
+        if (verdict.pipeline) |difference| {
             summary.pipeline += 1;
-            try writer.print("{s}: pipeline ({t}): {s}\n", .{
-                name,
-                mismatch.kind,
-                mismatch.reason,
-            });
+            try writer.print("{s}: pipeline: {s}\n", .{ name, difference });
         }
         if (verdict.structure) {
             summary.structure += 1;

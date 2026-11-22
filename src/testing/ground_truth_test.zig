@@ -40,19 +40,22 @@ fn transcript_results(arena: std.mem.Allocator, io: std.Io) ![]const oracle.Resu
 }
 
 test "oracle: ground truth" {
-    // Every difference from ink is ledgered, and every entry still holds.
+    // Every case plays as it did on ink.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const results = try ground_truth_results(arena, std.testing.io);
-    try oracle.check(arena, std.testing.io, .ground_truth, results);
+    try oracle.check(arena, "ground truth", results);
 }
 
 test "oracle: transcripts" {
-    // Every difference from the stored transcripts is ledgered.
+    // Every fixture plays as its stored transcript says, header included.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const results = try transcript_results(arena, std.testing.io);
-    try oracle.check(arena, std.testing.io, .transcripts, results);
+    oracle.check(arena, "transcripts", results) catch |err| {
+        std.debug.print("if the change is intended, run zig build transcripts\n", .{});
+        return err;
+    };
 }

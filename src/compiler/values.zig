@@ -148,7 +148,7 @@ pub fn number_list(
 }
 
 test "list items number from 1, and an explicit value sets the count" {
-    // The auto-numbering the old compiler got wrong (test/known_bugs.zon,
+    // The auto-numbering the old compiler got wrong (ground-truth case
     // audit/list_auto_numbering: ink prints 6 10 11). Number two lists.
     const gpa = std.testing.allocator;
     var parsed = try grammar.parse(

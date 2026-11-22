@@ -633,3 +633,14 @@ test "a dense story of short knots parses in one attempt" {
     try std.testing.expectEqual(@as(u32, 0), parsed.diagnostics_count);
     try std.testing.expect(parsed.tree.tags.len > source.written().len / 4 + 256);
 }
+
+test "the parser reports an unclosed brace" {
+    // The old compile() ignored this error. The parse gets ink's diagnostics: the inner logic,
+    // then the line end.
+    const gpa = std.testing.allocator;
+    var parsed = try parse(gpa, "Hello {unclosed\n", .{});
+    defer parsed.deinit(gpa);
+    try std.testing.expect(parsed.diagnostics_count > 0);
+    const expected: u32 = @backingInt(Expectation.inner_logic);
+    try std.testing.expectEqual(expected, parsed.diagnostics()[0].extra);
+}

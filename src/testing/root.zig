@@ -8,7 +8,6 @@ test {
     _ = @import("ground_truth_test.zig");
     _ = @import("transcripts.zig");
     _ = @import("oracle.zig");
-    _ = @import("known_bugs.zig");
     _ = @import("simulation.zig");
     _ = @import("zero_allocation.zig");
     _ = @import("save_load_test.zig");

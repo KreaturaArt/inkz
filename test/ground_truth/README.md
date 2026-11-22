@@ -80,11 +80,10 @@ that end a transcript: `unsupported: <action>` when an engine lacks a capability
 ## The gate
 
 `zig build test` replays every case on each engine in its own process and compares the result
-with the `.expected` file (`src/testing/oracle.zig`; the same check runs over the old
-runtime's transcripts in `test/transcripts/`). Every difference must be listed in `test/divergence_ledger.zon`,
-and every listed case must still differ. `zig build test -Dledger-update` rewrites the ledger:
-it adds new differences with an automatic reason, drops fixed ones and keeps the rest as they
-are, so reasons edited by hand survive.
+with the `.expected` file (`src/testing/oracle.zig`; the same check runs over the stored
+transcripts in `test/transcripts/`). The comparison is line by line, with `save:` lines
+compared as JSON; every case must match, and a case that doesn't is reported with its first
+differing turn and line.
 
 ## `dotnet_random.expected`
 

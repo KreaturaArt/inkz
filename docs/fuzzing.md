@@ -177,8 +177,8 @@ zig build swarm-check -Doptimize=ReleaseSafe -- zig-out/swarm/1
    ink on the candidate, and keeps the removal when the same kind of divergence stays. That
    is one ink run per feature, so a configuration of 60 features takes 61 runs.
 5. A reduced divergence is either fixed, with a ground-truth case under
-   `test/ground_truth/swarm/` (`mise run reference:expected -- swarm/<name>`), or recorded
-   in the divergence ledger with its reason.
+   `test/ground_truth/swarm/` (`mise run reference:expected -- swarm/<name>`), or, when
+   inkz differs on purpose, one of the skips below.
 
 `swarm-check` doesn't count two kinds of difference as divergences, but only when the
 transcripts match up to the line where they start:
