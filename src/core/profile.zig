@@ -49,7 +49,6 @@ pub const Zone = enum(u8) {
     image_shape,
     image_strings,
     image_arrays,
-    image_references,
     image_write,
     program_check,
     // Runtime.

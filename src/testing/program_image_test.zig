@@ -148,7 +148,7 @@ fn record_at(program: *const Program, opcode: Opcode) u32 {
 /// Expects `program` to fail its check with `fault` and its image to be rejected on load.
 fn expect_rejected(program: *const Program, fault: Program.Fault) !void {
     const gpa = std.testing.allocator;
-    if (fault != .ok) try std.testing.expectEqual(fault, program.check());
+    try std.testing.expectEqual(fault, program.check());
     var image: std.Io.Writer.Allocating = .init(gpa);
     defer image.deinit();
     try program_image.write(program, &image.writer);
@@ -208,13 +208,36 @@ test "an image's variable pointers, divert kinds and newline are checked" {
     extra[flags_at] = flags;
     const newline = program.newline;
     program.newline = program.strings.find("A").?;
-    try expect_rejected(&program, .ok);
+    try expect_rejected(&program, .newline_not_newline);
     program.newline = newline;
     var image: std.Io.Writer.Allocating = .init(gpa);
     defer image.deinit();
     try program_image.write(&program, &image.writer);
     var loaded = try program_image.load(gpa, image.written());
     loaded.deinit(gpa);
+}
+
+test "an image's container ranges and string ids are checked" {
+    // An instruction range or a named range past its array, and a string id past the
+    // strings, are named faults and rejected images.
+    const gpa = std.testing.allocator;
+    var program = try build_records(gpa);
+    defer program.deinit(gpa);
+    const counts = program.containers.items(.instruction_count);
+    const knot_count = counts[1];
+    counts[1] = std.math.maxInt(u32);
+    try expect_rejected(&program, .instructions_not_partitioned);
+    counts[1] = knot_count;
+    const named_firsts = program.containers.items(.named_first);
+    named_firsts[0] = std.math.maxInt(u32);
+    try expect_rejected(&program, .named_range_out_of_bounds);
+    named_firsts[0] = 0;
+    const paths = program.containers.items(.path);
+    const knot_path = paths[1];
+    paths[1] = .from_int(9999);
+    try expect_rejected(&program, .string_out_of_range);
+    paths[1] = knot_path;
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
 }
 
 test "list origin item counts that overflow u32 are rejected" {

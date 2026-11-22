@@ -10,8 +10,8 @@
 //! - the sections, in table order, each padded to a multiple of 8 bytes.
 //!
 //! Loading never trusts the image: it checks the header and every section's size, the string
-//! ends, the opcodes, every index and string id (`check_references`) and then `Program.check`,
-//! and returns a named error for anything wrong.
+//! ends, the opcodes, and then every index and string id (`Program.check`), and returns a
+//! named error for anything wrong.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -381,9 +381,6 @@ pub fn load(gpa: Allocator, bytes: []const u8) Error!Program {
     };
     arrays_zone.end();
     errdefer program.deinit(gpa);
-    const references_zone = profile.begin(.image_references);
-    try check_references(&program);
-    references_zone.end();
     if (program.check() != .ok) return error.InvalidImage;
     return program;
 }
@@ -404,7 +401,6 @@ pub fn load_trusted(gpa: Allocator, bytes: []const u8) Error!Program {
     };
     if (std.debug.runtime_safety) {
         check_shape(&layout) catch @panic("a trusted program image has a bad record");
-        check_references(&program) catch @panic("a trusted program image has a bad reference");
         program.verify();
     }
     return program;
@@ -503,49 +499,4 @@ fn load_arrays(
         .ink_version = header.ink_version,
         .newline = @fromBackingInt(header.newline),
     };
-}
-
-/// What `Program.check` takes for granted, since programs normally come from the builder:
-/// every string id names a string, index ranges fit (in 64 bits), indices that must exist
-/// aren't `.none`.
-fn check_references(program: *const Program) Error!void {
-    const strings: u64 = program.strings.count();
-    assert(strings > 0);
-    assert(program.containers.len > 0);
-    const containers = program.containers;
-    // Newline output items are one-byte slices of this string.
-    if (!is_string(program.newline, strings)) return error.InvalidImage;
-    if (!std.mem.eql(u8, program.strings.get(program.newline), "\n")) return error.InvalidImage;
-    if (!program.global_declaration.is_none() and
-        @backingInt(program.global_declaration) >= containers.len) return error.InvalidImage;
-    for (0..containers.len) |position| {
-        const info = containers.get(position);
-        if (!info.name.is_none() and !is_string(info.name, strings)) return error.InvalidImage;
-        if (!is_string(info.path, strings)) return error.InvalidImage;
-        if (info.instruction_first.is_none()) return error.InvalidImage;
-        const first: u64 = @backingInt(info.instruction_first);
-        const instructions_end = first + info.instruction_count;
-        if (instructions_end > program.instructions.len) return error.InvalidImage;
-        const named_end = @as(u64, info.named_first) + info.named_count;
-        if (named_end > program.named.len) return error.InvalidImage;
-    }
-    for (program.named) |entry| if (!is_string(entry.name, strings)) return error.InvalidImage;
-    for (program.globals) |global| if (!is_string(global.name, strings)) return error.InvalidImage;
-    for (program.externals) |external| {
-        if (!is_string(external.name, strings)) return error.InvalidImage;
-    }
-    for (program.list_origins) |origin| {
-        if (!is_string(origin.name, strings) or origin.items_first.is_none()) {
-            return error.InvalidImage;
-        }
-    }
-    for (program.list_items) |item| {
-        const named = is_string(item.name, strings) and is_string(item.full_name, strings);
-        if (!named or item.origin.is_none()) return error.InvalidImage;
-    }
-}
-
-fn is_string(id: index.StringId, strings: u64) bool {
-    assert(strings > 0);
-    return @backingInt(id) < strings;
 }

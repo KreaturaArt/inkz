@@ -141,6 +141,7 @@ pub const Program = struct {
         name_classes_mismatch,
         list_item_origin_mismatch,
         fallback_out_of_range,
+        newline_not_newline,
         list_item_out_of_range,
         list_origin_out_of_range,
         variable_pointer_context_out_of_range,
@@ -257,6 +258,8 @@ pub const Program = struct {
         defer profile_zone.end();
         const tree = program.check_containers();
         if (tree != .ok) return tree;
+        const names = program.check_names();
+        if (names != .ok) return names;
         const partition = program.check_partition();
         if (partition != .ok) return partition;
         const structure = program.check_children();
@@ -307,6 +310,38 @@ pub const Program = struct {
         return .ok;
     }
 
+    /// Every string id in the tables names a string, and the newline string is "\n".
+    fn check_names(program: *const Program) Fault {
+        const containers = program.containers;
+        for (containers.items(.name), containers.items(.path)) |name, path| {
+            if (!name.is_none() and !program.is_string(name)) return .string_out_of_range;
+            if (!program.is_string(path)) return .string_out_of_range;
+        }
+        for (program.named) |entry| if (!program.is_string(entry.name)) return .string_out_of_range;
+        for (program.globals) |global| {
+            if (!program.is_string(global.name)) return .string_out_of_range;
+        }
+        for (program.externals) |external| {
+            if (!program.is_string(external.name)) return .string_out_of_range;
+        }
+        for (program.list_origins) |origin| {
+            if (!program.is_string(origin.name)) return .string_out_of_range;
+        }
+        for (program.list_items) |item| {
+            if (!program.is_string(item.name) or !program.is_string(item.full_name)) {
+                return .string_out_of_range;
+            }
+        }
+        if (!program.global_declaration.is_none() and
+            program.global_declaration.to_int() >= containers.len) return .container_out_of_range;
+        // Newline output items are one-byte slices of this string.
+        if (!program.is_string(program.newline)) return .string_out_of_range;
+        if (!std.mem.eql(u8, program.strings.get(program.newline), "\n")) {
+            return .newline_not_newline;
+        }
+        return .ok;
+    }
+
     /// Containers' instructions are laid out back to back in container order, so every
     /// instruction belongs to exactly one container.
     fn check_partition(program: *const Program) Fault {
@@ -314,7 +349,7 @@ pub const Program = struct {
         const counts = program.containers.items(.instruction_count);
         var next: u64 = 0;
         for (firsts, counts) |first, count| {
-            if (first.to_int() != next) return .instructions_not_partitioned;
+            if (@backingInt(first) != next) return .instructions_not_partitioned;
             next += count;
         }
         if (next != program.instructions.len) return .instructions_not_partitioned;
@@ -440,12 +475,12 @@ pub const Program = struct {
         // 64 bits: untrusted counts may sum past u32.
         var next: u64 = 0;
         for (program.list_origins, 0..) |origin, origin_index| {
-            if (origin.items_first.to_int() != next) return .list_items_not_partitioned;
+            if (@backingInt(origin.items_first) != next) return .list_items_not_partitioned;
             next += origin.items_count;
             if (next > program.list_items.len) return .list_items_not_partitioned;
             const items = program.list_items[origin.items_first.to_int()..][0..origin.items_count];
             for (items) |item| {
-                if (item.origin.to_int() != origin_index) return .list_item_origin_mismatch;
+                if (@backingInt(item.origin) != origin_index) return .list_item_origin_mismatch;
             }
         }
         if (next != program.list_items.len) return .list_items_not_partitioned;
