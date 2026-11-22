@@ -8,31 +8,14 @@ const compile = @import("../compiler/compile.zig");
 const api = @import("../runtime/api.zig");
 const Program = @import("../core/program.zig").Program;
 const string_pool = @import("../core/string_pool.zig");
+const support = @import("support.zig");
 
-/// A story on `program` with `limits`, owned by the caller.
-fn start(gpa: std.mem.Allocator, program: *const Program, limits: api.Limits) !*api.Story {
-    assert(program.containers.len > 0);
-    const story = try gpa.create(api.Story);
-    errdefer gpa.destroy(story);
-    try story.init(gpa, program, .{ .limits = limits });
-    return story;
-}
-
-fn stop(gpa: std.mem.Allocator, story: *api.Story) void {
-    story.deinit(gpa);
-    gpa.destroy(story);
-}
+const start = support.start;
+const stop = support.stop;
 
 /// The story's whole output until it stops or asks for a choice, owned by the caller.
 fn play(gpa: std.mem.Allocator, story: *api.Story) ![]u8 {
-    var text: std.Io.Writer.Allocating = .init(gpa);
-    errdefer text.deinit();
-    var lines: u32 = 0;
-    while (story.can_continue()) : (lines += 1) {
-        assert(lines < 1000);
-        try text.writer.writeAll((try story.cont()).get());
-    }
-    return text.toOwnedSlice();
+    return support.play_alloc(gpa, story, .{ .list = &.{} });
 }
 
 /// The first story error's message, written into `buffer`.

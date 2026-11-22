@@ -10,8 +10,8 @@ const compile = @import("../compiler/compile.zig");
 const api = @import("../runtime/api.zig");
 const evaluate = @import("../runtime/evaluate.zig");
 const RuntimeStory = @import("../runtime/story.zig").Story;
-const Program = @import("../core/program.zig").Program;
 const Value = api.Value;
+const support = @import("support.zig");
 
 const strings_source =
     \\VAR a = "x"
@@ -40,19 +40,8 @@ const strings_source =
 /// A string argument longer than the 256-byte heaps below.
 const long_text: [256]u8 = @splat('l');
 
-/// A story on `program` with `limits`, owned by the caller.
-fn start(gpa: std.mem.Allocator, program: *const Program, limits: api.Limits) !*api.Story {
-    assert(program.containers.len > 0);
-    const story = try gpa.create(api.Story);
-    errdefer gpa.destroy(story);
-    try story.init(gpa, program, .{ .limits = limits });
-    return story;
-}
-
-fn stop(gpa: std.mem.Allocator, story: *api.Story) void {
-    story.deinit(gpa);
-    gpa.destroy(story);
-}
+const start = support.start;
+const stop = support.stop;
 
 fn heap_offset(story: *api.Story, name: []const u8) u32 {
     const value = story.core.get_variable(name).?;

@@ -1,9 +1,9 @@
 //! The compiler's end-to-end tests: each story is compiled from source and played through a
-//! fixed list of choices, choosing whenever the story can't continue (`support.play`). They
-//! began as the old compiler's e2e tests; where the old pipeline differed from ink, the
-//! expectation is what ink prints. Stories checked by their output alone are rows of
-//! `source_rows` and `fixture_rows`; tests that need more steps follow them. The tests that
-//! drive the story API directly live in e2e_api.zig.
+//! fixed list of choices, choosing whenever the story can't continue
+//! (`support.play_program`). They began as the old compiler's e2e tests; where the old
+//! pipeline differed from ink, the expectation is what ink prints. Stories checked by their
+//! output alone are rows of `source_rows` and `fixture_rows`; tests that need more steps
+//! follow them. The tests that drive the story API directly live in e2e_api.zig.
 
 const std = @import("std");
 const compile = @import("../compiler/compile.zig");
@@ -41,7 +41,7 @@ fn expect_output(output: []const u8, expect: Expect) !void {
 fn play_file(gpa: std.mem.Allocator, path: []const u8, choices: []const u32) ![]u8 {
     var program = try support.compile_fixture(gpa, std.testing.io, path);
     defer program.deinit(gpa);
-    return (try support.play(gpa, &program, choices)).output;
+    return (try support.play_program(gpa, &program, choices)).output;
 }
 
 /// Plays the fixture `path` (under test/fixture/original/) and checks its output.
@@ -59,7 +59,7 @@ fn expect_source(source: []const u8, choices: []const u32, expect: Expect) !void
     const gpa = std.testing.allocator;
     var program = try compile.compile_source(gpa, source);
     defer program.deinit(gpa);
-    const played = try support.play(gpa, &program, choices);
+    const played = try support.play_program(gpa, &program, choices);
     defer gpa.free(played.output);
     try expect_output(played.output, expect);
 }
@@ -990,11 +990,11 @@ const Pair = struct {
     }
 
     /// Plays both programs through `choices`; their outputs and choices must agree.
-    fn play(pair: *const Pair, choices: []const u32) !support.Played {
+    fn play(pair: *const Pair, choices: []const u32) !support.PlayedProgram {
         const gpa = std.testing.allocator;
-        const compiled = try support.play(gpa, &pair.compiled, choices);
+        const compiled = try support.play_program(gpa, &pair.compiled, choices);
         defer gpa.free(compiled.output);
-        const loaded = try support.play(gpa, &pair.loaded, choices);
+        const loaded = try support.play_program(gpa, &pair.loaded, choices);
         errdefer gpa.free(loaded.output);
         try std.testing.expectEqualStrings(compiled.output, loaded.output);
         try std.testing.expectEqual(compiled.choices_count, loaded.choices_count);

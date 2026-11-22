@@ -328,7 +328,7 @@ test "a story-level temp's re-assignment is VAR=, as inklecate writes it, and st
     var program = try compile_source(gpa, source);
     defer program.deinit(gpa);
     const support = @import("../testing/support.zig");
-    const played = try support.play(gpa, &program, &.{});
+    const played = try support.play_program(gpa, &program, &.{});
     defer gpa.free(played.output);
     try std.testing.expectEqualStrings("2\n", played.output);
 }

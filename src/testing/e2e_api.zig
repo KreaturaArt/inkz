@@ -269,31 +269,11 @@ test "runtime/bindings/variable_observer.ink" {
     try std.testing.expectEqual(@as(i32, 25), observed.last);
 }
 
-/// Plays up to `turns` turns, taking the first or the last choice.
-fn play(fixture: *Fixture, turns: u32, last: bool) ![]u8 {
-    const gpa = std.testing.allocator;
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(gpa);
-    for (0..turns) |_| {
-        const story = &fixture.story;
-        if (story.can_continue()) {
-            const line = try story.cont_alloc(gpa);
-            defer gpa.free(line);
-            try output.appendSlice(gpa, line);
-        } else if (story.current_choices_count() > 0) {
-            const count = story.current_choices_count();
-            try story.choose_choice_index(if (last) count - 1 else 0);
-        } else break;
-    }
-    return output.toOwnedSlice(gpa);
-}
-
 test "simple_taster_tutorial.ink: always the first choice" {
     var fixture: Fixture = undefined;
     try fixture.init("test/fixture/simple_taster_tutorial.ink");
     defer fixture.deinit();
-    // The old test played 20 turns of whole-turn cont(); lines are finer, so allow more.
-    const text = try play(&fixture, 400, false);
+    const text = try support.play_alloc(std.testing.allocator, &fixture.story, .first);
     defer std.testing.allocator.free(text);
     try expect_contains(text, "we passed the day in silence");
 }
@@ -302,7 +282,7 @@ test "crime_scene.ink: always the last choice" {
     var fixture: Fixture = undefined;
     try fixture.init("test/fixture/crime_scene.ink");
     defer fixture.deinit();
-    const text = try play(&fixture, 1200, true);
+    const text = try support.play_alloc(std.testing.allocator, &fixture.story, .last);
     defer std.testing.allocator.free(text);
     try expect_contains(text, "bedroom");
 }

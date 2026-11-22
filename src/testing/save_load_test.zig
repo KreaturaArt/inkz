@@ -9,17 +9,13 @@ const assert = std.debug.assert;
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const Story = @import("../runtime/story.zig").Story;
+const api = @import("../runtime/api.zig");
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
 const cases = @import("cases.zig");
 const support = @import("support.zig");
 
-fn prepare(story: *Story) void {
-    assert(story.callback_depth == 0);
-    support.quiet(story);
-}
-
-/// Plays up to `turns` turns choosing the first choice, writing every line and choice to
+/// Plays up to 30 turns choosing the first choice, writing every line and choice count to
 /// `transcript`; with `round_trip`, saves and loads into a fresh story before each choice.
 fn play(
     gpa: std.mem.Allocator,
@@ -28,31 +24,27 @@ fn play(
     round_trip: bool,
     save_buffer: []u8,
 ) !void {
-    var story: Story = undefined;
+    var story: api.Story = undefined;
     try story.init(gpa, program, .{});
     defer story.deinit(gpa);
-    prepare(&story);
-    var turn: u32 = 0;
-    while (turn < 30) : (turn += 1) {
-        var lines: u32 = 0;
-        while (story.can_continue() and lines < 300) : (lines += 1) {
-            const line = story.cont() catch break;
-            try transcript.writeAll(line);
-        }
-        const count = story.visible_choices_count();
+    support.quiet(&story.core);
+    for (0..30) |_| {
+        // A failed line ends the turn, as it would end the run.
+        _ = support.play(&story, .{ .list = &.{} }, transcript) catch {};
+        const count = story.current_choices_count();
         try transcript.print("[{d} choices]\n", .{count});
         if (count == 0) return;
         // ink doesn't save isInvisibleDefault, so a hidden fallback choice shows after a
         // load, in C# too; turns holding one aren't round-tripped.
-        if (round_trip and !has_invisible_default(&story)) {
+        if (round_trip and !has_invisible_default(&story.core)) {
             var writer: std.Io.Writer = .fixed(save_buffer);
-            try save.to_json(&story, &writer);
+            try story.to_json(&writer);
             const json = writer.buffered();
             story.deinit(gpa);
             try story.init(gpa, program, .{});
-            prepare(&story);
-            try load.load_json(&story, json);
-            try std.testing.expectEqual(count, story.visible_choices_count());
+            support.quiet(&story.core);
+            try story.load_json(json);
+            try std.testing.expectEqual(count, story.current_choices_count());
         }
         try story.choose_choice_index(0);
     }
@@ -318,7 +310,7 @@ test "a save's flows must include the default flow, each name once" {
     var story: Story = undefined;
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
-    prepare(&story);
+    support.quiet(&story);
     var single: std.Io.Writer.Allocating = .init(gpa);
     defer single.deinit();
     try save.to_json(&story, &single.writer);
@@ -353,7 +345,7 @@ test "a saved variable pointer's context is checked on load and when followed" {
     var story: Story = undefined;
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
-    prepare(&story);
+    support.quiet(&story);
     while (story.can_continue()) _ = try story.cont();
     try std.testing.expectEqual(@as(u32, 1), story.visible_choices_count());
     var saved: std.Io.Writer.Allocating = .init(gpa);
@@ -372,7 +364,7 @@ test "a saved variable pointer's context is checked on load and when followed" {
     try std.testing.expectError(error.StoryError, story.cont());
     try std.testing.expect(story.state.check() == .ok);
     story.state.reset_errors(); // Unhandled errors stay until reset, as in ink.
-    prepare(&story);
+    support.quiet(&story);
     try load.load_json(&story, good);
     try story.choose_choice_index(0);
     var text: std.Io.Writer.Allocating = .init(gpa);
