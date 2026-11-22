@@ -37,16 +37,12 @@ test "every ground-truth case round-trips through an image" {
     var json_total: u64 = 0;
     var image_total: u64 = 0;
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = ink_json.load(std.testing.allocator, json) catch continue;
+    var programs: cases.Programs = try .init(arena, std.testing.allocator, io);
+    while (try programs.next()) |case| {
+        var program = case.program;
         defer program.deinit(std.testing.allocator);
         image_total += try round_trip(std.testing.allocator, &program);
-        json_total += json.len;
+        json_total += case.json.len;
         checked += 1;
     }
     try std.testing.expect(checked > 150);
@@ -240,13 +236,10 @@ test "a trusted load gives the same program as a checked one" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     var loaded_count: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const cwd = std.Io.Dir.cwd();
-        const json = cwd.readFileAlloc(io, path, arena, .limited(16 << 20)) catch continue;
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
         var image: std.Io.Writer.Allocating = .init(arena);
-        try program_image.write(&program, &image.writer);
+        try program_image.write(&case.program, &image.writer);
         var checked = try program_image.load(arena, image.written());
         var trusted = try program_image.load_trusted(arena, image.written());
         try program_testing.expect_same_program(&checked, &trusted);

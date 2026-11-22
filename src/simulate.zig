@@ -97,11 +97,10 @@ fn simulate(
     const save_buffer = try arena.alloc(u8, 4 << 20);
     var totals: Totals = .{};
     for (ids) |id| {
-        const path = if (options.json != null)
-            id
+        const json = if (options.json != null)
+            try std.Io.Dir.cwd().readFileAlloc(io, id, arena, .limited(16 << 20))
         else
-            try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
+            try cases.read_json(arena, io, id);
         var program = ink_json.load(gpa, json) catch continue;
         defer program.deinit(gpa);
         const run: Run = .{ .id = id, .program = &program, .save_buffer = save_buffer };

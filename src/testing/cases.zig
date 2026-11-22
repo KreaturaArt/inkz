@@ -4,6 +4,8 @@
 
 const std = @import("std");
 const Harness = @import("harness.zig").Harness;
+const ink_json = @import("../core/ink_json.zig");
+const Program = @import("../core/program.zig").Program;
 
 pub const cases_directory = "test/ground_truth";
 const file_bytes_max = 16 * 1024 * 1024;
@@ -28,7 +30,6 @@ pub fn replay_case(
     actions_override: ?[]const u8,
 ) ![]const u8 {
     const cwd = std.Io.Dir.cwd();
-    const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{ cases_directory, id });
     const actions_path = try std.fmt.allocPrint(arena, "{s}/{s}.actions", .{ cases_directory, id });
     const actions = actions_override orelse
         cwd.readFileAlloc(io, actions_path, arena, .limited(file_bytes_max)) catch |err|
@@ -36,17 +37,17 @@ pub fn replay_case(
             error.FileNotFound => "play",
             else => return err,
         };
-    return replay_json(arena, io, json_path, actions);
+    return replay_json(arena, io, try json_path(arena, id), actions);
 }
 
-/// Replays `actions` on the story at `json_path` and returns the transcript.
+/// Replays `actions` on the story at `path` and returns the transcript.
 pub fn replay_json(
     arena: std.mem.Allocator,
     io: std.Io,
-    json_path: []const u8,
+    path: []const u8,
     actions: []const u8,
 ) ![]const u8 {
-    const json = try std.Io.Dir.cwd().readFileAlloc(io, json_path, arena, .limited(file_bytes_max));
+    const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(file_bytes_max));
     var output: std.Io.Writer.Allocating = .init(arena);
     var harness: Harness = undefined;
     harness.init(arena, json) catch |err| {
@@ -57,6 +58,55 @@ pub fn replay_json(
     try harness.replay(actions, &output.writer);
     return output.written();
 }
+
+/// The path of case `id`'s story JSON.
+pub fn json_path(arena: std.mem.Allocator, id: []const u8) ![]const u8 {
+    return std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{ cases_directory, id });
+}
+
+/// Case `id`'s story JSON, read into `arena`.
+pub fn read_json(arena: std.mem.Allocator, io: std.Io, id: []const u8) ![]const u8 {
+    const path = try json_path(arena, id);
+    return std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(file_bytes_max));
+}
+
+/// Case `id`'s program, loaded with `gpa` from its JSON (read into `arena`).
+pub fn load_program(
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    id: []const u8,
+) !Program {
+    return ink_json.load(gpa, try read_json(arena, io, id));
+}
+
+/// The ground-truth cases whose JSON loads, in id order.
+pub const Programs = struct {
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    ids: []const []const u8,
+    next_index: u32 = 0,
+
+    pub const Case = struct { id: []const u8, json: []const u8, program: Program };
+
+    /// The programs are allocated with `gpa`, everything else in `arena`.
+    pub fn init(arena: std.mem.Allocator, gpa: std.mem.Allocator, io: std.Io) !Programs {
+        return .{ .arena = arena, .gpa = gpa, .io = io, .ids = try ids(arena, io) };
+    }
+
+    /// The next case that loads; its program is the caller's.
+    pub fn next(programs: *Programs) !?Case {
+        while (programs.next_index < programs.ids.len) {
+            const id = programs.ids[programs.next_index];
+            programs.next_index += 1;
+            const json = try read_json(programs.arena, programs.io, id);
+            const program = ink_json.load(programs.gpa, json) catch continue;
+            return .{ .id = id, .json = json, .program = program };
+        }
+        return null;
+    }
+};
 
 /// The ground-truth case ids (paths below `cases_directory` without `.expected`), sorted.
 pub fn ids(arena: std.mem.Allocator, io: std.Io) ![]const []const u8 {

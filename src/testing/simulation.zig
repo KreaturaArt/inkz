@@ -262,12 +262,11 @@ test "the simulation keeps the state sound" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     const save_buffer = try arena.alloc(u8, 2 << 20);
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
+        const id = case.id;
         var story: Story = undefined;
-        try story.init(std.testing.allocator, &program, .{});
+        try story.init(std.testing.allocator, &case.program, .{});
         defer story.deinit(std.testing.allocator);
         for ([_]bool{ false, true }) |compact_always| {
             prepare(&story, compact_always);

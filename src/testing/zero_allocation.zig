@@ -63,16 +63,11 @@ test "the runtime allocates nothing after init, on every ground-truth case" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
         var counting = CountingAllocator.init(std.testing.allocator);
         var story: Story = undefined;
-        story.init(counting.allocator(), &program, .{}) catch continue;
+        story.init(counting.allocator(), &case.program, .{}) catch continue;
         defer story.deinit(counting.allocator());
         const before = counting.growths();
         exercise(&story) catch |err| switch (err) {
@@ -80,7 +75,7 @@ test "the runtime allocates nothing after init, on every ground-truth case" {
             else => return err,
         };
         std.testing.expectEqual(before, counting.growths()) catch |err| {
-            std.debug.print("case {s} allocated\n", .{id});
+            std.debug.print("case {s} allocated\n", .{case.id});
             return err;
         };
         checked += 1;

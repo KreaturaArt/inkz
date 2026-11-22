@@ -12,8 +12,6 @@ const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const program_testing = @import("../core/program_testing.zig");
 
-const file_bytes_max = 16 * 1024 * 1024;
-
 /// The case's `.ink` compiled from its directory (so INCLUDEs resolve as in inklecate).
 fn compile_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !Program {
     return compile_case_with(arena, io, id, null);
@@ -45,12 +43,7 @@ fn compile_case_with(
 /// Null when the case's serialized program equals inklecate's JSON; otherwise why not.
 fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const u8 {
     assert(std.mem.indexOf(u8, id, "..") == null);
-    const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-        cases.cases_directory,
-        id,
-    });
-    const limit: std.Io.Limit = .limited(file_bytes_max);
-    const raw = try std.Io.Dir.cwd().readFileAlloc(io, json_path, arena, limit);
+    const raw = try cases.read_json(arena, io, id);
     const bom = "\xEF\xBB\xBF";
     const expected = if (std.mem.startsWith(u8, raw, bom)) raw[bom.len..] else raw;
     var program = compile_case(arena, io, id) catch |err| {
@@ -78,11 +71,6 @@ test "every ground-truth case compiles to inklecate's JSON" {
     var problems: u32 = 0;
     var compared: u32 = 0;
     for (try cases.ids(arena, io)) |id| {
-        const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        std.Io.Dir.cwd().access(io, json_path, .{}) catch continue;
         compared += 1;
         const difference = try compare_case(arena, io, id);
         if (difference) |text| {

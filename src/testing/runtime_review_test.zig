@@ -314,17 +314,14 @@ test "name classes from the builder equal the ones an image load rebuilds" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
-    const ink_json = @import("../core/ink_json.zig");
     const program_image = @import("../core/program_image.zig");
     const cases = @import("cases.zig");
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const cwd = std.Io.Dir.cwd();
-        const json = cwd.readFileAlloc(io, path, arena, .limited(16 << 20)) catch continue;
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
+        const program = &case.program;
         var image: std.Io.Writer.Allocating = .init(arena);
-        try program_image.write(&program, &image.writer);
+        try program_image.write(program, &image.writer);
         var loaded = try program_image.load(arena, image.written());
         try std.testing.expectEqualSlices(
             u32,

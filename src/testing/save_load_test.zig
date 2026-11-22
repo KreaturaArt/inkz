@@ -67,19 +67,15 @@ test "a save and load at every turn doesn't change the play" {
     const io = std.testing.io;
     const save_buffer = try arena.alloc(u8, 1 << 20);
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    const gpa = std.testing.allocator;
+    while (try programs.next()) |case| {
         var plain: std.Io.Writer.Allocating = .init(arena);
         var tripped: std.Io.Writer.Allocating = .init(arena);
-        play(std.testing.allocator, &program, &plain.writer, false, save_buffer) catch continue;
-        try play(std.testing.allocator, &program, &tripped.writer, true, save_buffer);
+        play(gpa, &case.program, &plain.writer, false, save_buffer) catch continue;
+        try play(gpa, &case.program, &tripped.writer, true, save_buffer);
         std.testing.expectEqualStrings(plain.written(), tripped.written()) catch |err| {
-            std.debug.print("case {s}\n", .{id});
+            std.debug.print("case {s}\n", .{case.id});
             return err;
         };
         checked += 1;
@@ -97,23 +93,9 @@ test "every C# save in the ground truth loads and saves back to the same JSON" {
     const io = std.testing.io;
     var checked: u32 = 0;
     for (try cases.ids(arena, io)) |id| {
-        const expected_path = try std.fmt.allocPrint(arena, "{s}/{s}.expected", .{
-            cases.cases_directory,
-            id,
-        });
-        const expected = try std.Io.Dir.cwd().readFileAlloc(
-            io,
-            expected_path,
-            arena,
-            .limited(16 << 20),
-        );
-        if (std.mem.indexOf(u8, expected, "\nsave: ") == null) continue;
-        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = try ink_json.load(arena, json);
+        const expected = try cases.read_expected(arena, io, id);
+        if (std.mem.indexOf(u8, expected, "save: ") == null) continue;
+        var program = try cases.load_program(arena, arena, io, id);
         var lines = std.mem.splitScalar(u8, expected, '\n');
         while (lines.next()) |line| {
             if (!std.mem.startsWith(u8, line, "save: ")) continue;
