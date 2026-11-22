@@ -1,6 +1,7 @@
 //! The two oracle gates:
 //! - ground truth: each case in `test/ground_truth`, compared with ink v1.2.1;
-//! - transcripts: each fixture in `test/transcripts`, compared with the stored transcript.
+//! - transcripts: each fixture in `test/transcripts`, compared with the stored transcript
+//!   (the only test that replays that corpus).
 //! Each story runs in its own process (`src/replay_case.zig`), so a crash is a result.
 
 const std = @import("std");
