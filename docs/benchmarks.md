@@ -36,8 +36,9 @@ allocates exactly the byte budget, once") and, with externals, in
 `src/testing/zero_allocation.zig`. Until P16.10 the external bindings were a second
 allocation; they are now carved from the same block. Nothing allocates after that. The total has three parts:
 
-- **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
-  `str` marks, and the choices with their tags and thread snapshots.
+- **Flows**: each of the `flows_max` flows owns its call stack (frames, threads, temps),
+  output items and `str` marks, and its choices with their tags and thread snapshots, plus a
+  100-byte directory entry; the evaluation stack is one, shared by all flows.
 - **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6)
   and of the globals (12 bytes each), visit counts and turn indices (8 bytes per counted
   container), which it copies out 64 slots at a time before their first write, plus its
@@ -46,18 +47,18 @@ allocation; they are now carved from the same block. Nothing allocates after tha
   (8 bytes per counted container), the external bindings (24 bytes per EXTERNAL), the line buffer (`output_bytes_max`), the tag scratch
   (`tag_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
-  list slab, the flow directory (64 bytes per flow), the flow parking region, the output stash
-  `evaluate_function` sets the current output aside in (`output_stash_bytes_max`), observers, the
+  list slab, the output stash `evaluate_function` sets the current output aside in
+  (`output_stash_bytes_max`), observers, the
   observer queue, errors and warnings, the ancestor scratch for visit counting, and the
   scratch `load_json` parses a save into with std.json (`load_bytes_max`, 1 MiB; a save
   takes about 8 to 16 times its size there, P17.12).
 
-Flows don't multiply the budget: all flows of a story share one state, and only the current
-flow uses the live buffers. A switched-out flow is packed into the parking region, taking
-44 bytes of header plus what it actually uses: 24 bytes per frame, 20 per thread, 16 per
-temp, 12 per output item, 40 per choice, 24 per choice snapshot, 4 per tag or mark. A flow
-waiting at a choice, three frames deep, with 10 temps, 20 output items and 4 choices with
-their snapshots, parks in about 1 KiB, so the default 256 KiB parking region holds hundreds.
+Flows multiply their own buffers: each flow has a full set (`Limits.flow_bytes`, 164.5 KiB at
+the defaults), so switching only points the live stacks at the target flow's set and copies
+nothing (18 ns, against 163 ns when switched-out flows were packed into a 256 KiB parking
+region, P17.14). With the default `flows_max = 8` that is 1.29 MiB, about 0.9 MiB more than
+the parking region and one live set took. A story that never switches flows can set
+`flows_max = 1`; `fitted_limits` sizes it from the flows a story used.
 
 ### Example: one main story and four side stories
 
@@ -73,13 +74,13 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 
 | Part | Main story | Side story |
 |---|---:|---:|
-| Live flow | 180,736 | 27,776 |
+| Flows (four) | 686,480 | 102,288 |
 | Lookahead (copies) | 207,144 | 30,540 |
-| Shared | 2,724,224 | 404,784 |
-| **Total per story** | **3,112,104** (2.97 MiB) | **463,100** (452 KiB) |
+| Shared | 2,461,824 | 371,760 |
+| **Total per story** | **3,355,448** (3.20 MiB) | **504,588** (493 KiB) |
 
-The whole game, one main story and four side stories, needs 3,112,104 + 4 × 463,100 =
-4,964,504 bytes (4.73 MiB), fixed at load time. In the main story the 1 MiB string heap and
+The whole game, one main story and four side stories, needs 3,355,448 + 4 × 504,588 =
+5,373,800 bytes (5.12 MiB), fixed at load time. In the main story the 1 MiB string heap and
 the 1 MiB load scratch are about a third of the total each.
 
 ### Fitted limits (P10.2)

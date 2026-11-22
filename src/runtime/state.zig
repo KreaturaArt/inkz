@@ -2,8 +2,9 @@
 //! exactly `Limits.bytes_total()` bytes, made in `init`; nothing allocates afterwards.
 //!
 //! The live flow (evaluation stack, call stack, output, choices) is what the lookahead
-//! snapshot copies and what flows park. Globals, counts, the heap, the random
-//! state and the diagnostics are shared by every flow.
+//! snapshot copies; each flow owns its own call stack, output and choices buffers. Globals,
+//! counts, the evaluation stack, the heap, the random state and the diagnostics are shared
+//! by every flow.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -53,12 +54,14 @@ pub const Observer = struct {
     slot: GlobalSlot,
 };
 
-/// A flow's directory entry. Flow names are stored inline.
+/// A flow's directory entry. Flow names are stored inline. While the flow isn't current, it
+/// keeps the live stacks' state: each owned buffer's count, in `owned_buffers` order, the
+/// call stack's thread counter and the choices' indexed count.
 pub const FlowRecord = struct {
-    name: [flow_name_bytes_max]u8,
-    parked_first: u32,
-    parked_words: u32,
+    counts: [owned_buffers.len]u32,
     thread_counter: u32,
+    indexed_count: u32,
+    name: [flow_name_bytes_max]u8,
     name_length: u8,
     in_use: bool,
 };
@@ -87,7 +90,7 @@ pub const OutputStash = struct {
 pub const never_visited: i32 = std.math.minInt(i32);
 
 comptime {
-    // What flows park, the lookahead snapshots and saves rebuild is copied by value: no
+    // What the lookahead snapshots and saves rebuild is copied by value: no
     // pointers (F11, docs/Guidelines.md).
     for (flow_buffers) |buffer| assert(pointer_free.has_no_pointers(FlowElement(buffer)));
     assert(pointer_free.has_no_pointers(Value));
@@ -132,8 +135,8 @@ pub const FlowBuffers = struct {
 pub const FlowBuffer = limits_module.FlowBuffer;
 /// Every per-flow buffer, in the order of `FlowBuffers`' fields.
 pub const flow_buffers = std.enums.values(FlowBuffer);
-/// The buffers a parked flow keeps: all but the evaluation stack, which flows share.
-pub const parked_buffers = flow_buffers[1..];
+/// The buffers each flow owns: all but the evaluation stack, which flows share.
+pub const owned_buffers = flow_buffers[1..];
 
 pub fn FlowElement(comptime buffer: FlowBuffer) type {
     return @typeInfo(@FieldType(FlowBuffers, @tagName(buffer))).pointer.child;
@@ -148,12 +151,11 @@ fn FlowStack(comptime StatePointer: type, comptime buffer: FlowBuffer) type {
 comptime {
     const names = @typeInfo(FlowBuffers).@"struct".field_names;
     assert(names.len == flow_buffers.len);
-    assert(parked_buffers[0] != .evaluation);
+    assert(owned_buffers[0] != .evaluation);
     for (names, flow_buffers) |name, buffer| {
         assert(std.mem.eql(u8, name, @tagName(buffer)));
         assert(@sizeOf(FlowElement(buffer)) == buffer.bytes_per_element());
-        // Parking packs the buffers as words.
-        assert(@sizeOf(FlowElement(buffer)) % 4 == 0);
+        // Carved after the 8-byte aligned buffers.
         assert(@alignOf(FlowElement(buffer)) <= 4);
     }
 }
@@ -163,7 +165,7 @@ pub const State = struct {
     limits: Limits,
     memory: []align(8) u8,
 
-    // The live flow.
+    // The live flow: the current flow's slot of `flow_storage`, and the evaluation stack.
     evaluation: BoundedStack(Value),
     call_stack: CallStack,
     output: Output,
@@ -208,7 +210,7 @@ pub const State = struct {
     /// takes the same bytes in every story.
     load_scratch: []u8,
 
-    // The lookahead snapshot and parked flows.
+    // The lookahead snapshot and the flows.
     lookahead: FlowBuffers,
     /// The snapshot's copies of the shared arrays, as they were at `take`.
     lookahead_globals: []Value,
@@ -219,7 +221,9 @@ pub const State = struct {
     /// when no snapshot is active.
     lookahead_copied: []u32,
     flows: []FlowRecord,
-    parking: []u32,
+    /// Every flow's buffers: each owned buffer holds `flows_max` slots of its capacity, flow
+    /// record `i`'s at slot `i` (`flows.zig`). The evaluation field is empty.
+    flow_storage: FlowBuffers,
     current_flow: u32 = 0,
     /// Output streams set aside by evaluate_function (ink's outputStreamBefore), packed in
     /// `output_stash`; compaction roots.
@@ -237,7 +241,6 @@ pub const State = struct {
     peaks: Peaks = .{},
 
     pub const Peaks = struct {
-        parking_words: u32 = 0,
         output_stash_words: u32 = 0,
         line_bytes: u32 = 0,
         tag_bytes: u32 = 0,
@@ -275,7 +278,6 @@ pub const State = struct {
         limits.verify();
         const word_limits = [_]u32{
             limits.heap_bytes_max,
-            limits.flow_parking_bytes_max,
             limits.output_stash_bytes_max,
         };
         for (word_limits) |bytes| if (bytes % 4 != 0) return error.InvalidLimits;
@@ -313,7 +315,6 @@ pub const State = struct {
             .heap_bytes = state.strings.peak,
             .list_words = state.lists.peak,
             .flows = state.peaks.flows,
-            .flow_parking_bytes = state.peaks.parking_words * 4,
             .output_stash_bytes = state.peaks.output_stash_words * 4,
             .choice_snapshot_frames = choices.frames.peak,
             .choice_snapshot_temps = choices.temps.peak,
@@ -330,6 +331,7 @@ pub const State = struct {
     /// The story's starting state: one thread at the root, empty output and choices, zeroed
     /// counts, globals undefined until the global declaration has run.
     pub fn reset(state: *State) void {
+        flows.reset(state);
         state.evaluation.clear();
         state.call_stack.fresh(.start_of(Program.root));
         state.output.clear();
@@ -351,7 +353,6 @@ pub const State = struct {
         state.output_stashes_count = 0;
         state.snapshot = .{};
         @memset(state.lookahead_copied, 0);
-        flows.reset(state);
         state.verify();
     }
 
@@ -393,7 +394,7 @@ pub const State = struct {
         visit_flow(state.live_flow(), visitor);
         for (state.globals) |*value| visit_value(value, visitor);
         for (state.global_defaults) |*value| visit_value(value, visitor);
-        flows.visit_parked(state, visitor);
+        flows.visit_others(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
             const words = state.output_stash[stash.first..][0 .. stash.items * 3];
             visit_items(@alignCast(std.mem.bytesAsSlice(
@@ -544,7 +545,7 @@ pub const State = struct {
     }
 };
 
-/// Visits the heap references in one flow's buffers, live, copied or parked.
+/// Visits the heap references in one flow's buffers, live, copied or not current.
 pub fn visit_flow(buffers: FlowBuffers, visitor: anytype) void {
     assert(buffers.snapshots.len <= buffers.choices.len);
     for (buffers.evaluation) |*value| visit_value(value, visitor);
@@ -684,13 +685,20 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     const binding_words = carver.take(u64, shape.externals_count * binding_words_each);
     const load_words = carver.take(u64, std.math.divCeil(u32, limits.load_bytes_max, 8) catch
         unreachable);
-    const live = carve_flow(carver, limits);
-    const lookahead = carve_flow(carver, limits);
+    const evaluation = carver.take(Value, limits.evaluation_values_max);
+    const storage = carve_flow(carver, limits, limits.flows_max, 0);
+    const lookahead = carve_flow(carver, limits, 1, limits.evaluation_values_max);
+    // Flow record 0's slot is the first of each buffer (`flows.reset` selects it again).
+    var live = lookahead;
+    inline for (owned_buffers) |buffer| {
+        const name = @tagName(buffer);
+        @field(live, name) = @field(storage, name)[0..@field(lookahead, name).len];
+    }
     var result: State = .{
         .program = program,
         .limits = limits,
         .memory = memory,
-        .evaluation = .init(live.evaluation),
+        .evaluation = .init(evaluation),
         .call_stack = .init(live.frames, live.threads, live.temps, limits.temps_per_frame_max),
         .output = .init(live.items, live.marks),
         .choices = .init(.{
@@ -715,7 +723,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .ancestors = carver.take(ContainerIndex, limits.container_depth_max),
         .lookahead = lookahead,
         .flows = carver.take(FlowRecord, limits.flows_max),
-        .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
+        .flow_storage = storage,
         .output_stash = carver.take(u32, limits.output_stash_bytes_max / 4),
         // The cache's items here, for alignment; its bytes after `line_bytes`.
         .text_cache = .{
@@ -739,14 +747,18 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     return result;
 }
 
-fn carve_flow(carver: *Carver, limits: Limits) FlowBuffers {
+/// `slots` flows' worth of every owned flow buffer, each buffer's slots together, and an
+/// evaluation stack of `evaluation_values` values.
+fn carve_flow(carver: *Carver, limits: Limits, slots: u32, evaluation_values: u32) FlowBuffers {
     assert(carver.used % 4 == 0);
+    assert(slots > 0);
     var buffers: FlowBuffers = undefined;
-    inline for (flow_buffers) |buffer| {
-        const count = buffer.capacity(&limits);
+    buffers.evaluation = carver.take(Value, evaluation_values);
+    inline for (owned_buffers) |buffer| {
+        const count = buffer.capacity(&limits) * slots;
         @field(buffers, @tagName(buffer)) = carver.take(FlowElement(buffer), count);
     }
-    assert(buffers.frames.len == limits.frames_max);
+    assert(buffers.frames.len == limits.frames_max * slots);
     return buffers;
 }
 

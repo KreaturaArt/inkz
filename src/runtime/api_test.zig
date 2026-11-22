@@ -432,12 +432,8 @@ test "the other limit errors" {
     try story.to_json(&saved.writer);
     try std.testing.expectError(error.SaveTooLarge, story.load_json(saved.written()));
     var tight: Story = undefined;
-    try tight.init_from_json(gpa, json, .{ .limits = .{
-        .flow_parking_bytes_max = 32,
-        .output_stash_bytes_max = 4,
-    } });
+    try tight.init_from_json(gpa, json, .{ .limits = .{ .output_stash_bytes_max = 4 } });
     defer tight.deinit(gpa);
-    try std.testing.expectError(error.FlowParkingLimit, tight.switch_flow("parked"));
     try tight.bind_external_function("greet", .{}, &recorder, Recorder.greet);
     // The line's one output item (12 bytes) can't be set aside for the evaluation.
     try tight.choose_path_string("knot", .{});

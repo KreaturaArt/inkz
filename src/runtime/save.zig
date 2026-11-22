@@ -34,7 +34,7 @@ const ListItemIndex = @import("../core/index.zig").ListItemIndex;
 pub const save_version = 10;
 pub const format_version = 21;
 
-/// One flow's buffers, live or parked.
+/// One flow's buffers, live or not current.
 const FlowView = struct {
     buffers: state_module.FlowBuffers,
     thread_counter: u32,
@@ -50,13 +50,13 @@ fn live_view(story: *Story) FlowView {
     };
 }
 
-fn parked_view(story: *Story, record: *const state_module.FlowRecord) FlowView {
-    assert(record.in_use and record.parked_words > 0);
-    const parked = flows.Parked.of(flows.parked_words(&story.state, record));
+fn other_view(story: *Story, flow: u32) FlowView {
+    const record = &story.state.flows[flow];
+    assert(record.in_use and flow != story.state.current_flow);
     return .{
-        .buffers = parked.buffers,
-        .thread_counter = parked.thread_counter,
-        .indexed_count = @intCast(parked.buffers.choices.len),
+        .buffers = flows.view(&story.state, flow),
+        .thread_counter = record.thread_counter,
+        .indexed_count = record.indexed_count,
     };
 }
 
@@ -76,7 +76,7 @@ pub fn to_json(story: *Story, writer: *Writer) Writer.Error!void {
         const view = if (position == story.state.current_flow)
             live_view(story)
         else
-            parked_view(story, record);
+            other_view(story, @intCast(position));
         try write_flow(story, writer, view);
     }
     try writer.writeAll("},\"currentFlowName\":");

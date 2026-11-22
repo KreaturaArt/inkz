@@ -151,11 +151,11 @@ const Loader = struct {
         assert(!lookahead.active(&loader.story.state));
         assert(loader.story.callback_depth == 0);
         const s = loader.state();
+        flows.reset(s);
         s.evaluation.clear();
         s.call_stack.fresh(.start_of(loader.story.program.root_container()));
         s.output.clear();
         s.choices.clear();
-        flows.reset(s);
         @memcpy(s.globals, s.global_defaults);
         @memset(s.visit_counts, 0);
         @memset(s.turn_indices, state_module.never_visited);
@@ -175,7 +175,7 @@ const Loader = struct {
             try loader.flows_of(top, try as(all, .object));
         } else {
             // Before multi-flow, the one flow's keys are at the top level.
-            try loader.flow(top, flows.default_name, true);
+            try loader.flow(top, flows.default_name);
         }
         try loader.variables(try as(try member(top, "variablesState"), .object));
         try loader.evaluation((try as(try member(top, "evalStack"), .array)).items);
@@ -217,19 +217,21 @@ const Loader = struct {
             for (all.keys(), all.values()) |name, flow_json| {
                 const is_current = current == null or std.mem.eql(u8, name, current.?);
                 if (is_current == want_current) {
-                    try loader.flow(try as(flow_json, .object), name, is_current);
+                    try loader.flow(try as(flow_json, .object), name);
                 }
             }
         }
     }
 
-    /// One flow (ink's Flow constructor): loaded into the live buffers, then parked unless
-    /// it is the current flow.
-    fn flow(loader: *Loader, object: Object, name: []const u8, is_current: bool) Error!void {
+    /// One flow (ink's Flow constructor): loaded into its own buffers, selected as the live
+    /// ones. The current flow comes last, so it stays selected.
+    fn flow(loader: *Loader, object: Object, name: []const u8) Error!void {
         if (name.len == 0) return error.InvalidSave;
         if (name.len > state_module.flow_name_bytes_max) return error.SaveTooLarge;
         assert(name.len > 0);
         const s = loader.state();
+        const record = flows.record_for(s, name) catch return error.SaveTooLarge;
+        if (record != s.current_flow) flows.select(s, record);
         s.call_stack.frames.clear();
         s.call_stack.threads.clear();
         s.call_stack.temps.clear();
@@ -242,12 +244,7 @@ const Loader = struct {
         try loader.choices((try as(try member(object, "currentChoices"), .array)).items, threads);
         assert(s.call_stack.threads.count > 0);
         assert(s.choices.snapshots.count == s.choices.count());
-        const record = flows.record_for(s, name) catch return error.SaveTooLarge;
-        if (is_current) {
-            s.current_flow = record;
-        } else {
-            flows.park_live_into(s, record) catch return error.SaveTooLarge;
-        }
+        assert(s.current_flow == record);
     }
 
     fn call_stack(loader: *Loader, object: Object) Error!void {

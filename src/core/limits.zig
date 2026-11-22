@@ -19,7 +19,7 @@ pub const element_bytes = struct {
     pub const choice = 40; // text, target, source, threads, tags, snapshot, flags
     pub const tag = 4; // StringReference
     pub const list_word = 4;
-    pub const flow = 64; // name, directory ranges into the parking region
+    pub const flow = 100; // buffer counts, thread counter, indexed count, name
     pub const observer = 24; // global slot, callback, context
     pub const observer_event = 4; // GlobalSlot
     pub const diagnostic = 8; // where its message is: start and length
@@ -52,7 +52,6 @@ pub const Limits = struct {
     heap_bytes_max: u32 = 1024 * 1024,
     list_words_max: u32 = 16 * 1024,
     flows_max: u32 = 8,
-    flow_parking_bytes_max: u32 = 256 * 1024,
     /// The output set aside by `evaluate_function` (ink's outputStreamBefore), for every
     /// evaluation in progress: 12 bytes per output item, 4 per string mark.
     output_stash_bytes_max: u32 = 64 * 1024,
@@ -137,31 +136,49 @@ pub const Limits = struct {
     }
 
     fn bytes_total_checked(limits: *const Limits, shape: ProgramShape) ?u64 {
-        const live = limits.live_flow_bytes();
+        const flows = limits.flows_bytes();
         // The lookahead snapshot is a second copy of the live-flow buffers and of the globals,
         // visit counts and turn indices, with its bitset of copied chunks.
-        const lookahead = live + @as(u64, shape.globals_count) * element_bytes.value +
+        const lookahead = limits.live_flow_bytes() +
+            @as(u64, shape.globals_count) * element_bytes.value +
             @as(u64, shape.count_slots) * element_bytes.count_slot +
             @as(u64, shape.lookahead_copied_words()) * 4;
         const shared = limits.shared_bytes(shape);
-        const total = std.math.add(u64, live, lookahead) catch return null;
+        const total = std.math.add(u64, flows, lookahead) catch return null;
         const result = std.math.add(u64, total, shared) catch return null;
-        assert(result >= live);
+        assert(result >= flows);
         assert(result >= shared);
         return result;
     }
 
-    /// Buffers that belong to the active flow: call stack, evaluation, output and choices.
+    /// The buffers of one live flow: call stack, evaluation, output and choices.
     pub fn live_flow_bytes(limits: *const Limits) u64 {
-        var total: u64 = 0;
-        for (std.enums.values(FlowBuffer)) |buffer| {
-            total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
-        }
+        const total = @as(u64, limits.evaluation_values_max) * element_bytes.value +
+            limits.flow_bytes();
         assert(total > limits.evaluation_values_max);
         return total;
     }
 
-    /// Buffers shared by all flows: globals, counts, the heap, flows and diagnostics.
+    /// The buffers each flow owns: all of a live flow's but the evaluation stack.
+    pub fn flow_bytes(limits: *const Limits) u64 {
+        var total: u64 = 0;
+        for (std.enums.values(FlowBuffer)[1..]) |buffer| {
+            total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
+        }
+        assert(total > limits.frames_max);
+        return total;
+    }
+
+    /// Every flow's buffers and directory entry, and the evaluation stack they share.
+    pub fn flows_bytes(limits: *const Limits) u64 {
+        const each = limits.flow_bytes() + element_bytes.flow;
+        const total = @as(u64, limits.flows_max) * each +
+            @as(u64, limits.evaluation_values_max) * element_bytes.value;
+        assert(total >= each);
+        return total;
+    }
+
+    /// Buffers shared by all flows: globals, counts, the heap and diagnostics.
     pub fn shared_bytes(limits: *const Limits, shape: ProgramShape) u64 {
         const bytes = element_bytes;
         var total: u64 = 0;
@@ -174,8 +191,6 @@ pub const Limits = struct {
         total += @as(u64, limits.output_items_max) * bytes.output_item + limits.output_bytes_max;
         total += limits.heap_bytes_max;
         total += @as(u64, limits.list_words_max) * bytes.list_word;
-        total += @as(u64, limits.flows_max) * bytes.flow;
-        total += limits.flow_parking_bytes_max;
         total += limits.output_stash_bytes_max;
         total += @as(u64, limits.observers_max) * bytes.observer;
         total += @as(u64, limits.observer_events_max) * bytes.observer_event;
@@ -188,9 +203,9 @@ pub const Limits = struct {
     }
 };
 
-/// The buffers of one live flow, in the order they are carved and parked. The runtime's
-/// `FlowBuffers` has one field per tag; the lookahead copies all of them, and a parked flow
-/// all but the evaluation stack, which flows share.
+/// The buffers of one live flow, in the order they are carved. The runtime's `FlowBuffers`
+/// has one field per tag; the lookahead copies all of them, and each flow owns all but the
+/// evaluation stack, which flows share.
 pub const FlowBuffer = enum {
     evaluation,
     frames,
@@ -248,7 +263,6 @@ pub const Usage = struct {
     heap_bytes: u32 = 0,
     list_words: u32 = 0,
     flows: u32 = 0,
-    flow_parking_bytes: u32 = 0,
     output_stash_bytes: u32 = 0,
     choice_snapshot_frames: u32 = 0,
     choice_snapshot_temps: u32 = 0,
@@ -275,7 +289,6 @@ pub fn fitted(usage: Usage, margin: u32) Limits {
         @field(limits, name ++ "_max") = @max(fitted_floor, scaled);
     }
     limits.heap_bytes_max = std.mem.alignForward(u32, limits.heap_bytes_max, 4);
-    limits.flow_parking_bytes_max = std.mem.alignForward(u32, limits.flow_parking_bytes_max, 4);
     limits.output_stash_bytes_max = std.mem.alignForward(u32, limits.output_stash_bytes_max, 4);
     limits.output_bytes_max = @max(limits.output_bytes_max, limits.output_items_max);
     limits.frames_max = @max(limits.frames_max, limits.threads_max);
@@ -360,7 +373,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 3_059_476), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 3_976_756), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -379,7 +392,6 @@ pub const small_story_limits: Limits = .{
     .heap_bytes_max = 64 * 1024,
     .list_words_max = 1024,
     .flows_max = 4,
-    .flow_parking_bytes_max = 32 * 1024,
     .output_stash_bytes_max = 8 * 1024,
     .choice_snapshot_frames_max = 64,
     .choice_snapshot_temps_max = 256,
@@ -397,14 +409,18 @@ test "the sizing example in docs/benchmarks.md" {
     var main: Limits = .{};
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
+    try std.testing.expectEqual(@as(u64, 168_448), main.flow_bytes());
+    try std.testing.expectEqual(@as(u64, 686_480), main.flows_bytes());
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 2_724_224), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 3_112_104), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_461_824), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 3_355_448), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
+    try std.testing.expectEqual(@as(u64, 24_704), side.flow_bytes());
+    try std.testing.expectEqual(@as(u64, 102_288), side.flows_bytes());
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 404_784), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 463_100), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 371_760), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 504_588), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {

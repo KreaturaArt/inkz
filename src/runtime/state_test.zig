@@ -47,8 +47,8 @@ const Corruption = enum {
     dangling_list,
     temps_outside_frame,
     snapshot_range,
-    parking_directory,
-    parking_shape,
+    flow_counts,
+    flow_threads,
     lookahead_count,
 };
 
@@ -72,13 +72,13 @@ fn corrupt(state: *State, corruption: Corruption) !State.Fault {
         .dangling_list => try state.evaluation.push(.{ .list = @fromBackingInt(40) }),
         .temps_outside_frame => state.call_stack.frames.buffer[0].temps_count = 3,
         .snapshot_range => try state.choices.records.push(choice),
-        .parking_directory => {
+        .flow_counts => {
             try flows.switch_flow(state, "other");
-            state.flows[0].parked_words += 1;
+            state.flows[0].counts[0] = state.call_stack.frames.capacity() + 1; // its frames
         },
-        .parking_shape => {
+        .flow_threads => {
             try flows.switch_flow(state, "other");
-            state.parking[0] = 1000; // the parked frame count
+            state.flows[0].counts[1] = 0; // its threads
         },
         .lookahead_count => {
             state.snapshot = .{ .active = true, .errors = state.errors.capacity() + 1 };
@@ -89,7 +89,7 @@ fn corrupt(state: *State, corruption: Corruption) !State.Fault {
         .dangling_string => .string_reference,
         .dangling_list => .list_reference,
         .snapshot_range => .choices,
-        .parking_directory, .parking_shape => .flows,
+        .flow_counts, .flow_threads => .flows,
         .lookahead_count => .lookahead,
     };
 }
