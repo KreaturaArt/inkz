@@ -1148,6 +1148,23 @@ pub fn splice(choices: Choices, buffer: []u8, length: usize) usize {
 const compile = @import("../compiler/compile.zig");
 
 /// A source from a seeded PRNG, as the seed corpora use.
+/// A fuzz target: `check` on 32 seeded choice streams, more than `passed_min` of which must
+/// pass (return true), then under the fuzzer.
+pub fn run_target(comptime check: fn (Choices) anyerror!bool, passed_min: u32) !void {
+    var passed: u32 = 0;
+    for (0..32) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        if (try check(.{ .random = prng.random() })) passed += 1;
+    }
+    try std.testing.expect(passed > passed_min);
+    const target = struct {
+        fn entry(_: void, smith: *Smith) anyerror!void {
+            _ = try check(.{ .smith = smith });
+        }
+    };
+    try std.testing.fuzz({}, target.entry, .{ .corpus = &.{""} });
+}
+
 pub fn generate_seeded(seed: u64, buffer: []u8, options: Options) []const u8 {
     assert(buffer.len >= 1024);
     var prng: std.Random.DefaultPrng = .init(seed);

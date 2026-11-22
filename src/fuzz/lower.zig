@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const compile = @import("../compiler/compile.zig");
 const messages = @import("../compiler/messages.zig");
 const ink_json = @import("../core/ink_json.zig");
@@ -14,11 +13,11 @@ const fuzz_ink = @import("../testing/fuzz_ink.zig");
 
 const Allocator = std.mem.Allocator;
 
-fn lower_emit(_: void, smith: *Smith) anyerror!void {
+/// A generated source compiled and checked; whether it compiled.
+fn lower_emit(choices: fuzz_ink.Choices) !bool {
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    const choices: fuzz_ink.Choices = .{ .smith = smith };
     const source = fuzz_ink.Generator.generate(choices, &buffer, .{});
-    _ = try check_source(source);
+    return check_source(source);
 }
 
 fn image_of(gpa: Allocator, program: *const Program) ![]u8 {
@@ -96,12 +95,5 @@ fn check_source(source: []const u8) !bool {
 
 test "fuzz: compiled programs check, repeat, and survive their JSON" {
     // Seeded sources first: most compile, and every compiled one passes the checks.
-    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    var compiled: u32 = 0;
-    for (0..32) |seed| {
-        const source = fuzz_ink.generate_seeded(seed, &buffer, .{});
-        if (try check_source(source)) compiled += 1;
-    }
-    try std.testing.expect(compiled > 16);
-    try std.testing.fuzz({}, lower_emit, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(lower_emit, 16);
 }

@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
 const json_target = @import("json.zig");
@@ -47,12 +46,8 @@ fn save_of(gpa: Allocator, story: *play.Story) ![]u8 {
     return save.toOwnedSlice();
 }
 
-fn save_load(_: void, smith: *Smith) anyerror!void {
-    _ = try check_save_load(.{ .smith = smith }, smith);
-}
-
-/// Plays, saves, loads and compares; then loads a mutated save when there is a Smith.
-fn check_save_load(choices: fuzz_ink.Choices, smith: ?*Smith) !bool {
+/// Plays, saves, loads and compares; then, under the fuzzer, loads a mutated save.
+fn check_save_load(choices: fuzz_ink.Choices) !bool {
     const gpa = std.testing.allocator;
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
     var program = try play.compile_story(gpa, choices, &buffer) orelse return false;
@@ -86,9 +81,7 @@ fn check_save_load(choices: fuzz_ink.Choices, smith: ?*Smith) !bool {
     var script: [script_max]u8 = undefined;
     for (&script) |*byte| byte.* = choices.choose(u8);
     if (clean and !invisible) try expect_same_play(&original, &loaded, &script);
-    if (smith) |fuzzer| {
-        _ = try load_mutated(.{ .smith = fuzzer }, gpa, &program, setup, save, null);
-    }
+    if (choices == .smith) _ = try load_mutated(choices, gpa, &program, setup, save, null);
     return true;
 }
 
@@ -138,13 +131,7 @@ fn load_mutated(
 
 test "fuzz: a loaded save plays as the story it was saved from" {
     // Seeded stories first: most compile, and every one saves and loads to the same play.
-    var compared: u32 = 0;
-    for (0..32) |seed| {
-        var prng: std.Random.DefaultPrng = .init(seed);
-        if (try check_save_load(.{ .random = prng.random() }, null)) compared += 1;
-    }
-    try std.testing.expect(compared > 16);
-    try std.testing.fuzz({}, save_load, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(check_save_load, 16);
 }
 
 test "fuzz: an edited save applies only the operators it drew" {

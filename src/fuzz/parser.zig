@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const grammar = @import("../compiler/grammar.zig");
 const ast_module = @import("../compiler/ast.zig");
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
@@ -12,11 +11,11 @@ const NodeIndex = ast_module.NodeIndex;
 
 const nodes_max = 1 << 16;
 
-fn parse(_: void, smith: *Smith) anyerror!void {
+/// A generated source, raw bytes spliced in, parsed and checked; whether it parsed.
+fn parse(choices: fuzz_ink.Choices) !bool {
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    const choices: fuzz_ink.Choices = .{ .smith = smith };
     const source = fuzz_ink.Generator.generate(choices, &buffer, .{ .splices = true });
-    _ = try check_source(source);
+    return check_source(source);
 }
 
 /// Parses `source` and checks the tree; whether it parsed.
@@ -82,14 +81,6 @@ fn check_tree(parsed: *const grammar.Parsed) !void {
 }
 
 test "fuzz: the parser builds a well-formed tree or fails" {
-    // Seeded sources first, with and without splices: most parse, and their trees check.
-    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    var parsed: u32 = 0;
-    for (0..32) |seed| {
-        const splices = seed % 2 == 1;
-        const source = fuzz_ink.generate_seeded(seed, &buffer, .{ .splices = splices });
-        if (try check_source(source)) parsed += 1;
-    }
-    try std.testing.expect(parsed > 16);
-    try std.testing.fuzz({}, parse, .{ .corpus = &.{""} });
+    // Seeded sources first: most parse, and their trees check.
+    try fuzz_ink.run_target(parse, 16);
 }

@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
 const Program = @import("../core/program.zig").Program;
@@ -160,8 +159,9 @@ fn save_and_load(story: *play.Story) !void {
     assert(story.core.state.check() == .ok);
 }
 
-fn host_calls(_: void, smith: *Smith) anyerror!void {
-    _ = try check_calls(.{ .smith = smith });
+/// Whether a story compiled and its session ran.
+fn host_calls(choices: fuzz_ink.Choices) !bool {
+    return try check_calls(choices) != null;
 }
 
 /// What a session drew and made.
@@ -201,13 +201,7 @@ fn session_on(program: *const Program, choices: fuzz_ink.Choices) !Session {
 
 test "fuzz: host calls in any order keep the state consistent" {
     // Seeded sessions first: most stories compile, and every call sequence checks.
-    var sessions: u32 = 0;
-    for (0..32) |seed| {
-        var prng: std.Random.DefaultPrng = .init(seed);
-        if (try check_calls(.{ .random = prng.random() }) != null) sessions += 1;
-    }
-    try std.testing.expect(sessions > 16);
-    try std.testing.fuzz({}, host_calls, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(host_calls, 16);
 }
 
 test "fuzz: a session makes only the calls it drew" {

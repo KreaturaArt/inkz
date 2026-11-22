@@ -10,7 +10,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
 const host = @import("host.zig");
@@ -113,10 +112,10 @@ fn session(choices: fuzz_ink.Choices, limits: Limits, compact_always: bool) !?Se
     return result;
 }
 
-fn limits_swarm(_: void, smith: *Smith) anyerror!void {
-    const choices: fuzz_ink.Choices = .{ .smith = smith };
+/// A session on drawn limits; whether it played.
+fn limits_swarm(choices: fuzz_ink.Choices) !bool {
     const limits = draw_limits(choices);
-    _ = try session(choices, limits, choices.choose(bool));
+    return try session(choices, limits, choices.choose(bool)) != null;
 }
 
 /// The budget property for the run seeded with `seed`: replayed under its fitted limits, it
@@ -146,15 +145,7 @@ fn check_budget(seed: u64) !bool {
 test "fuzz: limits drawn tight or default fail cleanly" {
     // Seeded sessions first: the limits are drawn per field, and some sessions have
     // tight limits and still play.
-    var played: u32 = 0;
-    for (0..32) |seed| {
-        var prng: std.Random.DefaultPrng = .init(seed);
-        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
-        const limits = draw_limits(choices);
-        if (try session(choices, limits, choices.choose(bool)) != null) played += 1;
-    }
-    try std.testing.expect(played > 8);
-    try std.testing.fuzz({}, limits_swarm, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(limits_swarm, 8);
 }
 
 test "fuzz: a run's fitted usage replays it without a limit error" {
