@@ -75,7 +75,8 @@ comptime {
 
 pub const output_stashes_max = 8;
 
-/// A parked output stream: `items` items then `marks` string marks, from word `first`.
+/// A set-aside output stream: `items` items then `marks` string marks, from word `first` of
+/// `State.output_stash`.
 pub const OutputStash = struct {
     first: u32,
     items: u32,
@@ -220,8 +221,9 @@ pub const State = struct {
     flows: []FlowRecord,
     parking: []u32,
     current_flow: u32 = 0,
-    /// Output streams set aside by evaluate_function (ink's outputStreamBefore), parked
-    /// after the flows in `parking`; compaction roots.
+    /// Output streams set aside by evaluate_function (ink's outputStreamBefore), packed in
+    /// `output_stash`; compaction roots.
+    output_stash: []u32,
     output_stashes: [output_stashes_max]OutputStash = undefined,
     output_stashes_count: u32 = 0,
     /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
@@ -236,6 +238,7 @@ pub const State = struct {
 
     pub const Peaks = struct {
         parking_words: u32 = 0,
+        output_stash_words: u32 = 0,
         line_bytes: u32 = 0,
         tag_bytes: u32 = 0,
         load_bytes: u32 = 0,
@@ -270,9 +273,12 @@ pub const State = struct {
         const profile_zone = profile.begin(.state_init);
         defer profile_zone.end();
         limits.verify();
-        if (limits.heap_bytes_max % 4 != 0 or limits.flow_parking_bytes_max % 4 != 0) {
-            return error.InvalidLimits;
-        }
+        const word_limits = [_]u32{
+            limits.heap_bytes_max,
+            limits.flow_parking_bytes_max,
+            limits.output_stash_bytes_max,
+        };
+        for (word_limits) |bytes| if (bytes % 4 != 0) return error.InvalidLimits;
         const total = limits.bytes_total(shape_of(program));
         const memory = try gpa.alignedAlloc(u8, .@"8", @intCast(total));
         var carver: Carver = .{ .memory = memory };
@@ -308,6 +314,7 @@ pub const State = struct {
             .list_words = state.lists.peak,
             .flows = state.peaks.flows,
             .flow_parking_bytes = state.peaks.parking_words * 4,
+            .output_stash_bytes = state.peaks.output_stash_words * 4,
             .choice_snapshot_frames = choices.frames.peak,
             .choice_snapshot_temps = choices.temps.peak,
             .observer_events = state.observer_events.peak,
@@ -388,7 +395,7 @@ pub const State = struct {
         for (state.global_defaults) |*value| visit_value(value, visitor);
         flows.visit_parked(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
-            const words = state.parking[stash.first..][0 .. stash.items * 3];
+            const words = state.output_stash[stash.first..][0 .. stash.items * 3];
             visit_items(@alignCast(std.mem.bytesAsSlice(
                 output_module.Item,
                 std.mem.sliceAsBytes(words),
@@ -709,6 +716,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .lookahead = lookahead,
         .flows = carver.take(FlowRecord, limits.flows_max),
         .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
+        .output_stash = carver.take(u32, limits.output_stash_bytes_max / 4),
         // The cache's items here, for alignment; its bytes after `line_bytes`.
         .text_cache = .{
             .items = carver.take(output_module.Item, limits.output_items_max),

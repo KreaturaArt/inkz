@@ -53,6 +53,9 @@ pub const Limits = struct {
     list_words_max: u32 = 16 * 1024,
     flows_max: u32 = 8,
     flow_parking_bytes_max: u32 = 256 * 1024,
+    /// The output set aside by `evaluate_function` (ink's outputStreamBefore), for every
+    /// evaluation in progress: 12 bytes per output item, 4 per string mark.
+    output_stash_bytes_max: u32 = 64 * 1024,
     choice_snapshot_frames_max: u32 = 256,
     choice_snapshot_temps_max: u32 = 1024,
     observers_max: u32 = 64,
@@ -173,6 +176,7 @@ pub const Limits = struct {
         total += @as(u64, limits.list_words_max) * bytes.list_word;
         total += @as(u64, limits.flows_max) * bytes.flow;
         total += limits.flow_parking_bytes_max;
+        total += limits.output_stash_bytes_max;
         total += @as(u64, limits.observers_max) * bytes.observer;
         total += @as(u64, limits.observer_events_max) * bytes.observer_event;
         const diagnostics = @as(u64, limits.errors_max) + limits.warnings_max;
@@ -245,6 +249,7 @@ pub const Usage = struct {
     list_words: u32 = 0,
     flows: u32 = 0,
     flow_parking_bytes: u32 = 0,
+    output_stash_bytes: u32 = 0,
     choice_snapshot_frames: u32 = 0,
     choice_snapshot_temps: u32 = 0,
     observers: u32 = 0,
@@ -271,6 +276,7 @@ pub fn fitted(usage: Usage, margin: u32) Limits {
     }
     limits.heap_bytes_max = std.mem.alignForward(u32, limits.heap_bytes_max, 4);
     limits.flow_parking_bytes_max = std.mem.alignForward(u32, limits.flow_parking_bytes_max, 4);
+    limits.output_stash_bytes_max = std.mem.alignForward(u32, limits.output_stash_bytes_max, 4);
     limits.output_bytes_max = @max(limits.output_bytes_max, limits.output_items_max);
     limits.frames_max = @max(limits.frames_max, limits.threads_max);
     limits.temps_per_frame_max = @min(limits.temps_per_frame_max, limits.temps_max);
@@ -354,7 +360,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 2_993_940), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 3_059_476), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -374,6 +380,7 @@ pub const small_story_limits: Limits = .{
     .list_words_max = 1024,
     .flows_max = 4,
     .flow_parking_bytes_max = 32 * 1024,
+    .output_stash_bytes_max = 8 * 1024,
     .choice_snapshot_frames_max = 64,
     .choice_snapshot_temps_max = 256,
     .observers_max = 16,
@@ -391,13 +398,13 @@ test "the sizing example in docs/benchmarks.md" {
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 2_658_688), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 3_046_568), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_724_224), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 3_112_104), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 396_592), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 454_908), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 404_784), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 463_100), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {

@@ -9,7 +9,6 @@ const assert = std.debug.assert;
 const story_module = @import("story.zig");
 const output_module = @import("output.zig");
 const state_module = @import("state.zig");
-const flows = @import("flows.zig");
 const ops = @import("ops.zig");
 const vm = @import("vm.zig");
 const Value = @import("value.zig").Value;
@@ -23,8 +22,8 @@ pub const Error = story_module.Error || error{
     /// ink's "Function doesn't exist".
     FunctionNotFound,
     EvaluateDepthLimit,
-    /// The parking region has no room to set the output aside.
-    FlowParkingLimit,
+    /// `Limits.output_stash_bytes_max` has no room to set the output aside.
+    OutputStashLimit,
     /// ink's "Expected external function evaluation to be complete".
     EvaluationNotComplete,
 };
@@ -211,16 +210,16 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
 fn stash_output(story: *Story) Error!void {
     const state = &story.state;
     assert(state.output_stashes_count <= state_module.output_stashes_max);
-    assert(state.parking.len > 0);
+    assert(state.output_stash.len > 0);
     if (state.output_stashes_count == state_module.output_stashes_max) {
         return error.EvaluateDepthLimit;
     }
-    const first = flows.parking_used(state) + stashed_words(state);
+    const first = stashed_words(state);
     const items = state.output.items.slice();
     const marks = state.output.string_marks.slice();
     const words: u32 = @intCast(items.len * 3 + marks.len);
-    if (first + words > state.parking.len) return error.FlowParkingLimit;
-    const target = state.parking[first..][0..words];
+    if (first + words > state.output_stash.len) return error.OutputStashLimit;
+    const target = state.output_stash[first..][0..words];
     @memcpy(target[0 .. items.len * 3], std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(items)));
     @memcpy(target[items.len * 3 ..], marks);
     state.output_stashes[state.output_stashes_count] = .{
@@ -229,6 +228,7 @@ fn stash_output(story: *Story) Error!void {
         .marks = @intCast(marks.len),
     };
     state.output_stashes_count += 1;
+    state.peaks.output_stash_words = @max(state.peaks.output_stash_words, first + words);
 }
 
 fn stashed_words(state: *const state_module.State) u32 {
@@ -237,7 +237,7 @@ fn stashed_words(state: *const state_module.State) u32 {
     for (state.output_stashes[0..state.output_stashes_count]) |stash| {
         words += stash.items * 3 + stash.marks;
     }
-    assert(words <= state.parking.len);
+    assert(words <= state.output_stash.len);
     return words;
 }
 
@@ -247,7 +247,7 @@ fn unstash_output(story: *Story) void {
     assert(state.output_stashes_count > 0);
     state.output_stashes_count -= 1;
     const stash = state.output_stashes[state.output_stashes_count];
-    const words = state.parking[stash.first..][0 .. stash.items * 3 + stash.marks];
+    const words = state.output_stash[stash.first..][0 .. stash.items * 3 + stash.marks];
     const item_bytes = std.mem.sliceAsBytes(words[0 .. stash.items * 3]);
     const items: []const Item = @alignCast(std.mem.bytesAsSlice(Item, item_bytes));
     assert(items.len == stash.items);

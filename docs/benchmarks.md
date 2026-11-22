@@ -46,7 +46,8 @@ allocation; they are now carved from the same block. Nothing allocates after tha
   (8 bytes per counted container), the external bindings (24 bytes per EXTERNAL), the line buffer (`output_bytes_max`), the tag scratch
   (`tag_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
-  list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
+  list slab, the flow directory (64 bytes per flow), the flow parking region, the output stash
+  `evaluate_function` sets the current output aside in (`output_stash_bytes_max`), observers, the
   observer queue, errors and warnings, the ancestor scratch for visit counting, and the
   scratch `load_json` parses a save into with std.json (`load_bytes_max`, 1 MiB; a save
   takes about 8 to 16 times its size there, P17.12).
@@ -74,11 +75,11 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copies) | 207,144 | 30,540 |
-| Shared | 2,658,688 | 396,592 |
-| **Total per story** | **3,046,568** (2.91 MiB) | **454,908** (444 KiB) |
+| Shared | 2,724,224 | 404,784 |
+| **Total per story** | **3,112,104** (2.97 MiB) | **463,100** (452 KiB) |
 
-The whole game, one main story and four side stories, needs 3,046,568 + 4 × 454,908 =
-4,866,200 bytes (4.64 MiB), fixed at load time. In the main story the 1 MiB string heap and
+The whole game, one main story and four side stories, needs 3,112,104 + 4 × 463,100 =
+4,964,504 bytes (4.73 MiB), fixed at load time. In the main story the 1 MiB string heap and
 the 1 MiB load scratch are about a third of the total each.
 
 ### Fitted limits (P10.2)
