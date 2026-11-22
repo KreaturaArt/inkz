@@ -299,34 +299,19 @@ pub const Output = struct {
         return false;
     }
 
-    /// ink's TrimWhitespaceFromFunctionEnd, when a function returns.
+    /// ink's TrimWhitespaceFromFunctionEnd, when a function returns: drops the whitespace
+    /// text after the function's last non-whitespace text.
     pub fn trim_function_end(output: *Output, function_start: u32) void {
         const start: usize = if (function_start == no_function_start) 0 else function_start;
-        const items = output.items.slice();
-        var position = items.len;
-        while (position > start) {
-            position -= 1;
-            const item = items[position];
-            if (item.kind != .text) continue;
-            if (item.class == .non_whitespace) break;
-            // Removing keeps the order of everything after it.
-            std.mem.copyForwards(Item, items[position .. items.len - 1], items[position + 1 ..]);
-            output.items.count -= 1;
-            return output.trim_function_end_from(start, position);
-        }
-        assert(position >= start);
-    }
-
-    fn trim_function_end_from(output: *Output, start: usize, below: usize) void {
-        assert(start <= below);
-        assert(below <= output.items.count + 1);
-        var position = below;
+        assert(start <= output.items.count);
+        var position: usize = output.items.count;
         while (position > start) {
             position -= 1;
             const items = output.items.slice();
             const item = items[position];
             if (item.kind != .text) continue;
             if (item.class == .non_whitespace) return;
+            // Removing keeps the order of everything after it.
             std.mem.copyForwards(Item, items[position .. items.len - 1], items[position + 1 ..]);
             output.items.count -= 1;
         }
