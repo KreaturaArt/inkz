@@ -161,7 +161,8 @@ if (story.can_continue()) _ = try story.cont(); // `line` and `text` are stale f
   The data plane (`vm.run`) uses `std.debug.assert`, which stays on in ReleaseSafe, the
   shipped mode, and runs whole-structure checks at batch boundaries, not per instruction.
 - The unit of work is one `cont()`: text is assembled and observers are notified once per
-  call. The heap is compacted only when an allocation fails.
+  call. The heap is compacted only when room an instruction reserves (before it
+  pops its operands) isn't free; an allocation never compacts.
 - The VM's hot path never resolves a path, hashes or compares strings, or finds a name
   (lint: `hot_path`). The hot path is every runtime file the step reaches
   (`hot_path_files` in `tools/lint.zig`): `vm`, `ops`, `native`, `call_stack`, `lists`,

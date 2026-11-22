@@ -3,7 +3,7 @@
 //! (a few of what a story needs, heap bytes down to a few hundred). Every call returns a
 //! result or an error, the state checks after each one, and a story that failed in the
 //! middle of a step stays failed (`error.StoryFailed`) until `reset_state` or `load_json`.
-//! With `compact_always` drawn, the heap compacts before every allocation.
+//! With `compact_always` drawn, the heap compacts at every reservation of room.
 //!
 //! The budget property: a run's peak usage, fitted with no margin (`Limits.fitted(usage,
 //! 1)`), is enough to replay the same run without a limit error.

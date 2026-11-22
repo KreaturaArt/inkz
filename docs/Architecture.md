@@ -247,8 +247,9 @@ flowchart TB
     heap -. "compaction roots: values in every box above" .- live
 ```
 
-The heap is compacted only when an allocation doesn't fit. Compaction keeps allocation
-order, so heap marks recorded by the lookahead snapshot stay valid after relocation.
+The heap is compacted only when an instruction reserves room that isn't free
+(`State.reserve`), before it pops its operands, so every live value is on a root; an
+allocation itself never compacts. Compaction keeps allocation order, so heap marks recorded by the lookahead snapshot stay valid after relocation.
 Running out of any buffer returns a named error (`error.HeapLimit`, `error.FlowLimit`, ...).
 
 Every buffer records its peak (P10.2). `Story.usage()` reports them, and `Limits.fitted(usage,

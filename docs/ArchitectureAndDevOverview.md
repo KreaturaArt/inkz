@@ -157,7 +157,8 @@ functions after it in `story.zig`, which take the story first.
   shared values. If new text or tags then extend the line, it restores the snapshot and
   returns the line. That is how `cont()` returns one line and still joins glue.
 - **The heap** (`heap.zig`) holds runtime strings and lists in fixed buffers, reclaimed by
-  sliding mark-compact only when an allocation doesn't fit.
+  sliding mark-compact only when an instruction reserves room that isn't free, before it
+  pops its operands (`State.reserve`); an allocation never compacts.
 - **Flows** (`flows.zig`) park the used part of each live buffer in a bounded region on a
   switch, so a switch costs a copy of what is used, not of the limits.
 - **Saves** (`save.zig`, `load.zig`, `json_tree.zig`) stream ink's save format v10 with no

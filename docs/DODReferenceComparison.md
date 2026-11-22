@@ -536,7 +536,8 @@ Measured densities:
        N" and restore by truncating, which is how D12 stays cheap.
     4. A fixed heap is defragmented by construction.
   - *Costs to inkz:* a GC pause when the heap fills. It is bounded by the heap size, but
-    nonzero, and stress-tested with `compact_always`. In-flight operands need `keep` roots.
+    nonzero, and stress-tested with `compact_always`. Room is reserved before an
+    instruction pops its operands, so they are on a root then.
     There is no in-place mutation, which ink doesn't need anyway since its strings and lists
     are immutable values.
   - *fino's reason:* its whole research question is mutable value semantics. COW plus
