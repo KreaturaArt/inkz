@@ -1,8 +1,9 @@
 //! The structural gate: every ground-truth case (test/ground_truth, compiled by
 //! ink v1.2.1) is compiled from its `.ink` by the compiler, serialized with
 //! ink_json.serialize, and must equal inklecate's `.ink.json` exactly (which covers container
-//! names, nesting, flags and every instruction). Also the verified pair:
-//! load(serialize(compile(source))) is compile(source).
+//! names, nesting, flags and every instruction), and loading that JSON must give the compiled
+//! program back (the verified pair: load(serialize(compile(source))) is compile(source)). So
+//! the ground-truth gate, which plays inklecate's JSON, also plays what the compiler makes.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -40,7 +41,8 @@ fn compile_case_with(
     return compile.compile_file_with(arena, io, directory, std.fs.path.basename(path), options);
 }
 
-/// Null when the case's serialized program equals inklecate's JSON; otherwise why not.
+/// Null when the case's serialized program equals inklecate's JSON and loads back as the
+/// same program; otherwise why not.
 fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const u8 {
     assert(std.mem.indexOf(u8, id, "..") == null);
     const raw = try cases.read_json(arena, io, id);
@@ -52,7 +54,13 @@ fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const 
     var out: std.Io.Writer.Allocating = .init(arena);
     try ink_json.serialize(arena, &program, &out.writer);
     const actual = out.written();
-    if (std.mem.eql(u8, actual, expected)) return null;
+    if (std.mem.eql(u8, actual, expected)) {
+        var loaded = try ink_json.load(arena, actual);
+        program_testing.expect_same_program(&program, &loaded) catch |err| {
+            return try std.fmt.allocPrint(arena, "the loaded JSON differs: {t}", .{err});
+        };
+        return null;
+    }
     var at: usize = 0;
     while (at < @min(actual.len, expected.len) and actual[at] == expected[at]) at += 1;
     const from = at -| 24;
@@ -63,7 +71,7 @@ fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const 
     });
 }
 
-test "every ground-truth case compiles to inklecate's JSON" {
+test "every ground-truth case compiles to inklecate's JSON and loads back the same" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -83,8 +91,9 @@ test "every ground-truth case compiles to inklecate's JSON" {
 }
 
 test "the verified pair: loading the serialized program gives the same program" {
-    // The image round trip: for stories covering every kind of content, the
-    // program compiled from source equals the one loaded from its serialized JSON.
+    // The image round trip on small stories covering every kind of content; the gate
+    // above checks it for every ground-truth case, crime_scene.ink and
+    // simple_taster_tutorial.ink among them.
     const gpa = std.testing.allocator;
     const sources = [_][]const u8{
         "Hello.\n* [A] -> k\n* B\n- (g) {g} -> k\n== k ==\n{&a|b} {x: y|z}\n-> DONE\nVAR x = 1\n",
@@ -94,30 +103,6 @@ test "the verified pair: loading the serialized program gives the same program" 
             "~ return n * 1.5\n",
     };
     for (sources) |source| {
-        var compiled = try compile.compile_source(gpa, source);
-        defer compiled.deinit(gpa);
-        var out: std.Io.Writer.Allocating = .init(gpa);
-        defer out.deinit();
-        try ink_json.serialize(gpa, &compiled, &out.writer);
-        var loaded = try ink_json.load(gpa, out.written());
-        defer loaded.deinit(gpa);
-        try program_testing.expect_same_program(&compiled, &loaded);
-    }
-}
-
-test "the verified pair holds for whole stories" {
-    // The round trip keeps even the string table's order on stories with
-    // nested named content. Crime_scene.ink and simple_taster_tutorial.ink compiled,
-    // serialized and loaded give the same program.
-    const gpa = std.testing.allocator;
-    const paths = [_][]const u8{
-        "test/fixture/crime_scene.ink",
-        "test/fixture/simple_taster_tutorial.ink",
-    };
-    for (paths) |path| {
-        const limit: std.Io.Limit = .limited(1 << 20);
-        const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, limit);
-        defer gpa.free(source);
         var compiled = try compile.compile_source(gpa, source);
         defer compiled.deinit(gpa);
         var out: std.Io.Writer.Allocating = .init(gpa);
