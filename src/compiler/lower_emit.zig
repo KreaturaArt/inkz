@@ -154,7 +154,7 @@ fn add_item(lowered: *Lowered, layout: *const Layout, builder: *ProgramBuilder, 
         .variable_reference => |name| try builder.add_variable(name, .get),
         .assignment => |set| try add_assignment(builder, set.name, set.global, set.new),
         .variable_pointer => |pointer| {
-            try ink_json.add_variable_pointer_to(builder, pointer.name, pointer.context);
+            try builder.add_variable_pointer(pointer.name, pointer.context);
         },
         .choice_point => |choice| {
             const flags: @import("../core/instruction.zig").ChoiceFlags = @bitCast(

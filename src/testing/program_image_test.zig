@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const ink_json = @import("../core/ink_json.zig");
 const program_image = @import("../core/program_image.zig");
 const program_testing = @import("../core/program_testing.zig");
 const Program = @import("../core/program.zig").Program;
@@ -124,7 +123,7 @@ fn build_records(gpa: std.mem.Allocator) !Program {
     defer builder.deinit();
     _ = try builder.begin_container(.{});
     try builder.add_list_literal(&.{ "letters.a", "letters.b" }, &.{});
-    try ink_json.add_variable_pointer_to(&builder, "x", 0);
+    try builder.add_variable_pointer("x", 0);
     try builder.add_divert("k", .{ .kind = .plain, .conditional = false, .variable = false });
     try builder.add(.text, try builder.intern("A"));
     _ = try builder.list_origin("letters", &.{

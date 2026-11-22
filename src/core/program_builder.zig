@@ -474,6 +474,17 @@ pub const ProgramBuilder = struct {
         return .from_int(@intCast(builder.externals.items.len - 1));
     }
 
+    /// A pointer to variable `name` (ink's `{"^var": name, "ci": context}`).
+    pub fn add_variable_pointer(builder: *ProgramBuilder, name: []const u8, context: i32) !void {
+        assert(name.len > 0);
+        assert(context >= -1);
+        const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
+            .name = try builder.intern(name),
+            .context = context,
+        });
+        try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
+    }
+
     /// A divert to `target`, a path (`[]const u8`) or a `KeyTarget`, resolved in `finish`.
     pub fn add_divert(
         builder: *ProgramBuilder,

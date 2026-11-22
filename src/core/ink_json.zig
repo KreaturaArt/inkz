@@ -485,16 +485,12 @@ const Loader = struct {
             if (fields.reassignment) return builder.add(.temp_assign, name);
             return builder.add(.temp_declare, name);
         }
-        if (std.mem.eql(u8, key, "^var")) return loader.add_variable_pointer(value, fields.context);
+        if (std.mem.eql(u8, key, "^var")) {
+            return builder.add_variable_pointer(value, fields.context);
+        }
         assert(key.len > 0);
         std.log.debug("unknown content object key: {s}", .{key});
         return error.UnknownContent;
-    }
-
-    fn add_variable_pointer(loader: *Loader, name: []const u8, context: i32) Error!void {
-        assert(name.len > 0);
-        assert(loader.frames_count > 0);
-        try add_variable_pointer_to(&loader.builder, name, context);
     }
 
     fn add_divert_object(loader: *Loader, fields: *const Fields) Error!void {
@@ -554,21 +550,6 @@ pub fn add_word_to(builder: *ProgramBuilder, word: []const u8) Error!void {
     const count_before = builder.scratch.len;
     try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
     assert(builder.scratch.len == count_before + 1);
-}
-
-/// `{"^var": name, "ci": context}`.
-pub fn add_variable_pointer_to(
-    builder: *ProgramBuilder,
-    name: []const u8,
-    context: i32,
-) Error!void {
-    assert(name.len > 0);
-    const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
-        .name = try builder.intern(name),
-        .context = context,
-    });
-    try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
-    assert(at < builder.extra.count());
 }
 
 /// A divert-like content object: `->`, `f()`, `->t->` or `x()` with its fields.
