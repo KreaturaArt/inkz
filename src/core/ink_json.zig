@@ -838,7 +838,7 @@ fn expect_paths_match(gpa: Allocator, program: *const Program, listing: []const 
                 10,
             );
         }
-        const info = program.table().get(container);
+        const info = program.container_info(container);
         try std.testing.expectEqual(hash, info.path_hash);
         try std.testing.expectEqual(flags, info.flags);
         try std.testing.expectEqual(content, info.instruction_count);

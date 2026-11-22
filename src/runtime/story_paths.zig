@@ -79,15 +79,15 @@ pub fn choose_path_string(
 pub fn visit_count_at_path_string(story: *const Story, text: []const u8) u32 {
     assert(text.len > 0);
     const id = story.program.strings.find(text) orelse return 0;
-    const table = story.program.table();
+    const containers = story.program.containers;
     var position: u32 = 0;
-    while (position < table.count()) : (position += 1) {
-        const info = table.get(.from_int(position));
+    while (position < containers.len) : (position += 1) {
+        const info = containers.get(position);
         if (info.path != id) continue;
         if (info.count_slot == container_module.no_count_slot) return 0;
         return story.state.visit_counts[info.count_slot];
     }
-    assert(position == table.count());
+    assert(position == containers.len);
     return 0;
 }
 

@@ -21,7 +21,8 @@ pub fn write(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Writer
     try writer.print("RUNTIME {s}: ", .{kind});
     if (!diagnostic.pointer.is_null()) {
         const pointer = diagnostic.pointer;
-        const path = story.program.strings.get(story.program.table().get(pointer.container).path);
+        const program = story.program;
+        const path = program.strings.get(program.container_info(pointer.container).path);
         if (path.len == 0) {
             try writer.print("({d}): ", .{pointer.index});
         } else {

@@ -201,7 +201,7 @@ pub fn visit_changed_containers_due_to_divert(story: *Story) Error!void {
     var walked: u32 = 0;
     while (!ancestor.is_none()) : (walked += 1) {
         assert(walked <= story.program.containers.len);
-        const info = story.program.table().get(ancestor);
+        const info = story.program.container_info(ancestor);
         const in_previous = std.mem.indexOfScalar(ContainerIndex, ancestors, ancestor) != null;
         if (in_previous and !info.flags.count_start_only) break;
         const at_start = info.instruction_count > 0 and child_index == 0 and all_entered_at_start;

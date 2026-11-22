@@ -226,7 +226,7 @@ fn set_some_variable(story: *Story, random: *DotnetRandom) !void {
 /// evaluate_function on a top-level knot, function or not: the state must stay sound.
 fn evaluate_some_knot(story: *Story, random: *DotnetRandom) void {
     assert(story.callback_depth == 0);
-    const root = story.program.table().get(story.program.root_container());
+    const root = story.program.container_info(story.program.root_container());
     if (root.named_count == 0) return;
     const pick: u32 = @intCast(@rem(random.next(), @as(i32, @intCast(root.named_count))));
     const entry = story.program.named[root.named_first + pick];
@@ -239,7 +239,7 @@ fn evaluate_some_knot(story: *Story, random: *DotnetRandom) void {
 /// state must stay sound.
 fn choose_some_knot(story: *Story, random: *DotnetRandom) void {
     assert(story.callback_depth == 0);
-    const root = story.program.table().get(story.program.root_container());
+    const root = story.program.container_info(story.program.root_container());
     if (root.named_count == 0) return;
     const pick: u32 = @intCast(@rem(random.next(), @as(i32, @intCast(root.named_count))));
     const entry = story.program.named[root.named_first + pick];

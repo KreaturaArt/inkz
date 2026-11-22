@@ -841,7 +841,7 @@ pub const ProgramBuilder = struct {
             },
             .container_operand => {
                 if (target.content_index != null) return error.UnresolvedPaths;
-                const info = program.table().get(fixup.container);
+                const info = program.container_info(fixup.container);
                 const at = info.instruction_first.to_int() + fixup.at;
                 program.instructions.items(.operand)[at] = @backingInt(target.container);
             },
@@ -1032,6 +1032,65 @@ test "check catches a corrupted program" {
     try std.testing.expectEqual(Program.Fault.string_out_of_range, program.check());
     operands[0] = 1;
     try std.testing.expectEqual(Program.Fault.ok, program.check());
+}
+
+test "named lookup goes by container" {
+    // Names resolve within one container only: `knot` at the root, `stitch` inside it,
+    // and no `stitch` at the root.
+    var builder = try ProgramBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try build_sample(&builder);
+    var program = try builder.finish();
+    defer program.deinit(std.testing.allocator);
+    const knot = program.named_child(Program.root, "knot").?;
+    try std.testing.expectEqual(ContainerIndex.from_int(2), knot);
+    const stitch = program.named_child(knot, "stitch").?;
+    try std.testing.expectEqual(ContainerIndex.from_int(3), stitch);
+    try std.testing.expect(program.named_child(Program.root, "stitch") == null);
+    try std.testing.expectEqual(Program.root, program.parent(knot));
+    try std.testing.expectEqual(@as(u16, 2), program.container_info(stitch).depth);
+}
+
+test "check catches a broken container tree" {
+    // Negative space: corrupt one container field at a time, expect the named fault, and
+    // restore it. Depths are untrusted in images, so one at the u16 maximum must be a
+    // fault, not an overflow; so must an instruction or named range past its array.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    try build_sample(&builder);
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    const Fault = Program.Fault;
+    const depths = program.containers.items(.depth);
+    depths[1] = 2;
+    try std.testing.expectEqual(Fault.depth_not_parent_plus_one, program.check());
+    depths[1] = 1;
+    depths[2] = std.math.maxInt(u16);
+    depths[3] = 0;
+    try std.testing.expectEqual(Fault.depth_not_parent_plus_one, program.check());
+    depths[2] = 1;
+    depths[3] = 2;
+    const parents = program.containers.items(.parent);
+    parents[1] = .from_int(3);
+    try std.testing.expectEqual(Fault.parent_after_child, program.check());
+    parents[1] = Program.root;
+    const named: []NamedEntry = @constCast(program.named);
+    const knot_entry = &named[program.containers.items(.named_first)[0]];
+    knot_entry.child = .from_int(3);
+    try std.testing.expectEqual(Fault.named_child_has_other_parent, program.check());
+    knot_entry.child = .from_int(2);
+    const named_counts = program.containers.items(.named_count);
+    const root_named = named_counts[0];
+    named_counts[0] = std.math.maxInt(u32);
+    try std.testing.expectEqual(Fault.named_range_out_of_bounds, program.check());
+    named_counts[0] = root_named;
+    const instruction_counts = program.containers.items(.instruction_count);
+    const stitch_count = instruction_counts[3];
+    instruction_counts[3] = std.math.maxInt(u32);
+    try std.testing.expectEqual(Fault.instructions_not_partitioned, program.check());
+    instruction_counts[3] = stitch_count;
+    try std.testing.expectEqual(Fault.ok, program.check());
 }
 
 test "globals, lists, externals and the global declaration" {

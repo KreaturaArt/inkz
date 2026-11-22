@@ -337,13 +337,13 @@ const Counts = enum { visits, turns };
 
 fn write_counts(story: *Story, writer: *Writer, counts: Counts) Writer.Error!void {
     assert(@backingInt(counts) <= 1);
-    const table = story.program.table();
+    const containers = story.program.containers;
     assert(story.state.visit_counts.len == story.state.turn_indices.len);
     try writer.writeByte('{');
     var written = false;
     var position: u32 = 0;
-    while (position < table.count()) : (position += 1) {
-        const info = table.get(.from_int(position));
+    while (position < containers.len) : (position += 1) {
+        const info = containers.get(position);
         if (info.count_slot == container_module.no_count_slot) continue;
         const number: i64 = switch (counts) {
             .visits => story.state.visit_counts[info.count_slot],

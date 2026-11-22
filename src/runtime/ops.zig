@@ -211,7 +211,7 @@ fn value_text(story: *Story, value: Value) Error![]const u8 {
             error.WriteFailed => return error.OutputLimit,
         },
         .divert_target => |target| {
-            const path = story.program.table().get(target).path;
+            const path = story.program.container_info(target).path;
             writer.print("DivertTargetValue({s})", .{story.program.strings.get(path)}) catch
                 return error.OutputLimit;
         },
@@ -839,7 +839,7 @@ const ChoicePops = struct {
 pub fn turns_since(story: *Story, container: ContainerIndex) i32 {
     assert(container.to_int() < story.program.containers.len);
     assert(story.state.turn_indices.len == story.state.visit_counts.len);
-    const info = story.program.table().get(container);
+    const info = story.program.container_info(container);
     if (info.count_slot == container_module.no_count_slot) return -1;
     const recorded = story.state.turn_indices[info.count_slot];
     if (recorded == state_module.never_visited) return -1;
@@ -896,7 +896,7 @@ pub fn sequence_shuffle_index(story: *Story) Error!void {
     const loop_index = @divTrunc(count, elements);
     const iteration_index = @rem(count, elements);
     const container = vm.current_pointer(story).container;
-    const hash: i32 = @bitCast(story.program.table().get(container).path_hash);
+    const hash: i32 = @bitCast(story.program.container_info(container).path_hash);
     var generator = DotnetRandom.init(hash +% loop_index +% story.state.story_seed);
     var unpicked: [shuffle_elements_max]i32 = undefined;
     var unpicked_count: u32 = @intCast(elements);

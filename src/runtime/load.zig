@@ -636,7 +636,7 @@ const Loader = struct {
             members.skip_value(name + 1);
             // ink keeps counts by path; a path the story doesn't count is kept but unused.
             const container = loader.container_at(name) catch continue;
-            const slot = loader.story.program.table().get(container).count_slot;
+            const slot = loader.story.program.container_info(container).count_slot;
             if (slot == container_module.no_count_slot or !loader.commit) continue;
             const s = loader.state();
             switch (which) {

@@ -28,7 +28,7 @@ fn write_container(
     writer: *std.Io.Writer,
     container: index.ContainerIndex,
 ) !void {
-    const info = program.table().get(container);
+    const info = program.container_info(container);
     assert(info.instruction_count <= program.instructions.len);
     try writer.print("container {d} \"{s}\"", .{
         container.to_int(),

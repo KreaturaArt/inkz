@@ -843,7 +843,7 @@ pub const Story = struct {
     /// A container's path, as ink prints a divert target's path.
     pub fn path_of(story: *const Story, container: ContainerIndex) []const u8 {
         assert(container.to_int() < story.program.containers.len);
-        const path = story.program.table().get(container).path;
+        const path = story.program.container_info(container).path;
         assert(!path.is_none());
         return story.program.strings.get(path);
     }

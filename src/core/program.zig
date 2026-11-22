@@ -16,7 +16,6 @@ const Instruction = instruction_module.Instruction;
 const Opcode = instruction_module.Opcode;
 const ContainerInfo = container_module.ContainerInfo;
 const NamedEntry = container_module.NamedEntry;
-const ContainerTable = container_module.ContainerTable;
 const GlobalSlot = index.GlobalSlot;
 const ListItemIndex = index.ListItemIndex;
 const ListOriginIndex = index.ListOriginIndex;
@@ -119,7 +118,15 @@ pub const Program = struct {
 
     pub const Fault = enum {
         ok,
-        containers,
+        no_containers,
+        root_has_parent,
+        root_depth_not_zero,
+        parent_out_of_range,
+        parent_after_child,
+        depth_not_parent_plus_one,
+        named_range_out_of_bounds,
+        named_child_out_of_range,
+        named_child_has_other_parent,
         instructions_not_partitioned,
         enter_container_child_mismatch,
         index_in_parent_mismatch,
@@ -153,13 +160,11 @@ pub const Program = struct {
         program.* = undefined;
     }
 
-    pub fn table(program: *const Program) ContainerTable {
-        const result: ContainerTable = .{
-            .containers = program.containers,
-            .named = program.named,
-        };
-        assert(result.named.len == program.named.len);
-        return result;
+    pub fn container_info(program: *const Program, container: ContainerIndex) ContainerInfo {
+        assert(container.to_int() < program.containers.len);
+        const info = program.containers.get(container.to_int());
+        assert(info.named_first + info.named_count <= program.named.len);
+        return info;
     }
 
     pub fn instructions_count(program: *const Program) u32 {
@@ -188,27 +193,32 @@ pub const Program = struct {
     // The container-table interface of `path.zig`.
 
     pub fn root_container(program: *const Program) ContainerIndex {
-        assert(program.table().parent(root).is_none());
+        assert(program.containers.items(.parent)[0].is_none());
         return root;
     }
 
     pub fn parent(program: *const Program, container: ContainerIndex) ContainerIndex {
         assert(container.to_int() < program.containers.len);
-        const result = program.table().parent(container);
+        const result = program.containers.items(.parent)[container.to_int()];
+        assert(result.is_none() == (container == root));
         assert(result.is_none() or result.to_int() < container.to_int());
         return result;
     }
 
+    /// The named child `name` of `container`: one string lookup, then id compares only.
     pub fn named_child(
         program: *const Program,
         container: ContainerIndex,
         name: []const u8,
     ) ?ContainerIndex {
-        assert(container.to_int() < program.containers.len);
+        const info = program.container_info(container);
         const id = program.strings.find(name) orelse return null;
-        const child = program.table().named_child(container, id) orelse return null;
-        assert(program.table().parent(child) == container);
-        return child;
+        for (program.named[info.named_first..][0..info.named_count]) |entry| {
+            if (entry.name != id) continue;
+            assert(program.parent(entry.child) == container);
+            return entry.child;
+        }
+        return null;
     }
 
     pub fn content_count(program: *const Program, container: ContainerIndex) u32 {
@@ -237,7 +247,7 @@ pub const Program = struct {
         const item = program.instruction_at(container, position);
         if (item.opcode != .enter_container) return null;
         const child = item.get(.enter_container);
-        assert(program.table().parent(child) == container);
+        assert(program.parent(child) == container);
         return child;
     }
 
@@ -245,21 +255,56 @@ pub const Program = struct {
     pub fn check(program: *const Program) Fault {
         const profile_zone = profile.begin(.program_check);
         defer profile_zone.end();
-        const instructions_total = program.instructions_count();
-        if (program.table().check(instructions_total) != .ok) return .containers;
+        const tree = program.check_containers();
+        if (tree != .ok) return tree;
         const partition = program.check_partition();
         if (partition != .ok) return partition;
         const structure = program.check_children();
         if (structure != .ok) return structure;
         const operands = program.check_operands();
         if (operands != .ok) return operands;
-        const tables = program.check_tables();
-        assert(tables != .containers);
-        return tables;
+        return program.check_tables();
     }
 
     pub fn verify(program: *const Program) void {
         fault.verify(program.check());
+    }
+
+    /// The tree: the root first, parents before children, depths one more than the parent's,
+    /// and each named range in bounds and naming children of its container.
+    fn check_containers(program: *const Program) Fault {
+        const containers = program.containers;
+        if (containers.len == 0) return .no_containers;
+        const parents = containers.items(.parent);
+        const depths = containers.items(.depth);
+        if (!parents[0].is_none()) return .root_has_parent;
+        if (depths[0] != 0) return .root_depth_not_zero;
+        for (parents[1..], depths[1..], 1..) |container_parent, depth, position| {
+            if (container_parent.is_none()) return .parent_out_of_range;
+            // Parents come first, so one forward pass can check depths.
+            if (container_parent.to_int() >= position) return .parent_after_child;
+            // Widened: a parent at the u16 maximum must be a fault, not an overflow.
+            if (depth != @as(u32, depths[container_parent.to_int()]) + 1) {
+                return .depth_not_parent_plus_one;
+            }
+        }
+        for (0..containers.len) |position| {
+            const named_first = containers.items(.named_first)[position];
+            const named_count = containers.items(.named_count)[position];
+            if (@as(u64, named_first) + named_count > program.named.len) {
+                return .named_range_out_of_bounds;
+            }
+            for (program.named[named_first..][0..named_count]) |entry| {
+                if (entry.child.is_none() or entry.child.to_int() >= containers.len) {
+                    return .named_child_out_of_range;
+                }
+                if (parents[entry.child.to_int()] != ContainerIndex.from_int(@intCast(position))) {
+                    return .named_child_has_other_parent;
+                }
+            }
+        }
+        assert(containers.len > 0);
+        return .ok;
     }
 
     /// Containers' instructions are laid out back to back in container order, so every
