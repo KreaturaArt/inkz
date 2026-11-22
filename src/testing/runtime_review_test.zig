@@ -1,6 +1,7 @@
 //! Runtime fixes from the final review (P15.1), each checked through a whole story: the
 //! lookahead's undo log, long tags, glue in choice tags, lists that print long, and ink's
-//! list-and-int operation errors. The stories are compiled from the ink in each test.
+//! list-and-int operation errors; and (P17.15) a nearly full heap compacting between
+//! instructions. The stories are compiled from the ink in each test.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -339,4 +340,52 @@ test "name classes from the builder equal the ones an image load rebuilds" {
         try std.testing.expectEqual(Program.Fault.name_classes_mismatch, loaded.check());
     }
     try std.testing.expect(checked > 100);
+}
+
+test "a nearly full heap compacts between instructions, and string and list ops come out right" {
+    // Compaction happens only where room is reserved, before an instruction pops
+    // its operands, so values in flight are on the evaluation stack. A loop makes about
+    // 2 KB of strings and lists in a 256-byte heap and a 32-word slab, so it compacts
+    // over and over; with `compact_always` it compacts at every reservation too.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\LIST colours = red, green, blue
+        \\VAR s = ""
+        \\VAR l = ()
+        \\~ temp i = 0
+        \\- (top)
+        \\~ s = "x{i}"
+        \\~ s = s + "-" + s
+        \\~ l = (red, blue)
+        \\~ l = l - red
+        \\~ l = l + LIST_MIN(LIST_INVERT(l))
+        \\~ i = i + 1
+        \\{ i < 40: -> top }
+        \\{s} {l} {LIST_COUNT(LIST_ALL(l))}
+        \\* [{s}!] done
+        \\
+    );
+    defer program.deinit(gpa);
+    var roomy: api.Story = undefined;
+    try roomy.init(gpa, &program, .{});
+    defer roomy.deinit(gpa);
+    const expected = try play(gpa, &roomy);
+    defer gpa.free(expected);
+    try std.testing.expect(std.mem.endsWith(u8, expected, "x39-x39 red, blue 3\n"));
+    try std.testing.expect(roomy.state.strings.peak > 2048); // without compaction
+    for ([_]bool{ false, true }) |compact_always| {
+        var story: api.Story = undefined;
+        try story.init(gpa, &program, .{
+            .limits = .{ .heap_bytes_max = 256, .list_words_max = 32 },
+        });
+        defer story.deinit(gpa);
+        story.state.compact_always = compact_always;
+        const text = try play(gpa, &story);
+        defer gpa.free(text);
+        try std.testing.expectEqualStrings(expected, text);
+        try std.testing.expectEqual(@as(u32, 1), story.current_choices_count());
+        try std.testing.expectEqualStrings("x39-x39!", (try story.current_choice(0)).get().text);
+        try std.testing.expect(story.state.strings.peak <= 256);
+        story.state.verify();
+    }
 }

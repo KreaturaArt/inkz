@@ -2,9 +2,10 @@
 //! StoryState.cs and VariablesState.cs: variables, native calls, strings and tags, choices,
 //! randomness and the ends of flow. `vm.zig` dispatches; these do the work.
 //!
-//! Heap safety: an allocation may compact the heap, which moves strings and lists. Values a
-//! function still needs are either on a root (the evaluation stack) or passed as `keep`, and
-//! byte slices are only taken after the last allocation.
+//! Heap safety: compaction moves strings and lists, and only `State.reserve` compacts. An
+//! instruction reserves the room it needs before it pops its operands (or once it holds
+//! nothing but text in the line buffer), so every live value is on a root then; its
+//! allocations after that never compact.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -174,7 +175,7 @@ pub fn eval_output(story: *Story) Error!vm.Signal {
         },
         else => {
             const text = try value_text(story, value);
-            const reference = try store_string(story, text, &.{});
+            const reference = try store_string(story, text);
             try push_text(story, reference, 0, @intCast(text.len));
         },
     }
@@ -232,19 +233,13 @@ fn in_heap(story: *const Story, text: []const u8) bool {
     return @intFromPtr(text.ptr) >= start and @intFromPtr(text.ptr) < start + heap_bytes.len;
 }
 
-/// Copies `text` into a new heap string. Text inside the heap is copied out first, since
-/// the allocation may compact.
-pub fn store_string(story: *Story, text_raw: []const u8, keep: []Value) Error!StringReference {
-    assert(text_raw.len < 1 << 31);
-    var text = text_raw;
-    if (in_heap(story, text)) {
-        if (text.len > story.state.line_bytes.len) return error.OutputLimit;
-        @memcpy(story.state.line_bytes[0..text.len], text);
-        text = story.state.line_bytes[0..text.len];
-        note_line_bytes(&story.state, text.len);
-    }
-    const reference = story.state.allocate_string(@intCast(text.len), keep) catch
-        return error.HeapLimit;
+/// Copies `text`, which is not in the heap, into a new heap string, making room first (the
+/// caller holds no heap value).
+fn store_string(story: *Story, text: []const u8) Error!StringReference {
+    assert(text.len < 1 << 31);
+    assert(!in_heap(story, text));
+    try story.state.reserve(@intCast(text.len + 8 + 3), 0);
+    const reference = story.state.strings.try_allocate(@intCast(text.len)) orelse unreachable;
     @memcpy(story.state.strings.get(reference), text);
     assert(reference.is_heap());
     return reference;
@@ -261,7 +256,7 @@ pub fn end_string(story: *Story) Error!vm.Signal {
         else => return error.OutputLimit,
     };
     note_line_bytes(state, writer.end);
-    const reference = try store_string(story, writer.buffered(), &.{});
+    const reference = try store_string(story, writer.buffered());
     state.call_stack.current_frame().in_expression_evaluation = true;
     try vm.push_evaluation(story, .{ .string = reference });
     return .output;
@@ -299,7 +294,7 @@ pub fn end_tag(story: *Story) Error!vm.Signal {
     }
     state.output.items.truncate(@intCast(start));
     note_line_bytes(state, writer.end);
-    const reference = try store_string(story, writer.buffered(), &.{});
+    const reference = try store_string(story, writer.buffered());
     try vm.push_evaluation(story, .{ .tag = reference });
     return .output;
 }
@@ -552,8 +547,8 @@ fn global_of(story: *const Story, name: StringId) ?GlobalSlot {
 fn single_item_list(story: *Story, item: ListItemIndex) Error!Value {
     assert(item.to_int() < story.program.list_items.len);
     const origin = story.program.list_items[item.to_int()].origin;
-    const reference = story.state.store_list(&.{item}, &.{origin}, &.{}) catch
-        return error.ListLimit;
+    try story.state.reserve(0, lists_module.ListSlab.header_words + 2);
+    const reference = story.state.lists.store(&.{item}, &.{origin}) catch unreachable;
     return .{ .list = reference };
 }
 
@@ -743,7 +738,9 @@ pub fn list_literal(story: *Story, instruction: Instruction) Error!ListReference
     const items: []const ListItemIndex = @ptrCast(words[0..record.items_count]);
     const origin_words = words[record.items_count..][0..record.origins_count];
     const origins: []const ListOriginIndex = @ptrCast(origin_words);
-    return story.state.store_list(items, origins, &.{}) catch error.ListLimit;
+    const size = lists_module.ListSlab.header_words + items.len + origins.len;
+    try story.state.reserve(0, @intCast(size));
+    return story.state.lists.store(items, origins) catch unreachable;
 }
 
 // Choices.
@@ -805,7 +802,7 @@ fn choice_text_bytes(story: *const Story, record: instruction_module.ChoicePoint
     return bytes;
 }
 
-/// The strings and tags a choice point pops, kept as values so compaction updates them.
+/// The strings and tags a choice point pops.
 const ChoicePops = struct {
     pub const tags_max = 32;
     /// [0] start text, [1] choice-only text, then tags in order.
@@ -854,13 +851,11 @@ const ChoicePops = struct {
             return pops.values[1].string;
         }
         const total: u32 = @intCast(start.len + only.len);
-        const reference = story.state.allocate_string(total, &pops.values) catch
-            return error.HeapLimit;
-        // The parts may have moved; read them again.
+        // process_choice made room.
+        const reference = story.state.strings.try_allocate(total) orelse unreachable;
         const target = story.state.strings.get(reference);
-        const start_now = pops.part(story, 0);
-        @memcpy(target[0..start_now.len], start_now);
-        @memcpy(target[start_now.len..], pops.part(story, 1));
+        @memcpy(target[0..start.len], start);
+        @memcpy(target[start.len..], only);
         const trimmed = std.mem.trim(u8, target, blank);
         const leading: u32 = @intCast(std.mem.indexOf(u8, target, trimmed) orelse 0);
         std.mem.copyForwards(u8, target[0..trimmed.len], target[leading..][0..trimmed.len]);
@@ -1053,7 +1048,8 @@ fn list_random(story: *Story) Error!Value {
 /// The words of the longest list the program can make: every item and every origin.
 pub fn list_words_max(story: *const Story) u32 {
     const program = story.program;
-    const words: u32 = @intCast(3 + program.list_items.len + program.list_origins.len);
+    const words: u32 = @intCast(lists_module.ListSlab.header_words + program.list_items.len +
+        program.list_origins.len);
     assert(words >= 3);
     return words;
 }

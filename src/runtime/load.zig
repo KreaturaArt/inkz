@@ -127,7 +127,7 @@ const Loader = struct {
         s.output_stashes_count = 0;
         s.did_safe_exit = false;
         loader.story.diverted_pointer = .null;
-        s.compact(&.{});
+        s.compact();
     }
 
     /// Validation's check that the save's strings and lists fit next to what survives.
