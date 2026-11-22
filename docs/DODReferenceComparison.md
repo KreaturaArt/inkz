@@ -146,7 +146,7 @@ Almost every difference below follows from this table.
 | Backtracking | Yes, ink's: `Checkpoint{at, tokens, nodes, scratch, flags}`, restored on fail and after a peek | None | None (FIRST-set guards; "never fails") |
 | Recursion bound | `parse_depth_max = 512` frames gives a `too_deep` diagnostic (`limits.zig:284`) | None | None (unbounded native stack) |
 | Progress bound | Gas `64*(len+64)` gives a `no_progress` diagnostic (`core.zig:247-254`) | None | Gas only in `containerMembers`, which panics (`grammar.zig:111-181`) |
-| Recursion enforcement | Lint: call-graph SCC (Tarjan with an explicit stack), one suppression in the repo (`tools/lint.zig:565-620`) | None; recursion everywhere | None |
+| Recursion enforcement | Lint: call-graph cycle check (back edges of an iterative depth-first search), one suppression in the repo (`call_cycles` in `tools/lint.zig`) | None; recursion everywhere | None |
 | Rule dispatch | `switch (rule) { inline else => rule_function(rule)(…) }`; rules found by name at comptime across four modules (`grammar.zig:71-102`) | Direct calls | Direct calls; local labeled switches for sub-state (`grammar.zig:98-180`, `688-958`) |
 | Precedence | Precedence climbing through frames, ink's table | Precedence climbing, `binOp` switch (`post_tree/Parser.zig:392-409`) | Precedence table parsed at comptime from a multiline string, scanned linearly (`grammar.zig:589-613`, `1064-1076`) |
 
@@ -666,7 +666,7 @@ host.
 |---|---|---|---|
 | Size guards | `comptime assert(@sizeOf(T) == limits.element_bytes.x)` next to every type, plus `sizes_test.zig` with `soa_bytes(T)` | Runtime tests only; index_sea's is wrong | None (packed widths only) |
 | Structural checks | `check() → Fault` enum + `verify()` that panics **in every build mode**; death tests run in child processes (`tools/death.zig`) | `debug.assert` | `assert` in accessors, `maybe()`, comptime schema exhaustiveness |
-| Lint | `tools/lint.zig`: function ≤ 70 lines, line ≤ 100 columns, recursion SCC, no `usize` fields, snake_case files, ≥ 1 assert per function, `hot_path` text bans in `vm.zig` | None | None |
+| Lint | `tools/lint.zig`: function ≤ 70 lines, line ≤ 100 columns, call cycles, no `usize` fields, snake_case files, ≥ 1 assert per function, `hot_path` text bans in `vm.zig` | None | None |
 | Release mode | ReleaseSafe ships (D11) | ReleaseFast | ReleaseFast |
 | Comptime metaprogramming | `operand_kind` table, `rule_function` lookup, `Walk(order)`, image `record_layouts` | `@FieldType`/`@unionInit` constructors, `inline` op prongs | `TagSet`, `SyntaxTag` = `@Enum(u16, Token.Tag ++ Node.Tag)`, schema reflection, comptime precedence table |
 

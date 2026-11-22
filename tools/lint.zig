@@ -444,72 +444,53 @@ pub const Linter = struct {
         return found;
     }
 
+    /// Reports each call cycle on which no function has a recursion suppression.
     fn check_recursion(linter: *Linter) !void {
-        const graph = try linter.build_graph();
-        const components = try strongly_connected_components(linter.arena, graph);
-        assert(components.len == linter.functions.items.len);
-        const members = try group_components(linter.arena, components);
-        for (members.first, 0..) |first, component| {
-            const count = members.first_next[component] - first;
-            const nodes = members.nodes[first..][0..count];
-            assert(nodes.len > 0);
-            if (nodes.len == 1 and !graph.has_edge(nodes[0], nodes[0])) continue;
-            try linter.report_cycle(nodes);
+        const cycles = try call_cycles(linter.arena, try linter.call_graph());
+        cycles: for (cycles) |cycle| {
+            for (cycle) |node| {
+                if (linter.functions.items[node].allow_recursion) continue :cycles;
+            }
+            var names: std.ArrayList(u8) = .empty;
+            for (cycle, 0..) |node, index| {
+                if (index > 0) try names.appendSlice(linter.arena, ", ");
+                try names.appendSlice(linter.arena, linter.functions.items[node].name);
+            }
+            const function = linter.functions.items[cycle[0]];
+            const path = linter.files.items[function.file].path;
+            const message = try std.fmt.allocPrint(
+                linter.arena,
+                "functions call themselves: {s}",
+                .{names.items},
+            );
+            try linter.report(path, function.line, .recursion, message);
         }
     }
 
-    fn report_cycle(linter: *Linter, nodes: []const u32) !void {
-        assert(nodes.len > 0);
-        for (nodes) |node| {
-            if (linter.functions.items[node].allow_recursion) return;
-        }
-        var names: std.ArrayList(u8) = .empty;
-        for (nodes, 0..) |node, index| {
-            if (index > 0) try names.appendSlice(linter.arena, ", ");
-            try names.appendSlice(linter.arena, linter.functions.items[node].name);
-        }
-        const function = linter.functions.items[nodes[0]];
-        const path = linter.files.items[function.file].path;
-        const message = try std.fmt.allocPrint(
-            linter.arena,
-            "functions call themselves: {s}",
-            .{names.items},
-        );
-        assert(message.len > 0);
-        try linter.report(path, function.line, .recursion, message);
-    }
-
-    /// Builds a compressed adjacency list from the recorded calls.
-    fn build_graph(linter: *Linter) !Graph {
-        const nodes_count: u32 = @intCast(linter.functions.items.len);
-        var edges: std.ArrayList(Edge) = .empty;
-        for (linter.calls.items) |call| {
-            assert(call.caller < nodes_count);
-            const caller_file = linter.functions.items[call.caller].file;
-            const target_file = if (call.target_path) |path|
-                linter.file_by_path(path) orelse continue
-            else
-                caller_file;
+    /// The functions each function calls, resolved by name, without duplicates.
+    fn call_graph(linter: *Linter) ![]const []const u32 {
+        const callees = try linter.arena.alloc(std.ArrayList(u32), linter.functions.items.len);
+        @memset(callees, .empty);
+        calls: for (linter.calls.items) |call| {
+            var target_file = linter.functions.items[call.caller].file;
+            if (call.target_path) |path| {
+                target_file = for (linter.files.items, 0..) |file, index| {
+                    if (std.mem.eql(u8, file.path, path)) break @intCast(index);
+                } else continue :calls;
+            }
             const file = &linter.files.items[target_file];
             const first = file.functions_first;
             const functions = linter.functions.items[first..][0..file.functions_count];
+            const list = &callees[call.caller];
             for (functions, first..) |function, callee| {
                 if (!std.mem.eql(u8, function.name, call.callee_name)) continue;
-                try edges.append(linter.arena, .{ .from = call.caller, .to = @intCast(callee) });
+                if (std.mem.indexOfScalar(u32, list.items, @intCast(callee)) != null) continue;
+                try list.append(linter.arena, @intCast(callee));
             }
         }
-        const graph = try Graph.from_edges(linter.arena, nodes_count, edges.items);
-        assert(graph.edge_first.len == nodes_count + 1);
+        const graph = try linter.arena.alloc([]const u32, callees.len);
+        for (graph, callees) |*successors, list| successors.* = list.items;
         return graph;
-    }
-
-    fn file_by_path(linter: *const Linter, path: []const u8) ?u32 {
-        assert(path.len > 0);
-        for (linter.files.items, 0..) |file, index| {
-            assert(file.path.len > 0);
-            if (std.mem.eql(u8, file.path, path)) return @intCast(index);
-        }
-        return null;
     }
 };
 
@@ -573,162 +554,49 @@ fn import_argument(tree: *const Ast, node: Ast.Node.Index) ?[]const u8 {
     return literal[1 .. literal.len - 1];
 }
 
-const Edge = struct {
-    from: u32,
-    to: u32,
-};
-
-/// Compressed adjacency: the targets of node `n` are `targets[edge_first[n]..edge_first[n + 1]]`.
-const Graph = struct {
-    edge_first: []u32,
-    targets: []u32,
-
-    fn from_edges(arena: Allocator, nodes_count: u32, edges: []const Edge) !Graph {
-        const edge_first = try arena.alloc(u32, nodes_count + 1);
-        @memset(edge_first, 0);
-        for (edges) |edge| {
-            assert(edge.from < nodes_count);
-            assert(edge.to < nodes_count);
-            edge_first[edge.from + 1] += 1;
-        }
-        for (1..edge_first.len) |index| edge_first[index] += edge_first[index - 1];
-        const targets = try arena.alloc(u32, edges.len);
-        const cursor = try arena.dupe(u32, edge_first[0..nodes_count]);
-        for (edges) |edge| {
-            targets[cursor[edge.from]] = edge.to;
-            cursor[edge.from] += 1;
-        }
-        assert(edge_first[nodes_count] == edges.len);
-        return .{ .edge_first = edge_first, .targets = targets };
-    }
-
-    fn successors(graph: Graph, node: u32) []const u32 {
-        assert(node + 1 < graph.edge_first.len);
-        const first = graph.edge_first[node];
-        const last = graph.edge_first[node + 1];
-        assert(first <= last);
-        return graph.targets[first..last];
-    }
-
-    fn has_edge(graph: Graph, from: u32, to: u32) bool {
-        assert(to + 1 < graph.edge_first.len);
-        for (graph.successors(from)) |target| {
-            if (target == to) return true;
-        }
-        return false;
-    }
-};
-
-const unvisited = std.math.maxInt(u32);
-
-const Frame = struct {
-    node: u32,
-    edge: u32,
-};
-
-const Tarjan = struct {
-    graph: Graph,
-    index: []u32,
-    low: []u32,
-    on_stack: []bool,
-    component: []u32,
-    stack: std.ArrayList(u32) = .empty,
-    frames: std.ArrayList(Frame) = .empty,
-    index_next: u32 = 0,
-    component_next: u32 = 0,
-
-    fn visit(tarjan: *Tarjan, arena: Allocator, node: u32) !void {
-        assert(tarjan.index[node] == unvisited);
-        tarjan.index[node] = tarjan.index_next;
-        tarjan.low[node] = tarjan.index_next;
-        tarjan.index_next += 1;
-        tarjan.on_stack[node] = true;
-        try tarjan.stack.append(arena, node);
-        try tarjan.frames.append(arena, .{ .node = node, .edge = tarjan.graph.edge_first[node] });
-        assert(tarjan.frames.items.len <= tarjan.index.len);
-    }
-
-    /// Pops a finished frame, propagates its low link and emits its component if it is a root.
-    fn leave(tarjan: *Tarjan) void {
-        const node = tarjan.frames.pop().?.node;
-        assert(tarjan.on_stack[node]);
-        if (tarjan.frames.items.len > 0) {
-            const parent = tarjan.frames.items[tarjan.frames.items.len - 1].node;
-            tarjan.low[parent] = @min(tarjan.low[parent], tarjan.low[node]);
-        }
-        if (tarjan.low[node] != tarjan.index[node]) return;
-        while (true) {
-            const member = tarjan.stack.pop().?;
-            tarjan.on_stack[member] = false;
-            tarjan.component[member] = tarjan.component_next;
-            if (member == node) break;
-        }
-        tarjan.component_next += 1;
-        assert(tarjan.component_next <= tarjan.index_next);
-    }
-};
-
-/// Tarjan's algorithm with an explicit frame stack (no recursion). Returns a component id per
-/// node; ids are dense, starting at 0.
-fn strongly_connected_components(arena: Allocator, graph: Graph) ![]u32 {
-    const nodes_count: u32 = @intCast(graph.edge_first.len - 1);
-    var tarjan: Tarjan = .{
-        .graph = graph,
-        .index = try arena.alloc(u32, nodes_count),
-        .low = try arena.alloc(u32, nodes_count),
-        .on_stack = try arena.alloc(bool, nodes_count),
-        .component = try arena.alloc(u32, nodes_count),
-    };
-    @memset(tarjan.index, unvisited);
-    @memset(tarjan.on_stack, false);
-    const steps_max = nodes_count + graph.targets.len;
-    var steps: u64 = 0;
-    for (0..nodes_count) |root| {
-        if (tarjan.index[root] != unvisited) continue;
-        try tarjan.visit(arena, @intCast(root));
-        while (tarjan.frames.items.len > 0) : (steps += 1) {
-            assert(steps <= 2 * steps_max);
-            const frame = &tarjan.frames.items[tarjan.frames.items.len - 1];
-            if (frame.edge == graph.edge_first[frame.node + 1]) {
-                tarjan.leave();
+/// The cycles of `graph` (`graph[n]` are the successors of node `n`) as the back edges of an
+/// iterative depth-first search: each cycle is the search path from the edge's target to its
+/// source. A graph has a cycle exactly when it has a back edge, and a strongly connected
+/// component with no suppressed member always yields a cycle inside it.
+fn call_cycles(arena: Allocator, graph: []const []const u32) ![]const []const u32 {
+    const State = enum { unvisited, on_path, done };
+    const states = try arena.alloc(State, graph.len);
+    @memset(states, .unvisited);
+    // The search path, and for each node on it the index of its next edge to follow.
+    var path: std.ArrayList(u32) = .empty;
+    var edges_next: std.ArrayList(u32) = .empty;
+    var cycles: std.ArrayList([]const u32) = .empty;
+    for (0..graph.len) |root| {
+        if (states[root] != .unvisited) continue;
+        states[root] = .on_path;
+        try path.append(arena, @intCast(root));
+        try edges_next.append(arena, 0);
+        while (path.items.len > 0) {
+            const node = path.items[path.items.len - 1];
+            const edge = &edges_next.items[edges_next.items.len - 1];
+            if (edge.* == graph[node].len) {
+                states[node] = .done;
+                _ = path.pop();
+                _ = edges_next.pop();
                 continue;
             }
-            const target = graph.targets[frame.edge];
-            frame.edge += 1;
-            if (tarjan.index[target] == unvisited) {
-                try tarjan.visit(arena, target);
-            } else if (tarjan.on_stack[target]) {
-                tarjan.low[frame.node] = @min(tarjan.low[frame.node], tarjan.index[target]);
+            const target = graph[node][edge.*];
+            edge.* += 1;
+            switch (states[target]) {
+                .unvisited => {
+                    states[target] = .on_path;
+                    try path.append(arena, target);
+                    try edges_next.append(arena, 0);
+                },
+                .on_path => {
+                    const first = std.mem.indexOfScalar(u32, path.items, target).?;
+                    try cycles.append(arena, try arena.dupe(u32, path.items[first..]));
+                },
+                .done => {},
             }
         }
     }
-    assert(tarjan.stack.items.len == 0);
-    return tarjan.component;
-}
-
-const ComponentMembers = struct {
-    /// `nodes[first[c]..first_next[c]]` are the members of component `c`.
-    first: []u32,
-    first_next: []u32,
-    nodes: []u32,
-};
-
-fn group_components(arena: Allocator, components: []const u32) !ComponentMembers {
-    var components_count: u32 = 0;
-    for (components) |component| components_count = @max(components_count, component + 1);
-    const counts = try arena.alloc(u32, components_count + 1);
-    @memset(counts, 0);
-    for (components) |component| counts[component + 1] += 1;
-    for (1..counts.len) |index| counts[index] += counts[index - 1];
-    const nodes = try arena.alloc(u32, components.len);
-    const cursor = try arena.dupe(u32, counts[0..components_count]);
-    for (components, 0..) |component, node| {
-        nodes[cursor[component]] = @intCast(node);
-        cursor[component] += 1;
-    }
-    assert(counts[components_count] == components.len);
-    assert(std.mem.eql(u32, cursor, counts[1..]));
-    return .{ .first = counts[0..components_count], .first_next = counts[1..], .nodes = nodes };
+    return cycles.items;
 }
 
 /// `assert` and `verify` (the `check()`/`verify()` convention) count as assertions.
@@ -1235,4 +1103,19 @@ test "unparsable files are reported" {
     defer arena.deinit();
     const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/core/broken.zig", "fn (" }});
     try expect_rules(diagnostics, &.{.syntax});
+}
+
+test "the cycle search reports exactly the functions on a cycle" {
+    // A self-loop (0), a 3-cycle (2, 3, 4) reached from an acyclic caller (1), and an
+    // acyclic chain (5, 6, 7) with a shared callee, so a done node is reached twice.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const graph = [_][]const u32{
+        &.{ 0, 1 }, &.{2}, &.{3}, &.{4}, &.{ 2, 5 },
+        &.{ 6, 7 }, &.{7}, &.{},
+    };
+    const cycles = try call_cycles(arena.allocator(), &graph);
+    try std.testing.expectEqual(@as(usize, 2), cycles.len);
+    try std.testing.expectEqualSlices(u32, &.{0}, cycles[0]);
+    try std.testing.expectEqualSlices(u32, &.{ 2, 3, 4 }, cycles[1]);
 }
