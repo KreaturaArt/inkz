@@ -170,8 +170,8 @@ test "each built-in takes its number of arguments" {
     //   minimum and a maximum integer; MIN, MAX ...; FLOOR should take 1 parameter; The
     //   CHOICE_COUNT() function shouldn't take any arguments; LIST_RANGE should take 3
     //   parameters - a list, a min and a max; The TURNS_SINCE() function should take one
-    //   argument: a divert target ... (inklecate throws on TURNS_SINCE(), SEED_RANDOM() and
-    //   LIST_RANDOM(), which index a missing argument.)
+    //   argument: a divert target ...; _ should take 1 parameter (inklecate throws on
+    //   TURNS_SINCE(), SEED_RANDOM() and LIST_RANDOM(), which index a missing argument.)
     const sources = [_][]const u8{
         "{POW(2)}\n",         "{RANDOM(1,2,3)}\n", "{TURNS_SINCE()}\n",
         "{TURNS_SINCE(5)}\n", "{READ_COUNT()}\n",  "{MIN(1)}\n",
@@ -180,7 +180,7 @@ test "each built-in takes its number of arguments" {
         "{LIST_MAX()}\n",     "{LIST_ALL()}\n",    "{LIST_COUNT()}\n",
         "{LIST_VALUE()}\n",   "{LIST_INVERT()}\n", "{CHOICE_COUNT(1)}\n",
         "{TURNS(2)}\n",       "~ SEED_RANDOM()\n", "{LIST_RANGE(1,2)}\n",
-        "{LIST_RANDOM()}\n",
+        "{LIST_RANDOM()}\n",  "~ _(1, 2)\n",
     };
     var cases: [sources.len]Case = undefined;
     for (sources, &cases) |source, *case| {

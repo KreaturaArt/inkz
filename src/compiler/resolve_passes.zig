@@ -20,12 +20,6 @@ const ObjectIndex = sema.ObjectIndex;
 const Flags = sema.Flags;
 const NodeIndex = ast_module.NodeIndex;
 
-/// FunctionCall.IsBuiltIn for names: the built-ins, and `_` (ink's negation, which
-/// lowering generates as an ordinary call).
-pub fn is_builtin(name: []const u8) bool {
-    return ir.builtin(name) != null or std.mem.eql(u8, name, "_");
-}
-
 /// The name a variable assignment or declaration assigns.
 fn assigned_name(context: *const Context, object: ObjectIndex) []const u8 {
     assert(context.tree.kind(object) == .variable_assignment);
@@ -99,7 +93,7 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             assert(tree.children_of(object).len > 0);
             const proxy = tree.children_of(object)[0];
             assert(tree.kind(proxy) == .divert);
-            if (is_builtin(name) or is_list) {
+            if (ir.builtin(name) != null or is_list) {
                 context.skipped.set(proxy.to_int());
                 try argument_checks.check_call(context, object, is_list);
             }
@@ -406,7 +400,7 @@ fn check_divert_itself(context: *Context, divert: ObjectIndex, path: *const Path
     if (path.count == 1) {
         const name = path.first();
         const external = context.lookup(&context.externals, Tree.root, name);
-        if (is_builtin(name) or external != null) {
+        if (ir.builtin(name) != null or external != null) {
             if (!is_call) try context.report(.builtin_not_called, divert);
             if (external) |declaration| {
                 try argument_checks.check_external(context, divert, declaration);

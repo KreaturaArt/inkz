@@ -63,6 +63,7 @@ pub const Command = enum {
 pub const Builtin = struct { name: []const u8, arity: u32, command: ?Command = null };
 
 pub const builtins = [_]Builtin{
+    .{ .name = "_", .arity = 1 },
     .{ .name = "MIN", .arity = 2 },
     .{ .name = "MAX", .arity = 2 },
     .{ .name = "POW", .arity = 2 },
@@ -86,8 +87,9 @@ pub const builtins = [_]Builtin{
     .{ .name = "LIST_RANDOM", .arity = 1, .command = .list_random },
 };
 
-/// The built-in called `name`, if any. ink's operators are built-ins too, but no call or
-/// declaration can be named like one; `_` (negation) is resolution's alone.
+/// The built-in called `name`, if any (FunctionCall.IsBuiltIn). ink's other operators are
+/// built-ins too, but only `_` (negation) is an identifier, so no call or declaration can
+/// be named like the others.
 pub fn builtin(name: []const u8) ?Builtin {
     assert(name.len == 0 or name[0] != ' ');
     for (builtins) |entry| {
