@@ -461,44 +461,25 @@ const NativeContext = struct {
 
 // Variables (ink's VariablesState).
 
-/// ink's GetRawVariableWithName: a global or a list item for context 0 or -1, then temps.
-/// The name's class (`Program.name_classes`) says which, with one read.
-fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
-    assert(!name.is_none());
-    assert(context >= -1);
-    if (context == 0 or context == -1) {
-        const class = story.program.name_class(name);
-        switch (class.kind) {
-            .global => return story.state.globals[class.index],
-            .list_item => return try single_item_list(story, .from_int(class.index)),
-            .none => {},
-            _ => unreachable,
-        }
-    }
-    const stack = &story.state.call_stack;
-    if (context > @as(i32, @intCast(stack.depth()))) return null;
-    return stack.temp_get(name, if (context == 0) -1 else context);
-}
+/// What ink's GetRawVariableWithName finds: a global or a list item for context 0 or -1,
+/// then a temp (`frame_temp`). The name's class (`Program.name_classes`) says which, with
+/// one read. Allocates nothing.
+const RawVariable = union(enum) { value: Value, list_item: ListItemIndex, none };
 
-/// The variable pointer `raw_variable` would return, or null when it would return anything
-/// else; allocates nothing. A list item's name is never a pointer.
-fn raw_pointer(story: *Story, name: StringId, context: i32) ?value_module.VariablePointer {
+fn raw_lookup(story: *Story, name: StringId, context: i32) RawVariable {
     assert(!name.is_none());
     assert(context >= -1);
     if (context == 0 or context == -1) {
         const class = story.program.name_class(name);
         switch (class.kind) {
-            .global => {
-                const global = story.state.globals[class.index];
-                return if (global == .variable_pointer) global.variable_pointer else null;
-            },
-            .list_item => return null,
+            .global => return .{ .value = story.state.globals[class.index] },
+            .list_item => return .{ .list_item = .from_int(class.index) },
             .none => {},
             _ => unreachable,
         }
     }
-    const value = frame_temp(story, name, context) orelse return null;
-    return if (value == .variable_pointer) value.variable_pointer else null;
+    const value = frame_temp(story, name, context) orelse return .none;
+    return .{ .value = value };
 }
 
 /// The temp `name` in the frame of `context` (0 and -1: the current one), or null.
@@ -508,6 +489,23 @@ fn frame_temp(story: *Story, name: StringId, context: i32) ?Value {
     assert(stack.depth() > 0);
     if (context > @as(i32, @intCast(stack.depth()))) return null;
     return stack.temp_get(name, if (context == 0) -1 else context);
+}
+
+/// ink's GetRawVariableWithName; a list item's name gives a one-item list.
+fn raw_variable(story: *Story, name: StringId, context: i32) Error!?Value {
+    return switch (raw_lookup(story, name, context)) {
+        .value => |value| value,
+        .list_item => |item| try single_item_list(story, item),
+        .none => null,
+    };
+}
+
+/// The variable pointer `raw_variable` would return, or null when it would return anything
+/// else; allocates nothing. A list item's name is never a pointer.
+fn raw_pointer(story: *Story, name: StringId, context: i32) ?value_module.VariablePointer {
+    const found = raw_lookup(story, name, context);
+    if (found != .value or found.value != .variable_pointer) return null;
+    return found.value.variable_pointer;
 }
 
 /// The global slot `name` names, if it names a global.
