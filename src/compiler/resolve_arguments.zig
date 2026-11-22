@@ -11,6 +11,7 @@ const lookups = @import("resolve_lookups.zig");
 const values = @import("values.zig");
 const sema = @import("sema.zig");
 const ast_module = @import("ast.zig");
+const ir = @import("lower_ir.zig");
 const Context = resolve.Context;
 const ObjectIndex = sema.ObjectIndex;
 const Tag = ast_module.Tag;
@@ -145,38 +146,6 @@ pub fn check_external(context: *Context, divert: ObjectIndex, external: ObjectIn
     });
 }
 
-/// The number of parameters of Runtime.NativeFunctionCall's functions that can be called
-/// by name.
-fn native_parameters(name: []const u8) ?u32 {
-    assert(name.len == 0 or name[0] != ' ');
-    const binary = [_][]const u8{ "MIN", "MAX", "POW" };
-    const unary = [_][]const u8{
-        "FLOOR",    "CEILING",  "INT",        "FLOAT",      "LIST_MIN",
-        "LIST_MAX", "LIST_ALL", "LIST_COUNT", "LIST_VALUE", "LIST_INVERT",
-    };
-    for (binary) |native| {
-        if (std.mem.eql(u8, name, native)) return 2;
-    }
-    for (unary) |native| {
-        if (std.mem.eql(u8, name, native)) return 1;
-    }
-    return null;
-}
-
-/// The number of arguments a built-in control command takes.
-fn command_parameters(name: []const u8) ?u32 {
-    assert(name.len == 0 or name[0] != ' ');
-    const names = [_][]const u8{
-        "CHOICE_COUNT", "TURNS",       "TURNS_SINCE", "READ_COUNT",
-        "RANDOM",       "SEED_RANDOM", "LIST_RANGE",  "LIST_RANDOM",
-    };
-    const counts = [_]u32{ 0, 0, 1, 1, 2, 1, 3, 1 };
-    for (names, counts) |command, count| {
-        if (std.mem.eql(u8, name, command)) return count;
-    }
-    return null;
-}
-
 /// FunctionCall.GenerateIntoContainer's checks of a built-in's arguments, or of a list's
 /// name called to make a list.
 pub fn check_call(context: *Context, call: ObjectIndex, is_list: bool) !void {
@@ -184,12 +153,12 @@ pub fn check_call(context: *Context, call: ObjectIndex, is_list: bool) !void {
     assert(tree.kind(call) == .function_call);
     const name = context.slot_name(call, .name);
     const arguments = tree.children_of(tree.children_of(call)[0]);
-    const expected = command_parameters(name) orelse native_parameters(name) orelse {
+    const expected = (ir.builtin(name) orelse {
         if (is_list and arguments.len > 1) {
             try context.report(.list_from_more_than_one_value, call);
         }
         return;
-    };
+    }).arity;
     // `numbers`: the parameters it takes, for the message.
     const count_error: resolve.Details = .{ .numbers = .{ expected, 0 } };
     if (arguments.len != expected) {

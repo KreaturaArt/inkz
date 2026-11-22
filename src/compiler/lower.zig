@@ -185,7 +185,7 @@ pub const Lowering = struct {
         const call = lowering.tree.parent(divert);
         assert(lowering.tree.kind(call) == .function_call);
         if (!lowering.resolution.targets[call.to_int()].is_none()) return true;
-        return expressions.is_builtin_call(lowering.slot_name(call, .name));
+        return ir_module.builtin(lowering.slot_name(call, .name)) != null;
     }
 
     pub fn result(lowering: *const Lowering, object: ObjectIndex) Result {

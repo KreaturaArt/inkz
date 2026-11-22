@@ -11,6 +11,7 @@ const argument_checks = @import("resolve_arguments.zig");
 const sema = @import("sema.zig");
 const values = @import("values.zig");
 const ast_module = @import("ast.zig");
+const ir = @import("lower_ir.zig");
 const Context = resolve.Context;
 const Path = resolve.Path;
 const Reference = resolve.Reference;
@@ -19,22 +20,10 @@ const ObjectIndex = sema.ObjectIndex;
 const Flags = sema.Flags;
 const NodeIndex = ast_module.NodeIndex;
 
-/// FunctionCall.IsBuiltIn: ink's native functions and its other built-ins.
+/// FunctionCall.IsBuiltIn for names: the built-ins, and `_` (ink's negation, which
+/// lowering generates as an ordinary call).
 pub fn is_builtin(name: []const u8) bool {
-    assert(name.len == 0 or name[0] != ' ');
-    const names = [_][]const u8{
-        "+",           "-",            "/",           "*",        "%",          "_",
-        "==",          ">",            "<",           ">=",       "<=",         "!=",
-        "!",           "&&",           "||",          "MIN",      "MAX",        "POW",
-        "FLOOR",       "CEILING",      "INT",         "FLOAT",    "?",          "!?",
-        "^",           "LIST_MIN",     "LIST_MAX",    "LIST_ALL", "LIST_COUNT", "LIST_VALUE",
-        "LIST_INVERT", "CHOICE_COUNT", "TURNS_SINCE", "TURNS",    "RANDOM",     "SEED_RANDOM",
-        "LIST_RANDOM", "READ_COUNT",   "LIST_RANGE",
-    };
-    for (names) |builtin| {
-        if (std.mem.eql(u8, name, builtin)) return true;
-    }
-    return false;
+    return ir.builtin(name) != null or std.mem.eql(u8, name, "_");
 }
 
 /// The name a variable assignment or declaration assigns.

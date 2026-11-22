@@ -58,6 +58,44 @@ pub const Command = enum {
     }
 };
 
+/// A built-in called by name: a native function (Runtime.NativeFunctionCall) or, with a
+/// command, a control command. Its arguments come first either way.
+pub const Builtin = struct { name: []const u8, arity: u32, command: ?Command = null };
+
+pub const builtins = [_]Builtin{
+    .{ .name = "MIN", .arity = 2 },
+    .{ .name = "MAX", .arity = 2 },
+    .{ .name = "POW", .arity = 2 },
+    .{ .name = "FLOOR", .arity = 1 },
+    .{ .name = "CEILING", .arity = 1 },
+    .{ .name = "INT", .arity = 1 },
+    .{ .name = "FLOAT", .arity = 1 },
+    .{ .name = "LIST_MIN", .arity = 1 },
+    .{ .name = "LIST_MAX", .arity = 1 },
+    .{ .name = "LIST_ALL", .arity = 1 },
+    .{ .name = "LIST_COUNT", .arity = 1 },
+    .{ .name = "LIST_VALUE", .arity = 1 },
+    .{ .name = "LIST_INVERT", .arity = 1 },
+    .{ .name = "CHOICE_COUNT", .arity = 0, .command = .choice_count },
+    .{ .name = "TURNS", .arity = 0, .command = .turns },
+    .{ .name = "TURNS_SINCE", .arity = 1, .command = .turns_since },
+    .{ .name = "READ_COUNT", .arity = 1, .command = .read_count },
+    .{ .name = "RANDOM", .arity = 2, .command = .random },
+    .{ .name = "SEED_RANDOM", .arity = 1, .command = .seed_random },
+    .{ .name = "LIST_RANGE", .arity = 3, .command = .list_range },
+    .{ .name = "LIST_RANDOM", .arity = 1, .command = .list_random },
+};
+
+/// The built-in called `name`, if any. ink's operators are built-ins too, but no call or
+/// declaration can be named like one; `_` (negation) is resolution's alone.
+pub fn builtin(name: []const u8) ?Builtin {
+    assert(name.len == 0 or name[0] != ' ');
+    for (builtins) |entry| {
+        if (std.mem.eql(u8, name, entry.name)) return entry;
+    }
+    return null;
+}
+
 /// What a divert, divert target or read count points at.
 pub const Target = union(enum) {
     none,

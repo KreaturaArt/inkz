@@ -264,7 +264,8 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
     assert(tree.kind(proxy) == .divert);
     const arguments = tree.children_of(proxy);
     const is_list = !lowering.resolution.targets[call.to_int()].is_none();
-    if (is_builtin_call(name) or (is_list and arguments.len == 1)) {
+    const builtin = ir_module.builtin(name);
+    if (builtin != null or (is_list and arguments.len == 1)) {
         if (frame.stage == 0 and is_list) _ = try ir.add(container, .{ .text = name });
         if (frame.stage < arguments.len) {
             frame.stage += 1;
@@ -272,7 +273,7 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
         }
         if (is_list) {
             _ = try ir.add_command(container, .list_from_int);
-        } else if (builtin_command(name)) |command| {
+        } else if (builtin.?.command) |command| {
             _ = try ir.add_command(container, command);
         } else _ = try ir.add(container, .{ .native = name });
     } else if (is_list) {
@@ -282,42 +283,6 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
     if (tree.has(call, Flags.pop_result)) _ = try ir.add_command(container, .pop);
     frame.stage = done;
     return null;
-}
-
-/// Whether a call is to a built-in (a control command or a native function).
-pub fn is_builtin_call(name: []const u8) bool {
-    assert(name.len == 0 or name[0] != ' ');
-    return builtin_command(name) != null or is_native(name);
-}
-
-/// The built-ins that are control commands (their arguments come first).
-fn builtin_command(name: []const u8) ?ir_module.Command {
-    assert(name.len == 0 or name[0] != '.');
-    const names = [_][]const u8{
-        "CHOICE_COUNT", "TURNS",       "TURNS_SINCE", "READ_COUNT",
-        "RANDOM",       "SEED_RANDOM", "LIST_RANGE",  "LIST_RANDOM",
-    };
-    const commands = [_]ir_module.Command{
-        .choice_count, .turns,       .turns_since, .read_count,
-        .random,       .seed_random, .list_range,  .list_random,
-    };
-    for (names, commands) |builtin, command| {
-        if (std.mem.eql(u8, name, builtin)) return command;
-    }
-    return null;
-}
-
-/// Runtime.NativeFunctionCall.CallExistsWithName, for names written as calls.
-fn is_native(name: []const u8) bool {
-    assert(name.len == 0 or name[0] != '.');
-    const names = [_][]const u8{
-        "MIN",      "MAX",      "POW",        "FLOOR",      "CEILING",     "INT",      "FLOAT",
-        "LIST_MIN", "LIST_MAX", "LIST_COUNT", "LIST_VALUE", "LIST_INVERT", "LIST_ALL",
-    };
-    for (names) |native| {
-        if (std.mem.eql(u8, name, native)) return true;
-    }
-    return false;
 }
 
 /// List.GenerateIntoContainer: each item by its list and value.
