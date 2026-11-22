@@ -18,14 +18,18 @@ const Limits = limits_module.Limits;
 
 const calls_max = 48;
 
-/// A tight value for a limit: a byte count of a few hundred to a few thousand, or a count
-/// of 1 to 16 (4 to 64 for the counts a story needs many of to start at all).
+/// A tight value for a limit: a byte count of a few hundred to a few thousand (the save
+/// scratch 1 to 64 KiB), or a count of 1 to 16 (4 to 64 for the counts a story needs many
+/// of to start at all).
 fn tight(choices: fuzz_ink.Choices, comptime name: []const u8) u32 {
+    if (comptime std.mem.eql(u8, name, "load_bytes_max")) {
+        return std.mem.alignForward(u32, choices.range(u32, 1024, 64 * 1024), 8);
+    }
     if (comptime std.mem.endsWith(u8, name, "bytes_max")) {
         return std.mem.alignForward(u32, choices.range(u32, 256, 4096), 4);
     }
     const roomy = comptime std.mem.eql(u8, name, "steps_per_continue_max") or
-        std.mem.eql(u8, name, "load_nodes_max") or std.mem.eql(u8, name, "container_depth_max") or
+        std.mem.eql(u8, name, "container_depth_max") or
         std.mem.eql(u8, name, "path_components_max");
     if (roomy) return choices.range(u32, 64, 4096);
     return choices.range(u32, 1, 16);

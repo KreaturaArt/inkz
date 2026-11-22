@@ -48,7 +48,8 @@ allocation; they are now carved from the same block. Nothing allocates after tha
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
   list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
   observer queue, errors and warnings, the ancestor scratch for visit counting, and the
-  scratch `load_json` tokenizes a save into (16 bytes per token, `load_nodes_max`).
+  scratch `load_json` parses a save into with std.json (`load_bytes_max`, 1 MiB; a save
+  takes about 8 to 16 times its size there, P17.12).
 
 Flows don't multiply the budget: all flows of a story share one state, and only the current
 flow uses the live buffers. A switched-out flow is packed into the parking region, taking
@@ -66,18 +67,19 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
   companion flows), 3000 counted containers, 200 globals.
 - **Side stories** (barks, a shop, a codex): `small_story_limits` in `src/core/limits.zig`,
   each with 300 counted containers and 30 globals and up to four flows. These limits cut the
-  heap to 64 KiB, the call stack to 128 frames and choices to 16.
+  heap to 64 KiB, the load scratch to 256 KiB, the call stack to 128 frames and choices to
+  16.
 
 | Part | Main story | Side story |
 |---|---:|---:|
 | Live flow | 180,736 | 27,776 |
 | Lookahead (copies) | 207,144 | 30,540 |
-| Shared | 1,872,256 | 199,984 |
-| **Total per story** | **2,260,136** (2.16 MiB) | **258,300** (252 KiB) |
+| Shared | 2,658,688 | 396,592 |
+| **Total per story** | **3,046,568** (2.91 MiB) | **454,908** (444 KiB) |
 
-The whole game, one main story and four side stories, needs 2,260,136 + 4 × 258,300 =
-3,293,336 bytes (3.14 MiB), fixed at load time. In the main story the 1 MiB string heap is
-about half of the total.
+The whole game, one main story and four side stories, needs 3,046,568 + 4 × 454,908 =
+4,866,200 bytes (4.64 MiB), fixed at load time. In the main story the 1 MiB string heap and
+the 1 MiB load scratch are about a third of the total each.
 
 ### Fitted limits (P10.2)
 

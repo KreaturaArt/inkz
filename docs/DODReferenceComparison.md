@@ -614,8 +614,8 @@ Neither reference has these. They are listed because they shape choices made els
   `extern` header into a 256 KiB region, and every flow element is asserted to be 4-byte
   aligned and a multiple of 4 B.
 - **Saves.** Ink v10 JSON, both ways (D15). `save` streams to a writer without allocating.
-  `load` tokenises into a fixed `json_tree.Node[]` (16 B, with a `next` subtree-end link for
-  O(1) skip), validates in one pass and commits in a second, so a failed load changes nothing.
+  `load` parses with std.json into a fixed scratch (`load_bytes_max`) and reads the values in
+  one pass into a reset state, so a failed load leaves the story reset (P17.12).
 
 ---
 

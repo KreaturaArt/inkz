@@ -17,7 +17,6 @@ pub const story = @import("story.zig");
 pub const story_paths = @import("story_paths.zig");
 pub const evaluate = @import("evaluate.zig");
 pub const save = @import("save.zig");
-pub const json_tree = @import("json_tree.zig");
 pub const load = @import("load.zig");
 const api_test = @import("api_test.zig");
 const state_test = @import("state_test.zig");
@@ -40,7 +39,6 @@ test {
     _ = story_paths;
     _ = evaluate;
     _ = save;
-    _ = json_tree;
     _ = load;
     _ = api_test;
     _ = state_test;

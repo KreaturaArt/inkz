@@ -161,9 +161,9 @@ functions after it in `story.zig`, which take the story first.
   pops its operands (`State.reserve`); an allocation never compacts.
 - **Flows** (`flows.zig`) park the used part of each live buffer in a bounded region on a
   switch, so a switch costs a copy of what is used, not of the limits.
-- **Saves** (`save.zig`, `load.zig`, `json_tree.zig`) stream ink's save format v10 with no
-  allocation, and load into fixed scratch, validating the whole save before touching the
-  state.
+- **Saves** (`save.zig`, `load.zig`) stream ink's save format v10 with no allocation, and
+  load by parsing with std.json into fixed scratch and reading it once into a reset state; a
+  save that fails to load leaves the story as `reset_state` leaves it.
 
 ### What changed for hosts
 

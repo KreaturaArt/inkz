@@ -414,7 +414,7 @@ test "the other limit errors" {
     try story.init_from_json(
         gpa,
         json,
-        .{ .limits = .{ .observers_max = 1, .flows_max = 2, .load_nodes_max = 16 } },
+        .{ .limits = .{ .observers_max = 1, .flows_max = 2, .load_bytes_max = 256 } },
     );
     defer story.deinit(gpa);
     try story.observe_variable("score", &recorder, Recorder.observe);

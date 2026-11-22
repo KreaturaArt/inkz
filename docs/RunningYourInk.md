@@ -576,7 +576,7 @@ that returns `LIST_COUNT(list)` or tests `list ? item`).
 Each story makes exactly one allocation, in `init`, of `Limits.bytes_total()` bytes, and
 none after that: `cont`, choosing, saving, loading and the rest run in that memory. Running
 out of a buffer returns a named error such as `error.OutputLimit`, never undefined
-behaviour. The defaults take about 2.2 MB per story and suit most stories. Play speed doesn't
+behaviour. The defaults take about 3 MB per story and suit most stories. Play speed doesn't
 depend on the limits, so a smaller budget costs nothing but headroom. A small side story can
 use less:
 
@@ -616,7 +616,7 @@ defer fitted.deinit(gpa);
 `zig build simulate -- --json story.ink.json --seeds 10000 --fit on` does this over 10,000
 seeded random playthroughs, with saves, loads and flow switches along the way. It prints the
 fitted limits as Zig source with their byte budget, then replays the same seeds within them.
-crime_scene fits in 47 KB instead of 2.2 MB. A fitted budget is only as good as the play that
+crime_scene fits in 47 KB instead of 3 MB. A fitted budget is only as good as the play that
 measured it: a story that later needs more gets a named limit error, so keep the margin.
 
 `docs/benchmarks.md` has a worked sizing example and the measurements.

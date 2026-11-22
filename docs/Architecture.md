@@ -255,6 +255,6 @@ made; the next compaction finds them unreachable.
 Running out of any buffer returns a named error (`error.HeapLimit`, `error.FlowLimit`, ...).
 
 Every buffer records its peak (P10.2). `Story.usage()` reports them, and `Limits.fitted(usage,
-margin)` sizes a story's limits from them. The default budget is about 2.2 MB per story.
+margin)` sizes a story's limits from them. The default budget is about 3 MB per story.
 Fitted limits need about 40–50 KB for the stories measured, at the same speed, because play
 speed doesn't depend on the budget.

@@ -22,7 +22,6 @@ const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
 const flows = @import("flows.zig");
-const json_tree = @import("json_tree.zig");
 const lookahead_module = @import("lookahead.zig");
 const text_cache_module = @import("text_cache.zig");
 const Limits = limits_module.Limits;
@@ -204,8 +203,9 @@ pub const State = struct {
     diagnostics_dropped: u32 = 0,
     /// Scratch for the visit-counting walk.
     ancestors: []ContainerIndex,
-    /// The fixed scratch `load_json` tokenizes a save into.
-    load_nodes: []json_tree.Node,
+    /// The fixed scratch `load_json` parses a save into: 8-byte aligned, so the same save
+    /// takes the same bytes in every story.
+    load_scratch: []u8,
 
     // The lookahead snapshot and parked flows.
     lookahead: FlowBuffers,
@@ -238,7 +238,7 @@ pub const State = struct {
         parking_words: u32 = 0,
         line_bytes: u32 = 0,
         tag_bytes: u32 = 0,
-        load_nodes: u32 = 0,
+        load_bytes: u32 = 0,
         flows: u32 = 1,
     };
 
@@ -314,7 +314,7 @@ pub const State = struct {
             .errors = state.errors.peak,
             .warnings = state.warnings.peak,
             .container_depth = container_depth(state.program),
-            .load_nodes = state.peaks.load_nodes,
+            .load_bytes = state.peaks.load_bytes,
         };
         assert(result.frames <= state.limits.frames_max);
         return result;
@@ -675,6 +675,8 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     // 8-byte aligned first.
     const observers = carver.take(Observer, limits.observers_max);
     const binding_words = carver.take(u64, shape.externals_count * binding_words_each);
+    const load_words = carver.take(u64, std.math.divCeil(u32, limits.load_bytes_max, 8) catch
+        unreachable);
     const live = carve_flow(carver, limits);
     const lookahead = carve_flow(carver, limits);
     var result: State = .{
@@ -704,7 +706,6 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .errors = .init(carver.take(Diagnostic, limits.errors_max)),
         .warnings = .init(carver.take(Diagnostic, limits.warnings_max)),
         .ancestors = carver.take(ContainerIndex, limits.container_depth_max),
-        .load_nodes = carver.take(json_tree.Node, limits.load_nodes_max),
         .lookahead = lookahead,
         .flows = carver.take(FlowRecord, limits.flows_max),
         .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
@@ -722,6 +723,7 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         ),
         .observers = observers,
         .binding_words = binding_words,
+        .load_scratch = std.mem.sliceAsBytes(load_words),
     };
     result.text_cache.text = carver.take(u8, limits.output_bytes_max);
     assert(result.text_cache.check() == .ok);

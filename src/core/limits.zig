@@ -29,7 +29,6 @@ pub const element_bytes = struct {
     pub const global = value * 2; // current value + default value
     pub const ancestor = 4; // ContainerIndex, for the visit-counting walk
     pub const snapshot = 24; // a choice's stored thread: frame and temp ranges, previous pointer
-    pub const load_node = 16; // a token of a save being loaded (vm/json_tree.zig)
     pub const binding = 24; // an external's function, context and lookahead flag
 };
 
@@ -64,8 +63,9 @@ pub const Limits = struct {
     evaluate_depth_max: u32 = 4,
     container_depth_max: u32 = 256,
     path_components_max: u32 = 64,
-    /// Tokens of a save document `load_json` can hold (its fixed scratch).
-    load_nodes_max: u32 = 16 * 1024,
+    /// The scratch `load_json` parses a save into (std.json values, copies of its strings
+    /// and the parser's stack): several times the save's size. Rounded up to 8 bytes.
+    load_bytes_max: u32 = 1024 * 1024,
 
     pub const Fault = enum {
         ok,
@@ -178,7 +178,7 @@ pub const Limits = struct {
         const diagnostics = @as(u64, limits.errors_max) + limits.warnings_max;
         total += diagnostics * (bytes.diagnostic + bytes.diagnostic_text);
         total += @as(u64, limits.container_depth_max) * bytes.ancestor;
-        total += @as(u64, limits.load_nodes_max) * bytes.load_node;
+        total += std.mem.alignForward(u64, limits.load_bytes_max, 8); // 8-byte aligned words
         assert(total >= limits.heap_bytes_max);
         return total;
     }
@@ -252,7 +252,7 @@ pub const Usage = struct {
     errors: u32 = 0,
     warnings: u32 = 0,
     container_depth: u32 = 0,
-    load_nodes: u32 = 0,
+    load_bytes: u32 = 0,
 };
 
 /// The smallest value `Limits.fitted` gives a buffer, so a story that never used one (no
@@ -354,7 +354,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 2_207_508), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 2_993_940), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -381,7 +381,7 @@ pub const small_story_limits: Limits = .{
     .errors_max = 8,
     .warnings_max = 8,
     .container_depth_max = 64,
-    .load_nodes_max = 4096,
+    .load_bytes_max = 256 * 1024,
 };
 
 test "the sizing example in docs/benchmarks.md" {
@@ -391,13 +391,13 @@ test "the sizing example in docs/benchmarks.md" {
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 1_872_256), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 2_260_136), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_658_688), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 3_046_568), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 199_984), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 258_300), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 396_592), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 454_908), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {
