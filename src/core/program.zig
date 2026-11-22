@@ -386,17 +386,25 @@ pub const Program = struct {
         return .ok;
     }
 
+    /// The `Data` record at `at` in `extra`, or null if it runs past the end or a word
+    /// doesn't decode (images are untrusted; `extra.get` asserts both).
+    fn record(
+        program: *const Program,
+        comptime Data: type,
+        at: u32,
+    ) ?extra_module.Decoded(Data) {
+        if (!extra_module.decodable(Data, program.extra, at)) return null;
+        const decoded = extra_module.get(Data, program.extra, at);
+        assert(decoded.end <= program.extra.len);
+        return decoded;
+    }
+
     fn check_variable_pointer(program: *const Program, at: u32) Fault {
         const Data = instruction_module.VariablePointer;
-        const words = @typeInfo(Data).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
-        const pointer = extra_module.get(Data, program.extra, at).data;
-        if (pointer.name.is_none() or pointer.name.to_int() >= program.strings.count()) {
-            return .string_out_of_range;
-        }
+        const pointer = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        if (!program.is_string(pointer.name)) return .string_out_of_range;
         // ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
         if (pointer.context < -1) return .variable_pointer_context_out_of_range;
-        assert(words == 2);
         return .ok;
     }
 
@@ -404,17 +412,15 @@ pub const Program = struct {
     /// the VM slices and stores without further checks.
     fn check_list_literal(program: *const Program, at: u32) Fault {
         const Data = instruction_module.ListLiteral;
-        const words = @typeInfo(Data).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
-        const decoded = extra_module.get(Data, program.extra, at);
-        const record = decoded.data;
-        const tail_words = @as(u64, record.items_count) + record.origins_count;
+        const decoded = program.record(Data, at) orelse return .extra_out_of_range;
+        const literal = decoded.data;
+        const tail_words = @as(u64, literal.items_count) + literal.origins_count;
         if (tail_words > program.extra.len - decoded.end) return .extra_out_of_range;
         const tail = program.extra[decoded.end..][0..@intCast(tail_words)];
-        for (tail[0..record.items_count]) |item| {
+        for (tail[0..literal.items_count]) |item| {
             if (item >= program.list_items.len) return .list_item_out_of_range;
         }
-        for (tail[record.items_count..]) |origin| {
+        for (tail[literal.items_count..]) |origin| {
             if (origin >= program.list_origins.len) return .list_origin_out_of_range;
         }
         assert(decoded.end <= program.extra.len);
@@ -422,15 +428,9 @@ pub const Program = struct {
     }
 
     fn check_external_call(program: *const Program, at: u32) Fault {
-        const words = @typeInfo(instruction_module.ExternalCall).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.ExternalCall;
-        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
-        const call = extra_module.get(instruction_module.ExternalCall, program.extra, at).data;
-        if (call.external.is_none() or call.external.to_int() >= program.externals.len) {
-            return .external_out_of_range;
-        }
-        assert(words == 3);
+        const call = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        if (@backingInt(call.external) >= program.externals.len) return .external_out_of_range;
         return .ok;
     }
 
@@ -516,11 +516,9 @@ pub const Program = struct {
         return null;
     }
 
-    fn check_extra(program: *const Program, at: u32, words: u32) Fault {
-        assert(words > 0);
-        if (at > program.extra.len or words > program.extra.len - at) return .extra_out_of_range;
-        assert(at + words <= program.extra.len);
-        return .ok;
+    fn is_string(program: *const Program, id: StringId) bool {
+        assert(program.strings.count() > 0);
+        return @backingInt(id) < program.strings.count();
     }
 
     fn check_target(program: *const Program, container: ContainerIndex, position: u32) Fault {
@@ -535,28 +533,18 @@ pub const Program = struct {
     }
 
     fn check_divert(program: *const Program, at: u32) Fault {
-        const words = @typeInfo(instruction_module.Divert).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.Divert;
-        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
-        const divert = extra_module.get(instruction_module.Divert, program.extra, at).data;
-        if (divert.flags.variable) {
-            if (divert.name.is_none() or divert.name.to_int() >= program.strings.count()) {
-                return .string_out_of_range;
-            }
-            return .ok;
+        const divert = (program.record(Data, at) orelse return .extra_out_of_range).data;
+        if (!divert.flags.variable) {
+            return program.check_target(divert.target_container, divert.target_index);
         }
-        assert(!divert.flags.variable);
-        return program.check_target(divert.target_container, divert.target_index);
+        if (!program.is_string(divert.name)) return .string_out_of_range;
+        return .ok;
     }
 
     fn check_choice_point(program: *const Program, at: u32) Fault {
-        const words = @typeInfo(instruction_module.ChoicePoint).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.ChoicePoint;
-        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
-        const choice = extra_module.get(instruction_module.ChoicePoint, program.extra, at).data;
-        assert(words == 3);
+        const choice = (program.record(Data, at) orelse return .extra_out_of_range).data;
         return program.check_target(choice.target_container, choice.target_index);
     }
 };
