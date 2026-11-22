@@ -30,7 +30,8 @@ zig build fuzz -Doptimize=ReleaseSafe --fuzz=100K -Dtest-filter="<filter>"
 ```
 
 `zig build fuzz` runs each target once, on its seeds. It also checks 32 seeded generated
-inputs per target with the same invariants, so it works as a regression test.
+inputs per target with the same invariants, so it works as a regression test; the
+generating targets share this through `fuzz_ink.run_target(check, passed_min)`.
 
 `--fuzz=N` starts the coverage-guided fuzzer. It stops after about N inputs and prints the
 runs, the unique runs and the coverage. Its corpus is kept in `.zig-cache/f`, so the counts
