@@ -67,7 +67,8 @@ pub fn words(comptime T: type) u32 {
 
 /// Reads the `T` stored at `index`, which must be `decodable`.
 pub fn get(comptime T: type, extra: []const u32, index: u32) T {
-    assert(decodable(T, extra, index));
+    // Behind the guard: ReleaseFast still evaluated the whole check (about 3% of a turn).
+    if (std.debug.runtime_safety) assert(decodable(T, extra, index));
     const record: *const T = @ptrCast(extra[index..][0..words(T)]);
     return record.*;
 }
