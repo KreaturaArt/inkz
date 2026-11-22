@@ -484,6 +484,26 @@ pub const State = struct {
         assert(state.snapshot.strings_top <= state.strings.used or !state.snapshot.active);
     }
 
+    /// Room for `string_bytes` of heap strings (headers included) and `list_words` of lists,
+    /// compacting first if either is short. Compaction moves what it can reach from the
+    /// roots, so the caller must hold no heap value outside them: an instruction reserves
+    /// before it pops its operands. `usage` counts the room asked for.
+    pub fn reserve(
+        state: *State,
+        string_bytes: u32,
+        list_words: u32,
+    ) error{ HeapLimit, ListLimit }!void {
+        assert(state.strings.used <= state.strings.bytes.len);
+        assert(state.lists.used <= state.lists.words.len);
+        const strings_short = state.strings.bytes.len - state.strings.used < string_bytes;
+        const lists_short = state.lists.words.len - state.lists.used < list_words;
+        if (strings_short or lists_short or state.compact_always) state.compact(&.{});
+        state.strings.note_need(string_bytes);
+        state.lists.note_need(list_words);
+        if (state.strings.bytes.len - state.strings.used < string_bytes) return error.HeapLimit;
+        if (state.lists.words.len - state.lists.used < list_words) return error.ListLimit;
+    }
+
     /// Room for a heap string of `length` bytes, compacting once if the heap is full
     ///. `error.HeapLimit` when even the compacted heap has no room.
     pub fn allocate_string(

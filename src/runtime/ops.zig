@@ -322,14 +322,14 @@ pub fn call_native(story: *Story, opcode: Opcode) Error!void {
     defer profile_zone.end();
     assert(@backingInt(opcode) >= @backingInt(Opcode.add));
     assert(@backingInt(opcode) <= @backingInt(Opcode.list_invert));
-    var operands: [2]Value = undefined;
     const count: u32 = if (is_unary(opcode)) 1 else 2;
+    try reserve_native(story, count);
+    var operands: [2]Value = undefined;
     var position = count;
     while (position > 0) {
         position -= 1;
         operands[position] = try vm.pop_evaluation(story);
     }
-    try reserve(story, operands[0..count]);
     var context: NativeContext = .{ .story = story };
     // A runtime switch on the opcode: comptime prongs (fino's) measured no faster (F15,
     // docs/benchmarks.md).
@@ -425,26 +425,22 @@ fn pop_name(kind: ?call_stack_module.FrameKind) []const u8 {
     };
 }
 
-/// Makes room for the result of an operation on `operands` so that it can't compact: a
-/// string concatenation or one list, at most.
-fn reserve(story: *Story, operands: []Value) Error!void {
-    assert(operands.len <= 2);
-    assert(story.state.strings.used <= story.state.strings.bytes.len);
-    const state = &story.state;
+/// Room for the result of an operation on the top `count` values, before they are popped:
+/// a string concatenation or one list, at most.
+fn reserve_native(story: *Story, count: u32) Error!void {
+    assert(count == 1 or count == 2);
+    const stack = story.state.evaluation.slice();
+    if (stack.len < count) return; // popping fails
     var string_bytes: u32 = 8 + 3;
     var has_list = false;
-    for (operands) |operand| {
+    for (stack[stack.len - count ..]) |operand| {
         string_bytes += switch (operand) {
             .string => |reference| @intCast(strings_of(story).get(reference).len),
             else => value_module.float_text_bytes_max + 8,
         };
         if (operand == .list) has_list = true;
     }
-    const short = state.strings.bytes.len - state.strings.used < string_bytes;
-    if (short or state.compact_always) state.compact(operands);
-    state.strings.note_need(string_bytes);
-    if (state.strings.bytes.len - state.strings.used < string_bytes) return error.HeapLimit;
-    if (has_list) try reserve_list(story, operands);
+    try story.state.reserve(string_bytes, if (has_list) list_words_max(story) else 0);
 }
 
 const NativeContext = struct {
@@ -638,7 +634,7 @@ pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
         value.variable_pointer,
     );
     const old = story.state.call_stack.temp_get(name, -1);
-    stored = try retain_list_origins(story, old, stored);
+    stored = try retain_list_origins(story, old, stored) orelse stored;
     story.state.call_stack.temp_set(name, stored, true, -1) catch |err| switch (err) {
         error.TempNotFound => unreachable,
         else => return error.TempLimit,
@@ -692,7 +688,7 @@ fn assign_existing(
     }
     // ink's SetTemporaryVariable keeps list origins from the temp's own old value.
     const old = frame_temp(story, name, context);
-    const stored = try retain_list_origins(story, old, value);
+    const stored = try retain_list_origins(story, old, value) orelse value;
     story.state.call_stack.temp_set(name, stored, false, context) catch |err| switch (err) {
         error.TempNotFound => return fail(
             story,
@@ -708,12 +704,15 @@ fn assign_existing(
 pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
     assert(slot.to_int() < story.state.globals.len);
     const old = story.state.globals[slot.to_int()];
-    const stored = try retain_list_origins(story, old, value);
+    const made = try retain_list_origins(story, old, value);
+    const stored = made orelse value;
     lookahead.set_global(&story.state, slot, stored) catch return error.LookaheadLogLimit;
     assert(story.state.globals[slot.to_int()] == std.meta.activeTag(stored));
     // ink compares the old and new value objects by reference; identical values are the
     // closest a value representation gets (a reassigned literal is the same object in ink too).
-    if (old.identical(stored) or !story_module.is_observed(story, slot)) return;
+    // A list just made is new (and making it may have moved `old`).
+    const unchanged = made == null and old.identical(stored);
+    if (unchanged or !story_module.is_observed(story, slot)) return;
     if (!story.batching_observers) return story_module.notify_global(story, slot);
     const queue = &story.state.observer_events;
     if (std.mem.indexOfScalar(GlobalSlot, queue.slice(), slot) != null) return;
@@ -721,15 +720,19 @@ pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
 }
 
 /// ink's RetainListOriginsForAssignment: an empty list assigned over a list keeps the old
-/// list's origins.
-fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!Value {
+/// list's origins, as a new list (null: `value` is stored as it is). The origins are copied
+/// out before room is made, so neither `old` nor `value` is needed after it.
+fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!?Value {
     assert(value != .tag);
-    const previous = old orelse return value;
-    if (previous != .list or value != .list) return value;
-    if (lists_of(story).count(value.list) != 0) return value;
-    var keep = [_]Value{ previous, value };
-    try reserve_list(story, &keep);
-    return lists_of(story).empty_with_origins_of(keep[0].list) catch |err| list_error(err);
+    const previous = old orelse return null;
+    if (previous != .list or value != .list) return null;
+    if (lists_of(story).count(value.list) != 0) return null;
+    var buffer: [lists_module.Builder.origins_max]ListOriginIndex = undefined;
+    const origins = lists_of(story).retained_origins(previous.list, &buffer) catch |err|
+        return list_error(err);
+    try story.state.reserve(0, list_words_max(story));
+    const list = story.state.lists.store(&.{}, origins) catch unreachable;
+    return .{ .list = list };
 }
 
 pub fn list_literal(story: *Story, instruction: Instruction) Error!ListReference {
@@ -960,6 +963,7 @@ pub fn force_end(story: *Story) void {
 
 pub fn list_command(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .list_from_int or opcode == .list_range or opcode == .list_random);
+    try story.state.reserve(0, list_words_max(story));
     const value = switch (opcode) {
         .list_from_int => try list_from_int(story),
         .list_range => try list_range(story),
@@ -982,12 +986,11 @@ fn list_error(err: lists_module.Error) Error {
 /// `"listInt"`: the list item named by a list name and a value.
 fn list_from_int(story: *Story) Error!Value {
     const number = try vm.pop_evaluation(story);
-    var keep = [_]Value{try vm.pop_evaluation(story)};
+    const origin = try vm.pop_evaluation(story);
     if (number != .integer) return fail(story, "Passed non-integer when creating a list " ++
         "element from a numerical value.", .{});
-    if (keep[0] != .string) return fail(story, list_not_found, .{});
-    try reserve_list(story, &keep);
-    const name = strings_of(story).get(keep[0].string);
+    if (origin != .string) return fail(story, list_not_found, .{});
+    const name = strings_of(story).get(origin.string);
     const lists = lists_of(story);
     const result = lists.from_int(name, number.integer) catch |err| return list_error(err);
     assert(result == null or result.? == .list);
@@ -996,15 +999,13 @@ fn list_from_int(story: *Story) Error!Value {
 
 /// LIST_RANGE(list, min, max).
 fn list_range(story: *Story) Error!Value {
-    var keep: [3]Value = undefined;
-    keep[2] = try vm.pop_evaluation(story);
-    keep[1] = try vm.pop_evaluation(story);
-    keep[0] = try vm.pop_evaluation(story);
-    if (keep[0] != .list or keep[1] == .null or keep[2] == .null) {
+    const maximum = try vm.pop_evaluation(story);
+    const minimum = try vm.pop_evaluation(story);
+    const list = try vm.pop_evaluation(story);
+    if (list != .list or minimum == .null or maximum == .null) {
         return fail(story, "Expected list, minimum and maximum for LIST_RANGE", .{});
     }
-    try reserve_list(story, &keep);
-    const result = lists_of(story).sub_range(keep[0].list, keep[1], keep[2]) catch |err|
+    const result = lists_of(story).sub_range(list.list, minimum, maximum) catch |err|
         return list_error(err);
     assert(result == .list);
     return result;
@@ -1012,11 +1013,10 @@ fn list_range(story: *Story) Error!Value {
 
 /// LIST_RANDOM(list): one item, drawn like RANDOM.
 fn list_random(story: *Story) Error!Value {
-    var keep = [_]Value{try vm.pop_evaluation(story)};
-    if (keep[0] != .list) return fail(story, "Expected list for LIST_RANDOM", .{});
-    try reserve_list(story, &keep);
+    const list = try vm.pop_evaluation(story);
+    if (list != .list) return fail(story, "Expected list for LIST_RANDOM", .{});
     const lists = lists_of(story);
-    const count = lists.count(keep[0].list);
+    const count = lists.count(list.list);
     if (count == 0) {
         return .{ .list = story.state.lists.store(&.{}, &.{}) catch return error.ListLimit };
     }
@@ -1024,23 +1024,18 @@ fn list_random(story: *Story) Error!Value {
     var generator = DotnetRandom.init(state.story_seed +% state.previous_random);
     const next = generator.next();
     const position: u32 = @intCast(@rem(next, @as(i32, @intCast(count))));
-    const result = lists.item_list(keep[0].list, position) catch |err| return list_error(err);
+    const result = lists.item_list(list.list, position) catch |err| return list_error(err);
     state.previous_random = next;
     assert(result == .list);
     return result;
 }
 
-/// Room for one list of any size, compacting (and updating `keep`) if needed.
-fn reserve_list(story: *Story, keep: []Value) Error!void {
-    assert(keep.len <= 3);
-    const state = &story.state;
+/// The words of the longest list the program can make: every item and every origin.
+pub fn list_words_max(story: *const Story) u32 {
     const program = story.program;
     const words: u32 = @intCast(3 + program.list_items.len + program.list_origins.len);
-    const short = state.lists.words.len - state.lists.used < words;
-    if (short or state.compact_always) state.compact(keep);
-    state.lists.note_need(words);
-    if (state.lists.words.len - state.lists.used < words) return error.ListLimit;
-    assert(state.lists.used + words <= state.lists.words.len);
+    assert(words >= 3);
+    return words;
 }
 
 /// ink's CallExternalFunction (with the conditional divert check before it).

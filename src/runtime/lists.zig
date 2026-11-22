@@ -126,14 +126,14 @@ pub const ListSlab = struct {
 pub const list_items_max = 1024;
 
 /// Builds a list in a bounded scratch buffer before storing it.
-const Builder = struct {
+pub const Builder = struct {
     items: [items_max]ListItemIndex = undefined,
     items_count: u32 = 0,
     origins: [origins_max]ListOriginIndex = undefined,
     origins_count: u32 = 0,
 
     const items_max = list_items_max;
-    const origins_max = 64;
+    pub const origins_max = 64;
 
     fn add(builder: *Builder, item: ListItemIndex) error{ListLimit}!void {
         assert(builder.items_count <= items_max);
@@ -287,12 +287,18 @@ pub const Lists = struct {
         return builder.finish(lists.slab);
     }
 
-    /// An empty list declared with `old`'s origins (ink's RetainListOriginsForAssignment).
-    pub fn empty_with_origins_of(lists: Lists, old: ListReference) Error!Value {
+    /// The origins an empty list assigned over `old` keeps (ink's
+    /// RetainListOriginsForAssignment), copied into `out`.
+    pub fn retained_origins(
+        lists: Lists,
+        old: ListReference,
+        out: *[Builder.origins_max]ListOriginIndex,
+    ) Error![]const ListOriginIndex {
         var builder: Builder = .{};
         try lists.origin_names(lists.slab.view(old), &builder);
         assert(builder.items_count == 0);
-        return builder.finish(lists.slab);
+        @memcpy(out[0..builder.origins_count], builder.origins[0..builder.origins_count]);
+        return out[0..builder.origins_count];
     }
 
     pub fn count(lists: Lists, list: ListReference) u32 {
