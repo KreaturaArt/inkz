@@ -1033,6 +1033,9 @@ change is. Each finding comes with a success criterion that a unit test can chec
 
 ### F18: save load runs twice
 
+- **Outcome (P17.12).** Changed the other way: the load reads the save once and a failed load
+  leaves the story reset, not unchanged (`docs/benchmarks.md`, F18 revisited).
+
 - **Evidence.** `load.zig` validates in one pass and commits in a second. Benchmark lead 8 puts
   each at about 45%.
 - **Why low.** The two passes are what make a failed load leave the story untouched (D15).

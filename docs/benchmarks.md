@@ -398,6 +398,11 @@ The program grows by 4 bytes per string (crime_scene: 1,788 bytes).
   globals, the visit counts, the heap, the lists and the parked flows, and only the live
   flow has a second (lookahead) copy to stage into. A failed load must leave the story as it
   was (D15), so the validating pass stays.
+- **F18 revisited (P17.12): one pass.** For less code, a failed load now leaves the story as
+  `reset_state` leaves it instead of unchanged. The save is parsed with std.json into the
+  load scratch and read once: a load of crime_scene's save went from 9.8 to 8.2 µs and the
+  generated story's from 95.2 to 64.7 µs (`zig build bench-profile`, ReleaseFast, Apple M3),
+  with `load_parse` now 57% and 31% of it.
 
 ## Resolve keys, measured and decided (P16.16, F13)
 
@@ -501,7 +506,7 @@ story. The compiler is 70–80% of it, and the JSON load most of the rest.
    the outside time is allocating and freeing the 2.2 MB default budget. Lead: fitted limits
    (P10.2), or a way to re-initialise a story in place.
 8. **Two smaller safety costs on untrusted input.** `program_check` is 20–23% of an image
-   load. A save is read twice, once to validate and once to commit (`load_validate` and
-   `load_commit`, about 45% each). Lead: a trusted-input entry point for images made at
+   load. A save was read twice, once to validate and once to commit (`load_validate` and
+   `load_commit`, about 45% each; read once since P17.12). Lead: a trusted-input entry point for images made at
    build time. This trades safety for speed, so the default keeps the checks.
 
