@@ -193,7 +193,11 @@ Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 | `zig build fuzz` | One fuzz target per pipeline stage, on its corpus; add `--fuzz` (and `-Doptimize=ReleaseSafe`) to fuzz. See `docs/fuzzing.md`. |
 | `zig build simulate` | Plays every ground-truth case with seeded random choices, saves, loads and flow switches. |
 | `zig build transcripts` | Regenerates `test/transcripts/`. |
-| `zig build replay` | Installs `replay_case`, which replays one case and prints its transcript. |
+| `zig build replay -- <case id>` | Replays one case and prints its transcript (`--json <path> --actions <text>` for any story). |
+| `zig build swarm`, `swarm-gen`, `swarm-check`, `swarm-reduce` | Seeded and differential swarm runs (see `docs/fuzzing.md`). |
+
+`simulate`, `transcripts`, `replay` and the swarm steps are commands of one dev tool,
+`src/dev.zig`: `zig build <command> -- <arguments>` runs `dev <command> <arguments>`.
 | `zig build bench` | `src/bench.zig runtime` in ReleaseSafe and ReleaseFast (one bench program, subcommands `runtime`, `io`, `profile`); writes `docs/benchmarks.md`. |
 | `zig build bench-io` | Program load and store, ink's JSON against the binary image, in ReleaseSafe and ReleaseFast; appends to `zig-out/bench/load_store.jsonl`, or with `-Dbench-record` to the committed `bench/load_store.jsonl` (see `docs/benchmarks.md`). |
 | `zig build bench-profile` | Time per pipeline stage (profile zones, ReleaseFast): prints each workload's zones and the worst zones of one pass; appends to `zig-out/bench/profile.jsonl` (`-Dbench-record`: `bench/profile.jsonl`). `zig build test-profile` checks the zones. |
@@ -216,7 +220,7 @@ by line and reports the first differing turn; every case must match.
   layout order.
 - `inkz.compiler.compile_to_json` shows what the compiler made, in a form you can compare
   with inklecate's output.
-- `replay_case <case id>` replays a ground-truth case in its own process; the
+- `zig build replay -- <case id>` replays a ground-truth case in its own process; the
   simulator prints the exact command that reproduces each failure it finds.
 - `State.check()` and `Program.check()` return a named `Fault` for the first broken
   invariant. `verify()` asserts on it at the boundaries: when a program is built or loaded,

@@ -1,5 +1,5 @@
 //! Replays one ground-truth case, or a story's JSON, on the runtime. Used by
-//! `src/replay_case.zig`, which the gates start once per story so that a crash can't take
+//! `dev replay` (src/dev.zig), which the gates start once per story so that a crash can't take
 //! the test binary down with it.
 
 const std = @import("std");

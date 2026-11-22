@@ -26,15 +26,21 @@ pub fn build(b: *std.Build) void {
         "Generated stories draw a swarm configuration (default); off uses the full mix, " ++
             "for measuring swarm against it",
     ) orelse true;
-    const build_options = b.addOptions();
-    build_options.addOption(bool, "snap_update", snap_update);
-    build_options.addOption(bool, "fuzz_swarm", fuzz_swarm);
-    // The ground-truth gate replays each case in its own process (src/replay_case.zig).
-    const replay_case = add_executable(b, "replay_case", "src/replay_case.zig", target, optimize);
-    build_options.addOptionPath("replay_case_path", replay_case.getEmittedBin());
-    // `zig build replay` installs it, for replaying one case by hand.
-    const replay_step = b.step("replay", "Install replay_case (replay one case and print its transcript)");
-    replay_step.dependOn(&b.addInstallArtifact(replay_case, .{}).step);
+    // The dev tool (src/dev.zig): `zig build <command> -- <arguments>` runs one of its
+    // commands. Its build options can't name its own binary; the tests' options do, because
+    // the ground-truth gate replays each case in its own `dev replay` process.
+    const dev = add_executable(b, "dev", "src/dev.zig", target, optimize);
+    dev.root_module.addOptions("build_options", new_build_options(b, snap_update, fuzz_swarm));
+    const build_options = new_build_options(b, snap_update, fuzz_swarm);
+    build_options.addOptionPath("dev_path", dev.getEmittedBin());
+    for (dev_commands) |command| {
+        const run = b.addRunArtifact(dev);
+        run.setCwd(b.path("."));
+        run.has_side_effects = true;
+        run.addArg(command[0]);
+        run.addPassthruArgs();
+        b.step(command[0], command[1]).dependOn(&run.step);
+    }
 
     // The library's module, for packages that depend on inkz (`b.dependency("inkz", ...)
     // .module("inkz")`) and for the doctests.
@@ -103,14 +109,6 @@ pub fn build(b: *std.Build) void {
         .own_filters = &.{"fuzz: "},
     }, test_options);
 
-    const write_transcripts =
-        add_executable(b, "write_transcripts", "src/write_transcripts.zig", target, optimize);
-    write_transcripts.root_module.addOptions("build_options", build_options);
-    const run_transcripts = b.addRunArtifact(write_transcripts);
-    run_transcripts.setCwd(b.path("."));
-    const transcripts_step = b.step("transcripts", "Regenerate test/transcripts");
-    transcripts_step.dependOn(&run_transcripts.step);
-
     // Benchmarks (src/bench.zig, one program with a subcommand per kind). Each run is a new
     // measurement, so they always run. `bench` rewrites docs/benchmarks.md; `bench-io`
     // (program load and store) and `bench-profile` (profile zones per pipeline stage, in
@@ -127,47 +125,6 @@ pub fn build(b: *std.Build) void {
     bench_profile.addArg("profile");
     if (bench_record) bench_profile.addArg("--record");
     bench_profile_step.dependOn(&bench_profile.step);
-
-    const simulate = add_executable(b, "simulate", "src/simulate.zig", target, optimize);
-    simulate.root_module.addOptions("build_options", build_options);
-    const run_simulate = b.addRunArtifact(simulate);
-    run_simulate.setCwd(b.path("."));
-    run_simulate.addPassthruArgs();
-    b.step("simulate", "Play every case with seeded random choices").dependOn(&run_simulate.step);
-
-    // Seeded swarm runs out of the fuzzer, for long runs (docs/fuzzing.md).
-    const swarm_run = add_executable(b, "swarm_run", "src/swarm_run.zig", target, optimize);
-    swarm_run.root_module.addOptions("build_options", build_options);
-    const run_swarm = b.addRunArtifact(swarm_run);
-    run_swarm.setCwd(b.path("."));
-    run_swarm.has_side_effects = true;
-    run_swarm.addPassthruArgs();
-    b.step("swarm", "Seeded swarm runs (-- --target compile|play|save --seed S --seeds N)")
-        .dependOn(&run_swarm.step);
-
-    // The differential swarm run (docs/fuzzing.md): generated cases, compared with what ink's
-    // harness (`mise run reference:swarm`) wrote. Nothing here needs .NET but `swarm-reduce`.
-    const swarm_differential = add_executable(
-        b,
-        "swarm_differential",
-        "src/swarm_differential.zig",
-        target,
-        optimize,
-    );
-    swarm_differential.root_module.addOptions("build_options", build_options);
-    const swarm_steps = [_][3][]const u8{
-        .{ "swarm-gen", "gen", "Write generated swarm cases (-- --seed S --count N --out DIR)" },
-        .{ "swarm-check", "check", "Compare inkz with ink's results for swarm cases (-- DIR)" },
-        .{ "swarm-reduce", "reduce", "Reduce a divergent swarm case (-- DIR CASE --harness DLL)" },
-    };
-    for (swarm_steps) |swarm_step| {
-        const run = b.addRunArtifact(swarm_differential);
-        run.setCwd(b.path("."));
-        run.has_side_effects = true;
-        run.addArg(swarm_step[1]);
-        run.addPassthruArgs();
-        b.step(swarm_step[0], swarm_step[2]).dependOn(&run.step);
-    }
 
     const lint = add_executable(b, "lint", "tools/lint.zig", target, optimize);
     const run_lint = b.addRunArtifact(lint);
@@ -201,6 +158,24 @@ pub fn build(b: *std.Build) void {
     ci_step.dependOn(&run_lint.step);
     ci_step.dependOn(test_all);
     ci_step.dependOn(fuzz_corpus);
+}
+
+/// `zig build <command>` runs `dev <command>` (src/dev.zig) with the arguments after `--`.
+const dev_commands = [_][2][]const u8{
+    .{ "replay", "Replay one case and print its transcript (-- <id> | --json PATH --actions A)" },
+    .{ "simulate", "Play every case with seeded random choices" },
+    .{ "transcripts", "Regenerate test/transcripts" },
+    .{ "swarm", "Seeded swarm runs (-- --target compile|play|save --seed S --seeds N)" },
+    .{ "swarm-gen", "Write generated swarm cases (-- --seed S --count N --out DIR)" },
+    .{ "swarm-check", "Compare inkz with ink's results for swarm cases (-- DIR)" },
+    .{ "swarm-reduce", "Reduce a divergent swarm case (-- DIR CASE --harness DLL)" },
+};
+
+fn new_build_options(b: *std.Build, snap_update: bool, fuzz_swarm: bool) *std.Build.Step.Options {
+    const options = b.addOptions();
+    options.addOption(bool, "snap_update", snap_update);
+    options.addOption(bool, "fuzz_swarm", fuzz_swarm);
+    return options;
 }
 
 fn add_executable(

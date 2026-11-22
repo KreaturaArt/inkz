@@ -3,7 +3,7 @@
 //! files ("oracle: transcripts" in ground_truth_test.zig, the corpus's one replay);
 //! `zig build transcripts` regenerates them.
 //!
-//! Each story runs in its own process (`src/replay_case.zig`) with `turns_max` turns, so a
+//! Each story runs in its own process (`dev replay`, src/dev.zig) with `turns_max` turns, so a
 //! looping story ends with `turns_max reached` and a crashing one with `crash: <how>`.
 //! A story whose turn never ends stops at the line cap with `exception: "ContinueLimit"`;
 //! `overrides` lowers that cap for such stories, so their transcripts stay small.

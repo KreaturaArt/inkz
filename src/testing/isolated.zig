@@ -1,5 +1,5 @@
-//! Runs `replay_case` (src/replay_case.zig) in a child process, so a crashing story is a
-//! result rather than the end of the test binary.
+//! Runs `dev replay` (src/dev.zig) in a child process, so a crashing story is a result
+//! rather than the end of the test binary.
 
 const std = @import("std");
 const build_options = @import("build_options");
@@ -10,12 +10,14 @@ pub const Run = struct {
     crashed: bool,
 };
 
-/// Runs `replay_case <arguments...>` from the repository root.
+/// Runs `dev replay <arguments...>` from the repository root: the build's dev tool in tests,
+/// this program itself in the dev tool (whose build options can't name its own binary).
 pub fn replay(arena: std.mem.Allocator, io: std.Io, arguments: []const []const u8) !Run {
-    const argv = try std.mem.concat(arena, []const u8, &.{
-        &.{build_options.replay_case_path},
-        arguments,
-    });
+    const dev_path = if (@hasDecl(build_options, "dev_path"))
+        build_options.dev_path
+    else
+        try std.process.executablePathAlloc(io, arena);
+    const argv = try std.mem.concat(arena, []const u8, &.{ &.{ dev_path, "replay" }, arguments });
     const result = try std.process.run(arena, io, .{
         .argv = argv,
         .stdout_limit = .limited(16 * 1024 * 1024),

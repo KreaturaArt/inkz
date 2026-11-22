@@ -72,10 +72,9 @@ fn parse_options(arguments: []const [:0]const u8) !Options {
     return options;
 }
 
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const io = init.io;
-    const options = try parse_options(try init.minimal.args.toSlice(arena));
+/// `arguments[0]` is the command's name (src/dev.zig).
+pub fn command(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
+    const options = try parse_options(arguments);
     const ids: []const []const u8 = if (options.json) |path|
         try arena.dupe([]const u8, &.{path})
     else if (options.case) |case|

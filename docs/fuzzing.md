@@ -170,7 +170,7 @@ zig build swarm-check -Doptimize=ReleaseSafe -- zig-out/swarm/1
      comparison, so `save:` lines compare as JSON);
    - **pipeline**: inkz's own JSON played by inkz against ink's transcript;
    - **structure**: inkz's JSON against inklecate's.
-   Each replay runs in its own process (`replay_case --json`), so a crash is a result. Every
+   Each replay runs in its own process (`dev replay --json`), so a crash is a result. Every
    divergence is printed with its configuration, and the step fails.
 4. `zig build swarm-reduce -- <dir> <n> --harness reference/ink_harness_build/ink_harness.dll`
    reduces a divergent case by features. It regenerates the case from its seed with one

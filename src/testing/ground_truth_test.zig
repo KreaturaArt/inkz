@@ -2,7 +2,7 @@
 //! - ground truth: each case in `test/ground_truth`, compared with ink v1.2.1;
 //! - transcripts: each fixture in `test/transcripts`, compared with the stored transcript
 //!   (the only test that replays that corpus).
-//! Each story runs in its own process (`src/replay_case.zig`), so a crash is a result.
+//! Each story runs in its own process (`dev replay`, src/dev.zig), so a crash is a result.
 
 const std = @import("std");
 const oracle = @import("oracle.zig");

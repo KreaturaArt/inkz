@@ -1,11 +1,11 @@
-//! The differential swarm run (src/testing/differential.zig), run from the repository root:
-//!   `swarm_differential gen --seed <s> --count <n> --out <dir> [--swarm <line>]`:
+//! The differential swarm run (src/testing/differential.zig), commands of src/dev.zig:
+//!   `swarm-gen --seed <s> --count <n> --out <dir> [--swarm <line>]`:
 //!   generated cases, each with its drawn configuration or the one given;
-//!   `swarm_differential check <dir>`: compares inkz with ink's results, which
+//!   `swarm-check <dir>`: compares inkz with ink's results, which
 //!   `mise run reference:swarm -- <dir>` writes; exits 1 on a divergence;
-//!   `swarm_differential reduce <dir> <case> --harness <ink_harness.dll>`: drops swarm
+//!   `swarm-reduce <dir> <case> --harness <ink_harness.dll>`: drops swarm
 //!   features while the case's divergence stays, running ink's harness for each candidate.
-//! `zig build swarm-gen`, `swarm-check` and `swarm-reduce` run it.
+//! `zig build swarm-gen`, `swarm-check` and `swarm-reduce` run them.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -15,44 +15,42 @@ const fuzz_ink = @import("testing/fuzz_ink.zig");
 const Swarm = fuzz_ink.Swarm;
 
 const usage =
-    \\usage: swarm_differential gen --seed <s> --count <n> --out <dir> [--swarm <line>]
-    \\       swarm_differential check <dir>
-    \\       swarm_differential reduce <dir> <case> --harness <ink_harness.dll>
+    \\usage: dev swarm-gen --seed <s> --count <n> --out <dir> [--swarm <line>]
+    \\       dev swarm-check <dir>
+    \\       dev swarm-reduce <dir> <case> --harness <ink_harness.dll>
     \\
 ;
 
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const io = init.io;
-    const arguments = try init.minimal.args.toSlice(arena);
-    const gen = arguments.len >= 8 and std.mem.eql(u8, arguments[1], "gen") and
-        std.mem.eql(u8, arguments[2], "--seed") and std.mem.eql(u8, arguments[4], "--count") and
-        std.mem.eql(u8, arguments[6], "--out");
-    const swarm_given = arguments.len == 10 and std.mem.eql(u8, arguments[8], "--swarm");
-    if (gen and (arguments.len == 8 or swarm_given)) {
-        const seed = try std.fmt.parseInt(u64, arguments[3], 10);
-        const count = try std.fmt.parseInt(u32, arguments[5], 10);
-        const swarm: ?Swarm = if (swarm_given) try Swarm.parse(arguments[9]) else null;
-        try std.Io.Dir.cwd().createDirPath(io, arguments[7]);
-        var directory = try std.Io.Dir.cwd().openDir(io, arguments[7], .{});
+/// `arguments[0]` is the command's name (src/dev.zig).
+pub fn command(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
+    const gen = arguments.len >= 7 and std.mem.eql(u8, arguments[0], "swarm-gen") and
+        std.mem.eql(u8, arguments[1], "--seed") and std.mem.eql(u8, arguments[3], "--count") and
+        std.mem.eql(u8, arguments[5], "--out");
+    const swarm_given = arguments.len == 9 and std.mem.eql(u8, arguments[7], "--swarm");
+    if (gen and (arguments.len == 7 or swarm_given)) {
+        const seed = try std.fmt.parseInt(u64, arguments[2], 10);
+        const count = try std.fmt.parseInt(u32, arguments[4], 10);
+        const swarm: ?Swarm = if (swarm_given) try Swarm.parse(arguments[8]) else null;
+        try std.Io.Dir.cwd().createDirPath(io, arguments[6]);
+        var directory = try std.Io.Dir.cwd().openDir(io, arguments[6], .{});
         defer directory.close(io);
         try differential.generate(io, directory, seed, count, swarm);
-        std.debug.print("{d} cases in {s}\n", .{ count, arguments[7] });
+        std.debug.print("{d} cases in {s}\n", .{ count, arguments[6] });
         return;
     }
-    if (arguments.len == 3 and std.mem.eql(u8, arguments[1], "check")) {
+    if (arguments.len == 2 and std.mem.eql(u8, arguments[0], "swarm-check")) {
         var buffer: [4096]u8 = undefined;
         var file_writer = std.Io.File.stdout().writer(io, &buffer);
         const writer = &file_writer.interface;
-        const summary = try differential.check_directory(arena, io, arguments[2], replay, writer);
+        const summary = try differential.check_directory(arena, io, arguments[1], replay, writer);
         try writer.flush();
         if (summary.divergences() > 0) std.process.exit(1);
         return;
     }
-    if (arguments.len == 6 and std.mem.eql(u8, arguments[1], "reduce") and
-        std.mem.eql(u8, arguments[4], "--harness"))
+    if (arguments.len == 5 and std.mem.eql(u8, arguments[0], "swarm-reduce") and
+        std.mem.eql(u8, arguments[3], "--harness"))
     {
-        return reduce(arena, io, arguments[2], arguments[3], arguments[5]);
+        return reduce(arena, io, arguments[1], arguments[2], arguments[4]);
     }
     std.debug.print("{s}", .{usage});
     std.process.exit(2);
