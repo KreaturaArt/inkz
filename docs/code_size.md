@@ -34,9 +34,11 @@ The review estimated about −28%. Most of the gap is items left out because the
 changed output or risked more than they saved:
 
 - **Builtin tables.** Resolution treats `_` as a builtin and lowering doesn't, so merging
-  their tables would change how `_()` compiles.
+  their tables would change how `_()` compiles. (P17.17 merged them: `_()` failed an
+  assertion in lowering, and ink compiles it as a native call.)
 - **END/DONE and list items.** Passing these from resolution to lowering needs new
-  per-divert data in the resolution.
+  per-divert data in the resolution. (P17.17 added it: each divert's kind, and each list
+  literal's items.)
 - **heap.zig.** Its string and list paths look alike, but they use different layouts (a
   mark bit and byte offsets against a forward word and word offsets).
 - **"transcripts are up to date".** It replays every fixture a second time, and was kept.
