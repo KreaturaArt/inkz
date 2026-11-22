@@ -172,26 +172,14 @@ pub const ProgramBuilder = struct {
     pub fn deinit(builder: *ProgramBuilder) void {
         assert(builder.frames.items.len < 1 << 16);
         const gpa = builder.gpa;
-        // After `finish` the containers have moved into the program.
-        builder.strings.deinit(gpa);
-        builder.extra.deinit(gpa);
-        builder.containers.deinit(gpa);
-        builder.staged.deinit(gpa);
-        builder.finished.deinit(gpa);
-        builder.scratch.deinit(gpa);
-        builder.named_finished.deinit(gpa);
-        builder.named_scratch.deinit(gpa);
-        builder.frames.deinit(gpa);
-        builder.fixups.deinit(gpa);
-        builder.path_bytes.deinit(gpa);
-        builder.keys.deinit(gpa);
-        builder.variable_fixups.deinit(gpa);
-        builder.list_fixups.deinit(gpa);
-        builder.list_names.deinit(gpa);
-        builder.globals.deinit(gpa);
-        builder.list_origins.deinit(gpa);
-        builder.list_items.deinit(gpa);
-        builder.externals.deinit(gpa);
+        // After `finish` the containers have moved into the program. Every field with a
+        // `deinit` (the lists, the strings, the extra words) owns memory.
+        inline for (@typeInfo(ProgramBuilder).@"struct".field_names) |name| {
+            const Field = @FieldType(ProgramBuilder, name);
+            if (@typeInfo(Field) == .@"struct" and @hasDecl(Field, "deinit")) {
+                @field(builder, name).deinit(gpa);
+            }
+        }
         builder.* = undefined;
     }
 
