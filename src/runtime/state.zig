@@ -38,73 +38,13 @@ const CallStack = call_stack_module.CallStack;
 const Output = output_module.Output;
 const Choices = choices_module.Choices;
 
-/// A runtime error or warning, as ink's currentErrors and currentWarnings hold them.
+/// A kept runtime error or warning (ink's currentErrors and currentWarnings): its message,
+/// formatted when it was raised, is `State.diagnostic_bytes[start..][0..length]`.
 pub const Diagnostic = struct {
-    /// A string argument, such as a variable name, or a reference to nothing.
-    argument: StringReference,
-    /// A second string the message prints, such as the value a divert variable held.
-    detail: StringReference = .none,
-    /// Numbers the message prints, such as RANDOM's bounds.
-    number: i32 = 0,
-    other_number: i32 = 0,
-    /// Where the story was (ink prints `state.currentPointer.path`), or null.
-    pointer: call_stack_module.Pointer = .null,
-    code: Code,
-    severity: Severity,
+    start: u32,
+    length: u32,
 
     pub const Severity = enum(u8) { @"error", warning };
-    /// Filled in by the VM's error handling.
-    pub const Code = enum(u16) {
-        story_error,
-        evaluation_stack_empty,
-        glue_in_expression,
-        divert_variable_not_found,
-        divert_variable_not_target,
-        turns_since_expected_target,
-        tunnel_return_not_target,
-        pop_mismatch,
-        /// ink's "Found <popped>, when expected <current>": `number` the popped FrameKind,
-        /// `other_number` the current frame's, or 2 when the stack can't pop.
-        pop_unexpected,
-        unmatched_end_string,
-        unexpected_command_in_tag,
-        no_truth_value,
-        division_by_zero,
-        integer_overflow,
-        float_to_integer_out_of_range,
-        void_operand,
-        unsupported_operation,
-        /// ink's "Cannot perform operation": `number` the opcode, `other_number` the rank
-        /// (`Value.rank`) of the type the operands were coerced to.
-        operation_not_for_type,
-        /// `number`: the opcode; `other_number`: the operands' Value tags, left << 8 | right.
-        list_operand_types,
-        variable_not_found,
-        variable_pointer_cycle,
-        temp_not_found,
-        choice_text_not_string,
-        random_invalid_minimum,
-        random_invalid_maximum,
-        random_range_too_large,
-        random_range_empty,
-        seed_invalid,
-        shuffle_invalid,
-        thread_left_to_pop,
-        unexpected_end_of_tunnel,
-        unexpected_end_of_function,
-        ran_out_of_content,
-        unexpected_end_unknown,
-        list_from_int_not_int,
-        list_not_found,
-        list_range_arguments,
-        list_random_not_list,
-        external_unsafe_in_string,
-        external_not_bound,
-        external_fallback_missing,
-        too_many_arguments,
-        unsupported,
-        _,
-    };
 };
 
 /// One undo record of the lookahead change log: what a shared value was before.
@@ -266,6 +206,9 @@ pub const State = struct {
     /// `reset_errors` clears them once `cont()` has reported them.
     errors: BoundedStack(Diagnostic),
     warnings: BoundedStack(Diagnostic),
+    /// The kept diagnostics' messages, in the order they were raised.
+    diagnostic_bytes: []u8,
+    diagnostic_bytes_used: u32 = 0,
     /// Diagnostics that didn't fit; reported as a count after the kept ones.
     diagnostics_dropped: u32 = 0,
     /// Scratch for the visit-counting walk.
@@ -451,14 +394,6 @@ pub const State = struct {
         visit_flow(state.live_flow(), visitor);
         for (state.globals) |*value| visit_value(value, visitor);
         for (state.global_defaults) |*value| visit_value(value, visitor);
-        for (state.errors.slice()) |*diagnostic| {
-            visitor.string(&diagnostic.argument);
-            visitor.string(&diagnostic.detail);
-        }
-        for (state.warnings.slice()) |*diagnostic| {
-            visitor.string(&diagnostic.argument);
-            visitor.string(&diagnostic.detail);
-        }
         flows.visit_parked(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
             const words = state.parking[stash.first..][0 .. stash.items * 3];
@@ -470,19 +405,39 @@ pub const State = struct {
         lookahead_module.visit(state, visitor);
     }
 
-    /// ink's AddError. When the list is full the diagnostic is counted, not kept: the first
-    /// ones are usually the cause of the rest.
-    pub fn add_diagnostic(state: *State, diagnostic: Diagnostic) void {
-        const list = switch (diagnostic.severity) {
+    /// ink's AddError: formats the message now, with ink's prefix from Story.AddError. Compiled
+    /// JSON has no debug metadata, so the prefix is `RUNTIME ERROR: (<pointer path>): ` while
+    /// the story has a pointer, else `RUNTIME ERROR: `. When the list is full the diagnostic
+    /// is counted, not kept: the first ones are usually the cause of the rest. A message
+    /// longer than the bytes left is cut short.
+    pub fn add_diagnostic(
+        state: *State,
+        severity: Diagnostic.Severity,
+        pointer: call_stack_module.Pointer,
+        comptime format: []const u8,
+        arguments: anytype,
+    ) void {
+        const list = switch (severity) {
             .@"error" => &state.errors,
             .warning => &state.warnings,
         };
         assert(list.buffer.len > 0);
-        assert(list.count <= list.buffer.len);
-        list.push(diagnostic) catch {
+        assert(state.diagnostic_bytes_used <= state.diagnostic_bytes.len);
+        if (list.is_full()) {
             state.diagnostics_dropped += 1;
-        };
-        assert(list.count > 0 or list.buffer.len == 0);
+            return;
+        }
+        const start = state.diagnostic_bytes_used;
+        var writer: std.Io.Writer = .fixed(state.diagnostic_bytes[start..]);
+        write_diagnostic(state.program, severity, pointer, format, arguments, &writer) catch {};
+        state.diagnostic_bytes_used += @intCast(writer.end);
+        list.push(.{ .start = start, .length = @intCast(writer.end) }) catch unreachable;
+        assert(list.count > 0);
+    }
+
+    pub fn diagnostic_text(state: *const State, diagnostic: Diagnostic) []const u8 {
+        assert(diagnostic.start + diagnostic.length <= state.diagnostic_bytes_used);
+        return state.diagnostic_bytes[diagnostic.start..][0..diagnostic.length];
     }
 
     /// ink's hasError, which also stops `can_continue`.
@@ -503,6 +458,7 @@ pub const State = struct {
         assert(state.errors.buffer.len > 0 and state.warnings.buffer.len > 0);
         state.errors.clear();
         state.warnings.clear();
+        state.diagnostic_bytes_used = 0;
         state.diagnostics_dropped = 0;
         assert(!state.has_error() and !state.has_warning());
     }
@@ -726,6 +682,27 @@ const Carver = struct {
     }
 };
 
+fn write_diagnostic(
+    program: *const Program,
+    severity: Diagnostic.Severity,
+    pointer: call_stack_module.Pointer,
+    comptime format: []const u8,
+    arguments: anytype,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    const kind = if (severity == .@"error") "ERROR" else "WARNING";
+    try writer.print("RUNTIME {s}: ", .{kind});
+    if (!pointer.is_null()) {
+        const path = program.strings.get(program.container_info(pointer.container).path);
+        if (path.len == 0) {
+            try writer.print("({d}): ", .{pointer.index});
+        } else {
+            try writer.print("({s}.{d}): ", .{ path, pointer.index });
+        }
+    }
+    try writer.print(format, arguments);
+}
+
 /// The deepest nesting of containers in the program (root alone is 1).
 fn container_depth(program: *const Program) u32 {
     assert(program.containers.len > 0);
@@ -785,6 +762,10 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .strings = .init(carver.take(u8, limits.heap_bytes_max)),
         .line_bytes = carver.take(u8, limits.output_bytes_max),
         .tag_bytes = carver.take(u8, limits.tag_bytes_max),
+        .diagnostic_bytes = carver.take(
+            u8,
+            (limits.errors_max + limits.warnings_max) * element_bytes.diagnostic_text,
+        ),
         .observers = observers,
         .binding_words = binding_words,
     };
@@ -891,7 +872,7 @@ test "check catches a dangling heap string" {
 
 test "errors and warnings are bounded and reset together" {
     // Ink's AddError, hasError and ResetErrors, within errors_max: add
-    // more errors than fit, then a warning, then reset.
+    // more errors than fit, then a warning, then reset. Messages are formatted when added.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
     defer program.deinit(gpa);
@@ -899,19 +880,20 @@ test "errors and warnings are bounded and reset together" {
     try state.init(gpa, &program, .{ .errors_max = 2, .warnings_max = 1 });
     defer state.deinit(gpa);
     try std.testing.expect(!state.has_error());
-    const diagnostic: Diagnostic =
-        .{ .argument = .none, .number = 0, .code = .story_error, .severity = .@"error" };
-    for (0..3) |_| state.add_diagnostic(diagnostic);
+    for (0..3) |position| state.add_diagnostic(.@"error", .null, "error {d}", .{position});
     try std.testing.expect(state.has_error() and !state.has_warning());
     try std.testing.expectEqual(@as(u32, 2), state.errors.count);
     try std.testing.expectEqual(@as(u32, 1), state.diagnostics_dropped);
-    var warning = diagnostic;
-    warning.severity = .warning;
-    state.add_diagnostic(warning);
+    const second = state.diagnostic_text(state.errors.slice()[1]);
+    try std.testing.expectEqualStrings("RUNTIME ERROR: error 1", second);
+    state.add_diagnostic(.warning, .start_of(Program.root), "careful", .{});
     try std.testing.expect(state.has_warning());
+    const warning = state.diagnostic_text(state.warnings.slice()[0]);
+    try std.testing.expectEqualStrings("RUNTIME WARNING: (0): careful", warning);
     state.reset_errors();
     try std.testing.expect(!state.has_error() and !state.has_warning());
     try std.testing.expectEqual(@as(u32, 0), state.diagnostics_dropped);
+    try std.testing.expectEqual(@as(u32, 0), state.diagnostic_bytes_used);
 }
 
 test "a full heap compacts once and keeps the caller's operands" {

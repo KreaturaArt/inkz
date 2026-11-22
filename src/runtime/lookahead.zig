@@ -35,6 +35,7 @@ pub const Snapshot = struct {
     observer_events: u32 = 0,
     errors: u32 = 0,
     warnings: u32 = 0,
+    diagnostic_bytes: u32 = 0,
     diagnostics_dropped: u32 = 0,
     patch_count: u32 = 0,
     turn_index: i32 = -1,
@@ -93,6 +94,7 @@ pub fn take(state: *State) void {
         .observer_events = state.observer_events.count,
         .errors = state.errors.count,
         .warnings = state.warnings.count,
+        .diagnostic_bytes = state.diagnostic_bytes_used,
         .diagnostics_dropped = state.diagnostics_dropped,
         .turn_index = state.turn_index,
         .story_seed = state.story_seed,
@@ -123,6 +125,7 @@ pub fn restore(state: *State) void {
     state.observer_events.count = snapshot.observer_events;
     state.errors.count = snapshot.errors;
     state.warnings.count = snapshot.warnings;
+    state.diagnostic_bytes_used = snapshot.diagnostic_bytes;
     state.diagnostics_dropped = snapshot.diagnostics_dropped;
     state.turn_index = snapshot.turn_index;
     state.story_seed = snapshot.story_seed;
@@ -316,9 +319,7 @@ fn change_everything(state: *State) !void {
     try set_turn_index(state, 0, 3);
     _ = try state.lists.store(&.{.from_int(1)}, &.{});
     try state.observer_events.push(.from_int(0));
-    const diagnostic: state_module.Diagnostic =
-        .{ .argument = line, .number = 1, .code = .story_error, .severity = .@"error" };
-    state.add_diagnostic(diagnostic);
+    state.add_diagnostic(.@"error", .null, "Story error.", .{});
     state.turn_index += 1;
     state.previous_random = 99;
     state.verify();

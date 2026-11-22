@@ -109,7 +109,7 @@ const Loader = struct {
     }
 
     /// Resets the state for the commit: the defaults, no flows, empty counts, and the heap
-    /// compacted to what survives (the defaults and the diagnostics).
+    /// compacted to what survives (the defaults).
     fn prepare(loader: *Loader) void {
         assert(!lookahead.active(&loader.story.state));
         assert(loader.story.callback_depth == 0);
@@ -138,14 +138,6 @@ const Loader = struct {
         const s = loader.state();
         var retained: Retained = .{ .strings = &s.strings, .lists = &s.lists };
         for (s.global_defaults) |*item| retained.add_value(item);
-        for (s.errors.slice()) |*diagnostic| {
-            retained.string(&diagnostic.argument);
-            retained.string(&diagnostic.detail);
-        }
-        for (s.warnings.slice()) |*diagnostic| {
-            retained.string(&diagnostic.argument);
-            retained.string(&diagnostic.detail);
-        }
         if (loader.string_bytes + retained.bytes > s.strings.bytes.len) return error.SaveTooLarge;
         if (loader.list_words + retained.words > s.lists.words.len) return error.SaveTooLarge;
         if (loader.parking_words > s.parking.len) return error.SaveTooLarge;
@@ -870,7 +862,7 @@ const Tally = struct {
     }
 };
 
-/// Heap space the defaults and diagnostics keep through a load.
+/// Heap space the defaults keep through a load.
 const Retained = struct {
     strings: *const heap.StringHeap,
     lists: *const @import("lists.zig").ListSlab,

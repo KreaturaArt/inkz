@@ -40,7 +40,8 @@ const StringId = index.StringId;
 const GlobalSlot = index.GlobalSlot;
 const ListItemIndex = index.ListItemIndex;
 const ListOriginIndex = index.ListOriginIndex;
-const Code = state_module.Diagnostic.Code;
+const messages = @import("messages.zig");
+const Code = messages.Code;
 
 /// Strings by reference: the program's pool or the state's heap.
 pub const Strings = struct {
@@ -79,15 +80,8 @@ pub const Arguments = struct {
 /// returns `error.StoryError`.
 pub fn fail(story: *Story, code: Code, arguments: Arguments) Error {
     assert(@backingInt(code) > 0 or code == .story_error);
-    story.state.add_diagnostic(.{
-        .argument = if (arguments.name.is_none()) .none else .program(arguments.name),
-        .detail = arguments.detail,
-        .number = arguments.numbers[0],
-        .other_number = arguments.numbers[1],
-        .pointer = vm.current_pointer(story),
-        .code = code,
-        .severity = .@"error",
-    });
+    const text: messages.Text = .{ .story = story, .code = code, .arguments = arguments };
+    story.state.add_diagnostic(.@"error", vm.current_pointer(story), "{f}", .{text});
     force_end(story);
     assert(story.state.has_error());
     return error.StoryError;
@@ -95,13 +89,8 @@ pub fn fail(story: *Story, code: Code, arguments: Arguments) Error {
 
 pub fn warn_name(story: *Story, code: Code, name: StringId) void {
     assert(!name.is_none());
-    const argument: StringReference = .program(name);
-    story.state.add_diagnostic(.{
-        .argument = argument,
-        .pointer = vm.current_pointer(story),
-        .code = code,
-        .severity = .warning,
-    });
+    const text: messages.Text = .{ .story = story, .code = code, .arguments = .{ .name = name } };
+    story.state.add_diagnostic(.warning, vm.current_pointer(story), "{f}", .{text});
     assert(story.state.has_warning());
 }
 

@@ -162,12 +162,6 @@ test "compaction keeps every root kind" {
     const live_line = live_after_garbage(state, "live line");
     try state.output.push_text(&state.strings, state.call_stack.current_frames(), live_line, 0, 9);
     try state.observer_events.push(.from_int(0));
-    state.add_diagnostic(.{
-        .argument = live_after_garbage(state, "argument"),
-        .detail = live_after_garbage(state, "detail"),
-        .code = .divert_variable_not_target,
-        .severity = .@"error",
-    });
     lookahead.take(state);
     try state.evaluation.push(.{ .string = live_after_garbage(state, "evaluation") });
     try lookahead.set_global(state, .from_int(0), .{ .string = live_after_garbage(state, "new") });
@@ -181,8 +175,6 @@ test "compaction keeps every root kind" {
     try expect_text(state, state.output.items.slice()[0].string, "live line");
     try expect_text(state, state.lookahead.items[0].string, "live line");
     try std.testing.expectEqual(@as(u32, 1), state.observer_events.count);
-    try expect_text(state, state.errors.slice()[0].argument, "argument");
-    try expect_text(state, state.errors.slice()[0].detail, "detail");
     lookahead.restore(state); // the undo log's "old" was a root too
     try expect_text(state, state.globals[0].string, "old");
     try flows.switch_flow(state, flows.default_name);

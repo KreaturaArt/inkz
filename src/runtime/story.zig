@@ -464,19 +464,20 @@ pub const Story = struct {
         const state = &story.state;
         if (!state.has_error() and !state.has_warning()) return;
         const handler = story.on_error orelse return error.StoryError;
-        var buffer: [2048]u8 = undefined;
-        const errors = state.errors.slice();
-        const lists = [_][]const state_module.Diagnostic{ errors, state.warnings.slice() };
-        for (lists) |list| {
+        const lists = [_][]const state_module.Diagnostic{
+            state.errors.slice(),
+            state.warnings.slice(),
+        };
+        const severities = [_]Severity{ .@"error", .warning };
+        for (lists, severities) |list, severity| {
             for (list) |diagnostic| {
-                var writer: std.Io.Writer = .fixed(&buffer);
-                messages.write(story, diagnostic, &writer) catch {};
                 story.callback_depth += 1;
                 defer story.callback_depth -= 1;
-                handler(story.on_error_context, writer.buffered(), diagnostic.severity);
+                handler(story.on_error_context, state.diagnostic_text(diagnostic), severity);
             }
         }
         if (state.diagnostics_dropped > 0) {
+            var buffer: [128]u8 = undefined;
             const dropped = state.diagnostics_dropped;
             const text = std.fmt.bufPrint(&buffer, "RUNTIME ERROR: {d} more errors and " ++
                 "warnings didn't fit errors_max or warnings_max", .{dropped}) catch &buffer;
@@ -729,7 +730,7 @@ pub const Story = struct {
             ops.fail(story, .thread_left_to_pop, .{}) catch {};
         }
         if (state.choices.count() != 0 or state.did_safe_exit) return;
-        const code: state_module.Diagnostic.Code = if (state.call_stack.can_pop(.tunnel))
+        const code: messages.Code = if (state.call_stack.can_pop(.tunnel))
             .unexpected_end_of_tunnel
         else if (state.call_stack.can_pop(.function))
             .unexpected_end_of_function
@@ -930,13 +931,13 @@ pub const Story = struct {
     /// Error `position`'s message: `error.OutOfRange` past `error_count`.
     pub fn write_error(story: *const Story, position: u32, writer: *std.Io.Writer) !void {
         if (position >= story.state.errors.count) return error.OutOfRange;
-        try messages.write(story, story.state.errors.slice()[position], writer);
+        try writer.writeAll(story.state.diagnostic_text(story.state.errors.slice()[position]));
     }
 
     /// Warning `position`'s message: `error.OutOfRange` past `warning_count`.
     pub fn write_warning(story: *const Story, position: u32, writer: *std.Io.Writer) !void {
         if (position >= story.state.warnings.count) return error.OutOfRange;
-        try messages.write(story, story.state.warnings.slice()[position], writer);
+        try writer.writeAll(story.state.diagnostic_text(story.state.warnings.slice()[position]));
     }
 };
 

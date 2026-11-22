@@ -1,57 +1,102 @@
-//! Diagnostic messages: the text ink gives each runtime error and warning, with
-//! ink's prefix from Story.AddError. Compiled JSON has no debug metadata, so the prefix is
-//! `RUNTIME ERROR: (<pointer path>): ` while the story has a pointer, else `RUNTIME ERROR: `.
+//! Diagnostic messages: the text ink gives each runtime error and warning, without the
+//! prefix `State.add_diagnostic` writes.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const state_module = @import("state.zig");
 const value_module = @import("value.zig");
 const story_module = @import("story.zig");
 const ops = @import("ops.zig");
 const Story = story_module.Story;
-const Diagnostic = state_module.Diagnostic;
 const Value = value_module.Value;
 const Opcode = @import("../core/instruction.zig").Opcode;
 const ink_json = @import("../core/ink_json.zig");
 
-pub fn write(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Writer) !void {
-    assert(writer.buffer.len > 0);
-    assert(@backingInt(diagnostic.code) < std.math.maxInt(u16));
-    const kind = if (diagnostic.severity == .@"error") "ERROR" else "WARNING";
-    try writer.print("RUNTIME {s}: ", .{kind});
-    if (!diagnostic.pointer.is_null()) {
-        const pointer = diagnostic.pointer;
-        const program = story.program;
-        const path = program.strings.get(program.container_info(pointer.container).path);
-        if (path.len == 0) {
-            try writer.print("({d}): ", .{pointer.index});
-        } else {
-            try writer.print("({s}.{d}): ", .{ path, pointer.index });
-        }
-    }
-    try write_text(story, diagnostic, writer);
-}
+/// The text of the error `code` with `arguments`, for `State.add_diagnostic`'s "{f}".
+pub const Text = struct {
+    story: *const Story,
+    code: Code,
+    arguments: ops.Arguments,
 
-fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Writer) !void {
+    pub fn format(text: Text, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        return write_text(text.story, text.code, text.arguments, writer);
+    }
+};
+
+/// Filled in by the VM's error handling.
+pub const Code = enum(u16) {
+    story_error,
+    evaluation_stack_empty,
+    glue_in_expression,
+    divert_variable_not_found,
+    divert_variable_not_target,
+    turns_since_expected_target,
+    tunnel_return_not_target,
+    pop_mismatch,
+    /// ink's "Found <popped>, when expected <current>": `number` the popped FrameKind,
+    /// `other_number` the current frame's, or 2 when the stack can't pop.
+    pop_unexpected,
+    unmatched_end_string,
+    unexpected_command_in_tag,
+    no_truth_value,
+    division_by_zero,
+    integer_overflow,
+    float_to_integer_out_of_range,
+    void_operand,
+    unsupported_operation,
+    /// ink's "Cannot perform operation": `number` the opcode, `other_number` the rank
+    /// (`Value.rank`) of the type the operands were coerced to.
+    operation_not_for_type,
+    /// `number`: the opcode; `other_number`: the operands' Value tags, left << 8 | right.
+    list_operand_types,
+    variable_not_found,
+    variable_pointer_cycle,
+    temp_not_found,
+    choice_text_not_string,
+    random_invalid_minimum,
+    random_invalid_maximum,
+    random_range_too_large,
+    random_range_empty,
+    seed_invalid,
+    shuffle_invalid,
+    thread_left_to_pop,
+    unexpected_end_of_tunnel,
+    unexpected_end_of_function,
+    ran_out_of_content,
+    unexpected_end_unknown,
+    list_from_int_not_int,
+    list_not_found,
+    list_range_arguments,
+    list_random_not_list,
+    external_unsafe_in_string,
+    external_not_bound,
+    external_fallback_missing,
+    too_many_arguments,
+    unsupported,
+    _,
+};
+
+fn write_text(
+    story: *const Story,
+    code: Code,
+    arguments: ops.Arguments,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
     assert(story.state.memory.len > 0);
-    const argument = if (diagnostic.argument == value_module.StringReference.none)
-        ""
-    else
-        ops.strings_of(story).get(diagnostic.argument);
+    const name = arguments.name;
+    const argument = if (name.is_none()) "" else story.program.strings.get(name);
+    const number = arguments.numbers[0];
+    const other_number = arguments.numbers[1];
     assert(argument.len < 1 << 20);
-    const text: []const u8 = switch (diagnostic.code) {
+    const text: []const u8 = switch (code) {
         .variable_not_found => return writer.print("Variable not found: '{s}'. Using default " ++
             "value of 0 (false). This can happen with temporary variables if the declaration " ++
             "hasn't yet been hit. Globals are always given a default value on load if a value " ++
             "doesn't exist in the save state.", .{argument}),
         .divert_variable_not_found => return writer.print("Tried to divert using a target from " ++
             "a variable that could not be found ({s})", .{argument}),
-        .divert_variable_not_target => return write_not_target(story, diagnostic, argument, writer),
+        .divert_variable_not_target => return write_not_target(story, arguments, argument, writer),
         .random_range_empty => return writer.print("RANDOM was called with minimum as {d} and " ++
-            "maximum as {d}. The maximum must be larger", .{
-            diagnostic.number,
-            diagnostic.other_number,
-        }),
+            "maximum as {d}. The maximum must be larger", .{ number, other_number }),
         .external_not_bound => return writer.print("Trying to call EXTERNAL function '{s}' " ++
             "which has not been bound (and ink fallbacks disabled).", .{argument}),
         .external_fallback_missing => return writer.print("Trying to call EXTERNAL function " ++
@@ -72,19 +117,19 @@ fn write_text(story: *const Story, diagnostic: Diagnostic, writer: *std.Io.Write
         .list_not_found => return writer.print("Failed to find LIST called {s}", .{argument}),
         .list_operand_types => return writer.print("Can not call use '{s}' operation on {s} " ++
             "and {s}", .{
-            opcode_word(diagnostic.number),
-            type_name(diagnostic.other_number >> 8),
-            type_name(diagnostic.other_number & 0xff),
+            opcode_word(number),
+            type_name(other_number >> 8),
+            type_name(other_number & 0xff),
         }),
         .operation_not_for_type => return writer.print("Cannot perform operation '{s}' on {s}", .{
-            opcode_word(diagnostic.number),
-            rank_name(diagnostic.other_number),
+            opcode_word(number),
+            rank_name(other_number),
         }),
         .pop_unexpected => return writer.print("Found {s}, when expected {s}", .{
-            pop_name(diagnostic.number),
-            pop_name(diagnostic.other_number),
+            pop_name(number),
+            pop_name(other_number),
         }),
-        else => fixed_text(diagnostic.code),
+        else => fixed_text(code),
     };
     try writer.writeAll(text);
 }
@@ -114,17 +159,16 @@ fn rank_name(rank: i32) []const u8 {
 /// `detail`.
 fn write_not_target(
     story: *const Story,
-    diagnostic: Diagnostic,
+    arguments: ops.Arguments,
     name: []const u8,
     writer: *std.Io.Writer,
-) !void {
-    assert(diagnostic.code == .divert_variable_not_target);
+) std.Io.Writer.Error!void {
     try writer.print("Tried to divert to a target from a variable, but the variable ({s}) " ++
         "didn't contain a divert target, it ", .{name});
-    if (diagnostic.detail == value_module.StringReference.none) {
+    if (arguments.detail == value_module.StringReference.none) {
         return writer.writeAll("was empty/null (the value 0).");
     }
-    try writer.print("contained '{s}'.", .{ops.strings_of(story).get(diagnostic.detail)});
+    try writer.print("contained '{s}'.", .{ops.strings_of(story).get(arguments.detail)});
 }
 
 /// The native function's name as ink spells it (its JSON word), from an opcode number.
@@ -160,7 +204,7 @@ fn type_name(tag_number: i32) []const u8 {
     };
 }
 
-fn fixed_text(code: Diagnostic.Code) []const u8 {
+fn fixed_text(code: Code) []const u8 {
     assert(code != .variable_not_found);
     assert(@backingInt(code) < std.math.maxInt(u16));
     return switch (code) {
