@@ -83,7 +83,7 @@ fn check_rate(io: std.Io) !void {
 }
 
 /// The zones the F15 and F18 decisions read (docs/benchmarks.md): a play with arithmetic
-/// records `call_native`, and loading a save records both of its passes.
+/// records `call_native`, and loading a save records its parse and its pass.
 fn check_runtime_zones() !void {
     assert(!profile.active);
     const api = @import("runtime/story.zig");
@@ -102,7 +102,7 @@ fn check_runtime_zones() !void {
     try story.to_json(&save.writer);
     try story.load_json(save.written());
     const totals = profile.totals();
-    for ([_]profile.Zone{ .call_native, .load_validate, .load_commit }) |zone| {
+    for ([_]profile.Zone{ .call_native, .load_parse, .load_commit }) |zone| {
         try std.testing.expect(totals.calls[@backingInt(zone)] > 0);
     }
     assert(profile.active);

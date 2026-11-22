@@ -69,7 +69,7 @@ pub const Zone = enum(u8) {
     // Saves.
     save_write,
     load_parse,
-    load_validate,
+    /// Reading the parsed save into the state, in one pass.
     load_commit,
 };
 

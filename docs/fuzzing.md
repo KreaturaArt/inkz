@@ -60,8 +60,8 @@ compare runs of one target, not targets with each other.
 | Program image | `src/fuzz_targets.zig` | `mutated program image` | a valid image with words, bytes and bits changed and the length cut | a checked program or a named error |
 | Program image (raw) | `src/fuzz_targets.zig` | `image loader never crashes` | raw bytes | a checked program or a named error |
 | VM | `src/fuzz/vm.zig` | `keeps the state consistent` | generated stories played with the fuzzer's seed, bindings and choices | `state.check` after every call |
-| Save and load | `src/fuzz/save.zig` | `loaded save plays` | a played story's save, loaded into a fresh story; the save with its tokens edited | the same save JSON and the same transcript; an edited save leaves the story unchanged or checked |
-| Save loader (raw) | `src/fuzz_targets.zig` | `save loader never crashes` | raw bytes | the state is unchanged or checked |
+| Save and load | `src/fuzz/save.zig` | `loaded save plays` | a played story's save, loaded into a fresh story; the save with its tokens edited | the same save JSON and the same transcript; an edited save loads checked or leaves the story reset |
+| Save loader (raw) | `src/fuzz_targets.zig` | `save loader never crashes` | raw bytes | the state is checked, or reset as `reset_state` leaves it |
 | Host API | `src/fuzz/host.zig` | `host calls` | up to 48 API calls in any order from the session's drawn call set, with names and values in the pool and outside it | a result or an error; `state.check` after each call |
 | Limits | `src/fuzz/limits.zig` | `limits drawn` | generated stories and a host call mix under limits drawn per field: the default, or tight (1 to 16 of a count, 256 to 4,096 bytes) | a result or an error; `state.check` after each call; a story that failed in the middle of a step answers `cont` with `error.StoryFailed` |
 

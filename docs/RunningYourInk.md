@@ -446,8 +446,10 @@ EXTERNAL multiply(x, y)
 ## Saving and loading
 
 `to_json(writer)` streams the state as ink's save format (version 10), with no allocation.
-`load_json(json)` loads a save written by inkz or by C# ink (versions 8 to 10). A save that
-doesn't load leaves the story unchanged.
+`load_json(json)` loads a save written by inkz or by C# ink (versions 8 to 10). It reads the
+save once, straight into the state, so a save that doesn't load leaves the story started
+over, as `reset_state()` leaves it (C# ink leaves it partly loaded). Keep your own save of
+the current state if a failed load must not lose it.
 
 ```zig
 var saved: std.Io.Writer.Allocating = .init(gpa);

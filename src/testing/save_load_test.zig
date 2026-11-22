@@ -2,7 +2,7 @@
 //! reproduces byte for byte):
 //! - a save and load at every turn of every case doesn't change the play;
 //! - every C# save recorded in the ground truth loads, and saves back to the same JSON;
-//! - a corrupted save leaves the story unchanged.
+//! - a corrupted save leaves the story as `reset_state` leaves it.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -117,9 +117,9 @@ test "every C# save in the ground truth loads and saves back to the same JSON" {
     try std.testing.expect(checked >= 6);
 }
 
-test "a corrupted save leaves the story unchanged" {
-    // Validate-then-commit: break a real save in several ways; each load
-    // fails and the state hash doesn't move.
+test "a corrupted save leaves the story reset" {
+    // Break a real save in several ways: each load, from the saved state, fails part way
+    // or before it starts and leaves the state hash reset_state gives.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -148,11 +148,20 @@ test "a corrupted save leaves the story unchanged" {
         try std.mem.replaceOwned(u8, arena, good, "\"evalStack\":[]", "\"evalStack\":[\"bad\"]"),
     };
     for (broken) |text| {
-        if (load.load_json(&story, text)) |_| return error.TestUnexpectedResult else |_| {}
-        try std.testing.expectEqual(before, story.state.hash());
+        try load.load_json(&story, good);
+        const loaded = story.state.hash();
+        try std.testing.expect(loaded != before);
+        try expect_reset_after(&story, load.load_json(&story, text));
+        try std.testing.expect(story.state.hash() != loaded);
     }
-    try load.load_json(&story, good);
-    try std.testing.expect(story.state.hash() != before);
+}
+
+/// Expects `result` to be a failed load that left `story` as `reset_state` leaves it.
+fn expect_reset_after(story: *Story, result: load.Error!void) !void {
+    if (result) |_| return error.TestUnexpectedResult else |_| {}
+    const after = story.state.hash();
+    try story.reset_state();
+    try std.testing.expectEqual(after, story.state.hash());
 }
 
 test "a cont that fails in the newline lookahead leaves a state that saves" {
@@ -274,18 +283,18 @@ const pointer_source =
     \\
 ;
 
-/// Expects `json` to fail to load with `expected`, leaving `story` unchanged.
+/// Expects `json` to fail to load with `expected`, leaving `story` reset.
 fn expect_load_error(story: *Story, json: []const u8, expected: load.Error) !void {
-    const before = story.state.hash();
-    try std.testing.expectError(expected, load.load_json(story, json));
-    try std.testing.expectEqual(before, story.state.hash());
+    const result = load.load_json(story, json);
+    try std.testing.expectError(expected, result);
+    try expect_reset_after(story, result);
 }
 
 test "a save's flows must include the default flow, each name once" {
     // Found in review: a lone non-default flow loaded and then to_json asserted on the
     // default flow's empty parking, and a repeated flow name parked one record twice. ink
-    // writes the default flow in every save, so both are InvalidSave; the story is
-    // unchanged and the real save (two flows) still loads and saves back the same.
+    // writes the default flow in every save, so both are InvalidSave; the story is reset
+    // and the real save (two flows) still loads and saves back the same.
     const gpa = std.testing.allocator;
     const compile = @import("../compiler/compile.zig");
     var program = try compile.compile_source(gpa, pointer_source);

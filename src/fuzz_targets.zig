@@ -55,7 +55,7 @@ const save_module = @import("runtime/save.zig");
 const load_module = @import("runtime/load.zig");
 
 /// The save loader: any bytes either load into a state that passes its
-/// check, or fail and leave the state as it was.
+/// check, or fail and leave the state as `reset_state` leaves it.
 fn load_any_save(_: void, smith: *std.testing.Smith) anyerror!void {
     assert(json_corpus[0].len > 0);
     var buffer: [input_bytes_max + 1]u8 = undefined;
@@ -66,9 +66,10 @@ fn load_any_save(_: void, smith: *std.testing.Smith) anyerror!void {
     var story: Story = undefined;
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
-    const before = story.state.hash();
     load_module.load_json(&story, save) catch {
-        try std.testing.expectEqual(before, story.state.hash());
+        const after = story.state.hash();
+        try story.reset_state();
+        try std.testing.expectEqual(after, story.state.hash());
         return;
     };
     assert(story.state.check() == .ok);

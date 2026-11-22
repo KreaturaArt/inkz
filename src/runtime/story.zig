@@ -894,7 +894,7 @@ pub const Story = struct {
         try save.to_json(story, writer);
     }
 
-    /// ink's state.LoadJson; a save that doesn't load leaves the story unchanged.
+    /// ink's state.LoadJson; a save that doesn't load leaves the story as `reset_state` does.
     pub fn load_json(story: *Story, json: []const u8) load.Error!void {
         try load.load_json(story, json);
     }

@@ -1,9 +1,8 @@
 //! Loading: ink's StoryState.LoadJson for save format versions 8 to 10.
 //!
-//! The save is tokenized into the state's fixed scratch (`json_tree.zig`), then read twice
-//! by the same code: first to validate it (every path, name and value, and that everything
-//! fits the limits) without touching the state, then to commit it into a reset state. A save
-//! that fails validation leaves the story unchanged. Nothing allocates.
+//! The save is tokenized into the state's fixed scratch (`json_tree.zig`) and read once,
+//! into a reset state. A save that fails to load part way leaves the story as `reset_state`
+//! leaves it (C# ink leaves it partly loaded). Nothing allocates.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -18,7 +17,6 @@ const call_stack_module = @import("call_stack.zig");
 const choices_module = @import("choices.zig");
 const state_module = @import("state.zig");
 const flows = @import("flows.zig");
-const heap = @import("heap.zig");
 const lists_module = @import("lists.zig");
 const lookahead = @import("lookahead.zig");
 const story_module = @import("story.zig");
@@ -45,10 +43,12 @@ pub const Error = error{
 
 pub const save_version_min = 8;
 
-/// Loads `json` into the story; on any error the story is unchanged.
+/// Loads `json` into the story; on any error but `Reentrant` the story is reset.
 pub fn load_json(story: *Story, json: []const u8) Error!void {
     try story_module.begin_mutation(story);
     assert(!lookahead.active(&story.state));
+    // reset_state ran at init under the same limits, so it runs again.
+    errdefer story.reset_state() catch unreachable;
     const parse_zone = profile.begin(.load_parse);
     const tree = Tree.parse(json, story.state.load_nodes) catch |err| {
         parse_zone.end();
@@ -61,19 +61,11 @@ pub fn load_json(story: *Story, json: []const u8) Error!void {
     const nodes: u32 = @intCast(tree.nodes.len);
     story.state.peaks.load_nodes = @max(story.state.peaks.load_nodes, nodes);
     if (tree.nodes[0].kind != .object) return error.InvalidSave;
-    var checking: Loader = .{ .story = story, .tree = tree, .commit = false };
-    {
-        const validate_zone = profile.begin(.load_validate);
-        defer validate_zone.end();
-        try checking.document();
-        try checking.check_heap();
-    }
     const commit_zone = profile.begin(.load_commit);
     defer commit_zone.end();
-    var committing: Loader = .{ .story = story, .tree = tree, .commit = true };
-    committing.prepare();
-    // Validation proved every step of the commit succeeds.
-    committing.document() catch unreachable;
+    var loader: Loader = .{ .story = story, .tree = tree };
+    loader.prepare();
+    try loader.document();
     story.failed = false;
     story.state.verify();
 }
@@ -81,11 +73,6 @@ pub fn load_json(story: *Story, json: []const u8) Error!void {
 const Loader = struct {
     story: *Story,
     tree: Tree,
-    commit: bool,
-    /// What the save needs, counted while validating.
-    string_bytes: u64 = 0,
-    list_words: u64 = 0,
-    parking_words: u64 = 0,
 
     fn state(loader: *Loader) *state_module.State {
         assert(loader.story.state.memory.len > 0);
@@ -113,7 +100,6 @@ const Loader = struct {
     fn prepare(loader: *Loader) void {
         assert(!lookahead.active(&loader.story.state));
         assert(loader.story.callback_depth == 0);
-        assert(loader.commit);
         const s = loader.state();
         s.evaluation.clear();
         s.call_stack.fresh(.start_of(loader.story.program.root_container()));
@@ -128,19 +114,6 @@ const Loader = struct {
         s.did_safe_exit = false;
         loader.story.diverted_pointer = .null;
         s.compact();
-    }
-
-    /// Validation's check that the save's strings and lists fit next to what survives.
-    fn check_heap(loader: *Loader) Error!void {
-        assert(loader.state().strings.bytes.len > 0);
-        assert(loader.state().lists.words.len > 0);
-        assert(!loader.commit);
-        const s = loader.state();
-        var retained: Retained = .{ .strings = &s.strings, .lists = &s.lists };
-        for (s.global_defaults) |*item| retained.add_value(item);
-        if (loader.string_bytes + retained.bytes > s.strings.bytes.len) return error.SaveTooLarge;
-        if (loader.list_words + retained.words > s.lists.words.len) return error.SaveTooLarge;
-        if (loader.parking_words > s.parking.len) return error.SaveTooLarge;
     }
 
     fn document(loader: *Loader) Error!void {
@@ -159,7 +132,7 @@ const Loader = struct {
         if (tree.get(0, "currentDivertTarget")) |target| {
             var pointer = try loader.pointer_at(target);
             if (pointer.index == Pointer.container_self) pointer.index = 0;
-            if (loader.commit) loader.story.diverted_pointer = pointer;
+            loader.story.diverted_pointer = pointer;
         }
         try loader.counts(try loader.member(0, "visitCounts"), .visits);
         try loader.counts(try loader.member(0, "turnIndices"), .turns);
@@ -167,7 +140,6 @@ const Loader = struct {
         const seed = try loader.integer(try loader.member(0, "storySeed"));
         // Missing in inkjs saves; ink reads it as 0.
         const previous = if (tree.get(0, "previousRandom")) |node| try loader.integer(node) else 0;
-        if (!loader.commit) return;
         const s = loader.state();
         s.turn_index = turn;
         s.story_seed = seed;
@@ -200,10 +172,8 @@ const Loader = struct {
             while (members.next()) |name_node| {
                 var buffer: [state_module.flow_name_bytes_max]u8 = undefined;
                 const name = try loader.flow_name(name_node, &buffer);
-                if (!want_current and !loader.commit) {
-                    if (try loader.flow_name_repeated(all, name_node, name)) {
-                        return error.InvalidSave;
-                    }
+                if (!want_current and try loader.flow_name_repeated(all, name_node, name)) {
+                    return error.InvalidSave;
                 }
                 const is_current = current == null or std.mem.eql(u8, name, current.?);
                 if (std.mem.eql(u8, name, flows.default_name)) has_default = true;
@@ -250,86 +220,54 @@ const Loader = struct {
         assert(name.len > 0);
         try loader.kind_is(node, .object);
         const s = loader.state();
-        if (loader.commit) {
-            s.call_stack.frames.clear();
-            s.call_stack.threads.clear();
-            s.call_stack.temps.clear();
-            s.output.clear();
-            s.choices.clear();
-        }
-        var tally: Tally = .{};
+        s.call_stack.frames.clear();
+        s.call_stack.threads.clear();
+        s.call_stack.temps.clear();
+        s.output.clear();
+        s.choices.clear();
         const callstack = loader.tree.get(node, "callstack") orelse
             try loader.member(node, "callstackThreads");
-        try loader.call_stack(callstack, &tally);
-        try loader.output_stream(try loader.member(node, "outputStream"), &tally);
+        try loader.call_stack(callstack);
+        try loader.output_stream(try loader.member(node, "outputStream"));
         const threads = loader.tree.get(node, "choiceThreads");
-        try loader.choices(try loader.member(node, "currentChoices"), threads, &tally);
-        try loader.check_tally(tally, is_current);
-        if (!loader.commit) return;
-        const record = flows.record_for(s, name) catch unreachable;
+        try loader.choices(try loader.member(node, "currentChoices"), threads);
+        assert(s.call_stack.threads.count > 0);
+        assert(s.choices.snapshots.count == s.choices.count());
+        const record = flows.record_for(s, name) catch return error.SaveTooLarge;
         if (is_current) {
             s.current_flow = record;
         } else {
-            flows.park_live_into(s, record) catch unreachable;
+            flows.park_live_into(s, record) catch return error.SaveTooLarge;
         }
     }
 
-    /// A flow's sizes must fit the live buffers (a parked flow is unparked into them).
-    fn check_tally(loader: *Loader, tally: Tally, is_current: bool) Error!void {
-        assert(tally.frames >= tally.threads or tally.threads == 0);
-        assert(loader.state().parking.len > 0 or is_current);
-        if (loader.commit) return;
-        if (tally.threads == 0) return error.InvalidSave;
-        const flow_counts = tally.counts();
-        inline for (state_module.parked_buffers, flow_counts) |buffer, count| {
-            if (count > loader.state().flow_stack(buffer).capacity()) return error.SaveTooLarge;
-        }
-        if (!is_current) loader.parking_words += flows.parked_size(flow_counts);
-    }
-
-    fn call_stack(loader: *Loader, node: u32, tally: *Tally) Error!void {
+    fn call_stack(loader: *Loader, node: u32) Error!void {
         const threads = try loader.member(node, "threads");
         try loader.kind_is(threads, .array);
         const counter = try loader.integer(try loader.member(node, "threadCounter"));
         if (counter < 0) return error.InvalidSave;
+        const s = loader.state();
         var walker = loader.tree.children(threads);
         while (walker.next()) |thread_node| {
-            const first = tally.frames;
-            const temps_first = tally.temps;
-            const thread = try loader.load_thread(thread_node, tally, .live);
-            tally.threads += 1;
-            if (!loader.commit) {
-                if (tally.live_count == tally.live.len) return error.SaveTooLarge;
-                tally.live[tally.live_count] = .{
-                    .counter = thread.counter,
-                    .frames = tally.frames - first,
-                    .temps = tally.temps - temps_first,
-                };
-                tally.live_count += 1;
-                continue;
-            }
-            const s = loader.state();
+            const first = s.call_stack.frames.count;
+            const thread = try loader.load_thread(thread_node, .live);
             s.call_stack.threads.push(.{
                 .frame_first = first,
-                .frame_count = tally.frames - first,
+                .frame_count = s.call_stack.frames.count - first,
                 .counter = thread.counter,
                 .previous_pointer = thread.previous,
-            }) catch unreachable;
-            assert(s.call_stack.temps.count == tally.temps or temps_first <= tally.temps);
+            }) catch return error.SaveTooLarge;
         }
-        if (loader.commit) loader.state().call_stack.thread_counter = @intCast(counter);
+        if (s.call_stack.threads.count == 0) return error.InvalidSave;
+        assert(s.call_stack.frames.count >= s.call_stack.threads.count);
+        s.call_stack.thread_counter = @intCast(counter);
     }
 
     const Destination = enum { live, snapshot };
     const LoadedThread = struct { counter: u32, previous: Pointer };
 
     /// ink's Thread constructor: frames, their temps, the thread index, the previous pointer.
-    fn load_thread(
-        loader: *Loader,
-        node: u32,
-        tally: *Tally,
-        destination: Destination,
-    ) Error!LoadedThread {
+    fn load_thread(loader: *Loader, node: u32, destination: Destination) Error!LoadedThread {
         assert(@backingInt(destination) <= 1);
         try loader.kind_is(node, .object);
         const counter = try loader.integer(try loader.member(node, "threadIndex"));
@@ -339,7 +277,7 @@ const Loader = struct {
         var walker = loader.tree.children(frames);
         var count: u32 = 0;
         while (walker.next()) |frame_node| : (count += 1) {
-            try loader.frame(frame_node, tally, destination);
+            try loader.frame(frame_node, destination);
         }
         if (count == 0) return error.InvalidSave;
         var previous: Pointer = .null;
@@ -349,7 +287,7 @@ const Loader = struct {
         return .{ .counter = @intCast(counter), .previous = previous };
     }
 
-    fn frame(loader: *Loader, node: u32, tally: *Tally, destination: Destination) Error!void {
+    fn frame(loader: *Loader, node: u32, destination: Destination) Error!void {
         try loader.kind_is(node, .object);
         const kind_number = try loader.integer(try loader.member(node, "type"));
         if (kind_number < 0 or kind_number > 2) return error.InvalidSave;
@@ -362,20 +300,22 @@ const Loader = struct {
         }
         const in_expression = loader.tree.boolean(try loader.member(node, "exp")) catch
             return error.InvalidSave;
-        const temps_first = tally.temps_of(destination);
-        var temps_count: u32 = 0;
-        if (loader.tree.get(node, "temp")) |temps| {
-            try loader.kind_is(temps, .object);
-            var members = loader.tree.children(temps);
-            while (members.next()) |name_node| : (temps_count += 1) {
-                try loader.temp(name_node, destination);
+        const s = loader.state();
+        const frames = if (destination == .live) &s.call_stack.frames else &s.choices.frames;
+        const temps = if (destination == .live) &s.call_stack.temps else &s.choices.temps;
+        const temps_first = temps.count;
+        if (loader.tree.get(node, "temp")) |object| {
+            try loader.kind_is(object, .object);
+            var members = loader.tree.children(object);
+            while (members.next()) |name_node| {
+                try loader.temp(name_node, temps);
                 members.skip_value(name_node + 1);
             }
         }
-        if (temps_count > loader.state().limits.temps_per_frame_max) return error.SaveTooLarge;
-        tally.add_frame(destination, temps_count);
-        if (!loader.commit) return;
-        const loaded: Frame = .{
+        const temps_count = temps.count - temps_first;
+        if (temps_count > s.limits.temps_per_frame_max) return error.SaveTooLarge;
+        assert(temps_first + temps_count == temps.count);
+        frames.push(.{
             .pointer = pointer,
             .temps_first = temps_first,
             .evaluation_height = 0,
@@ -383,15 +323,11 @@ const Loader = struct {
             .temps_count = @intCast(temps_count),
             .kind = @fromBackingInt(@intCast(@as(u8, @intCast(kind_number)))),
             .in_expression_evaluation = in_expression,
-        };
-        const s = loader.state();
-        const stack = if (destination == .live) &s.call_stack.frames else &s.choices.frames;
-        stack.push(loaded) catch unreachable;
+        }) catch return error.SaveTooLarge;
     }
 
-    fn temp(loader: *Loader, name_node: u32, destination: Destination) Error!void {
+    fn temp(loader: *Loader, name_node: u32, temps: anytype) Error!void {
         assert(name_node + 1 < loader.tree.nodes.len);
-        assert(@backingInt(destination) <= 1);
         var buffer: [256]u8 = undefined;
         var writer: std.Io.Writer = .fixed(&buffer);
         loader.tree.decode(name_node, &writer) catch return error.InvalidSave;
@@ -399,25 +335,20 @@ const Loader = struct {
         const name = loader.story.program.strings.find(writer.buffered()) orelse
             return error.SaveDoesNotMatchStory;
         const value = try loader.load_value(name_node + 1);
-        if (!loader.commit) return;
-        const s = loader.state();
-        const temps = if (destination == .live) &s.call_stack.temps else &s.choices.temps;
-        temps.push(.{ .name = name, .value = value }) catch unreachable;
+        temps.push(.{ .name = name, .value = value }) catch return error.SaveTooLarge;
     }
 
-    fn output_stream(loader: *Loader, node: u32, tally: *Tally) Error!void {
+    fn output_stream(loader: *Loader, node: u32) Error!void {
         try loader.kind_is(node, .array);
+        const output = &loader.state().output;
         var walker = loader.tree.children(node);
         while (walker.next()) |item_node| {
             const item = try loader.output_item(item_node);
-            tally.items += 1;
-            if (item.kind == .begin_string) tally.marks += 1;
-            if (!loader.commit) continue;
-            const output = &loader.state().output;
             if (item.kind == .begin_string) output.string_marks.push(output.items.count) catch
-                unreachable;
-            output.items.push(item) catch unreachable;
+                return error.SaveTooLarge;
+            output.items.push(item) catch return error.SaveTooLarge;
         }
+        assert(output.string_marks.count <= output.items.count);
     }
 
     fn output_item(loader: *Loader, node: u32) Error!Item {
@@ -447,10 +378,7 @@ const Loader = struct {
         if (raw.len == 0 or raw[0] != '^') return error.InvalidSave;
         const reference = try loader.string(node, 1);
         const length = try loader.decoded_length(node) - 1;
-        const class: output_module.Class = if (loader.commit)
-            .of(story_module.text_of(loader.story, reference))
-        else
-            .non_whitespace;
+        const class: output_module.Class = .of(story_module.text_of(loader.story, reference));
         return text_item(reference, length, .text, class);
     }
 
@@ -478,27 +406,21 @@ const Loader = struct {
         return @intCast(length);
     }
 
-    /// The decoded text of string `node` from byte `skip` on, as a new heap string. While
-    /// validating, only its size is counted.
+    /// The decoded text of string `node` from byte `skip` on, as a new heap string.
     fn string(loader: *Loader, node: u32, skip: u32) Error!value_module.StringReference {
         try loader.kind_is(node, .string);
         const length = loader.tree.string_length(node) catch return error.InvalidSave;
         if (length < skip) return error.InvalidSave;
         const size = length - skip;
-        if (!loader.commit) {
-            loader.string_bytes += std.mem.alignForward(u64, 8 + size, 4);
-            return .none;
-        }
         const s = loader.state();
-        const reference = s.strings.try_allocate(size) orelse unreachable;
+        const reference = s.strings.try_allocate(size) orelse return error.SaveTooLarge;
         var writer: std.Io.Writer = .fixed(s.strings.get(reference));
         loader.tree.decode_from(node, skip, &writer) catch unreachable;
         assert(writer.end == size);
         return reference;
     }
 
-    fn choices(loader: *Loader, node: u32, threads: ?u32, tally: *Tally) Error!void {
-        assert(tally.choices == 0);
+    fn choices(loader: *Loader, node: u32, threads: ?u32) Error!void {
         try loader.kind_is(node, .array);
         if (threads) |object| try loader.kind_is(object, .object);
         var walker = loader.tree.children(node);
@@ -506,17 +428,16 @@ const Loader = struct {
         // been indexed (some index isn't 0) and recomputes the indices.
         var indexed = false;
         while (walker.next()) |choice_node| {
-            try loader.choice(choice_node, threads, tally);
+            try loader.choice(choice_node, threads);
             const saved_index = try loader.integer(try loader.member(choice_node, "index"));
             if (saved_index != 0) indexed = true;
         }
-        if (!loader.commit) return;
         const records = &loader.state().choices;
         records.indexed_count = if (indexed) records.count() else 0;
     }
 
     /// ink's JObjectToChoice and LoadFlowChoiceThreads.
-    fn choice(loader: *Loader, node: u32, threads: ?u32, tally: *Tally) Error!void {
+    fn choice(loader: *Loader, node: u32, threads: ?u32) Error!void {
         assert(threads == null or threads.? < loader.tree.nodes.len);
         try loader.kind_is(node, .object);
         const text = try loader.string(try loader.member(node, "text"), 0);
@@ -525,20 +446,18 @@ const Loader = struct {
         if (counter < 0) return error.InvalidSave;
         var target = try loader.pointer_at(try loader.member(node, "targetPath"));
         if (target.index == Pointer.container_self) target.index = 0;
-        const tags_first = tally.tags;
+        const records = &loader.state().choices;
+        const tags_first = records.tags.count;
         if (loader.tree.get(node, "tags")) |tags| {
             try loader.kind_is(tags, .array);
             var walker = loader.tree.children(tags);
             while (walker.next()) |tag| {
                 const reference = try loader.string(tag, 0);
-                tally.tags += 1;
-                if (loader.commit) loader.state().choices.tags.push(reference) catch unreachable;
+                records.tags.push(reference) catch return error.SaveTooLarge;
             }
         }
-        const snapshot = try loader.choice_thread(@intCast(counter), threads, tally);
-        tally.choices += 1;
-        if (!loader.commit) return;
-        loader.state().choices.records.push(.{
+        const snapshot = try loader.choice_thread(@intCast(counter), threads);
+        records.records.push(.{
             .text = text,
             .target = target,
             .source = source,
@@ -546,51 +465,45 @@ const Loader = struct {
             .thread_counter = @intCast(counter),
             .tags_first = tags_first,
             .snapshot = snapshot,
-            .tags_count = @intCast(tally.tags - tags_first),
+            .tags_count = @intCast(records.tags.count - tags_first),
             .invisible_default = false,
-        }) catch unreachable;
+        }) catch return error.SaveTooLarge;
     }
 
     /// The choice's stored thread: a copy of the live thread with its index, or the saved
     /// one in choiceThreads.
-    fn choice_thread(loader: *Loader, counter: u32, threads: ?u32, tally: *Tally) Error!u32 {
+    fn choice_thread(loader: *Loader, counter: u32, threads: ?u32) Error!u32 {
         assert(threads == null or threads.? < loader.tree.nodes.len);
         const s = loader.state();
-        const snapshot_index = tally.snapshots;
-        const frames_first = tally.snapshot_frames;
-        const temps_first = tally.snapshot_temps;
+        const snapshot_index = s.choices.snapshots.count;
+        const frames_first = s.choices.frames.count;
+        const temps_first = s.choices.temps.count;
         var previous: Pointer = .null;
-        const copied = if (loader.commit) live_thread(s, counter) else null;
-        if (copied) |thread| {
+        if (live_thread(s, counter)) |thread| {
             previous = thread.previous_pointer;
             const frames = s.call_stack.frames.slice()[thread.frame_first..][0..thread.frame_count];
             for (frames) |live| {
                 var copy = live;
                 copy.temps_first = s.choices.temps.count;
                 const temps = s.call_stack.temps.slice()[live.temps_first..][0..live.temps_count];
-                s.choices.temps.push_slice(temps) catch unreachable;
-                s.choices.frames.push(copy) catch unreachable;
-                tally.add_frame(.snapshot, live.temps_count);
+                s.choices.temps.push_slice(temps) catch return error.SaveTooLarge;
+                s.choices.frames.push(copy) catch return error.SaveTooLarge;
             }
-        } else if (!loader.commit and tally.has_live_thread(counter)) {
-            // Validation: the live thread's sizes were counted as it loaded.
-            tally.copy_live_thread(counter);
         } else {
             var name_buffer: [16]u8 = undefined;
             const key = std.fmt.bufPrint(&name_buffer, "{d}", .{counter}) catch unreachable;
             const object = threads orelse return error.InvalidSave;
             const saved = loader.tree.get(object, key) orelse return error.InvalidSave;
-            previous = (try loader.load_thread(saved, tally, .snapshot)).previous;
+            previous = (try loader.load_thread(saved, .snapshot)).previous;
         }
-        tally.snapshots += 1;
-        if (!loader.commit) return snapshot_index;
         s.choices.snapshots.push(.{
             .frames_first = frames_first,
-            .frames_count = tally.snapshot_frames - frames_first,
+            .frames_count = s.choices.frames.count - frames_first,
             .temps_first = temps_first,
-            .temps_count = tally.snapshot_temps - temps_first,
+            .temps_count = s.choices.temps.count - temps_first,
             .previous_pointer = previous,
-        }) catch unreachable;
+        }) catch return error.SaveTooLarge;
+        assert(s.choices.snapshots.count == snapshot_index + 1);
         return snapshot_index;
     }
 
@@ -600,19 +513,17 @@ const Loader = struct {
         const program = loader.story.program;
         for (program.globals, 0..) |global, slot| {
             const saved = loader.tree.get(node, program.strings.get(global.name)) orelse continue;
-            const value = try loader.load_value(saved);
-            if (loader.commit) loader.state().globals[slot] = value;
+            loader.state().globals[slot] = try loader.load_value(saved);
         }
     }
 
     fn evaluation(loader: *Loader, node: u32) Error!void {
+        assert(loader.state().evaluation.count == 0);
         try loader.kind_is(node, .array);
-        const capacity = loader.state().evaluation.capacity();
-        if (loader.tree.count(node) > capacity) return error.SaveTooLarge;
         var walker = loader.tree.children(node);
         while (walker.next()) |value_node| {
             const value = try loader.load_value(value_node);
-            if (loader.commit) loader.state().evaluation.push(value) catch unreachable;
+            loader.state().evaluation.push(value) catch return error.SaveTooLarge;
         }
     }
 
@@ -628,7 +539,7 @@ const Loader = struct {
             // ink keeps counts by path; a path the story doesn't count is kept but unused.
             const container = loader.container_at(name) catch continue;
             const slot = loader.story.program.container_info(container).count_slot;
-            if (slot == container_module.no_count_slot or !loader.commit) continue;
+            if (slot == container_module.no_count_slot) continue;
             const s = loader.state();
             switch (which) {
                 .visits => s.visit_counts[slot] = @bitCast(number),
@@ -688,7 +599,6 @@ const Loader = struct {
         assert(items_node < loader.tree.nodes.len);
         assert(origins_node == null or origins_node.? < loader.tree.nodes.len);
         try loader.kind_is(items_node, .object);
-        const program = loader.story.program;
         var items: [lists_module.list_items_max]index.ListItemIndex = undefined;
         var origins: [64]index.ListOriginIndex = undefined;
         var items_count: u32 = 0;
@@ -709,14 +619,9 @@ const Loader = struct {
                 origins_count += 1;
             }
         }
-        if (!loader.commit) {
-            loader.list_words += 3 + items_count + origins_count;
-            return .{ .list = @fromBackingInt(0) };
-        }
-        _ = program;
         const slab = &loader.state().lists;
         const reference = slab.store(items[0..items_count], origins[0..origins_count]) catch
-            unreachable;
+            return error.SaveTooLarge;
         return .{ .list = reference };
     }
 
@@ -793,90 +698,3 @@ fn live_thread(s: *state_module.State, counter: u32) ?call_stack_module.Thread {
     }
     return null;
 }
-
-/// What one flow holds, counted while loading it: a field per parked flow buffer.
-const Tally = struct {
-    frames: u32 = 0,
-    threads: u32 = 0,
-    temps: u32 = 0,
-    items: u32 = 0,
-    marks: u32 = 0,
-    choices: u32 = 0,
-    tags: u32 = 0,
-    snapshots: u32 = 0,
-    snapshot_frames: u32 = 0,
-    snapshot_temps: u32 = 0,
-    /// While validating: each live thread's counter and sizes, for choices that copy it.
-    live: [64]struct { counter: u32, frames: u32, temps: u32 } = undefined,
-    live_count: u32 = 0,
-
-    fn temps_of(tally: *const Tally, destination: Loader.Destination) u32 {
-        assert(tally.temps >= 0 and tally.snapshot_temps >= 0);
-        assert(@backingInt(destination) <= 1);
-        return if (destination == .live) tally.temps else tally.snapshot_temps;
-    }
-
-    fn add_frame(tally: *Tally, destination: Loader.Destination, temps: u32) void {
-        assert(temps <= std.math.maxInt(u16));
-        assert(@backingInt(destination) <= 1);
-        switch (destination) {
-            .live => {
-                tally.frames += 1;
-                tally.temps += temps;
-            },
-            .snapshot => {
-                tally.snapshot_frames += 1;
-                tally.snapshot_temps += temps;
-            },
-        }
-    }
-
-    fn has_live_thread(tally: *const Tally, counter: u32) bool {
-        assert(tally.live_count <= tally.live.len);
-        for (tally.live[0..tally.live_count]) |thread| {
-            if (thread.counter == counter) return true;
-        }
-        return false;
-    }
-
-    fn copy_live_thread(tally: *Tally, counter: u32) void {
-        assert(tally.live_count <= tally.live.len);
-        assert(tally.has_live_thread(counter));
-        for (tally.live[0..tally.live_count]) |thread| {
-            if (thread.counter != counter) continue;
-            tally.snapshot_frames += thread.frames;
-            tally.snapshot_temps += thread.temps;
-            return;
-        }
-        unreachable;
-    }
-
-    /// The counts in `parked_buffers` order.
-    fn counts(tally: *const Tally) [state_module.parked_buffers.len]u32 {
-        assert(tally.snapshots <= tally.choices);
-        var result: [state_module.parked_buffers.len]u32 = undefined;
-        inline for (state_module.parked_buffers, &result) |buffer, *count| {
-            count.* = @field(tally, @tagName(buffer));
-        }
-        return result;
-    }
-};
-
-/// Heap space the defaults keep through a load.
-const Retained = struct {
-    strings: *const heap.StringHeap,
-    lists: *const @import("lists.zig").ListSlab,
-    bytes: u64 = 0,
-    words: u64 = 0,
-
-    fn add_value(retained: *Retained, item: *const Value) void {
-        switch (item.*) {
-            .string, .tag => |reference| if (reference.is_heap()) {
-                const length = retained.strings.get(reference).len;
-                retained.bytes += std.mem.alignForward(u64, 8 + length, 4);
-            },
-            .list => |list| retained.words += retained.lists.object_words(@backingInt(list)),
-            else => {},
-        }
-    }
-};

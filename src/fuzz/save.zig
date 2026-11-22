@@ -2,7 +2,7 @@
 //! fuzzer-chosen point and is saved; a fresh story loads the save. The loaded story saves the
 //! same JSON, and when the play ended cleanly (and no invisible default choice is pending),
 //! both play on the same choices to the same transcript. A save mutated at the
-//! token level loads into a state that checks, or fails and leaves the state as it was.
+//! token level loads into a state that checks, or fails and leaves the state reset.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -102,7 +102,8 @@ fn expect_same_play(original: *play.Story, loaded: *play.Story, script: []const 
 }
 
 /// A save edited with the JSON target's operators (drawn when `allowed` is null), loaded
-/// into a fresh story: it loads and checks, or fails and leaves the story unchanged.
+/// into a fresh story: it loads and checks, or fails and leaves the story as `reset_state`
+/// leaves it.
 /// Returns the operators applied.
 fn load_mutated(
     choices: fuzz_ink.Choices,
@@ -119,9 +120,11 @@ fn load_mutated(
     var story: play.Story = undefined;
     try play.init_story(&story, gpa, program, setup);
     defer story.deinit(gpa);
-    const before = story.state.hash();
     story.load_json(json.items) catch {
-        assert(story.state.hash() == before);
+        assert(story.state.check() == .ok);
+        const after = story.state.hash();
+        story.reset_state() catch unreachable;
+        assert(story.state.hash() == after);
         return applied;
     };
     assert(story.state.check() == .ok);
@@ -136,7 +139,7 @@ test "fuzz: a loaded save plays as the story it was saved from" {
 
 test "fuzz: an edited save applies only the operators it drew" {
     // A seeded story's save, edited 1,000 times: the operators applied are in the drawn
-    // set; then each operator alone, on 8 seeds, loads cleanly or leaves the story as it was.
+    // set; then each operator alone, on 8 seeds, loads cleanly or leaves the story reset.
     const gpa = std.testing.allocator;
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
     // The first seed whose story compiles.
