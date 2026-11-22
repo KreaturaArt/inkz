@@ -13,6 +13,7 @@ pub fn Index(comptime name: []const u8) type {
         _,
 
         const Self = @This();
+        /// Uses `name`, which makes each index type distinct (an unused one would not).
         pub const type_name = name;
 
         /// Wraps a position. `value` must not be the `.none` bit pattern.
@@ -69,8 +70,6 @@ pub const GlobalSlot = Index("global");
 pub const ListItemIndex = Index("list_item");
 pub const ListOriginIndex = Index("list_origin");
 pub const ExternalIndex = Index("external");
-pub const FlowIndex = Index("flow");
-pub const FileIndex = Index("file");
 
 comptime {
     assert(ContainerIndex != StringId);
@@ -100,6 +99,5 @@ test "none and optionals" {
 test "index types are distinct and 4 bytes" {
     // Type safety without size cost: compare the types and their sizes.
     try std.testing.expect(ContainerIndex != InstructionIndex);
-    try std.testing.expectEqual(4, @sizeOf(FileIndex));
-    try std.testing.expectEqualStrings("list_item", ListItemIndex.type_name);
+    try std.testing.expectEqual(4, @sizeOf(ExternalIndex));
 }

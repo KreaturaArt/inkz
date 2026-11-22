@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Allocator = std.mem.Allocator;
 const fault = @import("fault.zig");
 
 pub fn BoundedStack(comptime T: type) type {
@@ -25,21 +24,6 @@ pub fn BoundedStack(comptime T: type) type {
             const stack: Self = .{ .buffer = buffer, .count = 0 };
             assert(stack.capacity() == buffer.len);
             return stack;
-        }
-
-        /// Allocates `capacity_count` elements; free them with `deinit`.
-        pub fn init_capacity(gpa: Allocator, capacity_count: u32) Allocator.Error!Self {
-            const buffer = try gpa.alloc(T, capacity_count);
-            const stack = init(buffer);
-            assert(stack.capacity() == capacity_count);
-            assert(stack.count == 0);
-            return stack;
-        }
-
-        pub fn deinit(stack: *Self, gpa: Allocator) void {
-            stack.verify();
-            gpa.free(stack.buffer);
-            stack.* = undefined;
         }
 
         pub fn capacity(stack: *const Self) u32 {
@@ -161,9 +145,8 @@ test "overflow returns an error and leaves the stack unchanged" {
 test "truncate restores an earlier count" {
     // Marks undo speculative pushes (used for backtracking and lookahead): take
     // a mark, push more, truncate to the mark.
-    const gpa = std.testing.allocator;
-    var stack = try BoundedStack(u32).init_capacity(gpa, 8);
-    defer stack.deinit(gpa);
+    var buffer: [8]u32 = undefined;
+    var stack = BoundedStack(u32).init(&buffer);
     try stack.push(10);
     const mark = stack.count;
     try stack.push_slice(&.{ 20, 30, 40 });

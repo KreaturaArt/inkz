@@ -10,9 +10,6 @@ const Alignment = std.mem.Alignment;
 pub const CountingAllocator = struct {
     child: Allocator,
     allocations_count: u64 = 0,
-    /// In-place resizes that succeeded, both growing and shrinking.
-    resizes_count: u64 = 0,
-    remaps_count: u64 = 0,
     frees_count: u64 = 0,
     /// Resizes and remaps that made a block bigger.
     grows_count: u64 = 0,
@@ -35,7 +32,6 @@ pub const CountingAllocator = struct {
 
     /// Every event that could take new memory: allocations and grows.
     pub fn growths(counting: *const CountingAllocator) u64 {
-        assert(counting.grows_count <= counting.resizes_count + counting.remaps_count);
         const result = counting.allocations_count + counting.grows_count;
         assert(result >= counting.allocations_count);
         return result;
@@ -75,7 +71,6 @@ pub const CountingAllocator = struct {
         const counting = from(context);
         assert(counting.bytes_live >= memory.len);
         if (!counting.child.rawResize(memory, alignment, new_len, return_address)) return false;
-        counting.resizes_count += 1;
         counting.change_live(memory.len, new_len);
         assert(counting.bytes_live >= new_len);
         return true;
@@ -92,7 +87,6 @@ pub const CountingAllocator = struct {
         assert(counting.bytes_live >= memory.len);
         const result = counting.child.rawRemap(memory, alignment, new_len, return_address) orelse
             return null;
-        counting.remaps_count += 1;
         counting.change_live(memory.len, new_len);
         assert(counting.bytes_live >= new_len);
         return result;

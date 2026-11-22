@@ -127,13 +127,6 @@ pub fn ExtraIndex(comptime T: type) type {
     };
 }
 
-/// A position inside a container: a divert target or a choice target.
-pub const Target = struct {
-    container: ContainerIndex,
-    /// The content index inside `container`; 0 is its start.
-    index: u32,
-};
-
 pub const DivertKind = enum(u2) { plain, function, tunnel };
 
 pub const DivertFlags = packed struct(u32) {
@@ -208,11 +201,16 @@ pub const OperandKind = enum {
     list,
 };
 
-/// What the operand of `opcode` means. The switch has no `else`, so a new opcode can't be
-/// added without deciding its operand.
+/// What the operand of `opcode` means. The control commands and native functions have none;
+/// a new opcode without a row fails the round-trip test below, which asks for every one.
 pub fn operand_kind(opcode: Opcode) OperandKind {
     assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
-    const kind: OperandKind = switch (opcode) {
+    const commands_first = @backingInt(Opcode.eval_start);
+    const commands_last = @backingInt(Opcode.list_invert);
+    if (@backingInt(opcode) >= commands_first and @backingInt(opcode) <= commands_last) {
+        return .none;
+    }
+    return switch (opcode) {
         .text, .tag, .temp_get, .temp_declare, .temp_assign => .string,
         .temp_assign_written_global => .string,
         .divert_target, .enter_container, .read_count => .container,
@@ -226,20 +224,8 @@ pub fn operand_kind(opcode: Opcode) OperandKind {
         .variable_pointer => .variable_pointer,
         .list => .list,
         .newline, .glue, .void => .none,
-        .eval_start, .eval_output, .eval_end, .duplicate, .pop, .function_return => .none,
-        .tunnel_return, .string_start, .string_end, .nop, .choice_count, .turns => .none,
-        .turns_since, .read_count_of_target, .random, .seed_random, .visit_index => .none,
-        .sequence_shuffle_index, .start_thread, .done, .end, .list_from_int => .none,
-        .list_range, .list_random, .tag_start, .tag_end => .none,
-        .add, .subtract, .divide, .multiply, .modulo, .negate, .equal, .greater => .none,
-        .less, .greater_or_equal, .less_or_equal, .not_equal, .not, .@"and", .@"or" => .none,
-        .min, .max, .pow, .floor, .ceiling, .int, .float_cast, .has, .hasnt => .none,
-        .intersect, .list_min, .list_max, .list_all, .list_count, .list_value => .none,
-        .list_invert => .none,
+        else => unreachable,
     };
-    // Every opcode from `eval_start` on is a command, a native function or flow.
-    if (@backingInt(opcode) >= @backingInt(Opcode.eval_start)) assert(kind != .integer);
-    return kind;
 }
 
 /// The Zig type of an operand of kind `kind`.

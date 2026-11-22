@@ -194,34 +194,31 @@ pub const FlowBuffer = enum {
     snapshot_frames,
     snapshot_temps,
 
+    /// Each buffer's capacity (a `Limits` field) and element size.
+    const Row = struct { limit: std.meta.FieldEnum(Limits), bytes: u32 };
+    const bytes = element_bytes;
+    const rows: std.enums.EnumArray(FlowBuffer, Row) = .init(.{
+        .evaluation = .{ .limit = .evaluation_values_max, .bytes = bytes.value },
+        .frames = .{ .limit = .frames_max, .bytes = bytes.frame },
+        .threads = .{ .limit = .threads_max, .bytes = bytes.thread },
+        .temps = .{ .limit = .temps_max, .bytes = bytes.temp },
+        .items = .{ .limit = .output_items_max, .bytes = bytes.output_item },
+        .marks = .{ .limit = .string_marks_max, .bytes = bytes.string_mark },
+        .choices = .{ .limit = .choices_max, .bytes = bytes.choice },
+        .tags = .{ .limit = .tags_max, .bytes = bytes.tag },
+        .snapshots = .{ .limit = .choices_max, .bytes = bytes.snapshot },
+        .snapshot_frames = .{ .limit = .choice_snapshot_frames_max, .bytes = bytes.frame },
+        .snapshot_temps = .{ .limit = .choice_snapshot_temps_max, .bytes = bytes.temp },
+    });
+
     pub fn capacity(buffer: FlowBuffer, limits: *const Limits) u32 {
         return switch (buffer) {
-            .evaluation => limits.evaluation_values_max,
-            .frames => limits.frames_max,
-            .threads => limits.threads_max,
-            .temps => limits.temps_max,
-            .items => limits.output_items_max,
-            .marks => limits.string_marks_max,
-            .choices, .snapshots => limits.choices_max,
-            .tags => limits.tags_max,
-            .snapshot_frames => limits.choice_snapshot_frames_max,
-            .snapshot_temps => limits.choice_snapshot_temps_max,
+            inline else => |known| @field(limits, @tagName(rows.get(known).limit)),
         };
     }
 
     pub fn bytes_per_element(buffer: FlowBuffer) u32 {
-        const bytes = element_bytes;
-        return switch (buffer) {
-            .evaluation => bytes.value,
-            .frames, .snapshot_frames => bytes.frame,
-            .threads => bytes.thread,
-            .temps, .snapshot_temps => bytes.temp,
-            .items => bytes.output_item,
-            .marks => bytes.string_mark,
-            .choices => bytes.choice,
-            .tags => bytes.tag,
-            .snapshots => bytes.snapshot,
-        };
+        return rows.get(buffer).bytes;
     }
 };
 
