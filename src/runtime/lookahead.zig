@@ -2,15 +2,13 @@
 //! DiscardSnapshot without copying the whole state.
 //!
 //! Taking a snapshot copies the used prefixes of the live-flow buffers into the lookahead
-//! buffers and records the scalars: heap tops, queue and diagnostic lengths, the turn index
-//! and the random state. The shared arrays (globals, visit counts, turn indices) are copied
+//! buffers and records the scalars: queue and diagnostic lengths, the turn index and the
+//! random state. The shared arrays (globals, visit counts, turn indices) are copied
 //! on write, a chunk of `chunk_slots` slots at a time: while a snapshot is active, writes go
 //! through `set_global`, `set_visit_count` and `set_turn_index`, which copy the slot's chunk
 //! before its first write (ink's StatePatch). Restoring copies the buffers and the written
-//! chunks back and truncates the heap.
-//!
-//! Sliding compaction keeps the heap's order, so the heap tops stay object boundaries when
-//! compaction relocates them (`State.compact`).
+//! chunks back. Heap objects made during the lookahead stay until the next compaction, which
+//! finds them unreachable; the copies are compaction roots while the snapshot is active.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -32,8 +30,6 @@ pub const Snapshot = struct {
     /// The copied length of each flow buffer, in `flow_buffers` order.
     counts: [flow_buffers.len]u32 = @splat(0),
     thread_counter: u32 = 0,
-    strings_top: u32 = 0,
-    lists_top: u32 = 0,
     observer_events: u32 = 0,
     errors: u32 = 0,
     warnings: u32 = 0,
@@ -46,7 +42,7 @@ pub const Snapshot = struct {
 };
 
 pub fn active(state: *const State) bool {
-    assert(state.snapshot.active or state.snapshot.strings_top == 0);
+    assert(state.snapshot.active or state.snapshot.thread_counter == 0);
     return state.snapshot.active;
 }
 
@@ -68,8 +64,6 @@ pub fn take(state: *State) void {
         .active = true,
         .counts = counts,
         .thread_counter = state.call_stack.thread_counter,
-        .strings_top = state.strings.used,
-        .lists_top = state.lists.used,
         .observer_events = state.observer_events.count,
         .errors = state.errors.count,
         .warnings = state.warnings.count,
@@ -83,8 +77,8 @@ pub fn take(state: *State) void {
     assert(active(state));
 }
 
-/// ink's RestoreStateSnapshot: the state as it was at `take`, except that heap objects made
-/// since then are gone.
+/// ink's RestoreStateSnapshot: the state as it was at `take`. Heap objects made since then
+/// are garbage, left to compaction.
 pub fn restore(state: *State) void {
     const profile_zone = profile.begin(.lookahead_restore);
     defer profile_zone.end();
@@ -99,8 +93,6 @@ pub fn restore(state: *State) void {
     }
     copy_back(state);
     state.call_stack.thread_counter = snapshot.thread_counter;
-    state.strings.truncate(snapshot.strings_top);
-    state.lists.truncate(snapshot.lists_top);
     state.observer_events.count = snapshot.observer_events;
     state.errors.count = snapshot.errors;
     state.warnings.count = snapshot.warnings;
@@ -221,10 +213,9 @@ pub const Fault = enum {
     ok,
     inactive_with_copies,
     count_exceeds_buffer,
-    heap_top_past_used,
 };
 
-/// Checks the snapshot's lengths against its buffers and the heap, and that no chunk is
+/// Checks the snapshot's lengths against its buffers, and that no chunk is
 /// copied without a snapshot.
 pub fn check(state: *const State) Fault {
     const snapshot = &state.snapshot;
@@ -238,8 +229,6 @@ pub fn check(state: *const State) Fault {
         .{ snapshot.observer_events, state.observer_events.capacity() },
     };
     for (pairs) |pair| if (pair[0] > pair[1]) return .count_exceeds_buffer;
-    if (snapshot.strings_top > state.strings.used) return .heap_top_past_used;
-    if (snapshot.lists_top > state.lists.used) return .heap_top_past_used;
     return .ok;
 }
 
@@ -301,9 +290,10 @@ fn change_everything(state: *State) !void {
     state.verify();
 }
 
-test "take then restore leaves the state bit-identical" {
-    // Ink's RestoreStateSnapshot: hash a state with content, take, change
-    // every part a lookahead can change, restore, compare hashes and the heap tops.
+test "take then restore leaves the state bit-identical once its garbage is compacted" {
+    // Ink's RestoreStateSnapshot: hash a compacted state with content, take, change every
+    // part a lookahead can change, restore, compact the lookahead's garbage away, compare
+    // hashes and the heap's size.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
     var state: State = undefined;
@@ -314,12 +304,15 @@ test "take then restore leaves the state bit-identical" {
     try state.output.push_text(&state.strings, state.call_stack.current_frames(), line, 0, 6);
     set_global(&state, .from_int(0), .{ .string = store_text(&state, "kept") });
     set_visit_count(&state, 0, 1);
+    state.compact();
     const before = state.hash();
     const strings_used = state.strings.used;
     take(&state);
     try std.testing.expect(state.hash() != before); // the active flag counts
     try change_everything(&state);
     restore(&state);
+    try std.testing.expect(state.strings.used > strings_used); // the garbage waits
+    state.compact();
     try std.testing.expectEqual(before, state.hash());
     try std.testing.expectEqual(strings_used, state.strings.used);
     try std.testing.expectEqual(@as(u32, 0), state.lists.used);
@@ -349,9 +342,9 @@ test "discard keeps the lookahead's changes" {
     try std.testing.expectEqual(@as(i32, 2), state.globals[0].integer);
 }
 
-test "the heap tops follow a compaction during lookahead" {
-    // Compaction relocates the snapshot's heap marks: garbage below the mark, live strings on
-    // both sides, compact, then restore.
+test "the snapshot's copies keep their heap values through a compaction during lookahead" {
+    // The copies are roots: garbage before the snapshot, live strings and lists on both
+    // sides of it, compact during the lookahead, then restore, and compact again.
     const gpa = std.testing.allocator;
     var program: Program = undefined;
     var state: State = undefined;
@@ -367,16 +360,19 @@ test "the heap tops follow a compaction during lookahead" {
     _ = store_text(&state, "garbage in lookahead");
     set_global(&state, .from_int(0), .{ .integer = 1 });
     state.compact();
-    // "live" (12 bytes with its header) is all that stays below the mark; the old global
-    // value is kept alive by the snapshot's copy of the globals.
-    try std.testing.expectEqual(@as(u32, 12), state.snapshot.strings_top);
-    try std.testing.expectEqual(@as(u32, 4), state.snapshot.lists_top);
+    // "live" (12 bytes with its header) stays, kept alive by the snapshot's copy of the
+    // globals, and so does the string on the evaluation stack (28 bytes).
     try std.testing.expectEqual(@as(u32, 12 + 28), state.strings.used);
     state.verify();
     restore(&state);
-    try std.testing.expectEqual(@as(u32, 12), state.strings.used);
     try std.testing.expectEqualStrings("live", state.strings.get(state.globals[0].string));
+    const list = state.lists.view(state.evaluation.peek().?.list).items;
+    try std.testing.expectEqual(@as(u32, 2), list[0].to_int());
+    state.verify();
+    state.compact();
+    try std.testing.expectEqual(@as(u32, 12), state.strings.used);
     try std.testing.expectEqual(@as(u32, 4), state.lists.used);
+    try std.testing.expectEqualStrings("live", state.strings.get(state.globals[0].string));
     state.verify();
 }
 

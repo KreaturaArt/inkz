@@ -455,23 +455,12 @@ pub const State = struct {
         assert(!state.has_error() and !state.has_warning());
     }
 
-    /// Compacts the heap; the lookahead snapshot's heap tops follow their objects. Only
-    /// `reserve` (and load) calls it, while the roots hold every live value.
+    /// Compacts the heap. Only `reserve` (and load) calls it, while the roots hold every
+    /// live value.
     pub fn compact(state: *State) void {
         assert(state.strings.used <= state.strings.bytes.len);
-        var string_tops = [1]u32{state.snapshot.strings_top};
-        var list_tops = [1]u32{state.snapshot.lists_top};
-        const marks: heap.Marks = if (state.snapshot.active)
-            .{ .strings = &string_tops, .lists = &list_tops }
-        else
-            .{};
-        _ = heap.compact(&state.strings, &state.lists, state, marks);
+        _ = heap.compact(&state.strings, &state.lists, state);
         assert(state.lists.used <= state.lists.words.len);
-        if (state.snapshot.active) {
-            state.snapshot.strings_top = string_tops[0];
-            state.snapshot.lists_top = list_tops[0];
-        }
-        assert(state.snapshot.strings_top <= state.strings.used or !state.snapshot.active);
     }
 
     /// Room for `string_bytes` of heap strings (headers included) and `list_words` of lists,

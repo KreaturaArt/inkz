@@ -521,7 +521,7 @@ Measured densities:
 |---|---|---|---|
 | Strategy | Fixed string heap + list slab; **sliding mark-compact** when an allocation fails (`heap.zig:145-310`) | Per-object `gpa.create`, **refcount + copy-on-write + move on last use** | n/a |
 | Object header | String `[length\|mark bit31, forward, bytes, pad]`; list `[forward, items_count, origins_count, …]` | `rc: u32` + payload | n/a |
-| Order | Allocation order preserved, so heap marks and lookahead tops stay valid | n/a | n/a |
+| Order | Allocation order preserved, so text keeps its order in the heap | n/a | n/a |
 | Value semantics | Ink strings and lists are immutable values: every op produces new objects | Mutable value semantics: COW when `rc > 1`, in place when `rc == 1` (`Vm.zig:37-79`) | n/a |
 | Lists | Ordered item arrays, **linear membership scan** (`lists.zig:1-12`) | `ArrayList(Value)` | n/a |
 
@@ -532,8 +532,9 @@ Measured densities:
     1. RC/COW needs a general allocator or a free list, and that breaks "no allocation after
        init".
     2. RC traffic (retain on every read) sits on the hot path.
-    3. A sliding compactor preserves order, so the lookahead snapshot can record "heap top =
-       N" and restore by truncating, which is how D12 stays cheap.
+    3. A sliding compactor needs no free list: a lookahead restore (D12) leaves its objects
+       as garbage for the next compaction (P17.13; until then it truncated to a recorded,
+       relocated heap top).
     4. A fixed heap is defragmented by construction.
   - *Costs to inkz:* a GC pause when the heap fills. It is bounded by the heap size, but
     nonzero, and stress-tested with `compact_always`. Room is reserved before an
@@ -605,7 +606,8 @@ Neither reference has these. They are listed because they shape choices made els
   - The snapshot memcpys the *used prefix* of 11 live-flow buffers. The shared arrays
     (globals, visit counts, turn indices) are copied on write, 64 slots at a time, through a
     bitset of copied chunks (P17.13 replaced the undo log of 16 B `PatchEntry` records).
-  - Restore copies the buffers and the written chunks back, and truncates the heap.
+  - Restore copies the buffers and the written chunks back; the lookahead's heap objects
+    stay as garbage until the next compaction.
   - *It is why* values are pointer-free (§10), the compactor preserves order (§11), and the
     budget contains a second copy of the live-flow buffers (§12).
 - **Flow parking.** Only the current flow is live. Parked flows are packed as `u32` words with an

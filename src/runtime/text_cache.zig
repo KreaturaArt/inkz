@@ -7,7 +7,7 @@
 //! it came from. While the output still starts with those items and no heap string changed
 //! (the heap's generation), only the new items are cleaned; anything else (items removed or
 //! rewritten by glue, trimming, `/str`, a lookahead restore, a flow switch or a load, and
-//! heap truncation or compaction) cleans from the start. Both buffers come from the state's
+//! heap shrinking or compaction) cleans from the start. Both buffers come from the state's
 //! one allocation: `output_items_max` items and `output_bytes_max` bytes.
 
 const std = @import("std");

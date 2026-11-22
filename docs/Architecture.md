@@ -197,7 +197,7 @@ stateDiagram-v2
     Check2 --> Restore: new text or tags,<br/>or an unsafe external function
     Check2 --> Discard: glue removed the newline
     Discard --> Running
-    Restore --> Finish: copy buffers and written chunks back,<br/>truncate the heap
+    Restore --> Finish: copy buffers and written chunks back<br/>(heap garbage waits for compaction)
     Check --> Finish: can't continue (choices, DONE, END,<br/>or out of content)
     Finish --> [*]: the cleaned line, report errors,<br/>notify queued observers
 ```
@@ -207,7 +207,7 @@ whole output stream. `runtime/text_cache.zig` (P10.1) keeps it between checks, w
 cleaner's state and a copy of the items it came from. While the output only grows and no
 heap string changes (`StringHeap.generation`), only new items are cleaned. Any other change
 cleans from the start: glue, trimming, `/str`, a restore, a flow switch, a load, heap
-truncation or compaction. Debug builds compare every cached line with a full clean. Before
+shrinking or compaction. Debug builds compare every cached line with a full clean. Before
 the cache, cleaning took about half of play time; with it, play is 1.5–1.8× faster.
 
 While a snapshot is active, the first write to a chunk of 64 slots of a shared array
@@ -250,7 +250,8 @@ flowchart TB
 
 The heap is compacted only when an instruction reserves room that isn't free
 (`State.reserve`), before it pops its operands, so every live value is on a root; an
-allocation itself never compacts. Compaction keeps allocation order, so heap marks recorded by the lookahead snapshot stay valid after relocation.
+allocation itself never compacts. A lookahead restore leaves the heap objects the lookahead
+made; the next compaction finds them unreachable.
 Running out of any buffer returns a named error (`error.HeapLimit`, `error.FlowLimit`, ...).
 
 Every buffer records its peak (P10.2). `Story.usage()` reports them, and `Limits.fitted(usage,

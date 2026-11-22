@@ -82,13 +82,6 @@ pub const ListSlab = struct {
         slab.peak = @max(slab.peak, slab.used +| words);
     }
 
-    /// Drops every list from `top` on; `top` must be an object boundary.
-    pub fn truncate(slab: *ListSlab, top: u32) void {
-        assert(top <= slab.used);
-        if (std.debug.runtime_safety) @memset(slab.words[top..slab.used], unmarked);
-        slab.used = top;
-    }
-
     /// Whether `list` can be a list's start: its header fits, counts fit the used words.
     /// Not proof that it is one; a full walk would be (heap.zig's compaction does that).
     pub fn check_reference(slab: *const ListSlab, list: ListReference) bool {
@@ -640,7 +633,7 @@ test "printing a list longer than the sort buffer returns ListLimit" {
     var writer: std.Io.Writer = .fixed(&buffer);
     try std.testing.expectError(error.ListLimit, lists.write(too_long, &writer));
     try std.testing.expectEqual(@as(usize, 0), writer.end);
-    slab.truncate(0);
+    slab.used = 0;
     const fits = try slab.store(many[0..list_items_max], &.{});
     var discarding: std.Io.Writer.Discarding = .init(&.{});
     try lists.write(fits, &discarding.writer);
