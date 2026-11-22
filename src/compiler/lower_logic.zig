@@ -18,21 +18,6 @@ const ContainerId = ir_module.ContainerId;
 const ItemId = ir_module.ItemId;
 const Item = ir_module.Item;
 
-/// A divert's target path text, if it is END or DONE.
-fn end_or_done(lowering: *const Lowering, divert: ObjectIndex) ?ir_module.Command {
-    assert(lowering.tree.kind(divert) == .divert);
-    const node = lowering.tree.node(divert);
-    if (node.is_none()) return if (lowering.tree.has(divert, Flags.done)) .done else null;
-    const ast = lowering.ast();
-    if (ast.tag(node) == .function_call or ast.tag(node) == .empty_divert) return null;
-    const path = ast.slot(node, .path);
-    if (ast.tag(path) != .path or ast.list(path).count != 1) return null;
-    const name = lowering.parsed.leaf_text(ast.item(path, 0));
-    if (std.mem.eql(u8, name, "END")) return .end;
-    if (std.mem.eql(u8, name, "DONE")) return .done;
-    return null;
-}
-
 /// The runtime divert of a divert object (its target and kind).
 pub fn divert_item(lowering: *const Lowering, divert: ObjectIndex) ir_module.Divert {
     const tree = lowering.tree;
@@ -40,18 +25,19 @@ pub fn divert_item(lowering: *const Lowering, divert: ObjectIndex) ir_module.Div
     var result: ir_module.Divert = .{};
     if (tree.has(divert, Flags.function_call)) result.kind = .function;
     if (tree.has(divert, Flags.tunnel)) result.kind = .tunnel;
-    const name = first_component(lowering, divert);
-    if (lowering.resolution.variable_diverts.isSet(divert.to_int())) {
-        result.variable = name;
-        return result;
+    switch (lowering.resolution.diverts[divert.to_int()]) {
+        .variable => result.variable = first_component(lowering, divert),
+        .external => {
+            result.external = first_component(lowering, divert);
+            result.external_arguments = @intCast(tree.children_of(divert).len);
+        },
+        .target => {
+            const target = lowering.resolution.targets[divert.to_int()];
+            if (!target.is_none()) result.target = .{ .object = target };
+        },
+        // A divert-target value of END or DONE (an error) has no target.
+        .none, .end, .done, .skipped => {},
     }
-    if (lowering.is_external(name)) {
-        result.external = name;
-        result.external_arguments = @intCast(tree.children_of(divert).len);
-        return result;
-    }
-    const target = lowering.resolution.targets[divert.to_int()];
-    if (!target.is_none()) result.target = .{ .object = target };
     return result;
 }
 
@@ -68,11 +54,13 @@ fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
 /// Divert.GenerateRuntimeObject.
 pub fn generate_divert(lowering: *Lowering, divert: ObjectIndex) !Result {
     const tree = lowering.tree;
-    if (tree.has(divert, Flags.empty)) return .none;
-    if (lowering.resolution_skipped(divert)) return .none;
-    if (end_or_done(lowering, divert)) |command| {
-        return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
-    }
+    const command: ir_module.Command = switch (lowering.resolution.diverts[divert.to_int()]) {
+        .none, .skipped => return .none,
+        .end => .end,
+        .done => .done,
+        .target, .variable, .external => .no_op,
+    };
+    if (command != .no_op) return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
     const arguments = tree.children_of(divert);
     const is_call = tree.has(divert, Flags.function_call);
     const is_thread = tree.has(divert, Flags.thread);

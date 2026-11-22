@@ -41,6 +41,22 @@ pub const Reference = enum(u8) {
     read_count,
 };
 
+/// What a divert resolved to; lowering generates it from this.
+pub const DivertKind = enum(u8) {
+    /// Not a divert, or `->` alone (an empty divert).
+    none,
+    /// Content found by its path (`targets` holds it; none if not found).
+    target,
+    /// A variable or parameter holds the target (ink's variableDivertName).
+    variable,
+    /// A call to an EXTERNAL function (ink's isExternal).
+    external,
+    end,
+    done,
+    /// A built-in call's or a list constructor's proxy: ink never generates or resolves it.
+    skipped,
+};
+
 pub const Code = enum(u8) {
     target_not_found,
     unresolved_variable,
@@ -210,8 +226,8 @@ pub const Resolution = struct {
     /// declaration, a list item reference's element, a list constructor's definition.
     targets: []ObjectIndex,
     references: []Reference,
-    /// Diverts whose target is a variable (ink's variableDivertName).
-    variable_diverts: std.DynamicBitSetUnmanaged,
+    /// Each divert's kind, by object.
+    diverts: []DivertKind,
     /// A list item's value (ink's seriesValue), by object; 0 for other objects.
     item_values: []i32,
     /// The list definitions in declaration order (ink's _listDefs).
@@ -230,13 +246,13 @@ pub const Resolution = struct {
 
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
         assert(resolution.targets.len == resolution.references.len);
-        assert(resolution.variable_diverts.bit_length == resolution.targets.len);
+        assert(resolution.diverts.len == resolution.targets.len);
         resolution.externals.deinit(gpa);
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
         gpa.free(resolution.item_values);
         gpa.free(resolution.lists);
-        resolution.variable_diverts.deinit(gpa);
+        gpa.free(resolution.diverts);
         gpa.free(resolution.diagnostics);
         resolution.* = undefined;
     }
@@ -299,9 +315,7 @@ pub const Context = struct {
     targets: []ObjectIndex = &.{},
     references: []Reference = &.{},
     item_values: []i32 = &.{},
-    variable_diverts: std.DynamicBitSetUnmanaged = .{},
-    /// Proxy diverts of built-in calls: ink never generates or resolves them.
-    skipped: std.DynamicBitSetUnmanaged = .{},
+    diverts: []DivertKind = &.{},
     /// Objects that already have an error or a warning (ink's _alreadyHadError and
     /// _alreadyHadWarning).
     had_error: std.DynamicBitSetUnmanaged = .{},
@@ -326,8 +340,7 @@ pub const Context = struct {
         gpa.free(context.targets);
         gpa.free(context.references);
         gpa.free(context.item_values);
-        context.variable_diverts.deinit(gpa);
-        context.skipped.deinit(gpa);
+        gpa.free(context.diverts);
         context.had_error.deinit(gpa);
         context.had_warning.deinit(gpa);
         context.diagnostics.deinit(gpa);
@@ -474,7 +487,7 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     const resolution: Resolution = .{
         .targets = context.targets,
         .references = context.references,
-        .variable_diverts = context.variable_diverts,
+        .diverts = context.diverts,
         .item_values = context.item_values,
         .lists = try context.list_order.toOwnedSlice(gpa),
         .externals = context.externals,
@@ -484,7 +497,7 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     context.targets = &.{};
     context.references = &.{};
     context.item_values = &.{};
-    context.variable_diverts = .{};
+    context.diverts = &.{};
     assert(resolution.targets.len == tree.count());
     return resolution;
 }
@@ -679,11 +692,8 @@ test "parameters, divert parameters, constants, list items and functions" {
         );
     }
     // `-> next` is a variable divert (a divert parameter).
-    const diverts = fixture.resolution.variable_diverts;
     var variable_count: u32 = 0;
-    for (0..fixture.tree.count()) |position| {
-        variable_count += @intFromBool(diverts.isSet(position));
-    }
+    for (fixture.resolution.diverts) |kind| variable_count += @intFromBool(kind == .variable);
     try std.testing.expectEqual(@as(u32, 1), variable_count);
     // The call targets the function.
     const function = fixture.nth(.knot, 2);

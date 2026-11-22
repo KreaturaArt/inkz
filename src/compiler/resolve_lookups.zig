@@ -33,8 +33,8 @@ pub fn prepare(context: *Context) !void {
     @memset(context.item_values, 0);
     context.root_weaves = try gpa.alloc(ObjectIndex, count);
     @memset(context.root_weaves, .none);
-    context.variable_diverts = try .initEmpty(gpa, count);
-    context.skipped = try .initEmpty(gpa, count);
+    context.diverts = try gpa.alloc(resolve.DivertKind, count);
+    @memset(context.diverts, .none);
     context.had_error = try .initEmpty(gpa, count);
     context.had_warning = try .initEmpty(gpa, count);
     // ink's FindAll order: pre-order (objects are numbered in creation order).

@@ -174,20 +174,6 @@ pub const Lowering = struct {
         return lowering.parsed.slot_text(lowering.tree.node(object), which);
     }
 
-    /// Whether `name` is an EXTERNAL function (ink's story.externals).
-    pub fn is_external(lowering: *const Lowering, name: []const u8) bool {
-        return lowering.resolution.externals.contains(.{ .scope = Tree.root, .name = name });
-    }
-
-    /// Whether a divert is a built-in call's proxy, which ink never generates.
-    pub fn resolution_skipped(lowering: *const Lowering, divert: ObjectIndex) bool {
-        if (!lowering.tree.has(divert, Flags.function_call)) return false;
-        const call = lowering.tree.parent(divert);
-        assert(lowering.tree.kind(call) == .function_call);
-        if (!lowering.resolution.targets[call.to_int()].is_none()) return true;
-        return ir_module.builtin(lowering.slot_name(call, .name)) != null;
-    }
-
     pub fn result(lowering: *const Lowering, object: ObjectIndex) Result {
         assert(object.to_int() < lowering.results.len);
         return lowering.results[object.to_int()];
