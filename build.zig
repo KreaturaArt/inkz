@@ -86,14 +86,6 @@ pub fn build(b: *std.Build) void {
 
     test_all.dependOn(add_death_tests(b, target));
 
-    // The profile zones with profiling compiled in (a test's root can't enable them).
-    const profile_check = "src/profile_check.zig";
-    const run_profile_check = b.addRunArtifact(
-        add_executable(b, "profile_check", profile_check, target, optimize),
-    );
-    const test_profile = b.step("test-profile", "Check the profile zones with profiling on");
-    test_profile.dependOn(&run_profile_check.step);
-    test_all.dependOn(test_profile);
     test_all.dependOn(add_doctests(b, inkz_module, test_options));
 
     // Fuzz targets: each runs on its seed corpus; `zig build fuzz --fuzz` fuzzes them.
@@ -109,35 +101,31 @@ pub fn build(b: *std.Build) void {
         .own_filters = &.{"fuzz: "},
     }, test_options);
 
-    // Benchmarks (src/bench.zig, one program with a subcommand per kind). Each run is a new
-    // measurement, so they always run. `bench` rewrites docs/benchmarks.md; `bench-io`
-    // (program load and store) and `bench-profile` (profile zones per pipeline stage, in
-    // ReleaseFast) append to zig-out/bench/*.jsonl, or with -Dbench-record to bench/*.jsonl.
-    const bench_step = b.step("bench", "Run benchmarks in ReleaseSafe and ReleaseFast");
-    add_release_benches(b, bench_step, target, &.{"runtime"});
-    const bench_io_step = b.step("bench-io", "Benchmark JSON and binary image load/store");
-    add_release_benches(b, bench_io_step, target, if (bench_record)
-        &.{ "io", "--record" }
-    else
-        &.{"io"});
-    const bench_profile_step = b.step("bench-profile", "Profile each pipeline stage");
-    const bench_profile = add_bench(b, "bench_profile", "src/bench_profile.zig", target, .fast);
-    bench_profile.addArg("profile");
-    if (bench_record) bench_profile.addArg("--record");
-    bench_profile_step.dependOn(&bench_profile.step);
-
-    const lint = add_executable(b, "lint", "tools/lint.zig", target, optimize);
-    const run_lint = b.addRunArtifact(lint);
-    run_lint.setCwd(b.path("."));
-    run_lint.addArgs(&.{ "src", "tools" });
-    b.step("lint", "Check TigerStyle rules").dependOn(&run_lint.step);
-
-    const code_size = add_executable(b, "code_size", "tools/code_size.zig", target, optimize);
-    const run_code_size = b.addRunArtifact(code_size);
-    run_code_size.setCwd(b.path("."));
-    run_code_size.addArgs(&.{ "src", "tools", "build.zig" });
-    run_code_size.has_side_effects = true;
-    b.step("code-size", "Count lines of Zig per module").dependOn(&run_code_size.step);
+    // The other programs' steps, from `tools`. Each run reads files the build cache doesn't
+    // track, or is a new measurement, so they always run.
+    const ci_step = b.step("ci", "Run formatting, lint, every test and the fuzz corpus");
+    for (tools) |tool| {
+        const step = b.step(tool.step, tool.description);
+        const modes = if (tool.modes.len > 0) tool.modes else &.{optimize};
+        var previous: ?*std.Build.Step = null;
+        for (modes) |mode| {
+            const name = b.fmt("{s}_{t}", .{ std.fs.path.stem(tool.root), mode });
+            const run = b.addRunArtifact(add_executable(b, name, tool.root, target, mode));
+            run.setCwd(b.path("."));
+            run.has_side_effects = true;
+            run.addArgs(tool.arguments);
+            if (tool.record and bench_record) run.addArg("--record");
+            // One mode at a time: benchmarks would measure each other.
+            if (previous) |before| run.step.dependOn(before);
+            previous = &run.step;
+            step.dependOn(&run.step);
+        }
+        switch (tool.gate) {
+            .none => {},
+            .test_all => test_all.dependOn(step),
+            .ci => ci_step.dependOn(step),
+        }
+    }
 
     const fmt = b.addFmt(.{
         .paths = &.{
@@ -151,11 +139,9 @@ pub fn build(b: *std.Build) void {
     });
     b.step("fmt", "Check that the Zig sources are formatted").dependOn(&fmt.step);
 
-    // `zig build ci` (.github/workflows/ci.yml): everything a change must pass. It needs no
-    // reference harness (no dotnet, no reference/).
-    const ci_step = b.step("ci", "Run formatting, lint, every test and the fuzz corpus");
+    // `zig build ci` (.github/workflows/ci.yml): everything a change must pass, with lint
+    // from `tools`. It needs no reference harness (no dotnet, no reference/).
     ci_step.dependOn(&fmt.step);
-    ci_step.dependOn(&run_lint.step);
     ci_step.dependOn(test_all);
     ci_step.dependOn(fuzz_corpus);
 }
@@ -169,6 +155,68 @@ const dev_commands = [_][2][]const u8{
     .{ "swarm-gen", "Write generated swarm cases (-- --seed S --count N --out DIR)" },
     .{ "swarm-check", "Compare inkz with ink's results for swarm cases (-- DIR)" },
     .{ "swarm-reduce", "Reduce a divergent swarm case (-- DIR CASE --harness DLL)" },
+};
+
+/// A program run by its own step, from the repository root.
+const Tool = struct {
+    step: []const u8,
+    description: []const u8,
+    root: []const u8,
+    arguments: []const []const u8 = &.{},
+    /// Built in each of these modes in turn; none: the -Doptimize mode.
+    modes: []const std.builtin.OptimizeMode = &.{},
+    /// Takes `--record` with -Dbench-record.
+    record: bool = false,
+    gate: enum { none, test_all, ci } = .none,
+};
+
+/// The benchmarks are src/bench.zig's subcommands (src/bench_profile.zig compiles the profile
+/// zones in): `bench` rewrites docs/benchmarks.md, `bench-io` and `bench-profile` append to
+/// zig-out/bench/*.jsonl, or with -Dbench-record to bench/*.jsonl.
+const tools = [_]Tool{
+    .{
+        .step = "lint",
+        .description = "Check TigerStyle rules",
+        .root = "tools/lint.zig",
+        .arguments = &.{ "src", "tools" },
+        .gate = .ci,
+    },
+    .{
+        .step = "code-size",
+        .description = "Count lines of Zig per module",
+        .root = "tools/code_size.zig",
+        .arguments = &.{ "src", "tools", "build.zig" },
+    },
+    // The profile zones with profiling compiled in (a test's root can't enable them).
+    .{
+        .step = "test-profile",
+        .description = "Check the profile zones with profiling on",
+        .root = "src/profile_check.zig",
+        .gate = .test_all,
+    },
+    .{
+        .step = "bench",
+        .description = "Run benchmarks in ReleaseSafe and ReleaseFast",
+        .root = "src/bench.zig",
+        .arguments = &.{"runtime"},
+        .modes = &.{ .safe, .fast },
+    },
+    .{
+        .step = "bench-io",
+        .description = "Benchmark JSON and binary image load/store",
+        .root = "src/bench.zig",
+        .arguments = &.{"io"},
+        .modes = &.{ .safe, .fast },
+        .record = true,
+    },
+    .{
+        .step = "bench-profile",
+        .description = "Profile each pipeline stage",
+        .root = "src/bench_profile.zig",
+        .arguments = &.{"profile"},
+        .modes = &.{.fast},
+        .record = true,
+    },
 };
 
 fn new_build_options(b: *std.Build, snap_update: bool, fuzz_swarm: bool) *std.Build.Step.Options {
@@ -193,38 +241,6 @@ fn add_executable(
             .optimize = optimize,
         }),
     });
-}
-
-/// A benchmark's run, in the project directory and every time.
-fn add_bench(
-    b: *std.Build,
-    name: []const u8,
-    root: []const u8,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-) *std.Build.Step.Run {
-    const run = b.addRunArtifact(add_executable(b, name, root, target, optimize));
-    run.setCwd(b.path("."));
-    run.has_side_effects = true;
-    return run;
-}
-
-/// Runs src/bench.zig with `arguments` in ReleaseSafe, then in ReleaseFast (never both at
-/// once: they would measure each other, and they write the same files).
-fn add_release_benches(
-    b: *std.Build,
-    step: *std.Build.Step,
-    target: std.Build.ResolvedTarget,
-    arguments: []const []const u8,
-) void {
-    var previous: ?*std.Build.Step = null;
-    for ([_]std.builtin.OptimizeMode{ .safe, .fast }) |mode| {
-        const run = add_bench(b, b.fmt("bench_{t}", .{mode}), "src/bench.zig", target, mode);
-        run.addArgs(arguments);
-        if (previous) |before| run.step.dependOn(before);
-        previous = &run.step;
-        step.dependOn(&run.step);
-    }
 }
 
 /// The docs whose ```zig blocks are compiled by `zig build doctest` (tools/doctest.zig).
