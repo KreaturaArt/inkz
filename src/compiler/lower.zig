@@ -196,13 +196,13 @@ pub const Lowering = struct {
         // Expressions generate nothing on their own: their users emit them.
         assert(lowering.result(object) == .none);
         const container = try lowering.ir.new_container();
-        _ = try lowering.ir.add_command(container, .eval_start);
+        _ = try lowering.ir.add_opcode(container, .eval_start);
         try expressions.emit(lowering, container, object);
-        if (lowering.tree.has(object, Flags.output)) _ = try lowering.ir.add_command(
+        if (lowering.tree.has(object, Flags.output)) _ = try lowering.ir.add_opcode(
             container,
             .eval_output,
         );
-        _ = try lowering.ir.add_command(container, .eval_end);
+        _ = try lowering.ir.add_opcode(container, .eval_end);
         return .{ .container = container };
     }
 
@@ -241,11 +241,11 @@ pub const Lowering = struct {
             .text => .{
                 .item = try lowering.ir.new_item(.{ .text = try lowering.text_of(object) }),
             },
-            .glue => .{ .item = try lowering.ir.new_item(.{ .command = .glue }) },
+            .glue => .{ .item = try lowering.ir.new_item(.{ .opcode = .glue }) },
             .tag => {
                 const is_start = tree.has(object, Flags.tag_start);
-                const command: ir_module.Command = if (is_start) .begin_tag else .end_tag;
-                return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
+                const command: ir_module.Opcode = if (is_start) .tag_start else .tag_end;
+                return .{ .item = try lowering.ir.new_item(.{ .opcode = command }) };
             },
             .divert => logic.generate_divert(lowering, object),
             .tunnel_onwards => logic.generate_tunnel_onwards(lowering, object),
@@ -359,20 +359,20 @@ pub const Lowering = struct {
         const root = lowering.result(Tree.root).container;
         lowering.root = root;
         const declarations = try ir.new_container();
-        _ = try ir.add_command(declarations, .eval_start);
+        _ = try ir.add_opcode(declarations, .eval_start);
         var any = false;
         var objects = lowering.tree.walk(lowering.gpa, Tree.root, .pre);
         defer objects.deinit();
         while (try objects.next()) |object| {
             any = try lowering.add_declaration(declarations, object) or any;
         }
-        _ = try ir.add_command(declarations, .eval_end);
-        _ = try ir.add_command(declarations, .end);
+        _ = try ir.add_opcode(declarations, .eval_end);
+        _ = try ir.add_opcode(declarations, .end);
         if (any) {
             ir.container(declarations).name = "global decl";
             try ir.add_named(root, declarations);
         }
-        _ = try ir.add_command(root, .done);
+        _ = try ir.add_opcode(root, .done);
     }
 
     /// One entry of the story's variableDeclarations: true if the object declares one (a

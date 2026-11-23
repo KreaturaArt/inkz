@@ -9,6 +9,7 @@ const sema = @import("sema.zig");
 const values = @import("values.zig");
 const ast_module = @import("ast.zig");
 const ir_module = @import("lower_ir.zig");
+const ink_json = @import("../core/ink_json.zig");
 const logic = @import("lower_logic.zig");
 const Lowering = lower.Lowering;
 const ObjectIndex = sema.ObjectIndex;
@@ -55,7 +56,7 @@ fn step(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectInde
         .binary => return binary(lowering, container, frame, children),
         .multiple_condition => {
             // Each condition after the first is joined with && once it is emitted.
-            if (frame.stage >= 2) _ = try lowering.ir.add(container, .{ .native = "&&" });
+            if (frame.stage >= 2) _ = try lowering.ir.add_opcode(container, .@"and");
             if (frame.stage == children.len) {
                 frame.stage = done;
                 return null;
@@ -81,7 +82,7 @@ fn step(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectInde
                 return children[0];
             }
             const negate = lowering.ast().tag(tree.node(object)) == .negate;
-            _ = try lowering.ir.add(container, .{ .native = if (negate) "_" else "!" });
+            _ = try lowering.ir.add_opcode(container, if (negate) .negate else .not);
             frame.stage = done;
             return null;
         },
@@ -107,9 +108,10 @@ fn binary(
         frame.stage += 1;
         return children[frame.stage - 1];
     }
-    _ = try lowering.ir.add(container, .{
-        .native = native_name(lowering.ast().tag(lowering.tree.node(frame.object))),
-    });
+    const name = native_name(lowering.ast().tag(lowering.tree.node(frame.object)));
+    // ink writes NativeFunctionCall "^" as "L^".
+    const word = if (std.mem.eql(u8, name, "^")) "L^" else name;
+    _ = try lowering.ir.add_opcode(container, ink_json.words.get(word).?);
     frame.stage = done;
     return null;
 }
@@ -161,9 +163,9 @@ fn leaf(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void 
             _ = try ir.add(container, literal_item(value));
         },
         .string_expression => {
-            _ = try ir.add_command(container, .begin_string);
+            _ = try ir.add_opcode(container, .string_start);
             for (tree.children_of(object)) |child| try lowering.add_result(container, child);
-            _ = try ir.add_command(container, .end_string);
+            _ = try ir.add_opcode(container, .string_end);
         },
         .divert_target => {
             const divert = tree.children_of(object)[0];
@@ -238,7 +240,7 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
         if (children.len > 0) return children[0];
         _ = try ir.add(container, .{ .integer = 1 });
     }
-    _ = try ir.add(container, .{ .native = if (tree.has(object, Flags.decrement)) "-" else "+" });
+    _ = try ir.add_opcode(container, if (tree.has(object, Flags.decrement)) .subtract else .add);
     const global = lowering.resolution.references[object.to_int()] == .global;
     _ = try ir.add(container, .{ .assignment = .{ .name = name, .global = global, .new = false } });
     frame.stage = done;
@@ -272,15 +274,13 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
             return arguments[frame.stage - 1];
         }
         if (is_list) {
-            _ = try ir.add_command(container, .list_from_int);
-        } else if (builtin.?.command) |command| {
-            _ = try ir.add_command(container, command);
-        } else _ = try ir.add(container, .{ .native = name });
+            _ = try ir.add_opcode(container, .list_from_int);
+        } else _ = try ir.add_opcode(container, builtin.?.opcode);
     } else if (is_list) {
         const origins = try ir.arena.allocator().dupe([]const u8, &.{name});
         _ = try ir.add(container, .{ .list = .{ .items = &.{}, .origins = origins } });
     } else try lowering.add_result(container, proxy);
-    if (tree.has(call, Flags.pop_result)) _ = try ir.add_command(container, .pop);
+    if (tree.has(call, Flags.pop_result)) _ = try ir.add_opcode(container, .pop);
     frame.stage = done;
     return null;
 }

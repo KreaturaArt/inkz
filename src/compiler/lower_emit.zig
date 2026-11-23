@@ -12,7 +12,6 @@ const Allocator = std.mem.Allocator;
 const lower = @import("lower.zig");
 const layout_module = @import("lower_layout.zig");
 const ir_module = @import("lower_ir.zig");
-const ink_json = @import("../core/ink_json.zig");
 const program_builder = @import("../core/program_builder.zig");
 const ProgramBuilder = program_builder.ProgramBuilder;
 const Program = @import("../core/program.zig").Program;
@@ -28,24 +27,6 @@ fn count_flags(flags: u8) u8 {
     assert(flags & 0xf8 == 0);
     assert(flags <= 7);
     return if (flags == ir_module.count_start_only) 0 else flags;
-}
-
-/// Each command's opcode, from the word ink writes for it (as the JSON loader reads it).
-const command_opcodes = table: {
-    const Command = ir_module.Command;
-    const Opcode = @import("../core/instruction.zig").Opcode;
-    var table: [@typeInfo(Command).@"enum".field_names.len]Opcode = undefined;
-    for (std.enums.values(Command)) |command| {
-        table[@backingInt(command)] = ink_json.words.get(command.word()).?;
-    }
-    break :table table;
-};
-
-/// ink writes NativeFunctionCall "^" as "L^".
-fn native_word(name: []const u8) []const u8 {
-    assert(name.len < 16);
-    assert(name.len > 0);
-    return if (std.mem.eql(u8, name, "^")) "L^" else name;
 }
 
 const Frame = struct { container: ContainerId, next: u32 = 0, next_named: ?u32 = null };
@@ -135,8 +116,7 @@ fn add_item(lowered: *Lowered, layout: *const Layout, builder: *ProgramBuilder, 
     assert(lowered.ir.items.items.len == layout.item_container.len);
     switch (value) {
         .container => unreachable,
-        .command => |command| try builder.add_bare(command_opcodes[@backingInt(command)]),
-        .native => |name| try ink_json.add_word_to(builder, native_word(name)),
+        .opcode => |opcode| try builder.add_bare(opcode),
         .text => |text| {
             if (std.mem.eql(u8, text, "\n")) return builder.add(.newline, {});
             try builder.add(.text, try builder.intern(text));

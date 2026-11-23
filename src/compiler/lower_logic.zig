@@ -54,13 +54,13 @@ fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
 /// Divert.GenerateRuntimeObject.
 pub fn generate_divert(lowering: *Lowering, divert: ObjectIndex) !Result {
     const tree = lowering.tree;
-    const command: ir_module.Command = switch (lowering.resolution.diverts[divert.to_int()]) {
+    const command: ir_module.Opcode = switch (lowering.resolution.diverts[divert.to_int()]) {
         .none, .skipped => return .none,
         .end => .end,
         .done => .done,
-        .target, .variable, .external => .no_op,
+        .target, .variable, .external => .nop,
     };
-    if (command != .no_op) return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
+    if (command != .nop) return .{ .item = try lowering.ir.new_item(.{ .opcode = command }) };
     const arguments = tree.children_of(divert);
     const is_call = tree.has(divert, Flags.function_call);
     const is_thread = tree.has(divert, Flags.thread);
@@ -71,11 +71,11 @@ pub fn generate_divert(lowering: *Lowering, divert: ObjectIndex) !Result {
     const ir = &lowering.ir;
     const container = try ir.new_container();
     if (arguments.len > 0) {
-        if (!is_call) _ = try ir.add_command(container, .eval_start);
+        if (!is_call) _ = try ir.add_opcode(container, .eval_start);
         try add_arguments(lowering, container, divert);
-        if (!is_call) _ = try ir.add_command(container, .eval_end);
+        if (!is_call) _ = try ir.add_opcode(container, .eval_end);
     }
-    if (is_thread) _ = try ir.add_command(container, .start_thread);
+    if (is_thread) _ = try ir.add_opcode(container, .start_thread);
     _ = try ir.add(container, .{ .divert = runtime });
     return .{ .container = container };
 }
@@ -114,13 +114,13 @@ fn is_reference_parameter(lowering: *const Lowering, flow: ObjectIndex, position
 pub fn generate_tunnel_onwards(lowering: *Lowering, onwards: ObjectIndex) !Result {
     const ir = &lowering.ir;
     const container = try ir.new_container();
-    _ = try ir.add_command(container, .eval_start);
+    _ = try ir.add_opcode(container, .eval_start);
     assert(lowering.tree.kind(onwards) == .tunnel_onwards);
     const children = lowering.tree.children_of(onwards);
     // At most the divert to take instead of returning.
     assert(children.len <= 1);
     if (children.len == 0) {
-        _ = try ir.add_command(container, .void);
+        _ = try ir.add_opcode(container, .void);
     } else {
         const after = children[0];
         try add_arguments(lowering, container, after);
@@ -129,8 +129,8 @@ pub fn generate_tunnel_onwards(lowering: *Lowering, onwards: ObjectIndex) !Resul
             _ = try ir.add(container, .{ .variable_reference = name });
         } else _ = try ir.add(container, .{ .divert_target = runtime.target });
     }
-    _ = try ir.add_command(container, .eval_end);
-    _ = try ir.add_command(container, .pop_tunnel);
+    _ = try ir.add_opcode(container, .eval_end);
+    _ = try ir.add_opcode(container, .tunnel_return);
     return .{ .container = container };
 }
 
@@ -194,13 +194,13 @@ pub fn generate_branch(lowering: *Lowering, branch: ObjectIndex) !Result {
     const ir = &lowering.ir;
     const container = try ir.new_container();
     const duplicates = flags.matching and !flags.is_else;
-    if (duplicates) _ = try ir.add_command(container, .duplicate);
+    if (duplicates) _ = try ir.add_opcode(container, .duplicate);
     const own = own_expression(lowering, branch);
     if (!flags.true_branch and !flags.is_else) {
-        if (own != null) _ = try ir.add_command(container, .eval_start);
+        if (own != null) _ = try ir.add_opcode(container, .eval_start);
         if (own) |expression| try expressions.emit(lowering, container, expression);
-        if (flags.matching) _ = try ir.add(container, .{ .native = "==" });
-        if (own != null) _ = try ir.add_command(container, .eval_end);
+        if (flags.matching) _ = try ir.add_opcode(container, .equal);
+        if (own != null) _ = try ir.add_opcode(container, .eval_end);
     }
     const content = branch_content(lowering, branch) orelse try ir.new_container();
     _ = try ir.add(
@@ -210,7 +210,7 @@ pub fn generate_branch(lowering: *Lowering, branch: ObjectIndex) !Result {
     ir.container(content).name = "b";
     if (!flags.is_inline) _ = try ir.prepend(content, .{ .text = "\n" });
     if (duplicates or (flags.is_else and flags.matching)) _ = try ir.prepend(content, .{
-        .command = .pop,
+        .opcode = .pop,
     });
     try ir.add_named(container, content);
     // Its target, the conditional's rejoin point, is set by the conditional.
@@ -240,9 +240,9 @@ pub fn generate_conditional(lowering: *Lowering, conditional: ObjectIndex) !Resu
     for (branches) |branch| try lowering.add_result(container, branch);
     const last_is_else = branch_flags(lowering, branches[branches.len - 1]).is_else;
     if (has_initial and own_expression(lowering, branches[0]) != null and !last_is_else) {
-        _ = try ir.add_command(container, .pop);
+        _ = try ir.add_opcode(container, .pop);
     }
-    const rejoin = try ir.add_command(container, .no_op);
+    const rejoin = try ir.add_opcode(container, .nop);
     for (branches) |branch| {
         // A branch's one named content is its `b` container (generate_branch).
         const named = ir.container(lowering.result(branch).container).named.items;
@@ -271,20 +271,20 @@ pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
     const elements = lowering.tree.children_of(sequence);
     const container = try ir.new_container();
     ir.container(container).flags |= ir_module.count_visits | ir_module.count_start_only;
-    _ = try ir.add_command(container, .eval_start);
-    _ = try ir.add_command(container, .visit_index);
+    _ = try ir.add_opcode(container, .eval_start);
+    _ = try ir.add_opcode(container, .visit_index);
     const count: i32 = @intCast(elements.len);
     const branch_count = count + @intFromBool(kind & once != 0);
     if (kind & (stopping | once) != 0) {
         _ = try ir.add(container, .{ .integer = branch_count - 1 });
-        _ = try ir.add(container, .{ .native = "MIN" });
+        _ = try ir.add_opcode(container, .min);
     } else if (kind & cycle != 0) {
         _ = try ir.add(container, .{ .integer = count });
-        _ = try ir.add(container, .{ .native = "%" });
+        _ = try ir.add_opcode(container, .modulo);
     }
     if (kind & shuffle != 0) try add_shuffle(lowering, container, kind, count);
-    _ = try ir.add_command(container, .eval_end);
-    const after = try ir.new_item(.{ .command = .no_op });
+    _ = try ir.add_opcode(container, .eval_end);
+    const after = try ir.new_item(.{ .opcode = .nop });
     for (0..@intCast(branch_count)) |position| {
         try add_sequence_branch(lowering, container, elements, position, after);
     }
@@ -295,13 +295,13 @@ pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
 fn add_shuffle(lowering: *Lowering, container: ContainerId, kind: u32, count: i32) !void {
     assert(kind & shuffle != 0);
     const ir = &lowering.ir;
-    const after_shuffle = try ir.new_item(.{ .command = .no_op });
+    const after_shuffle = try ir.new_item(.{ .opcode = .nop });
     const skips = kind & (once | stopping) != 0;
     if (skips) {
         const last = if (kind & stopping != 0) count - 1 else count;
-        _ = try ir.add_command(container, .duplicate);
+        _ = try ir.add_opcode(container, .duplicate);
         _ = try ir.add(container, .{ .integer = last });
-        _ = try ir.add(container, .{ .native = "==" });
+        _ = try ir.add_opcode(container, .equal);
         _ = try ir.add(
             container,
             .{ .divert = .{ .target = .{ .item = after_shuffle }, .conditional = true } },
@@ -309,7 +309,7 @@ fn add_shuffle(lowering: *Lowering, container: ContainerId, kind: u32, count: i3
     }
     const shuffled = if (kind & stopping != 0) count - 1 else count;
     _ = try ir.add(container, .{ .integer = shuffled });
-    _ = try ir.add_command(container, .sequence_shuffle_index);
+    _ = try ir.add_opcode(container, .sequence_shuffle_index);
     if (skips) try ir.attach(container, after_shuffle);
 }
 
@@ -323,11 +323,11 @@ fn add_sequence_branch(
     // One branch per element, plus an empty one after the last for `once`.
     assert(position <= elements.len);
     const ir = &lowering.ir;
-    _ = try ir.add_command(container, .eval_start);
-    _ = try ir.add_command(container, .duplicate);
+    _ = try ir.add_opcode(container, .eval_start);
+    _ = try ir.add_opcode(container, .duplicate);
     _ = try ir.add(container, .{ .integer = @intCast(position) });
-    _ = try ir.add(container, .{ .native = "==" });
-    _ = try ir.add_command(container, .eval_end);
+    _ = try ir.add_opcode(container, .equal);
+    _ = try ir.add_opcode(container, .eval_end);
     const branch = if (position < elements.len)
         lowering.result(elements[position]).container
     else
@@ -337,7 +337,7 @@ fn add_sequence_branch(
         .{ .divert = .{ .target = .{ .container = branch }, .conditional = true } },
     );
     ir.container(branch).name = try std.fmt.allocPrint(ir.arena.allocator(), "s{d}", .{position});
-    _ = try ir.prepend(branch, .{ .command = .pop });
+    _ = try ir.prepend(branch, .{ .opcode = .pop });
     _ = try ir.add(branch, .{ .divert = .{ .target = .{ .item = after } } });
     try ir.add_named(container, branch);
 }
@@ -372,11 +372,11 @@ pub fn generate_return(lowering: *Lowering, object: ObjectIndex) !Result {
     if (children.len > 0) {
         try lowering.add_content(container, children[0]);
     } else {
-        _ = try ir.add_command(container, .eval_start);
-        _ = try ir.add_command(container, .void);
-        _ = try ir.add_command(container, .eval_end);
+        _ = try ir.add_opcode(container, .eval_start);
+        _ = try ir.add_opcode(container, .void);
+        _ = try ir.add_opcode(container, .eval_end);
     }
-    _ = try ir.add_command(container, .pop_function);
+    _ = try ir.add_opcode(container, .function_return);
     return .{ .container = container };
 }
 

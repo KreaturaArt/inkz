@@ -14,77 +14,36 @@ const ObjectIndex = sema.ObjectIndex;
 pub const ContainerId = index.Index("runtime container");
 pub const ItemId = index.Index("runtime item");
 
-/// ink's ControlCommand types (and glue), by their JSON words.
-pub const Command = enum {
-    eval_start,
-    eval_end,
-    eval_output,
-    pop,
-    pop_tunnel,
-    pop_function,
-    duplicate,
-    no_op,
-    begin_string,
-    end_string,
-    void,
-    visit_index,
-    sequence_shuffle_index,
-    start_thread,
-    choice_count,
-    turns,
-    turns_since,
-    read_count,
-    random,
-    seed_random,
-    list_from_int,
-    list_range,
-    list_random,
-    begin_tag,
-    end_tag,
-    done,
-    end,
-    glue,
+/// An instruction without an operand: a control command, glue or a native function call.
+pub const Opcode = @import("../core/instruction.zig").Opcode;
 
-    pub fn word(command: Command) []const u8 {
-        assert(@backingInt(command) < @typeInfo(Command).@"enum".field_names.len);
-        const words = [_][]const u8{
-            "ev",   "/ev",  "out",     "pop",   "->->",   "~ret",      "du",   "nop",   "str",
-            "/str", "void", "visit",   "seq",   "thread", "choiceCnt", "turn", "turns", "readc",
-            "rnd",  "srnd", "listInt", "range", "lrnd",   "#",         "/#",   "done",  "end",
-            "<>",
-        };
-        comptime assert(words.len == @typeInfo(Command).@"enum".field_names.len);
-        return words[@backingInt(command)];
-    }
-};
-
-/// A built-in called by name: a native function (Runtime.NativeFunctionCall) or, with a
-/// command, a control command. Its arguments come first either way.
-pub const Builtin = struct { name: []const u8, arity: u32, command: ?Command = null };
+/// A built-in called by name: a native function (Runtime.NativeFunctionCall) or a control
+/// command. Its arguments come first either way.
+pub const Builtin = struct { name: []const u8, arity: u32, opcode: Opcode };
 
 pub const builtins = [_]Builtin{
-    .{ .name = "_", .arity = 1 },
-    .{ .name = "MIN", .arity = 2 },
-    .{ .name = "MAX", .arity = 2 },
-    .{ .name = "POW", .arity = 2 },
-    .{ .name = "FLOOR", .arity = 1 },
-    .{ .name = "CEILING", .arity = 1 },
-    .{ .name = "INT", .arity = 1 },
-    .{ .name = "FLOAT", .arity = 1 },
-    .{ .name = "LIST_MIN", .arity = 1 },
-    .{ .name = "LIST_MAX", .arity = 1 },
-    .{ .name = "LIST_ALL", .arity = 1 },
-    .{ .name = "LIST_COUNT", .arity = 1 },
-    .{ .name = "LIST_VALUE", .arity = 1 },
-    .{ .name = "LIST_INVERT", .arity = 1 },
-    .{ .name = "CHOICE_COUNT", .arity = 0, .command = .choice_count },
-    .{ .name = "TURNS", .arity = 0, .command = .turns },
-    .{ .name = "TURNS_SINCE", .arity = 1, .command = .turns_since },
-    .{ .name = "READ_COUNT", .arity = 1, .command = .read_count },
-    .{ .name = "RANDOM", .arity = 2, .command = .random },
-    .{ .name = "SEED_RANDOM", .arity = 1, .command = .seed_random },
-    .{ .name = "LIST_RANGE", .arity = 3, .command = .list_range },
-    .{ .name = "LIST_RANDOM", .arity = 1, .command = .list_random },
+    .{ .name = "_", .arity = 1, .opcode = .negate },
+    .{ .name = "MIN", .arity = 2, .opcode = .min },
+    .{ .name = "MAX", .arity = 2, .opcode = .max },
+    .{ .name = "POW", .arity = 2, .opcode = .pow },
+    .{ .name = "FLOOR", .arity = 1, .opcode = .floor },
+    .{ .name = "CEILING", .arity = 1, .opcode = .ceiling },
+    .{ .name = "INT", .arity = 1, .opcode = .int },
+    .{ .name = "FLOAT", .arity = 1, .opcode = .float_cast },
+    .{ .name = "LIST_MIN", .arity = 1, .opcode = .list_min },
+    .{ .name = "LIST_MAX", .arity = 1, .opcode = .list_max },
+    .{ .name = "LIST_ALL", .arity = 1, .opcode = .list_all },
+    .{ .name = "LIST_COUNT", .arity = 1, .opcode = .list_count },
+    .{ .name = "LIST_VALUE", .arity = 1, .opcode = .list_value },
+    .{ .name = "LIST_INVERT", .arity = 1, .opcode = .list_invert },
+    .{ .name = "CHOICE_COUNT", .arity = 0, .opcode = .choice_count },
+    .{ .name = "TURNS", .arity = 0, .opcode = .turns },
+    .{ .name = "TURNS_SINCE", .arity = 1, .opcode = .turns_since },
+    .{ .name = "READ_COUNT", .arity = 1, .opcode = .read_count_of_target },
+    .{ .name = "RANDOM", .arity = 2, .opcode = .random },
+    .{ .name = "SEED_RANDOM", .arity = 1, .opcode = .seed_random },
+    .{ .name = "LIST_RANGE", .arity = 3, .opcode = .list_range },
+    .{ .name = "LIST_RANDOM", .arity = 1, .opcode = .list_random },
 };
 
 /// The built-in called `name`, if any (FunctionCall.IsBuiltIn). ink's other operators are
@@ -128,9 +87,7 @@ pub const ListItem = struct { origin: []const u8, name: []const u8, value: i32 }
 /// of the IR's arena.
 pub const Item = union(enum) {
     container: ContainerId,
-    command: Command,
-    /// A native function call (`+`, `MIN`, ...).
-    native: []const u8,
+    opcode: Opcode,
     /// A StringValue: text, "\n", or a string in evaluation.
     text: []const u8,
     integer: i32,
@@ -154,8 +111,7 @@ pub const List = struct { items: []const ListItem, origins: []const []const u8 }
 /// How an item is stored: 24 bytes, the larger payloads in side arrays.
 const Stored = union(enum) {
     container: ContainerId,
-    command: Command,
-    native: []const u8,
+    opcode: Opcode,
     text: []const u8,
     integer: i32,
     float: f32,
@@ -311,10 +267,10 @@ pub const Ir = struct {
         return id;
     }
 
-    pub fn add_command(ir: *Ir, to: ContainerId, command: Command) !ItemId {
+    pub fn add_opcode(ir: *Ir, to: ContainerId, opcode: Opcode) !ItemId {
         assert(to.to_int() < ir.containers.items.len);
-        assert(@backingInt(command) < @typeInfo(Command).@"enum".field_names.len);
-        return ir.add(to, .{ .command = command });
+        assert(@import("../core/instruction.zig").operand_kind(opcode) == .none);
+        return ir.add(to, .{ .opcode = opcode });
     }
 
     /// Adds a container as content.
@@ -424,10 +380,4 @@ fn resolved(target: Target, containers: []const ContainerId) Target {
     assert(target.object.to_int() < containers.len);
     const container = containers[target.object.to_int()];
     return if (container.is_none()) .none else .{ .container = container };
-}
-
-test "commands have ink's words" {
-    try std.testing.expectEqualStrings("ev", Command.eval_start.word());
-    try std.testing.expectEqualStrings("choiceCnt", Command.choice_count.word());
-    try std.testing.expectEqualStrings("<>", Command.glue.word());
 }
