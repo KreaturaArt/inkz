@@ -79,9 +79,11 @@ The compiler is a faithful, non-recursive port of ink's `InkParser` and `ParsedH
 they follow.
 
 1. **Source space** (`source_space.zig`): every file of a compilation, with comments removed
-   (ink's `CommentEliminator`), laid end to end in one buffer. `INCLUDE`d files are appended
-   as they are found. Token and node indices are therefore global, and a file table maps
-   offsets back to `file:line:column`.
+   (ink's `CommentEliminator`), laid end to end in one buffer. Each file is parsed once, as
+   it is appended (`grammar.SpaceParser`); its `INCLUDE`s, read from its own region, append
+   the next files. Token and node indices are therefore global, and a file table maps
+   offsets back to `file:line:column`. A file that fills the parse workspace is parsed
+   again on its own with twice the room.
 2. **Parser** (`core.zig`, `grammar*.zig`): ink's backtracking rules, run on an explicit
    stack instead of the native one. A rule is a step function with numbered phases. Each
    step returns an `Action`: `call` another rule, `peek` at one, `succeed`, `fail`, or run
