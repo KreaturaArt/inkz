@@ -7,7 +7,8 @@
 //! - `simulate ...`: seeded random play of the ground-truth cases (src/simulate.zig).
 //! - `transcripts`: regenerates `test/transcripts/` from the runtime.
 //! - `swarm --target <compile|play|save|all> [--seed S] [--seeds N] [--seconds T]`: seeded
-//!   swarm runs out of the fuzzer (src/testing/swarm_runner.zig); exits with 1 when a run failed.
+//!   swarm runs out of the fuzzer (src/testing/swarm_runner.zig), `all` being play and save;
+//!   exits with 1 when a run failed.
 //! - `swarm-gen`, `swarm-check`, `swarm-reduce`: the differential swarm run
 //!   (src/swarm_differential.zig).
 
@@ -84,7 +85,8 @@ fn replay(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8)
 
 fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
     assert(arguments.len > 0);
-    // Null target: compile, play and save in turn, sharing the time budget.
+    // Null target: play and save in turn, sharing the time budget. Both check the compiled
+    // program as the compile target does, so `all` leaves that one out.
     var target: ?runner.Target = .play;
     var seed: u64 = 1;
     var seeds: ?u32 = null;
@@ -106,7 +108,7 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
             seconds = try std.fmt.parseInt(u32, value, 10);
         } else return error.UnknownOption;
     }
-    const all: []const runner.Target = &.{ .compile, .play, .save };
+    const all: []const runner.Target = &.{ .play, .save };
     const targets: []const runner.Target = if (target) |one| &.{one} else all;
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buffer);
