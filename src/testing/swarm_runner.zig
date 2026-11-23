@@ -95,14 +95,28 @@ pub const Summary = struct {
     /// Played stories that ended before it without an error: at END or DONE, or with
     /// neither content nor choices left.
     ended: u32 = 0,
-    /// The host target's: the actions its mixes took, the host calls made after them, the
+    /// The host target's: the actions its mixes took, how its mixes ended (also counted
+    /// under `ended` and, at a cap, `step_cap`), the host calls made after them, the
     /// changes the observers saw, and the actions and calls that returned an error, by name.
     actions: std.EnumArray(Mix.Action, u32) = .initFill(0),
+    ends: std.EnumArray(simulation.End, u32) = .initFill(0),
     host_calls: u32 = 0,
     observed: u64 = 0,
     host_errors: Codes = .{},
     /// The mutate target's: the mutations its mutants had, by name.
     mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
+
+    /// Counts what a host target's mix did.
+    fn add_mix(summary: *Summary, tally: *const simulation.Tally) void {
+        for (&summary.actions.values, tally.actions.values) |*total, count| total.* += count;
+        if (tally.end) |end| {
+            summary.ends.getPtr(end).* += 1;
+            summary.ended += @intFromBool(end == .ended);
+            summary.step_cap += @intFromBool(end == .line_cap or end == .turn_cap);
+        }
+        summary.lines += tally.lines;
+        summary.choices += tally.choices;
+    }
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("{d} runs ({d} large, {d} included from {d} files, {d} broken), " ++
@@ -149,6 +163,11 @@ pub const Summary = struct {
         for (std.enums.values(Mix.Action), 0..) |action, index| {
             const separator = if (index == 0) " " else ", ";
             try writer.print("{s}{t} {d}", .{ separator, action, summary.actions.get(action) });
+        }
+        try writer.writeAll("; mixes");
+        for (std.enums.values(simulation.End), 0..) |end, index| {
+            const separator = if (index == 0) " " else ", ";
+            try writer.print("{s}{t} {d}", .{ separator, end, summary.ends.get(end) });
         }
         try writer.print("; host calls {d}, observed {d}, host errors {d}", .{
             summary.host_calls,
@@ -1218,9 +1237,7 @@ fn play_host(
         summary.host_errors.add(@errorName(err), 1);
         break :mixed .ok;
     };
-    for (&summary.actions.values, tally.actions.values) |*total, count| total.* += count;
-    summary.lines += tally.lines;
-    summary.choices += tally.choices;
+    summary.add_mix(&tally);
     switch (mixed) {
         .ok => {},
         .check_failed => return "State.check in the mix",
@@ -1379,6 +1396,11 @@ test "the host target passes a few seeds, and reports a failing action with its 
     try std.testing.expectEqual(@as(u32, 0), passed.failures);
     try std.testing.expect(passed.host_calls > 0);
     try std.testing.expect(passed.observed > 0);
+    try std.testing.expect(passed.ended > 0);
+    var ends: u32 = 0;
+    for (passed.ends.values) |count| ends += count;
+    try std.testing.expect(ends > 0 and ends <= passed.runs);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "; mixes ended ") != null);
     var actions: u32 = 0;
     for (passed.actions.values) |count| actions += count;
     try std.testing.expect(actions > 0);

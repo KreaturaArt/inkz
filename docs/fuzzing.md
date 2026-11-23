@@ -302,9 +302,15 @@ removals (`flow changes`); since P18.3 also the stories stopped at their first l
 binding (`unbound externals`; a run with `e0` bound fails then), the second plays under
 other limits (`limited runs`) and those a limit stopped (`limit errors`; for `save`, saves
 too large for the loader's scratch), and the saves loaded mid-play and played on (`resumed
-saves`); the host target's line also has the actions its mixes took, the host calls made
-after them, the changes the observers saw, and the actions and calls that returned an error
-(by name, the most frequent four). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
+saves`); the host target's line also has the actions its mixes took, how the mixes ended
+(`mixes`: `ended`, `stopped` by an error that failed `cont`, at the simulator's 300 lines in
+a turn without a choice, `line_cap`, or at its 50 turns, `turn_cap`; since P19.7, and
+counted under `ended` and `step cap` too), the host calls made after them, the changes the
+observers saw (each compared with the global read back with `get_variable`, a difference
+failing the seed, since P19.7), and the actions and calls that returned an error (by name,
+the most frequent four). `--target host --seconds 3` from seed 1 after P19.7: 4,421 seeds,
+mixes ended 2,027, stopped 0, line_cap 1,372, turn_cap 985 (a hub story that loops through
+its knots without a choice is the line cap's), 180,441 observed changes, none differing. `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
 and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
 `typed`, after P18.3 bound `e0`, varied the limits and resumed saves, and after P18.4
 folded the compile checks into play and save (and `all` dropped `compile`, so play and save
