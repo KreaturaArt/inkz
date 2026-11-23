@@ -56,6 +56,8 @@ fn evaluating_echo(context: ?*anyopaque, story: *Story, arguments: []const Value
 pub const Setup = struct {
     random_seed: i32,
     fallbacks: bool,
+    /// Every external the story declares is bound: `e0` in generated stories, any name in
+    /// the swarm's mutated ground-truth stories.
     bind_external: bool,
     /// `e0`, when bound, is `evaluating_echo` (the swarm's host target).
     evaluate_in_external: bool = false,
@@ -97,7 +99,10 @@ pub fn init_story_with(
     });
     if (setup.bind_external) {
         const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
-        try story.bind_external_function("e0", .{}, null, function);
+        for (program.externals) |external| {
+            const name = program.strings.get(external.name);
+            try story.bind_external_function(name, .{}, null, function);
+        }
     }
     assert(story.state.check() == .ok);
 }
