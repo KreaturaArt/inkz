@@ -190,11 +190,14 @@ pub fn compile_file_with(
     return compile_from(gpa, files, path, options);
 }
 
+/// A file for `compile_files_with`: its path and its text.
+pub const MemoryFile = source_space.MemoryFile;
+
 /// Compiles the file `path` of `files` and the files it includes, all in memory: an INCLUDE
 /// names a file by its path in `files`.
 pub fn compile_files_with(
     gpa: Allocator,
-    files: []const source_space.MemoryFile,
+    files: []const MemoryFile,
     path: []const u8,
     options: Options,
 ) !Program {
