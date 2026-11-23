@@ -123,6 +123,14 @@ const words = [_][]const u8{ "Hello", "the cat", "a", "", "!", "  spaced  ", "x\
 ///   1/8 and not in `Swarm.all`; `Swarm.classic` has it, as the first generator dropped.
 pub const Resolution = enum { temp, ref, items, l1, collision, drop };
 
+/// The story's shape:
+/// - `hub`: the root diverts to a knot `hub`, and the hub, each knot and the stitch end in
+///   a block of choices (most sticky, a few to END or DONE) that divert to the hub, the
+///   knots and the stitch, so play loops through choices; a knot ends otherwise with
+///   probability 1/8. Tunnels call a knot `tunnel0` that only tunnels reach and that returns
+///   with `->->`, so no knot that a divert reaches ends in a tunnel return.
+pub const Structure = enum { hub };
+
 const ResolutionLine = enum {
     temp_declare,
     temp_assign,
@@ -170,6 +178,7 @@ pub const Swarm = struct {
     /// Globals `n0`... declared beyond `v0`-`v2`, read and assigned: 0 to 64 (`g` would
     /// collide with the gathers' labels).
     globals_extra: u8,
+    structure: std.EnumSet(Structure),
 
     pub const lines_limit = 10;
     pub const terms_limit = 4;
@@ -193,6 +202,7 @@ pub const Swarm = struct {
         .knots_count = knots_limit,
         .resolution = .initOne(.drop),
         .globals_extra = 0,
+        .structure = .empty,
     };
 
     /// Every feature at the largest bounds, but `collision` and `drop`, which would make
@@ -203,6 +213,7 @@ pub const Swarm = struct {
         swarm.resolution.remove(.collision);
         swarm.resolution.remove(.drop);
         swarm.globals_extra = globals_extra_limit;
+        swarm.structure = .full;
         break :all swarm;
     };
 
@@ -220,11 +231,12 @@ pub const Swarm = struct {
         .knots_count = 0,
         .resolution = .empty,
         .globals_extra = 0,
+        .structure = .empty,
     };
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
-    /// replays one: `all` with weight 1/8, else each feature on with probability ½ and each
-    /// bound uniform, then `normalize`.
+    /// replays one: `all` with weight 1/8, else each feature on with probability ½ (`hub`
+    /// ¾) and each bound uniform, then `normalize`.
     pub fn draw(choices: Choices) Swarm {
         if (choices.weighted(7, 1)) return all;
         var swarm: Swarm = .{
@@ -243,6 +255,7 @@ pub const Swarm = struct {
                 choices.range(u8, 1, globals_extra_limit)
             else
                 0,
+            .structure = .empty,
         };
         // A collision or a drop fails the compile, so each gets ¼ of the usual probability.
         if (swarm.resolution.contains(.collision) and !choices.weighted(3, 1)) {
@@ -251,6 +264,8 @@ pub const Swarm = struct {
         if (swarm.resolution.contains(.drop) and !choices.weighted(3, 1)) {
             swarm.resolution.remove(.drop);
         }
+        // Drawn last, so the other features of a seed's draw stay as they were before it.
+        if (choices.weighted(1, 3)) swarm.structure.insert(.hub);
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -503,6 +518,9 @@ pub const Generator = struct {
     parameter: bool = false,
     /// Whether the source has its one collision.
     collided: bool = false,
+    /// The knots and the stitch written after the current flow, which its diverts and
+    /// threads may name with `hub`: the root comes first, then `k0`, `k0.s0`, `k1`, `k2`.
+    later: std.EnumSet(Target) = knot_targets,
 
     pub const Case = struct {
         source: []const u8,
@@ -527,6 +545,7 @@ pub const Generator = struct {
         };
         generator.declarations();
         generator.weave(false);
+        if (swarm.structure.contains(.hub)) generator.hub();
         for (0..swarm.knots_count) |index| generator.knot(@intCast(index));
         generator.functions();
         const length = generator.writer.end;
@@ -587,6 +606,28 @@ pub const Generator = struct {
 
     fn knot_target(generator: *Generator) []const u8 {
         return generator.target(generator.swarm.targets.intersectWith(knot_targets));
+    }
+
+    /// Any target; with `hub`, the hub, END, DONE or a knot after this flow, so that
+    /// diverts outside choices never loop.
+    fn divert_target(generator: *Generator) []const u8 {
+        const swarm = generator.swarm;
+        if (!swarm.structure.contains(.hub)) return generator.target(swarm.targets);
+        const ends: std.EnumSet(Target) = .initMany(&.{ .end, .done });
+        return generator.hub_or(swarm.targets.intersectWith(generator.later.unionWith(ends)));
+    }
+
+    /// A knot; with `hub`, the hub or a knot after this flow, so that threads never nest
+    /// without end.
+    fn thread_target(generator: *Generator) []const u8 {
+        if (!generator.swarm.structure.contains(.hub)) return generator.knot_target();
+        return generator.hub_or(generator.swarm.targets.intersectWith(generator.later));
+    }
+
+    /// `hub` or one of `set`, each as likely.
+    fn hub_or(generator: *Generator, set: std.EnumSet(Target)) []const u8 {
+        if (generator.choices.below(set.count() + 1) == 0) return "hub";
+        return generator.target(set);
     }
 
     fn variable(generator: *Generator) []const u8 {
@@ -677,9 +718,13 @@ pub const Generator = struct {
         switch (line) {
             .choice => generator.choice(),
             .gather => generator.gather(),
-            .divert => generator.print("-> {s}\n", .{generator.target(generator.swarm.targets)}),
-            .tunnel => generator.print("-> {s} ->\n", .{generator.knot_target()}),
-            .thread => generator.print("<- {s}\n", .{generator.knot_target()}),
+            .divert => generator.print("-> {s}\n", .{generator.divert_target()}),
+            .tunnel => if (generator.swarm.structure.contains(.hub)) {
+                generator.put("-> tunnel0 ->\n");
+            } else {
+                generator.print("-> {s} ->\n", .{generator.knot_target()});
+            },
+            .thread => generator.print("<- {s}\n", .{generator.thread_target()}),
             else => unreachable,
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
@@ -909,19 +954,76 @@ pub const Generator = struct {
         if (!generator.keep()) return;
         generator.print("=== k{d} ===\n", .{index});
         generator.flow_start(false);
+        const order = [_]Target{ .k0, .k0_s0, .k1, .k2 };
+        const position: usize = if (index == 0) 0 else index + 1;
+        generator.later = .initMany(order[position + 1 ..]);
         generator.weave(false);
         generator.knot_end();
         if (index != 0) return;
         if (generator.keep()) generator.put("= s0\n");
         generator.flow_start(false);
+        generator.later = .initMany(order[2..]);
         generator.weave(false);
         generator.knot_end();
     }
 
+    /// The root diverts to the knot `hub`, a block of choices; with tunnels on, the knot
+    /// `tunnel0` that they call follows.
+    fn hub(generator: *Generator) void {
+        assert(generator.swarm.structure.contains(.hub));
+        generator.used.structure.insert(.hub);
+        generator.put("-> hub\n=== hub ===\n");
+        generator.flow_start(false);
+        generator.hub_choices();
+        if (!generator.swarm.lines.contains(.tunnel)) return;
+        // Only tunnels reach it, so its `->->` always has a tunnel to return from.
+        generator.put("=== tunnel0 ===\n");
+        generator.flow_start(false);
+        generator.weave(true);
+        generator.put("->->\n");
+    }
+
+    /// A gather, which the loose ends of the weave before it reach, then 2 to 4 choices
+    /// that divert to the hub, a knot or the stitch, or (1 in 32, when on) to END or DONE.
+    /// One in 4 is once-only, but not the last when none before it is sticky, so the block
+    /// always offers a choice.
+    fn hub_choices(generator: *Generator) void {
+        assert(generator.swarm.structure.contains(.hub));
+        const knots = generator.swarm.targets.intersectWith(knot_targets);
+        const ends = generator.swarm.targets.intersectWith(.initMany(&.{ .end, .done }));
+        generator.put("-\n");
+        const count = generator.choices.range(u8, 2, 4);
+        var sticky = false;
+        for (0..count) |index| {
+            const last = index + 1 == count;
+            const once = (sticky or !last) and generator.choices.weighted(3, 1);
+            sticky = sticky or !once;
+            generator.labels += 1;
+            generator.put(if (once) "*" else "+");
+            if (generator.choices.choose(bool)) {
+                generator.print(" [Go {d}]", .{generator.labels});
+            } else {
+                generator.print(" Go {d}", .{generator.labels});
+            }
+            const to = if (ends.count() > 0 and generator.choices.weighted(31, 1))
+                generator.target(ends)
+            else if (generator.choices.below(knots.count() + 1) == 0)
+                "hub"
+            else
+                generator.target(knots);
+            generator.print(" -> {s}\n", .{to});
+        }
+        assert(sticky);
+    }
+
+    /// A knot's or the stitch's end: with `hub`, a block of choices (7 in 8), else a divert
+    /// or (but with `hub`) a tunnel return.
     fn knot_end(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        // A tunnel return and a divert to a target are always possible.
-        var allowed: u8 = 0b1010;
+        const hub_on = generator.swarm.structure.contains(.hub);
+        if (hub_on and generator.choices.weighted(1, 7)) return generator.hub_choices();
+        // A divert to a target is always possible, and a tunnel return without `hub`.
+        var allowed: u8 = if (hub_on) 0b1000 else 0b1010;
         if (generator.swarm.targets.contains(.end)) allowed |= 0b0001;
         if (generator.swarm.targets.contains(.done)) allowed |= 0b0100;
         switch (generator.pick_bit(u2, allowed)) {
@@ -934,7 +1036,7 @@ pub const Generator = struct {
                 generator.used.targets.insert(.done);
                 generator.put("-> DONE\n");
             },
-            3 => generator.print("-> {s}\n", .{generator.target(generator.swarm.targets)}),
+            3 => generator.print("-> {s}\n", .{generator.divert_target()}),
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1431,14 +1533,17 @@ test "Swarm.format round-trips through Swarm.parse" {
         "",
         "lines=text",
         "lines=nope terms=integer operators=add inlines= targets=k0 declarations= " ++
-            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0",
+            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
+            "globals_extra=0 structure=",
         // k2 names a knot that a count of 1 doesn't write.
         "lines=text terms=integer operators=add inlines= targets=k2 declarations= " ++
-            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0",
+            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
+            "globals_extra=0 structure=",
     };
     for (invalid) |bad| try std.testing.expectError(error.InvalidSwarm, Swarm.parse(bad));
     const one = "lines=text terms=integer operators=add inlines= targets=k0 declarations= " ++
-        "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0";
+        "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0 " ++
+        "structure=";
     var writer: std.Io.Writer = .fixed(&text);
     try writer.print("{f}", .{try Swarm.parse(one)});
     try std.testing.expectEqualStrings(one, writer.buffered());
