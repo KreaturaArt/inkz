@@ -486,7 +486,7 @@ Measured densities:
 
 - **12 B indexed values vs 16 B pointer values.**
   - *inkz:* every payload is a 4 B index or scalar, so a `Value` is pointer-free and therefore
-    `memcpy`-safe across snapshots, flow parking, saves and heap compaction. Compaction only
+    `memcpy`-safe across snapshots, flow switches, saves and heap compaction. Compaction only
     has to rewrite references, never raw pointers. 32-bit numerics (D14) keep it at 12 B.
   - *fino:* `f64` numbers and raw heap pointers force 16 B. A pointer makes access direct, with
     no base addition, and refcounting operates on the pointee. But the objects can never move,
@@ -610,9 +610,10 @@ Neither reference has these. They are listed because they shape choices made els
     stay as garbage until the next compaction.
   - *It is why* values are pointer-free (§10), the compactor preserves order (§11), and the
     budget contains a second copy of the live-flow buffers (§12).
-- **Flow parking.** Only the current flow is live. Parked flows are packed as `u32` words with an
-  `extern` header into a 256 KiB region, and every flow element is asserted to be 4-byte
-  aligned and a multiple of 4 B.
+- **Per-flow buffers.** Each of `flows_max` flows owns a full set of call stack, output and
+  choice buffers in the one allocation; switching points the live stacks at the target
+  flow's set, so nothing is packed or copied (P17.14 replaced the 256 KiB parking region,
+  into which the outgoing flow used to be packed as `u32` words).
 - **Saves.** Ink v10 JSON, both ways (D15). `save` streams to a writer without allocating.
   `load` parses with std.json into a fixed scratch (`load_bytes_max`) and reads the values in
   one pass into a reset state, so a failed load leaves the story reset (P17.12).
@@ -952,7 +953,8 @@ change is. Each finding comes with a success criterion that a unit test can chec
 
 - **Evidence.**
   - Guidelines §"Index newtypes, no pointers in persistent data" says copying with `@memcpy`
-    (snapshots, parking) relies on there being no pointers.
+    (snapshots, then also flow parking, which P17.14 replaced with per-flow buffers) relies
+    on there being no pointers.
   - `State` holds `program: *const Program`; `Observer` holds `callback`/`context`; `Borrowed`
     stamps hold `*const u32`. These are all fine because none of them is snapshotted.
   - Nothing *checks* that the element types that are snapshotted are pointer-free. Today only

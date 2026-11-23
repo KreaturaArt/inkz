@@ -747,3 +747,14 @@ The runtime was rewritten (plan `docs/DODMigrationPlan.md`). Three decisions cha
 | `story.currentFlowIsDefaultFlow()` | compare `current_flow_name().get()` with `"DEFAULT_FLOW"` |
 | `ink.Value` with `.int` | `inkz.Value` with `.integer` (`i32`) and `.float` (`f32`) |
 | `ink.InkList` and its methods | none yet; lists are opaque `.list` references (see [Lists](#lists)) |
+
+Within inkz, the bloat-reduction branch (P17) changed these:
+
+| Before | Now |
+|---|---|
+| `inkz.runtime.story.Story` beside the host API's `inkz.Story` (api.zig) | one type: `inkz.Story` is the runtime's `Story`, and an external function gets that same story |
+| `Limits.patch_entries_max`, `error.LookaheadLogLimit` | gone: the lookahead copies chunks of 64 globals or counts before their first write, with no log to fill |
+| `Limits.flow_parking_bytes_max`, `error.FlowParkingLimit` | gone: each of `Limits.flows_max` flows owns its buffers, so switching flows copies nothing |
+| output set aside after the parked flows | `Limits.output_stash_bytes_max` (64 KiB) for `evaluate_function`, `error.OutputStashLimit` when full |
+| `Limits.load_nodes_max` | `Limits.load_bytes_max` (1 MiB): the scratch `load_json` parses a save into |
+| a failed `load_json` left the story as it was | a failed `load_json` leaves the story reset, as `reset_state()` does (see [Saving and loading](#saving-and-loading)) |
