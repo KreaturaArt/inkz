@@ -139,8 +139,6 @@ stateDiagram-v2
     [*] --> Step: push frame(rule, checkpoint)
     Step --> Call: .call / .peek(rule)
     Call --> Step: push callee frame
-    Step --> Again: .again (phase changed)
-    Again --> Step
     Step --> Succeed: .succeed
     Step --> Fail: .fail
     Succeed --> Resume: pop frame, keep nodes<br/>(peek undoes the input)

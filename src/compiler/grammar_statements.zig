@@ -29,8 +29,8 @@ pub fn story(machine: *Machine, frame: *Frame) Error!Action {
 /// StatementsAtLevel: Interleave(Optional(MultilineWhitespace), StatementAtLevel,
 /// untilTerminator: StatementsBreakForLevel).
 pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
-    const level: Level = @fromBackingInt(@intCast(frame.locals[0]));
-    switch (frame.phase) {
+    // locals: the level and the marker.
+    phase: switch (frame.phase) {
         0 => {
             assert(machine.argument <= @backingInt(Level.top));
             frame.locals[0] = machine.argument;
@@ -40,25 +40,24 @@ pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_message(machine, .gather_in_inner_block);
             }
             _ = grammar.multiline_whitespace(machine);
-            frame.phase = 1;
-            return .again;
+            continue :phase 1;
         },
+        // The loop's head, reached from phases 0 and 3 within their step.
         1 => {
             frame.phase = 2;
-            machine.argument = @backingInt(level);
+            machine.argument = frame.locals[0];
             return .{ .peek = .statements_break };
         },
         2 => {
             if (machine.outcome == .succeeded) return finish_statements(machine, frame);
-            return grammar.call(machine, frame, 3, .statement, @backingInt(level));
+            return grammar.call(machine, frame, 3, .statement, frame.locals[0]);
         },
         else => {
             assert(frame.phase == 3);
             if (machine.outcome == .failed) return finish_statements(machine, frame);
             _ = grammar.multiline_whitespace(machine);
             if (grammar.at_end(machine)) return finish_statements(machine, frame);
-            frame.phase = 1;
-            return .again;
+            continue :phase 1;
         },
     }
 }

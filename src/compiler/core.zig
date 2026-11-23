@@ -2,7 +2,7 @@
 //! grammar rules the way ink's StringParser does, without recursion.
 //!
 //! A rule is a step function with phases. A step returns an `Action`: call another rule,
-//! succeed, fail, or go on with its next phase. A call pushes a frame holding a checkpoint
+//! succeed or fail. A call pushes a frame holding a checkpoint
 //! (the input position and the token, node and scratch counts); a failed rule restores its
 //! checkpoint, which gives StringParser's BeginRule/FailRule/SucceedRule and so OneOf,
 //! Optional and Interleave. The caller reads the callee's outcome in its next phase.
@@ -190,8 +190,6 @@ pub fn Action(comptime Rule: type) type {
         succeed,
         /// This rule didn't match: everything since its call is undone.
         fail,
-        /// Run this frame again (its phase changed).
-        again,
     };
 }
 
@@ -296,7 +294,6 @@ pub fn Machine(comptime Grammar: type) type {
             assert(machine.frames_count == 0);
             const gas_max: u64 = 64 * (@as(u64, machine.source.len) + 64);
             var gas: u64 = 0;
-            var again = false;
             try machine.push(start);
             while (machine.frames_count > 0) : (gas += 1) {
                 if (gas == gas_max) {
@@ -310,13 +307,12 @@ pub fn Machine(comptime Grammar: type) type {
                 assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
                 assert(machine.nodes_count <= machine.workspace.node_tags.len);
                 // A frame past its entry phase resumes after its callee returned and reads
-                // the callee's outcome; only a frame just entered or run `.again` sees none.
-                if (machine.outcome == .none) assert(frame.phase == 0 or again);
+                // the callee's outcome; only a frame just entered sees none.
+                assert((machine.outcome == .none) == (frame.phase == 0));
                 const action = if (machine.abandoned) Action(Rule).fail else Grammar.step(
                     machine,
                     frame,
                 );
-                again = action == .again;
                 try machine.apply(action);
             }
             assert(machine.outcome != .none);
@@ -347,7 +343,6 @@ pub fn Machine(comptime Grammar: type) type {
                     machine.frames_count -= 1;
                     machine.outcome = .failed;
                 },
-                .again => {},
             }
         }
 
@@ -489,9 +484,15 @@ const Toy = struct {
         return switch (frame.rule) {
             .expression => expression(machine, frame),
             .term => term(machine, frame),
-            // A broken rule that never makes progress.
-            .stall => .again,
+            // A broken rule that never makes progress: it peeks at a term forever.
+            .stall => stall(frame),
         } catch return .fail;
+    }
+
+    fn stall(frame: *M.Frame) Action(Rule) {
+        assert(frame.rule == .stall);
+        frame.phase = 1;
+        return .{ .peek = .term };
     }
 
     fn accept(machine: *M, text: []const u8) bool {
@@ -501,25 +502,15 @@ const Toy = struct {
     }
 
     fn expression(machine: *M, frame: *M.Frame) Error!Action(Rule) {
-        switch (frame.phase) {
-            0 => {
-                frame.locals[0] = machine.scratch_count;
-                frame.phase = 1;
-                return .{ .call = .term };
-            },
-            1 => {
-                if (machine.outcome == .failed) return .fail;
-                if (!accept(machine, " + ")) {
-                    frame.phase = 2;
-                    return .again;
-                }
-                return .{ .call = .term };
-            },
-            else => {
-                try machine.wrap(.path, frame.locals[0]);
-                return .succeed;
-            },
+        if (frame.phase == 0) {
+            frame.locals[0] = machine.scratch_count;
+            frame.phase = 1;
+            return .{ .call = .term };
         }
+        if (machine.outcome == .failed) return .fail;
+        if (accept(machine, " + ")) return .{ .call = .term };
+        try machine.wrap(.path, frame.locals[0]);
+        return .succeed;
     }
 
     fn term(machine: *M, frame: *M.Frame) Error!Action(Rule) {

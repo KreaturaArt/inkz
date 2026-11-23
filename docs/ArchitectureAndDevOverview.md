@@ -86,8 +86,7 @@ they follow.
    again on its own with twice the room.
 2. **Parser** (`core.zig`, `grammar*.zig`): ink's backtracking rules, run on an explicit
    stack instead of the native one. A rule is a step function with numbered phases. Each
-   step returns an `Action`: `call` another rule, `peek` at one, `succeed`, `fail`, or run
-   `again`. A call pushes a frame that holds a checkpoint (input position, token, node and
+   step returns an `Action`: `call` another rule, `peek` at one, `succeed` or `fail`. A call pushes a frame that holds a checkpoint (input position, token, node and
    scratch counts); a failed rule restores it. That gives StringParser's
    `BeginRule`/`FailRule`/`SucceedRule`, and so `OneOf`, `Optional` and `Interleave`. The
    frame stack is bounded by `parse_depth_max`, and a gas counter bounds the steps by the

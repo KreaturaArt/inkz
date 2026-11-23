@@ -84,7 +84,7 @@ pub const Grammar = struct {
         // to it would run the rule again from the start.
         switch (result) {
             .call, .peek => assert(frame.phase > 0),
-            .succeed, .fail, .again => {},
+            .succeed, .fail => {},
         }
         return result;
     }
