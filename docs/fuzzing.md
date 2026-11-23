@@ -110,22 +110,34 @@ its fuzz step at 12. The step runs
 zig build fuzz -Doptimize=ReleaseSafe --fuzz=<runs> -Dtest-filter="<filter>"
 ```
 
-and fails when `.zig-cache/f/crash` exists or the log has an `error:` line, because the
-build's exit code doesn't say. A failed job uploads `crash.bin`, the fuzzer's
-`libfuzzer.log`, the step's log and the target and bound as the artifact
-`fuzz-crash-<target>-<run id>` (kept 30 days). The corpus isn't kept between runs: its
-directory is named by a hash of the binary's coverage points, which changes with the code.
+with `--seed=<seed>`, the run id modulo 2³² or the dispatch's `seed` input, and prints that
+command: one seed gives the same inputs (two local 100K runs with one seed matched in runs,
+unique runs and coverage), so a CI run reproduces locally. It fails when
+`.zig-cache/f/crash` exists or the log has an `error:` line, because the build's exit code
+doesn't say, and when `timeout` stops it after 10 minutes (the fuzzer prints nothing until it ends). A failed job uploads `crash.bin`
+or, after a timeout, `hang.bin` (the input in flight: `.zig-cache/f/in0` without its 20-byte
+header; both replay like `crash.bin`), the fuzzer's `libfuzzer.log`, the step's log and the
+target, bound and seed as the artifact `fuzz-crash-<target>-<run id>` (kept 30 days). The
+corpus isn't kept between runs: its directory is named by a hash of the binary's coverage
+points, which changes with the code.
 
 The bounds give each target about a minute locally (an M-series Mac, ReleaseSafe, the build
 included; lower and VM at 20K and save, host and limits from a fresh corpus, the others
 after a 20K run had filled theirs). A runner about half as fast takes two to four minutes; the first runs
 on GitHub will tell.
 
+CI starts every target from an empty corpus, and then the time depends much on the seed: the
+parser's 100K took 52 s to 2 min locally from an empty corpus (seeds 1, 3 and 5), and one CI
+run with 100K didn't end in 12 minutes while the one before took 5. It was no hang: Zig
+0.17.0's fuzzer is 0.17.1's, both finish locally, Linux arm64 and (emulated) x86_64 finish
+too, and no input of a 300K run on Linux took the parser 50 ms. So it runs 50K (17–33 s
+locally from an empty corpus).
+
 | Target | Filter | Runs | Local |
 |---|---|---:|---:|
 | Comment removal | `comment removal` | 200K | 15 s |
 | INCLUDE discovery | `INCLUDE discovery` | 200K | 58 s |
-| Parser | `well-formed tree` | 100K | 45 s |
+| Parser | `well-formed tree` | 50K | 17–33 s |
 | Sema and resolve | `consistent tree` | 50K | 38 s |
 | Lower and emit | `survive their JSON` | 20K | 98 s |
 | Compiler (raw) | `compiler never crashes` | 200K | 49 s |

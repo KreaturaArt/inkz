@@ -3,7 +3,9 @@ name: Fuzz
 # Bounded coverage-guided fuzzing (docs/fuzzing.md, "In CI"): each main target of
 # `zig build fuzz` runs once with --fuzz=N in ReleaseSafe, in its own job. A crash or a failed
 # check fails the job and uploads the crashing input (.zig-cache/f/crash) and the fuzzer's log
-# as the `fuzz-crash-<target>-<run id>` artifact.
+# as the `fuzz-crash-<target>-<run id>` artifact. The fuzzer's seed is fixed per run (the run id,
+# or the `seed` input), and a run with one seed takes the same inputs, so the printed command
+# reproduces a run; a run that doesn't finish in time keeps the input it was on.
 on:
   push:
     branches: [main]
@@ -17,6 +19,10 @@ on:
     inputs:
       runs:
         description: "Inputs per target, e.g. 50K (empty: each target's default)"
+        required: false
+        default: ""
+      seed:
+        description: "The fuzzer's seed, a u32 (empty: from the run id)"
         required: false
         default: ""
 
@@ -37,7 +43,9 @@ jobs:
         include:
           - { target: comments, filter: "comment removal", runs: 200K }
           - { target: include, filter: "INCLUDE discovery", runs: 200K }
-          - { target: parser, filter: "well-formed tree", runs: 100K }
+          # From an empty corpus the parser's time depends much on the seed: 100K took 17 s to
+          # 2 min locally, and one CI run with 100K didn't end in 12 minutes.
+          - { target: parser, filter: "well-formed tree", runs: 50K }
           - { target: sema, filter: "consistent tree", runs: 50K }
           - { target: lower, filter: "survive their JSON", runs: 20K }
           - { target: compiler-raw, filter: "compiler never crashes", runs: 200K }
@@ -56,6 +64,7 @@ jobs:
     env:
       FILTER: ${{ matrix.filter }}
       RUNS: ${{ inputs.runs || matrix.runs }}
+      SEED: ${{ inputs.seed }}
     steps:
       - uses: actions/checkout@v4
 
@@ -65,13 +74,25 @@ jobs:
       # Zig 0.17's `zig build --fuzz=N` exits 0 even when the test process crashed or a check
       # failed: it prints "error: test '...' exited with code 1; input saved to
       # '.zig-cache/f/crash'" and moves on. So the job fails on that file or an error line.
+      # The fuzzer prints nothing until it ends, so `timeout` stops it before the step's cap
+      # and the job still keeps the input in flight (.zig-cache/f/in0).
       - name: zig build fuzz
         timeout-minutes: 12
         run: |
+          seed="${SEED:-$(( GITHUB_RUN_ID % 4294967296 ))}"
           echo "reproduce with:"
-          echo "  zig build fuzz -Doptimize=ReleaseSafe --fuzz=$RUNS -Dtest-filter=\"$FILTER\""
-          zig build fuzz -Doptimize=ReleaseSafe --fuzz="$RUNS" -Dtest-filter="$FILTER" \
-            2>&1 | tee fuzz.log
+          echo "  zig build fuzz -Doptimize=ReleaseSafe --fuzz=$RUNS --seed=$seed -Dtest-filter=\"$FILTER\""
+          set +e
+          timeout --signal=INT --kill-after=30s 10m \
+            zig build fuzz -Doptimize=ReleaseSafe --fuzz="$RUNS" --seed="$seed" \
+            -Dtest-filter="$FILTER" 2>&1 | tee fuzz.log
+          status=${PIPESTATUS[0]}
+          set -e
+          # timeout exits 124 when it stopped the build, 137 when it had to kill it.
+          if [ "$status" -eq 124 ] || [ "$status" -eq 137 ]; then
+            echo "::error::fuzz target '$FILTER' didn't finish $RUNS inputs in 10 minutes; the input it was on is hang.bin in the fuzz-crash artifact"
+            exit 1
+          fi
           if [ -e .zig-cache/f/crash ] || grep -q '^error: ' fuzz.log; then
             echo "::error::fuzz target '$FILTER' failed; the input is in the fuzz-crash artifact"
             exit 1
@@ -84,8 +105,15 @@ jobs:
         run: |
           mkdir -p zig-out/fuzz-crash
           cp .zig-cache/f/crash zig-out/fuzz-crash/crash.bin || true
+          # After a timeout: the input in flight, without in0's 20-byte header (its length is
+          # the u32 at offset 16), in crash.bin's format.
+          if [ -e .zig-cache/f/in0 ] && [ ! -e .zig-cache/f/crash ]; then
+            length=$(od -An -t u4 -j 16 -N 4 .zig-cache/f/in0 | tr -d ' ')
+            tail -c +21 .zig-cache/f/in0 | head -c "$length" > zig-out/fuzz-crash/hang.bin || true
+          fi
           cp .zig-cache/tmp/libfuzzer.log fuzz.log zig-out/fuzz-crash/ || true
-          echo "$FILTER --fuzz=$RUNS" > zig-out/fuzz-crash/target.txt
+          echo "$FILTER --fuzz=$RUNS --seed=${SEED:-$(( GITHUB_RUN_ID % 4294967296 ))}" \
+            > zig-out/fuzz-crash/target.txt
 
       - uses: actions/upload-artifact@v4
         if: failure()
