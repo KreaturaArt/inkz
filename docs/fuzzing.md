@@ -289,6 +289,18 @@ zig build swarm-check -Doptimize=ReleaseSafe -- zig-out/swarm/1
    `test/ground_truth/swarm/` (`mise run reference:expected -- swarm/<name>`), or, when
    inkz differs on purpose, one of the skips below.
 
+### Nightly run
+
+`.github/workflows/differential.yml` runs these three steps every night (and on demand,
+`workflow_dispatch`, with an optional seed and count) on ubuntu-latest: it installs Zig
+(`EuroZig/setup-zig`) and .NET 8, builds the harness (`reference.sh setup`), generates 1,000
+cases with the run id as seed, and prints the `swarm-gen` command that writes them again. A
+divergence fails the job; `tools/ink_harness/collect_divergences.sh` then copies each
+divergent case's files, `check.log` and the harness's `batch.log` to the artifact
+`divergences-<seed>`, with a `swarm-reduce` of the first three (10 minutes each at most).
+200 cases took about a minute locally (ink's 5 s timeouts most of it), so 1,000 take about
+5 minutes; the job's limit of 45 minutes leaves room for the reductions.
+
 `swarm-check` doesn't count two kinds of difference as divergences, but only when the
 transcripts match up to the line where they start:
 - **ink exceptions**: ink throws a .NET exception that isn't one of ink's, such as
