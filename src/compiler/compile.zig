@@ -141,11 +141,12 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
 
 /// `compile_source` with options.
 pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options) !Program {
+    const decoded: source_space.Decoded = try .of(gpa, source);
+    defer decoded.deinit(gpa);
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
         defer profile_zone.end();
-        const text = source_space.without_bom(source);
-        break :parsed grammar.parse(gpa, text, .{}) catch |err| switch (err) {
+        break :parsed grammar.parse(gpa, decoded.text, .{}) catch |err| switch (err) {
             // The parser gave up on the story.
             error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
                 if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, "");
@@ -267,6 +268,35 @@ test "a UTF-8 byte order mark is not text, in a source, a file or an included fi
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"^Other.\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\"^Main.\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), bom) == null);
+}
+
+test "ill-formed UTF-8 compiles as U+FFFD, as inklecate reads it, in a source and a file" {
+    // P19.3, found by the swarm's mutate target cutting a ’ in half: the bytes went into the
+    // JSON as they were, and ink_json.load (like any JSON reader) rejected it. inklecate
+    // (ink v1.2.1 on .NET 8, `mise run reference:swarm`) compiles this source to this JSON:
+    // one U+FFFD per maximal subpart (`80`, `99`, `e2 80`, `ff`).
+    const gpa = std.testing.allocator;
+    const source = "Hello \x80\x99m and \xe2\x80 cut \xff.\n-> END\n";
+    const replaced = "\u{fffd}";
+    const expected = "{\"inkVersion\":21,\"root\":[[\"^Hello " ++ replaced ++ replaced ++
+        "m and " ++ replaced ++ " cut " ++ replaced ++ ".\",\"\\n\",\"end\"," ++
+        "[\"done\",{\"#n\":\"g-0\"}],null],\"done\",null],\"listDefs\":{}}";
+    const text = try compile_to_json(gpa, source);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings(expected, text);
+    var loaded = try ink_json.load(gpa, text);
+    loaded.deinit(gpa);
+
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.writeFile(io, .{ .sub_path = "main.ink", .data = source });
+    var from_file = try compile_file(gpa, io, temporary.dir, "main.ink");
+    defer from_file.deinit(gpa);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try ink_json.serialize(gpa, &from_file, &out.writer);
+    try std.testing.expectEqualStrings(expected, out.written());
 }
 
 test "a literal ink can't fold, such as - true, fails to compile instead of leaking an error" {

@@ -155,6 +155,31 @@ pub fn without_bom(text: []const u8) []const u8 {
     return if (std.mem.startsWith(u8, text, bom)) text[bom.len..] else text;
 }
 
+/// A file's text as .NET's File.ReadAllText gives it to inklecate: without its byte order
+/// mark, and with each ill-formed UTF-8 sequence replaced by U+FFFD (its maximal subparts,
+/// as .NET's decoder and `std.unicode.fmtUtf8` replace them). Invalid bytes once compiled
+/// to JSON that no JSON reader loads. Valid text is returned as it is; other text is copied
+/// into `gpa`, and `allocated` says which.
+pub const Decoded = struct {
+    text: []const u8,
+    allocated: bool,
+
+    pub fn of(gpa: Allocator, file_text: []const u8) Allocator.Error!Decoded {
+        const text = without_bom(file_text);
+        if (std.unicode.utf8ValidateSlice(text)) return .{ .text = text, .allocated = false };
+        var decoded: std.Io.Writer.Allocating = .init(gpa);
+        errdefer decoded.deinit();
+        decoded.writer.print("{f}", .{std.unicode.fmtUtf8(text)}) catch return error.OutOfMemory;
+        const copy = try decoded.toOwnedSlice();
+        assert(std.unicode.utf8ValidateSlice(copy));
+        return .{ .text = copy, .allocated = true };
+    }
+
+    pub fn deinit(decoded: Decoded, gpa: Allocator) void {
+        if (decoded.allocated) gpa.free(decoded.text);
+    }
+};
+
 /// An INCLUDE of a parsed file: its node, name and offset in the space.
 const Include = struct { node: NodeIndex, name: []const u8, offset: u32 };
 
@@ -287,7 +312,8 @@ const Discovery = struct {
                 else => return null,
             }
         };
-        return without_bom(text);
+        // The arena frees the copy.
+        return (try Decoded.of(discovery.arena, text)).text;
     }
 
     /// Appends a file to the space and parses it, the only parse it gets, and records it
