@@ -533,7 +533,7 @@ const Loader = struct {
 
     fn list(loader: *Loader, named: Object, origins_json: ?Json) Error!Value {
         var items: [lists_module.list_items_max]index.ListItemIndex = undefined;
-        var origins: [64]index.ListOriginIndex = undefined;
+        var origins: [lists_module.Builder.origins_max]index.ListOriginIndex = undefined;
         const names = named.keys();
         if (names.len > items.len) return error.SaveTooLarge;
         assert(names.len <= lists_module.list_items_max);
