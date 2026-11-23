@@ -11,6 +11,9 @@ const compile = @import("../compiler/compile.zig");
 const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
 const fuzz_play = @import("../fuzz/play.zig");
+const fuzz_limits = @import("../fuzz/limits.zig");
+const limits_module = @import("../core/limits.zig");
+const Limits = limits_module.Limits;
 const Swarm = fuzz_ink.Swarm;
 
 pub const Target = enum {
@@ -38,6 +41,10 @@ pub const Summary = struct {
     /// Played stories that stopped at their first line because `e0` was neither bound nor
     /// allowed its fallback (or has none).
     unbound_externals: u32 = 0,
+    /// Second plays of a seed under other limits (`Plan.limits_kind`, `compact_always`), and
+    /// those of them a limit stopped where the roomy play went on (or that couldn't start).
+    limited_runs: u32 = 0,
+    limit_errors: u32 = 0,
     lines: u64 = 0,
     choices: u64 = 0,
     /// Played stories still going after `play_steps_max` calls.
@@ -53,10 +60,12 @@ pub const Summary = struct {
             summary.compile_failures,
         });
         try summary.codes.write_top(writer, 4);
-        try writer.print("; runtime errors {d} (unbound externals {d}), lines {d}, " ++
-            "choices {d}, step cap {d}, ended {d}", .{
+        try writer.print("; runtime errors {d} (unbound externals {d}), limited runs {d} " ++
+            "(limit errors {d}), lines {d}, choices {d}, step cap {d}, ended {d}", .{
             summary.runtime_errors,
             summary.unbound_externals,
+            summary.limited_runs,
+            summary.limit_errors,
             summary.lines,
             summary.choices,
             summary.step_cap,
@@ -212,14 +221,137 @@ const Program = @import("../core/program.zig").Program;
 /// The calls (`cont` or a choice) a played story gets.
 const play_steps_max = 64;
 
-fn note_error(context: ?*anyopaque, _: []const u8, severity: api.Severity) void {
-    const errored: *bool = @ptrCast(@alignCast(context.?));
-    if (severity == .@"error") errored.* = true;
+/// What a play showed, call by call: each line, each choice count and pick, and each error
+/// or warning reported, hashed, so two plays compare without keeping their text.
+const Trace = struct {
+    hasher: std.hash.Wyhash = .init(0),
+    /// The hash after each call that returned.
+    hashes: [play_steps_max]u64 = undefined,
+    count: u32 = 0,
+    lines: u32 = 0,
+    choices: u32 = 0,
+    /// Whether the story reported an error (`on_error`).
+    errored: bool = false,
+    end: End = .running,
+    /// The error the last call returned, with `end == .failed`.
+    failure: ?anyerror = null,
+
+    const End = enum { running, ended, step_cap, failed };
+
+    fn note(context: ?*anyopaque, message: []const u8, severity: api.Severity) void {
+        const trace: *Trace = @ptrCast(@alignCast(context.?));
+        trace.hasher.update(&.{@backingInt(severity)});
+        trace.hasher.update(message);
+        if (severity == .@"error") trace.errored = true;
+    }
+
+    fn stop(trace: *Trace, err: anyerror) ?[]const u8 {
+        trace.end = .failed;
+        trace.failure = err;
+        return null;
+    }
+
+    fn failed_with(trace: *const Trace, err: anyerror) bool {
+        const failure = trace.failure orelse return false;
+        return failure == err;
+    }
+
+    /// Whether the play stopped at a limit (an error named `...Limit`).
+    fn limited(trace: *const Trace) bool {
+        const failure = trace.failure orelse return false;
+        return std.mem.endsWith(u8, @errorName(failure), "Limit");
+    }
+
+    /// Null when `varied` is `roomy` played again; or, when `limits_may` and a limit
+    /// stopped either, when they made the same calls until the first stopped, at a limit.
+    /// (A roomy play can stop at a default limit, and a fitted one, sized by the peak that
+    /// stopped it, then goes further.)
+    fn compare(roomy: *const Trace, varied: *const Trace, limits_may: bool) ?[]const u8 {
+        assert(roomy.end != .running and varied.end != .running);
+        const changed = "limits changed the play";
+        const count = @min(roomy.count, varied.count);
+        if (!std.mem.eql(u64, roomy.hashes[0..count], varied.hashes[0..count])) return changed;
+        if (limits_may and (roomy.limited() or varied.limited())) {
+            if (roomy.count < varied.count and !roomy.limited()) return changed;
+            if (varied.count < roomy.count and !varied.limited()) return changed;
+            return null;
+        }
+        if (roomy.count != varied.count or roomy.end != varied.end) return changed;
+        if (roomy.errored != varied.errored) return changed;
+        if (varied.failure) |failure| {
+            if (!roomy.failed_with(failure)) return changed;
+        }
+        return null;
+    }
+};
+
+/// Plays `story` with choices from `random` until `steps` calls are traced, the story ends
+/// or a call fails; the state checks after every call. Null, or what failed.
+fn advance(story: *api.Story, random: std.Random, trace: *Trace, steps: u32) ?[]const u8 {
+    assert(trace.end == .running);
+    assert(steps <= play_steps_max);
+    while (trace.count < steps) {
+        if (story.can_continue()) {
+            const line = story.cont() catch |err| return trace.stop(err);
+            trace.hasher.update("l");
+            trace.hasher.update(line.get());
+            trace.lines += 1;
+        } else {
+            const count = story.current_choices_count();
+            if (count == 0) {
+                trace.end = .ended;
+                return null;
+            }
+            const index = random.uintLessThan(u32, @intCast(count));
+            story.choose_choice_index(index) catch |err| return trace.stop(err);
+            trace.hasher.update(std.mem.asBytes(&[2]u32{ count, index }));
+            trace.choices += 1;
+        }
+        if (story.state.check() != .ok) return "State.check";
+        trace.hashes[trace.count] = trace.hasher.final();
+        trace.count += 1;
+    }
+    if (trace.count == play_steps_max) trace.end = .step_cap;
+    return null;
 }
 
-/// Mixed into a seed for the draws of how its story is set up, so they don't repeat the
+/// Which limits a seed's second play gets, to compare with its play under roomy limits.
+const LimitsKind = enum {
+    /// None: the roomy play alone (unless the heap compacts always).
+    default,
+    /// The roomy play's peak usage (`Limits.fitted(usage, 1)`): no limit may stop it.
+    fitted,
+    /// Each field its default or tight (`fuzz/limits.zig`): a limit may stop it.
+    tight,
+};
+
+/// How a seed's story is set up and played: drawn from the seed, apart from the
 /// generator's draws.
-const setup_salt = 0x5e7_0b5e7;
+const Plan = struct {
+    setup: fuzz_play.Setup,
+    limits_kind: LimitsKind,
+    /// The second play's heap compacts at every reservation of room.
+    compact_always: bool,
+    /// The second play's limits with `limits_kind == .tight`.
+    tight: Limits,
+
+    /// Mixed into the seed, so the plan doesn't repeat the generator's draws.
+    const salt = 0x5e7_0b5e7;
+
+    fn draw(seed: u64) Plan {
+        var prng: std.Random.DefaultPrng = .init(seed ^ salt);
+        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+        // `e0` bound, its fallback allowed, both or neither (as the fuzz targets do), and the
+        // story's random seed.
+        const setup: fuzz_play.Setup = .pick(choices);
+        return .{
+            .setup = setup,
+            .limits_kind = choices.choose(LimitsKind),
+            .compact_always = choices.choose(bool),
+            .tight = fuzz_limits.draw_limits(choices),
+        };
+    }
+};
 
 fn play(
     gpa: std.mem.Allocator,
@@ -228,45 +360,83 @@ fn play(
     round_trip: bool,
     summary: *Summary,
 ) !?[]const u8 {
-    // Each seed binds `e0`, allows its fallback, both or neither (as the fuzz targets do),
-    // and draws the story's random seed.
-    var setup_prng: std.Random.DefaultPrng = .init(seed ^ setup_salt);
-    const setup: fuzz_play.Setup = .pick(.{ .random = setup_prng.random() });
+    const plan: Plan = .draw(seed);
     var story: api.Story = undefined;
-    try fuzz_play.init_story(&story, gpa, program, setup);
+    try fuzz_play.init_story(&story, gpa, program, plan.setup);
     defer story.deinit(gpa);
-    var errored = false;
-    story.on_error = note_error;
-    story.on_error_context = &errored;
-    defer summary.runtime_errors += @intFromBool(errored);
+    var trace: Trace = .{};
+    story.on_error = Trace.note;
+    story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(seed);
-    const random = prng.random();
-    var steps: u32 = 0;
-    while (steps < play_steps_max) : (steps += 1) {
-        if (story.can_continue()) {
-            _ = story.cont() catch |err| {
-                errored = true;
-                // ink's ValidateExternalBindings, at the first `cont`.
-                if (err != error.MissingExternalBinding) return null;
-                summary.unbound_externals += 1;
-                return if (setup.bind_external) "e0 bound and missing" else null;
-            };
-            summary.lines += 1;
-        } else {
-            const count = story.current_choices_count();
-            if (count == 0) break;
-            const index = random.uintLessThan(u32, @intCast(count));
-            story.choose_choice_index(index) catch {
-                errored = true;
-                return null;
-            };
-            summary.choices += 1;
-        }
-        if (story.state.check() != .ok) return "State.check";
+    if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+    count_play(&trace, summary);
+    // ink's ValidateExternalBindings, at the first `cont`.
+    if (trace.failed_with(error.MissingExternalBinding) and plan.setup.bind_external) {
+        return "e0 bound and missing";
     }
-    if (steps == play_steps_max) summary.step_cap += 1;
-    if (steps < play_steps_max and !errored) summary.ended += 1;
-    if (!round_trip or story.failed) return null;
+    if (round_trip) return round_trip_end(gpa, program, &story, plan.setup);
+    const fitted = limits_module.fitted(story.usage(), 1);
+    return play_limited(gpa, program, seed, plan, &trace, fitted, summary);
+}
+
+fn count_play(trace: *const Trace, summary: *Summary) void {
+    assert(trace.end != .running);
+    summary.lines += trace.lines;
+    summary.choices += trace.choices;
+    summary.runtime_errors += @intFromBool(trace.errored or trace.end == .failed);
+    summary.unbound_externals += @intFromBool(trace.failed_with(error.MissingExternalBinding));
+    summary.step_cap += @intFromBool(trace.end == .step_cap);
+    summary.ended += @intFromBool(trace.end == .ended and !trace.errored);
+}
+
+/// Plays the seed again under the plan's limits: the same play as `roomy`'s, or (tight, or
+/// fitted to a roomy play that hit a limit itself) stopped at a limit after the same calls.
+fn play_limited(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    seed: u64,
+    plan: Plan,
+    roomy: *const Trace,
+    fitted: Limits,
+    summary: *Summary,
+) !?[]const u8 {
+    if (plan.limits_kind == .default and !plan.compact_always) return null;
+    var limits: Limits = switch (plan.limits_kind) {
+        .default => .{},
+        .fitted => fitted,
+        .tight => plan.tight,
+    };
+    // `fitted` sizes buffers only; the step budget is the roomy play's.
+    const steps_max = fuzz_play.steps_per_continue_max;
+    if (plan.limits_kind != .tight) limits.steps_per_continue_max = steps_max;
+    const limits_may = plan.limits_kind == .tight or roomy.limited();
+    summary.limited_runs += 1;
+    var story: api.Story = undefined;
+    fuzz_play.init_story_with(&story, gpa, program, plan.setup, limits) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        if (!limits_may) return "fitted limits too small to start";
+        summary.limit_errors += 1;
+        return null;
+    };
+    defer story.deinit(gpa);
+    story.state.compact_always = plan.compact_always;
+    var trace: Trace = .{};
+    story.on_error = Trace.note;
+    story.on_error_context = &trace;
+    var prng: std.Random.DefaultPrng = .init(seed);
+    if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+    summary.limit_errors += @intFromBool(trace.limited() and !roomy.limited());
+    return Trace.compare(roomy, &trace, limits_may);
+}
+
+/// The save at the end of a play loads into a fresh story, which saves the same.
+fn round_trip_end(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    story: *api.Story,
+    setup: fuzz_play.Setup,
+) !?[]const u8 {
+    if (story.failed) return null;
     var first: std.Io.Writer.Allocating = .init(gpa);
     defer first.deinit();
     try story.to_json(&first.writer);
@@ -328,6 +498,9 @@ test "the summary counts what the runs reached, and the run prints it" {
         "compile failures ") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "step cap ") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "ended ") != null);
+    // P18.3: most seeds play a second time under fitted or tight limits.
+    try std.testing.expect(summary.limited_runs * 2 > summary.runs - summary.compile_failures);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "limited runs ") != null);
 }
 
 test "played stories make many choices and reach the step cap, and some still end" {
@@ -347,6 +520,56 @@ test "played stories make many choices and reach the step cap, and some still en
     try std.testing.expect(summary.step_cap * 100 >= compiled * 40);
     try std.testing.expect(summary.unbound_externals * 8 <= compiled);
     try std.testing.expect(summary.ended * 10 >= compiled);
+}
+
+/// The trace of `source` played under `limits`, with no external bound.
+fn trace_source(gpa: std.mem.Allocator, source: []const u8, limits: Limits) !Trace {
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    const setup: fuzz_play.Setup = .{
+        .random_seed = 0,
+        .fallbacks = false,
+        .bind_external = false,
+    };
+    try fuzz_play.init_story_with(&story, gpa, &program, setup, limits);
+    defer story.deinit(gpa);
+    var trace: Trace = .{};
+    story.on_error = Trace.note;
+    story.on_error_context = &trace;
+    var prng: std.Random.DefaultPrng = .init(1);
+    try std.testing.expect(advance(&story, prng.random(), &trace, play_steps_max) == null);
+    return trace;
+}
+
+test "the limits comparison catches a play that differs, and lets a limit stop one" {
+    // P18.3, synthetic: a play compares with itself, not with a play that shows one other
+    // line; a play a limit stopped compares with the roomy play up to where it stopped (if
+    // limits may stop it), not when its lines before differ.
+    const gpa = std.testing.allocator;
+    const roomy_limits: Limits = .{ .steps_per_continue_max = 10_000 };
+    const roomy = try trace_source(gpa, "A\nB\nC\n* x\n* y\n- D\n-> END\n", roomy_limits);
+    try std.testing.expectEqual(Trace.End.ended, roomy.end);
+    try std.testing.expectEqual(@as(u32, 1), roomy.choices);
+    const same = try trace_source(gpa, "A\nB\nC\n* x\n* y\n- D\n-> END\n", roomy_limits);
+    try std.testing.expect(Trace.compare(&roomy, &same, false) == null);
+    const other = try trace_source(gpa, "A\nB\nC\n* x\n* y\n- E\n-> END\n", roomy_limits);
+    const changed = Trace.compare(&roomy, &other, true).?;
+    try std.testing.expectEqualStrings("limits changed the play", changed);
+
+    const long: [600]u8 = @splat('x');
+    var tight = roomy_limits;
+    tight.output_items_max = 64;
+    tight.output_bytes_max = 256;
+    const long_roomy = try trace_source(gpa, "A\nB\n" ++ long ++ "\n-> END\n", roomy_limits);
+    const stopped = try trace_source(gpa, "A\nB\n" ++ long ++ "\n-> END\n", tight);
+    try std.testing.expect(stopped.limited());
+    try std.testing.expect(stopped.count > 0 and stopped.count < long_roomy.count);
+    try std.testing.expect(Trace.compare(&long_roomy, &stopped, true) == null);
+    try std.testing.expect(Trace.compare(&long_roomy, &stopped, false) != null);
+    const stopped_other = try trace_source(gpa, "Z\nB\n" ++ long ++ "\n-> END\n", tight);
+    try std.testing.expect(stopped_other.limited());
+    try std.testing.expect(Trace.compare(&long_roomy, &stopped_other, true) != null);
 }
 
 test "codes keep the most frequent first, and count past their capacity as other" {

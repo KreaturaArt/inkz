@@ -17,7 +17,7 @@ const Limits = @import("../core/limits.zig").Limits;
 
 /// Steps (lines and choices) one play may take: generated stories loop.
 pub const steps_max = 256;
-const steps_per_continue_max = 10_000;
+pub const steps_per_continue_max = 10_000;
 
 /// The program of a generated story, or null when it doesn't compile.
 pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?Program {
