@@ -902,13 +902,13 @@ fn play_saved(
     // ink's save doesn't keep a choice's isInvisibleDefault (JsonSerialisation's
     // JObjectToChoice), so a loaded fallback choice is visible, in ink and here: the save
     // waits for a call after which none is pending, in any flow. A parked flow can keep one
-    // to the step cap; then there is no save, as the loaded save would save other choice
-    // indices (ink keeps the saved ones; see Implementation Notes of P19.4).
+    // to the step cap; the save is made then, and the loaded one saves the same choice
+    // indices, as ink keeps the saved ones (P19.9).
     while (trace.end == .running and invisible_choices(story)) {
         if (advance(story, prng.random(), trace, trace.count + 1)) |failure| return failure;
     }
     // A story that failed in the middle of a step is half done and doesn't save.
-    if (story.failed or invisible_choices(story)) return null;
+    if (story.failed) return null;
     const save = try save_of(gpa, story);
     defer gpa.free(save);
     var loaded: api.Story = undefined;

@@ -512,10 +512,11 @@ flow took the first free record, where .NET's Dictionary takes the one freed las
 with .NET 8); it now does the same (`flows.zig`, "a new flow takes the record freed last").
 Two differences are ink's own and the save target allows them: after a flow is removed and
 another made, a story and its loaded save list their flows in other orders (the loaded
-dictionary has no holes), so the end saves compare but for flow order; and a parked flow
-that keeps a fallback choice to the step cap has no save, as the loaded save would save
-other choice indices. inkz recomputes those where ink keeps the saved ones: P19.9 (git
-issue e8ec540). Compiling from files found no difference to inklecate: the choice body's
+dictionary has no holes), so the end saves compare but for flow order. A parked flow that
+kept a fallback choice to the step cap had no save at first, as the loaded save saved other
+choice indices: inkz recomputed them where ink keeps the saved ones, and it numbered a
+fallback choice among the visible ones where ink leaves it 0. Both are fixed and the save is
+made again (P19.9, ground-truth case `save_choice_indices`). Compiling from files found no difference to inklecate: the choice body's
 newline above is inklecate's JSON too.
 
 Real **gaps**, each assigned to a Phase 19 issue (P19.8 is git issue ba7dd2c):
