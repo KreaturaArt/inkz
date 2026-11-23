@@ -192,6 +192,10 @@ pub const Budget = struct {
     }
 };
 
+/// The seed `run` is on, for a panic handler to print (a crash loses the buffered output).
+pub const Running = struct { target: Target, seed: u64 };
+pub var running: ?Running = null;
+
 /// Runs seeds from `seed_first` on `target` within `budget`, writing failures and the triage.
 /// `mix`, when given, replaces the host targets' drawn mixes.
 pub fn run(
@@ -211,6 +215,8 @@ pub fn run(
     for (0..budget.seeds) |offset| {
         if (offset > 0 and budget.exhausted()) break;
         const seed = seed_first + offset;
+        running = .{ .target = target, .seed = seed };
+        defer running = null;
         var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
         const case = if (target.hosts())
             generate_hosted(seed, &buffer)

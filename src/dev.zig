@@ -22,6 +22,20 @@ const simulate = @import("simulate.zig");
 const simulation = @import("testing/simulation.zig");
 const swarm_differential = @import("swarm_differential.zig");
 
+/// The default panic, after the seed a swarm run was on (`runner.running`), so a crash
+/// can be reproduced.
+pub const panic = std.debug.FullPanic(panic_with_seed);
+
+fn panic_with_seed(message: []const u8, first_trace_address: ?usize) noreturn {
+    if (runner.running) |at| {
+        std.debug.print("swarm {t}: panic in seed {d}; reproduce with: zig build swarm " ++
+            "-Doptimize=ReleaseSafe -- --target {t} --seed {d} --seeds 1\n", .{
+            at.target, at.seed, at.target, at.seed,
+        });
+    }
+    std.debug.defaultPanic(message, first_trace_address);
+}
+
 const Command = enum {
     replay,
     simulate,
@@ -138,6 +152,7 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
             budget.io = io;
         }
         try file_writer.interface.print("swarm {t}: first seed {d}\n", .{ each, seed });
+        try file_writer.interface.flush();
         const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, mix);
         failures += summary.failures;
     }
