@@ -275,7 +275,8 @@ transcripts match up to the line where they start:
   `DivideByZeroException` for an integer `/` or `%` by 0. The host would crash; inkz reports
   ink's story error instead.
 - **inkz limits**: inkz stops at one of its limits (`ThreadLimit`, `FrameLimit`...), which
-  ink doesn't have, for example a knot that starts a thread of itself.
+  ink doesn't have, for example a knot that starts a thread of itself, or a save doesn't
+  fit them to load (`SaveTooLarge`, a string that doubles each turn).
 
 ### Results (2026-11-20)
 

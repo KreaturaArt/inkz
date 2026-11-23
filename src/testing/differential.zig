@@ -105,8 +105,9 @@ pub const Skip = enum {
     /// ink threw a .NET exception that isn't ink's (`DivideByZeroException` for an integer
     /// `/` or `%` by 0), where inkz reports a story error; the transcripts match up to it.
     ink_exception,
-    /// inkz stopped at one of its limits (`ThreadLimit`, `FrameLimit`...), which ink doesn't
-    /// have; the transcripts match up to it.
+    /// inkz stopped at one of its limits (`ThreadLimit`, `FrameLimit`..., or a save that
+    /// doesn't fit them to load, `SaveTooLarge`), which ink doesn't have; the transcripts
+    /// match up to it.
     inkz_limit,
 };
 
@@ -245,15 +246,26 @@ fn marker_line(text: []const u8, prefix: []const u8) ?usize {
     return null;
 }
 
-/// The index of the first `exception: "<name>Limit"` line.
+/// The index of the first `exception: "<name>Limit"` or `exception: "SaveTooLarge"` line.
 fn limit_line(text: []const u8) ?usize {
     var lines = std.mem.splitScalar(u8, text, '\n');
     var index: usize = 0;
     while (lines.next()) |line| : (index += 1) {
-        const exception = std.mem.startsWith(u8, line, "exception: \"");
-        if (exception and std.mem.endsWith(u8, line, "Limit\"")) return index;
+        if (!std.mem.startsWith(u8, line, "exception: \"")) continue;
+        if (std.mem.endsWith(u8, line, "Limit\"")) return index;
+        if (std.mem.eql(u8, line, "exception: \"SaveTooLarge\"")) return index;
     }
     return null;
+}
+
+test "limit_line finds inkz's limit errors and no other exception" {
+    // A string that grows without end makes a save too large to load in a story's limits
+    // (found by the swarm's differential run in P18.6).
+    const expect = std.testing.expectEqual;
+    try expect(@as(?usize, 1), limit_line("text: \"a\"\nexception: \"ThreadLimit\"\n"));
+    try expect(@as(?usize, 0), limit_line("exception: \"SaveTooLarge\"\n"));
+    try expect(@as(?usize, null), limit_line("exception: \"InvalidSave\"\n"));
+    try expect(@as(?usize, null), limit_line("text: \"exception: \\\"Limit\\\"\"\n"));
 }
 
 /// The first `count` lines of `text`.
