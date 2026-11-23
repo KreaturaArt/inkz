@@ -188,6 +188,10 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
     const frame = state.call_stack.current_frame();
     if (frame.kind != .function_evaluation_from_game) return error.EvaluationNotComplete;
     const height = frame.evaluation_height;
+    // A knot or function with more parameters than the host passed pops values left below
+    // its frame (a story error leaves its expression's values, as in ink). ink returns null
+    // with them gone; inkz fails closed, with ink's message for a pop of too many.
+    if (state.evaluation.count < height) return ops.fail(story, ops.evaluation_stack_empty, .{});
     assert(height <= state.evaluation.count);
     const returned: ?Value = if (state.evaluation.count > height)
         state.evaluation.buffer[height]

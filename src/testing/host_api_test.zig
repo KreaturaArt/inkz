@@ -420,3 +420,42 @@ test "host misuse returns errors" {
     try std.testing.expect(!story.can_continue());
     try std.testing.expectError(error.CannotContinue, story.cont());
 }
+
+test "evaluate_function of a knot with more parameters than arguments fails closed" {
+    // A story error leaves its expression's values on the evaluation stack, as in ink; a
+    // knot evaluated with too few arguments pops them as its parameters, below its own
+    // frame. ink returns null with the values gone; inkz asserted, and now reports a story
+    // error (found by the swarm's host target with P18.6's knots with parameters).
+    const gpa = std.testing.allocator;
+    const source =
+        \\VAR a = 0
+        \\Hello
+        \\~ a = 1 + divide(1)
+        \\-> DONE
+        \\== knot(x) ==
+        \\Knot {x}
+        \\-> DONE
+        \\== function divide(n) ==
+        \\~ return n / 0
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    try std.testing.expectEqualStrings("Hello\n", (try story.cont()).get());
+    try std.testing.expectError(error.StoryError, story.cont());
+    const left = story.state.evaluation.count;
+    try std.testing.expect(left > 0);
+    try story.reset_errors();
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    defer text.deinit();
+    try std.testing.expectError(
+        error.StoryError,
+        story.evaluate_function("knot", &.{}, &text.writer),
+    );
+    try std.testing.expect(!story.failed);
+    try std.testing.expect(!story.can_continue());
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
+    try std.testing.expect(story.state.evaluation.count < left);
+}
