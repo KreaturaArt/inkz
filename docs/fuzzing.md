@@ -134,9 +134,9 @@ Shared pieces:
 
 ## Long seeded runs and triage
 
-`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|host|all> --seed S --seeds N`
-(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play`, `save` and
-`host`, with 4, 3 and 3 tenths of the time. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
+`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|host|mutate|all> --seed S --seeds N`
+(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play`, `save`,
+`host` and `mutate`, with 4, 3, 3 and 2 twelfths of the time. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
 hk pre-push hook in `hk.pkl` runs `--seconds 10`; `hk install` once per clone)
 (`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
 configuration and a generated story, and the target checks it. Every target checks the
@@ -162,7 +162,20 @@ then a session of up to 48 host calls drawn as the host fuzz target draws them
 (`fuzz/host.zig`: also `remove_flow`, tags, `get_variable`, visit counts, `reset_state`,
 save and load); the state checks after every call, and a save loaded must save the same. It
 leaves out the program checks, which play and save make, and binds `e0` unless its fallback
-is allowed. Every failure prints its configuration and the command that reproduces it; a
+is allowed. `mutate` (P19.3, `src/testing/swarm_mutate.zig`) takes the ground-truth stories
+instead of generated ones: their sources (`cases.ids`, found by `cases.source_path`; the two
+with an INCLUDE left out) are read from disk once per run, from the repository root, and each
+seed picks one and applies one to four seeded mutations: a line, a knot or stitch, or a
+choice deleted, duplicated or swapped; `*` and `+` toggled; a number, a boolean, a divert
+target or any word changed (to another word of the story, END, DONE or a name it doesn't
+have); a piece of ink syntax put in; up to 32 bytes cut; or the rest cut off. A mutant that
+doesn't compile counts its first error's code (the summary's codes line lists all of them); one
+that compiles gets the program checks, then plays as `play` does on even seeds and as `save`
+does on odd ones. Every declared external is bound when the plan binds `e0`. A mutant is at
+most `source_bytes_max` long (a mutation that wouldn't fit is left out), the parser's gas and
+the plays' step budget bound the rest. Every failure prints its configuration and the command
+that reproduces it (a mutate failure names the story and the mutations; reproduced with
+`--seeds 1`, it also prints the mutant's source); a
 host failure's command also has `--mix <hex>` (`Mix.encode`), which replaces the drawn mix,
 so a mix with an action's weight set to 0 shows whether the action matters. The run
 ends with the **triage** (`src/testing/swarm_triage.zig`, after the swarm paper's §5): the
@@ -409,12 +422,47 @@ Unreached **by design** (most of the listed ranges, nothing to do):
 - **Test and tool code**: `state.zig:511-615` (`State.hash`, for the fuzz targets),
   `core/counting_allocator.zig` (benchmarks), `program_builder.zig:749` (a debug log).
 
+### Mutants of the ground-truth stories (P19.3, 2026-11-23)
+
+`zig build swarm-coverage -- --seconds 20` from seed 1, before and after `all` got `mutate`
+(2 of its 12 shares), and `--target mutate --seconds 20` alone, lines hit:
+
+| Module | `all` before | `all` after | `mutate` alone |
+|---|---|---|---|
+| src/compiler | 1,750 (69.4 %) | 1,892 (75.1 %) | 1,903 (75.5 %) |
+| src/runtime | 1,507 (81.3 %) | 1,536 (82.9 %) | 1,360 (73.4 %) |
+| src/core | 643 (74.9 %) | 642 (74.8 %) | 636 (74.1 %) |
+
+By file (blocks), `all` before and after: `grammar_statements.zig` 62.0 to 79.6 %,
+`grammar_content.zig` 67.9 to 80.8 %, `messages.zig` 36.2 to 45.4 %, `lower_termination.zig`
+69.1 to 80.9 %, `resolve_lookups.zig` 65.8 to 73.9 %. The error recovery the generator
+never reached (`grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462`,
+`resolve_lookups.zig:93-103`, most of `lower_termination.zig:183-193`) runs now. Mutate's
+share costs the other targets a sixth of their seeds and adds 5.7 points of compiler lines;
+it saturates as fast as they do (3.3 s of a 20-s `all` reach 75.1 %, 20 s alone 75.5 %), so 2
+shares are enough, and its runtime lines (the ground-truth stories play constructs the
+generator doesn't write) add 1.6 points. In 20 s alone it ran 33,665 mutants: 20,189
+compiled (60 %), 58,627 lines and 10,885 choices played, 18,119 plays ended and 226 reached
+the step cap; the failures fell under 67 codes (`target_not_found` 3,480, `duplicate_flow`
+1,370, `end_of_line` 1,322, `inner_logic` 994, ...). Its first runs found two bugs: the
+mutator itself unwrapped a missing word in a story with only diverts, and the compiler took
+ill-formed UTF-8 (a `’` cut in half) into its JSON as it was, which `ink_json.load` rejected;
+it now replaces each maximal subpart with U+FFFD, as .NET's `File.ReadAllText` does for
+inklecate (`compile.zig`, "ill-formed UTF-8 compiles as U+FFFD"). 200,000 seeds from seed
+1,000,000 and 120 s from seed 5,000,000 (262,184 mutants) found nothing more.
+
+Still unreached in `messages.zig`: the scope list (`scope_text`, 409-423) and the expression
+printer (421-489, 549-613), and the texts of codes only a semantic error in an otherwise
+valid story reaches (an increment of an unknown variable, a divert-target or `ref`
+argument that isn't one, `not` before `?` or `has`, 746-1113). A mutation rarely makes
+exactly those; a targeted generator feature would.
+
 Real **gaps**, each assigned to a Phase 19 issue (P19.8 is git issue ba7dd2c):
 
 | Area | Where | Follow-up |
 |---|---|---|
 | INCLUDE and `compile_file` | `compiler/source_space.zig:61-328`, `compiler/sema_includes.zig:19-108`, `compiler/compile.zig:176-226`, `grammar_statements.zig:376-381` | P19.4 |
-| Most diagnostics: the generator only makes `drop` and `collision` errors | `compiler/messages.zig:190-267,409-613,746-1113` (texts of other codes, scopes, expressions), `grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462,493-501` (error recovery), `lower_termination.zig:183-193`, `resolve_lookups.zig:93-103` | P19.3 (mutants) |
+| Most diagnostics: the generator only makes `drop` and `collision` errors | `compiler/messages.zig:190-267,409-613,746-1113` (texts of other codes, scopes, expressions), `grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462,493-501` (error recovery), `lower_termination.zig:183-193`, `resolve_lookups.zig:93-103` | P19.3 (mutants): all but the scopes, the expression printer and the semantic-error texts (above) |
 | `TURNS_SINCE`/`READ_COUNT` of `-> target`, divert targets in expressions | `runtime/vm.zig:500,516-529`, `resolve_passes.zig:290-323` | P19.8 |
 | List `^`, `LIST_RANGE` with list bounds, a bare list item as a value | `runtime/lists.zig:223-230,357-362`, `runtime/ops.zig:520-523` | P19.8 |
 | Comments, non-ASCII identifiers and text, `TODO:`, explicit list item values | `compiler/lexical.zig:16-22,60-69`, `grammar_statements.zig:360-365,465-471` | P19.8 |
@@ -448,6 +496,7 @@ All runs used ReleaseSafe unless noted. None crashed once the bugs below were fi
 | JSON loader | A content object with an empty key (`{"":"$r"}`) reached an assert. | `error.InvalidInkJson`; the cases are in "malformed input returns an error instead of crashing". |
 | Save and load | A limit or host error in the newline lookahead left the snapshot active, and saving then asserted. | The story goes back to its last line (`Story.fail_step`). |
 | Host API | After a limit error in the middle of a step, the next `cont` ran on from the half-done state and asserted in `end_string`. | The story fails closed with `error.StoryFailed` until `reset_state` or `load_json` (see `docs/RunningYourInk.md`). |
+| Swarm `mutate` | A source with ill-formed UTF-8 compiled to JSON with the bytes as they were, which `ink_json.load` rejected. | Each maximal subpart compiles as U+FFFD, as inklecate reads it (`source_space.Decoded`). |
 
 Two of the first assumptions turned out wrong; the parser was correct both times:
 
