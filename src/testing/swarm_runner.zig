@@ -16,6 +16,7 @@ const fuzz_host = @import("../fuzz/host.zig");
 const simulation = @import("simulation.zig");
 const fuzz_limits = @import("../fuzz/limits.zig");
 const ink_json = @import("../core/ink_json.zig");
+const flows_module = @import("../runtime/flows.zig");
 const program_image = @import("../core/program_image.zig");
 const program_testing = @import("../core/program_testing.zig");
 const limits_module = @import("../core/limits.zig");
@@ -77,8 +78,12 @@ pub const Summary = struct {
     resumed_saves: u32 = 0,
     lines: u64 = 0,
     choices: u64 = 0,
-    /// Played stories still going after `play_steps_max` calls.
+    /// Played stories still going after their plan's `steps` calls, and those that made
+    /// more than `play_steps_default`, the cap every play had before P19.4.
     step_cap: u32 = 0,
+    long_plays: u32 = 0,
+    /// Flow switches and removals made in the middle of plays (`Plan.flows`).
+    flow_changes: u32 = 0,
     /// Played stories that ended before it without an error: at END or DONE, or with
     /// neither content nor choices left.
     ended: u32 = 0,
@@ -100,7 +105,7 @@ pub const Summary = struct {
         try summary.codes.write_top(writer, 4);
         try writer.print("; runtime errors {d} (unbound externals {d}), limited runs {d} " ++
             "(limit errors {d}), resumed saves {d}, lines {d}, choices {d}, step cap {d}, " ++
-            "ended {d}", .{
+            "long plays {d}, flow changes {d}, ended {d}", .{
             summary.runtime_errors,
             summary.unbound_externals,
             summary.limited_runs,
@@ -109,6 +114,8 @@ pub const Summary = struct {
             summary.lines,
             summary.choices,
             summary.step_cap,
+            summary.long_plays,
+            summary.flow_changes,
             summary.ended,
         });
         var mutations: u32 = 0;
@@ -381,18 +388,28 @@ fn keep_first_error(context: ?*anyopaque, diagnostic: messages.Diagnostic) void 
 
 const Program = @import("../core/program.zig").Program;
 
-/// The calls (`cont` or a choice) a played story gets.
-const play_steps_max = 64;
+/// The calls (`cont` or a choice) a played story gets at most (`Plan.steps`), and the cap
+/// half the plans keep, which every play had before P19.4.
+const play_steps_max = 256;
+const play_steps_default = 64;
+
+/// The flows a play switches to and removes besides the default one (`Plan.flows`).
+const flow_names = [_][]const u8{ "one", "two" };
 
 /// What a play showed, call by call: each line, each choice count and pick, and each error
 /// or warning reported, hashed, so two plays compare without keeping their text.
 const Trace = struct {
+    /// The calls the play gets (`Plan.steps`).
+    steps_max: u32 = play_steps_default,
+    /// Whether the play switches and removes flows on the way (`Plan.flows`).
+    flows: bool = false,
     hasher: std.hash.Wyhash = .init(0),
     /// The hash after each call that returned.
     hashes: [play_steps_max]u64 = undefined,
     count: u32 = 0,
     lines: u32 = 0,
     choices: u32 = 0,
+    flow_changes: u32 = 0,
     /// Whether the story reported an error (`on_error`).
     errored: bool = false,
     end: End = .running,
@@ -453,11 +470,28 @@ const Trace = struct {
 };
 
 /// Plays `story` with choices from `random` until `steps` calls are traced, the story ends
-/// or a call fails; the state checks after every call. Null, or what failed.
+/// or a call fails; the state checks after every call. With `trace.flows`, one call in 8
+/// first switches to a flow, back to the default one, or removes one (the current one too,
+/// which makes the default current): a new flow starts at the top of the story.
 fn advance(story: *api.Story, random: std.Random, trace: *Trace, steps: u32) ?[]const u8 {
     assert(trace.end == .running);
-    assert(steps <= play_steps_max);
+    assert(steps <= trace.steps_max and trace.steps_max <= play_steps_max);
     while (trace.count < steps) {
+        if (trace.flows and random.uintLessThan(u32, 8) == 0) {
+            const change = random.uintLessThan(u32, 4);
+            const name = flow_names[random.uintLessThan(usize, flow_names.len)];
+            const changed = switch (change) {
+                0, 1 => story.switch_flow(name),
+                2 => story.switch_to_default_flow(),
+                3 => story.remove_flow(name),
+                else => unreachable,
+            };
+            changed catch |err| return trace.stop(err);
+            trace.hasher.update(std.mem.asBytes(&change));
+            trace.hasher.update(name);
+            trace.flow_changes += 1;
+            if (story.state.check() != .ok) return "State.check after a flow change";
+        }
         if (story.can_continue()) {
             const line = story.cont() catch |err| return trace.stop(err);
             trace.hasher.update("l");
@@ -478,7 +512,7 @@ fn advance(story: *api.Story, random: std.Random, trace: *Trace, steps: u32) ?[]
         trace.hashes[trace.count] = trace.hasher.final();
         trace.count += 1;
     }
-    if (trace.count == play_steps_max) trace.end = .step_cap;
+    if (trace.count == trace.steps_max) trace.end = .step_cap;
     return null;
 }
 
@@ -501,8 +535,12 @@ const Plan = struct {
     compact_always: bool,
     /// The second play's limits with `limits_kind == .tight`.
     tight: Limits,
+    /// The calls a play gets: `play_steps_default` or, half the time, 4 to `play_steps_max`.
+    steps: u32,
     /// The calls the save target plays before it saves.
     save_at: u32,
+    /// The plays switch and remove flows on the way (1 in 4).
+    flows: bool,
 
     /// Mixed into the seed, so the plan doesn't repeat the generator's draws.
     const salt = 0x5e7_0b5e7;
@@ -513,13 +551,29 @@ const Plan = struct {
         // `e0` bound, its fallback allowed, both or neither (as the fuzz targets do), and the
         // story's random seed.
         const setup: fuzz_play.Setup = .pick(choices);
+        const limits_kind = choices.choose(LimitsKind);
+        const compact_always = choices.choose(bool);
+        const tight = fuzz_limits.draw_limits(choices);
+        const steps: u32 = if (choices.choose(bool))
+            play_steps_default
+        else
+            choices.range(u32, 4, play_steps_max);
         return .{
             .setup = setup,
-            .limits_kind = choices.choose(LimitsKind),
-            .compact_always = choices.choose(bool),
-            .tight = fuzz_limits.draw_limits(choices),
-            .save_at = @intCast(choices.below(play_steps_max)),
+            .limits_kind = limits_kind,
+            .compact_always = compact_always,
+            .tight = tight,
+            .steps = steps,
+            .save_at = @intCast(choices.below(steps)),
+            .flows = choices.weighted(3, 1),
         };
+    }
+
+    /// An empty trace for a play of this plan.
+    fn trace(plan: Plan) Trace {
+        assert(plan.steps > 0 and plan.steps <= play_steps_max);
+        assert(plan.save_at < plan.steps);
+        return .{ .steps_max = plan.steps, .flows = plan.flows };
     }
 };
 
@@ -546,7 +600,7 @@ fn play_planned(
     var story: api.Story = undefined;
     try fuzz_play.init_story(&story, gpa, program, plan.setup);
     defer story.deinit(gpa);
-    var trace: Trace = .{};
+    var trace = plan.trace();
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(seed);
@@ -556,7 +610,7 @@ fn play_planned(
     }
     // The save target's play goes on alone when its save didn't load.
     if (trace.end == .running) {
-        if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+        if (advance(&story, prng.random(), &trace, plan.steps)) |failure| return failure;
     }
     count_play(&trace, summary);
     // ink's ValidateExternalBindings, at the first `cont`.
@@ -575,6 +629,8 @@ fn count_play(trace: *const Trace, summary: *Summary) void {
     summary.runtime_errors += @intFromBool(trace.errored or trace.end == .failed);
     summary.unbound_externals += @intFromBool(trace.failed_with(error.MissingExternalBinding));
     summary.step_cap += @intFromBool(trace.end == .step_cap);
+    summary.long_plays += @intFromBool(trace.count > play_steps_default);
+    summary.flow_changes += trace.flow_changes;
     summary.ended += @intFromBool(trace.end == .ended and !trace.errored);
 }
 
@@ -609,11 +665,11 @@ fn play_limited(
     };
     defer story.deinit(gpa);
     story.state.compact_always = plan.compact_always;
-    var trace: Trace = .{};
+    var trace = plan.trace();
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(seed);
-    if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+    if (advance(&story, prng.random(), &trace, plan.steps)) |failure| return failure;
     summary.limit_errors += @intFromBool(trace.limited() and !roomy.limited());
     return Trace.compare(roomy, &trace, limits_may);
 }
@@ -659,9 +715,9 @@ fn play_saved(
     loaded.on_error = Trace.note;
     loaded.on_error_context = &loaded_trace;
     var loaded_prng = prng.*;
-    if (advance(story, prng.random(), trace, play_steps_max)) |failure| return failure;
+    if (advance(story, prng.random(), trace, plan.steps)) |failure| return failure;
     const loaded_random = loaded_prng.random();
-    if (advance(&loaded, loaded_random, &loaded_trace, play_steps_max)) |failure| return failure;
+    if (advance(&loaded, loaded_random, &loaded_trace, plan.steps)) |failure| return failure;
     if (!Trace.same(trace, &loaded_trace)) return "loaded save played differently";
     summary.resumed_saves += 1;
     if (story.failed) return null;
@@ -669,13 +725,50 @@ fn play_saved(
     defer gpa.free(end);
     const loaded_end = try save_of(gpa, &loaded);
     defer gpa.free(loaded_end);
-    if (!std.mem.eql(u8, end, loaded_end)) return "loaded save ended in another save";
+    if (!try same_but_flow_order(gpa, end, loaded_end)) return "loaded save ended in another save";
     return null;
 }
 
-/// Whether the story holds a choice it doesn't show: a fallback (invisible default) choice.
+/// Whether two saves are the same but for the order of their flows. A new flow takes the
+/// record freed last, as in ink's dictionary, and a loaded story has none freed: after a
+/// flow is removed and another made, a story and its loaded save list them in other
+/// orders, in ink as here (.NET's Dictionary, checked with .NET 8).
+fn same_but_flow_order(gpa: std.mem.Allocator, a: []const u8, b: []const u8) !bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var a_json = try std.json.parseFromSliceLeaky(std.json.Value, arena, a, .{});
+    var b_json = try std.json.parseFromSliceLeaky(std.json.Value, arena, b, .{});
+    const a_flows = a_json.object.get("flows").?.object;
+    const b_flows = b_json.object.get("flows").?.object;
+    if (a_flows.count() != b_flows.count()) return false;
+    for (a_flows.keys(), a_flows.values()) |name, flow| {
+        const other = b_flows.get(name) orelse return false;
+        const flow_text = try std.json.Stringify.valueAlloc(arena, flow, .{});
+        const other_text = try std.json.Stringify.valueAlloc(arena, other, .{});
+        if (!std.mem.eql(u8, flow_text, other_text)) return false;
+    }
+    // The rest compares as it is, the flows in one order.
+    _ = a_json.object.orderedRemove("flows");
+    _ = b_json.object.orderedRemove("flows");
+    const a_rest = try std.json.Stringify.valueAlloc(arena, a_json, .{});
+    const b_rest = try std.json.Stringify.valueAlloc(arena, b_json, .{});
+    return std.mem.eql(u8, a_rest, b_rest);
+}
+
+/// Whether the story holds a choice it doesn't show: a fallback (invisible default) choice,
+/// in the current flow or a parked one (ink's save drops the flag in every flow).
 fn invisible_choices(story: *api.Story) bool {
-    return story.state.choices.records.slice().len > story.current_choices_count();
+    const state = &story.state;
+    if (state.choices.records.slice().len > story.current_choices_count()) return true;
+    for (state.flows, 0..) |*record, flow| {
+        if (!record.in_use or flow == state.current_flow) continue;
+        for (flows_module.view(state, @intCast(flow)).choices) |choice| {
+            if (choice.invisible_default) return true;
+        }
+    }
+    return false;
 }
 
 fn save_of(gpa: std.mem.Allocator, story: *api.Story) ![]u8 {
@@ -838,7 +931,7 @@ fn trace_source(gpa: std.mem.Allocator, source: []const u8, limits: Limits) !Tra
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(1);
-    try std.testing.expect(advance(&story, prng.random(), &trace, play_steps_max) == null);
+    try std.testing.expect(advance(&story, prng.random(), &trace, trace.steps_max) == null);
     return trace;
 }
 
@@ -904,7 +997,9 @@ test "a story saved in the middle of its play and loaded plays on the same" {
             .limits_kind = .default,
             .compact_always = false,
             .tight = .{},
+            .steps = play_steps_default,
             .save_at = save_at,
+            .flows = false,
         };
         try std.testing.expect(try play_planned(gpa, &program, 1, plan, true, &summary) == null);
     }
@@ -1005,4 +1100,33 @@ test "the mutate target passes a few seeds of a ground-truth story and counts it
     try std.testing.expect(std.mem.indexOf(u8, text, "mutants, mutations delete_line") != null);
     const codes_line = "swarm mutate: compile failures by code (";
     try std.testing.expect(std.mem.indexOf(u8, text, codes_line) != null);
+}
+
+test "plays change flows on the way and some go past the old step cap" {
+    // P19.4: a quarter of the plans switch and remove flows, and half draw a step cap from
+    // 4 to 256; 40 seeds of the save target (each played, saved, loaded and played on) pass
+    // with both counted.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .save, 1, .{ .seeds = 40 }, .{});
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    try std.testing.expect(summary.flow_changes > 0);
+    try std.testing.expect(summary.long_plays > 0);
+    try std.testing.expect(summary.resumed_saves > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "long plays ") != null);
+    var steps: std.StaticBitSet(play_steps_max + 1) = .empty;
+    for (0..64) |seed| steps.set(Plan.draw(seed).steps);
+    try std.testing.expect(steps.isSet(play_steps_default) and steps.count() > 8);
+}
+
+test "saves compare the same with their flows in another order, and differ otherwise" {
+    const gpa = std.testing.allocator;
+    const a = "{\"flows\":{\"D\":{\"x\":1},\"one\":{\"x\":2},\"two\":{\"x\":3}},\"t\":4}";
+    const b = "{\"flows\":{\"D\":{\"x\":1},\"two\":{\"x\":3},\"one\":{\"x\":2}},\"t\":4}";
+    const c = "{\"flows\":{\"D\":{\"x\":1},\"two\":{\"x\":2},\"one\":{\"x\":3}},\"t\":4}";
+    const d = "{\"flows\":{\"D\":{\"x\":1},\"one\":{\"x\":2},\"two\":{\"x\":3}},\"t\":5}";
+    try std.testing.expect(try same_but_flow_order(gpa, a, b));
+    try std.testing.expect(!try same_but_flow_order(gpa, a, c));
+    try std.testing.expect(!try same_but_flow_order(gpa, a, d));
 }
