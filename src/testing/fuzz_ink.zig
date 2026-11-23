@@ -127,8 +127,11 @@ pub const Resolution = enum { temp, ref, items, l1, collision, drop };
 /// - `hub`: the root diverts to a knot `hub`, and the hub, each knot and the stitch end in
 ///   a block of choices (most sticky, a few to END or DONE) that divert to the hub, the
 ///   knots and the stitch, so play loops through choices; a knot ends otherwise with
-///   probability 1/8. Tunnels call a knot `tunnel0` that only tunnels reach and that returns
-///   with `->->`, so no knot that a divert reaches ends in a tunnel return.
+///   probability 1/8. Every other choice comes after a sticky fallback to the hub. Tunnels
+///   call a knot `tunnel0` that only tunnels reach and that returns with `->->`, so no knot
+///   that a divert reaches ends in a tunnel return; diverts and threads outside choices
+///   only go forward (to a later knot, the hub, and seldom END or DONE), and function
+///   bodies call no function, so nothing loops or recurses without a choice.
 /// - `typed`: each expression keeps to one kind of value, numbers (and booleans), strings
 ///   or lists, with the operators ink defines on it; variables, temps, parameters and
 ///   function returns keep theirs (`v1` a string, `l0` a list, the others numbers), so
@@ -556,6 +559,8 @@ pub const Generator = struct {
     negated: bool = false,
     /// The kind of value the expression being written keeps to, with `typed`.
     kind: ?Kind = null,
+    /// Whether the current flow is `f0`, `f1` or `e0`.
+    in_function: bool = false,
     /// Whether the current flow is a function with the parameter `x`.
     parameter: bool = false,
     /// Whether the source has its one collision.
@@ -650,13 +655,14 @@ pub const Generator = struct {
         return generator.target(generator.swarm.targets.intersectWith(knot_targets));
     }
 
-    /// Any target; with `hub`, the hub, END, DONE or a knot after this flow, so that
-    /// diverts outside choices never loop.
+    /// Any target; with `hub`, END or DONE (1 in 8, when on), else the hub or a knot after
+    /// this flow, so that diverts outside choices never loop and seldom end the story.
     fn divert_target(generator: *Generator) []const u8 {
         const swarm = generator.swarm;
         if (!swarm.play.contains(.hub)) return generator.target(swarm.targets);
-        const ends: std.EnumSet(Target) = .initMany(&.{ .end, .done });
-        return generator.hub_or(swarm.targets.intersectWith(generator.later.unionWith(ends)));
+        const ends = swarm.targets.intersectWith(.initMany(&.{ .end, .done }));
+        if (ends.count() > 0 and generator.choices.weighted(7, 1)) return generator.target(ends);
+        return generator.hub_or(swarm.targets.intersectWith(generator.later));
     }
 
     /// A knot; with `hub`, the hub or a knot after this flow, so that threads never nest
@@ -789,8 +795,11 @@ pub const Generator = struct {
     }
 
     fn inline_kind(generator: *Generator) Inline {
-        const set = generator.swarm.inlines;
+        var set = generator.swarm.inlines;
         assert(set.count() > 0);
+        // With `hub`, no calls in a function body, where they could recurse without end.
+        if (generator.in_function and generator.swarm.play.contains(.hub) and
+            set.count() > 1) set.remove(.calls);
         if (!set.eql(.full)) return generator.pick_enabled(Inline, set);
         return switch (generator.choices.choose(u3)) {
             0, 1 => .value,
@@ -830,8 +839,14 @@ pub const Generator = struct {
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
+    /// A choice; with `hub`, after a sticky fallback choice to the hub, so that its choice set
+    /// never runs out once its choices are used up or their conditions are false.
     fn choice(generator: *Generator) void {
         const depth = generator.choices.range(u8, 1, generator.swarm.choice_depth_max);
+        if (generator.swarm.play.contains(.hub)) {
+            for (0..depth) |_| generator.put("+");
+            generator.put(" -> hub\n");
+        }
         const bullet = if (generator.choices.choose(bool)) "*" else "+";
         for (0..depth) |_| generator.put(bullet);
         generator.labels += 1;
@@ -1012,6 +1027,13 @@ pub const Generator = struct {
                 set = here.terms;
             }
         }
+        if (generator.in_function and generator.swarm.play.contains(.hub)) {
+            // A call in a function body could recurse without end.
+            const calls: std.EnumSet(Term) = .initMany(&.{ .call, .call_external });
+            if (set.differenceWith(calls).count() + kinds.count() > 0) {
+                set = set.differenceWith(calls);
+            }
+        }
         if (kinds.count() > 0 and (set.count() == 0 or generator.choices.weighted(2, 1))) {
             return generator.resolution_term(kinds);
         }
@@ -1108,12 +1130,13 @@ pub const Generator = struct {
         generator.knot_end();
     }
 
-    /// The root diverts to the knot `hub`, a block of choices; with tunnels on, the knot
-    /// `tunnel0` that they call follows.
+    /// The root gathers and diverts to the knot `hub`, a block of choices; with tunnels on,
+    /// the knot `tunnel0` that they call follows.
     fn hub(generator: *Generator) void {
         assert(generator.swarm.play.contains(.hub));
         generator.used.play.insert(.hub);
-        generator.put("-> hub\n=== hub ===\n");
+        // The gather takes the loose ends of the root's choices to the hub.
+        generator.put("-\n-> hub\n=== hub ===\n");
         generator.flow_start(false);
         generator.hub_choices();
         if (!generator.swarm.lines.contains(.tunnel)) return;
@@ -1189,6 +1212,7 @@ pub const Generator = struct {
             "=== function f1() ===\n",
             "=== function e0(x) ===\n",
         };
+        generator.in_function = true;
         for (headers, [_]bool{ true, false, true }) |header, parameter| {
             if (!generator.keep()) continue;
             generator.put(header);
@@ -1198,6 +1222,7 @@ pub const Generator = struct {
             generator.expression_typed(.number);
             generator.put("\n");
         }
+        generator.in_function = false;
         generator.flow_start(false);
         if (generator.swarm.resolution.contains(.ref)) {
             // f3 passes its own pointer on: a pointer to a pointer.
