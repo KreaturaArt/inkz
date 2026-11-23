@@ -356,6 +356,72 @@ that the divergence goes, as it did for the 46 extra globals there.
 | inkz compiled `not v ? 1`, which ink rejects: "Using 'not' or '!' here negates 'v' rather than the result of the '?' or 'has' operator" (11 stories). | The check from `BinaryExpression.ResolveReferences`, code `negated_has_operand`. | unit test in `src/compiler/termination_tests.zig` |
 | After two threads in a row that print nothing, ink saves the first thread's divert as `previousContentObject`, inkz the second's (2 stories). ink's live pointer is the second divert, but `Object.path` finds an object's index with `content.IndexOf`, which uses `Equals`, and two diverts with the same target are equal. | A save writes the index of the first equal divert in the container (P16.21; found by tracing ink's `Step` through reflection). | `swarm/thread_previous_pointer` |
 
+## Coverage of the swarm
+
+```sh
+zig build swarm-coverage                    # --target all --seconds 60, then the report
+zig build swarm-coverage -- --seconds 10    # later swarm arguments override
+```
+
+The step builds `dev` in ReleaseSafe with Zig's fuzz instrumentation (`-ffuzz`), which gives
+every basic block a hit counter and records its address. After the run,
+`src/testing/coverage.zig` resolves each block to its source line with the program's own
+debug info (`std.debug.SelfInfo`), so it needs no kcov or llvm-cov and runs on macOS as on
+Linux. It writes `zig-out/coverage/swarm.txt`: blocks and lines hit per module and per file,
+then every run of lines none of whose blocks ran, as `file:first-last blocks`. A "line" is
+a line on which some block starts; a line counts as hit when one of its blocks ran. Block
+percentages are low because every safety check (overflow, bounds, `try`'s error edge) is a
+block of its own that never runs, so read the line column. The coverage build also
+references every public non-generic function of the library, so functions the swarm never
+calls are compiled and listed instead of missing. Debug gives the same blocks but runs a
+tenth of the seeds.
+
+### Results (2026-11-23)
+
+`zig build swarm-coverage` (60 s from seed 1: 10,437 play, 5,929 save and 11,920 host runs):
+
+| Module | Lines | Hit | Lines % | Blocks % |
+|---|---|---|---|---|
+| src/compiler | 2,520 | 1,748 | 69.4 | 61.0 |
+| src/runtime | 1,853 | 1,518 | 81.9 | 58.2 |
+| src/core | 858 | 641 | 74.7 | 59.5 |
+
+The swarm saturates in seconds: a 5-s run reaches 68.9, 80.6 and 74.8 %. More time adds
+almost nothing; only new features do. The counts vary by a few lines between runs, as the
+deadline decides the last seed.
+
+Unreached **by design** (most of the listed ranges, nothing to do):
+
+- **Error edges of `try`**: one-line ranges of one to three blocks, all over (allocation
+  failure, a full writer). `src/core/allocation_failures.zig` and the zero-allocation gate
+  test them, not the swarm.
+- **Rejection of malformed input**: `src/core/ink_json.zig` (`expect`, `InvalidInkJson`),
+  `src/core/program_image.zig:251,361-365,404-423` (truncated or inconsistent images),
+  `src/runtime/load.zig` (`as`/`member` errors, `SaveDoesNotMatchStory` at 566),
+  `src/core/string_pool.zig:113`. The swarm only feeds them what inkz wrote; the `json`,
+  `image` and `save` fuzz targets mutate their input.
+- **Invariant checks that fail only on a bug**: the `check`/`verify` failure returns in
+  `bounded_stack.zig:89`, `call_stack.zig:349-365`, `program.zig:318-457`,
+  `output.zig:402-413`, `lookahead.zig:211-219`, `text_cache.zig:120`, `choices.zig:235`,
+  `limits.zig:304-315`.
+- **Capacity limits**: `state.zig:421` (diagnostic list full), `evaluate.zig:227` (output
+  stashes), `compiler/core.zig:290-359` (parser gas, frame stack, diagnostics).
+- **Test and tool code**: `state.zig:511-615` (`State.hash`, for the fuzz targets),
+  `core/counting_allocator.zig` (benchmarks), `program_builder.zig:749` (a debug log).
+
+Real **gaps**, each assigned to a Phase 19 issue (P19.8 is git issue ba7dd2c):
+
+| Area | Where | Follow-up |
+|---|---|---|
+| INCLUDE and `compile_file` | `compiler/source_space.zig:61-328`, `compiler/sema_includes.zig:19-108`, `compiler/compile.zig:176-226`, `grammar_statements.zig:376-381` | P19.4 |
+| Most diagnostics: the generator only makes `drop` and `collision` errors | `compiler/messages.zig:190-267,409-613,746-1113` (texts of other codes, scopes, expressions), `grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462,493-501` (error recovery), `lower_termination.zig:183-193`, `resolve_lookups.zig:93-103` | P19.3 (mutants) |
+| `TURNS_SINCE`/`READ_COUNT` of `-> target`, divert targets in expressions | `runtime/vm.zig:500,516-529`, `resolve_passes.zig:290-323` | P19.8 |
+| List `^`, `LIST_RANGE` with list bounds, a bare list item as a value | `runtime/lists.zig:223-230,357-362`, `runtime/ops.zig:520-523` | P19.8 |
+| Comments, non-ASCII identifiers and text, `TODO:`, explicit list item values | `compiler/lexical.zig:16-22,60-69`, `grammar_statements.zig:360-365,465-471` | P19.8 |
+| Floats printed in scientific notation | `runtime/value.zig:160-166` | P19.8 |
+| Host API never called by the host target: `global_tags`, errors without a handler (`error_count`, `write_error`), `cont_alloc`, `unbind_external_function`, `init_from_json`, the `events` callbacks, a non-lookahead-safe external inside string evaluation | `runtime/story.zig:277-283,377-381,426-443,518,793,887-917`, `evaluate.zig:49,68-79`, `story_paths.zig:49`, `ops.zig:1013-1025` | P19.8 |
+| A divert through a variable that holds no target | `runtime/vm.zig:399-407` | P19.8 |
+
 ## Results (2026-11-13)
 
 All runs used ReleaseSafe unless noted. None crashed once the bugs below were fixed.
