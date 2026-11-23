@@ -382,7 +382,7 @@ fn add_start_content(lowering: *Lowering, outer: ContainerId, start: ContainerId
     _ = try ir.add_opcode(outer, .string_start);
     _ = try ir.add(outer, .{ .divert = .{ .target = .{ .container = start } } });
     ir.container(start).name = "s";
-    _ = try ir.add(start, .{ .divert = .{ .variable = "$r" } });
+    _ = try ir.add(start, .{ .divert = .{ .name = "$r" } });
     try ir.add_named(outer, start);
     _ = try ir.add_container(outer, r1);
     _ = try ir.add_opcode(outer, .string_end);

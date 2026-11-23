@@ -147,15 +147,19 @@ fn add_item(lowered: *Lowered, layout: *const Layout, builder: *ProgramBuilder, 
 }
 
 fn emit_divert(layout: *const Layout, builder: *ProgramBuilder, divert: ir_module.Divert) !void {
-    assert(divert.external == null or divert.variable == null);
-    if (divert.external) |name| {
-        return builder.add_external_call(name, divert.external_arguments, divert.conditional);
+    assert(!divert.external or divert.name != null);
+    if (divert.external) {
+        return builder.add_external_call(
+            divert.name.?,
+            divert.external_arguments,
+            divert.conditional,
+        );
     }
     const options: ProgramBuilder.DivertOptions = .{
         .kind = divert.kind,
         .conditional = divert.conditional,
     };
-    if (divert.variable) |name| return builder.add_divert_variable(name, options);
+    if (divert.name) |name| return builder.add_divert_variable(name, options);
     try builder.add_divert(key_of(layout, divert.target), options);
 }
 

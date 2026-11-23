@@ -26,9 +26,10 @@ pub fn divert_item(lowering: *const Lowering, divert: ObjectIndex) ir_module.Div
     if (tree.has(divert, Flags.function_call)) result.kind = .function;
     if (tree.has(divert, Flags.tunnel)) result.kind = .tunnel;
     switch (lowering.resolution.diverts[divert.to_int()]) {
-        .variable => result.variable = first_component(lowering, divert),
+        .variable => result.name = first_component(lowering, divert),
         .external => {
-            result.external = first_component(lowering, divert);
+            result.name = first_component(lowering, divert);
+            result.external = true;
             result.external_arguments = @intCast(tree.children_of(divert).len);
         },
         .target => {
@@ -125,8 +126,8 @@ pub fn generate_tunnel_onwards(lowering: *Lowering, onwards: ObjectIndex) !Resul
         const after = children[0];
         try add_arguments(lowering, container, after);
         const runtime = divert_item(lowering, after);
-        if (runtime.variable) |name| {
-            _ = try ir.add(container, .{ .variable_reference = name });
+        if (runtime.name != null and !runtime.external) {
+            _ = try ir.add(container, .{ .variable_reference = runtime.name.? });
         } else _ = try ir.add(container, .{ .divert_target = runtime.target });
     }
     _ = try ir.add_opcode(container, .eval_end);

@@ -321,7 +321,7 @@ Measured densities:
 | Object tree | SoA `sema.Tree`: kinds u8, flags u16 (bits shared per kind), parents, nodes, `children_first`/`count`, `children` (`sema.zig:103-112`), about 23 B/object | none | none |
 | Resolution results | Side tables indexed by `ObjectIndex`: `targets`, `references`, a bitset, `item_values`, … (`resolve.zig:141-174`) | Inline in the compiler (`locals` stack) | `AutoHashMap(Node.Index, void)` (AstRlAnnotate) |
 | Names | **Source slices** with Wyhash keys `{scope, name}` until the builder interns them | Interned `u24` from the parser on | `[]const u8` from tokens |
-| IR | AoS `Stored` tagged union ≤ 24 B with side arrays; per-container **linked list** via `next`, then flattened (`lower_ir.zig`) | n/a | n/a (upstream ZIR in the copied AstGen) |
+| IR | AoS `Item` tagged union, 40 B, stored whole (side arrays dropped in P17.18); per-container **linked list** via `next`, then flattened (`lower_ir.zig`) | n/a | n/a (upstream ZIR in the copied AstGen) |
 | Traversal | `Walk(comptime .pre/.post)`, one frame per level, 64 inline then spill (`sema.zig:244-262`) | post_tree: linear cursor + recursion per block; moar_smaller: one loop + backpatch stacks | Recursive (AstRlAnnotate, `firstToken`/`lastToken`) |
 | Freeing | AST, object tree and resolution are freed before layout and emission (`compile.zig:36-60`) | AST freed after compile | Ast owned by the caller |
 
@@ -339,8 +339,8 @@ Measured densities:
   - *Cost to inkz:* memory and code. Mitigated by freeing early and by emitting by key instead
     of path strings, which made compiles 12–15% faster (P12.4).
 - **SoA object tree vs AoS IR inside inkz.** The object tree is the read-mostly structure walked
-    many times, so it is SoA. The IR is short-lived and heterogeneous, so a ≤ 24 B tagged union
-    with side arrays was simpler. Its linked list per container avoids a buffer per container
+    many times, so it is SoA. The IR is short-lived and heterogeneous, so a 40 B tagged union
+    stored whole was simpler. Its linked list per container avoids a buffer per container
     while generating, at the cost of pointer-chasing until it is flattened. Neither reference
     has a comparable structure; zirp's upstream AstGen uses SoA `MultiArrayList(Zir.Inst)` with
     `extra`.
