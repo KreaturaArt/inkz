@@ -514,3 +514,35 @@ test "evaluate_function from an external can't pop the external's arguments" {
     const expected = "trying to pop too many objects";
     try std.testing.expect(std.mem.endsWith(u8, writer.buffered(), expected));
 }
+
+test "a tag a story error left on the evaluation stack is a parameter's value, as in ink" {
+    // A story error inside a choice's text ends the flow with the text's tag still on the
+    // evaluation stack, as in ink (ForceEnd keeps the stack, which the flows share). A knot
+    // chosen with fewer arguments than parameters pops it: ink's Assign stores any object,
+    // and inkz asserted that no tag is ever assigned (the host fuzz target, CI run
+    // 45287271637, through a nested evaluate_function and a flow switch).
+    const gpa = std.testing.allocator;
+    const source =
+        \\Hello
+        \\* [Pick {f()}] -> DONE
+        \\== function f ==
+        \\Line # t
+        \\~ return RANDOM(5, 1)
+        \\== knot(x) ==
+        \\Knot
+        \\-> DONE
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    try std.testing.expectEqualStrings("Hello\n", (try story.cont()).get());
+    try std.testing.expectError(error.StoryError, story.cont());
+    try std.testing.expect(story.state.evaluation.peek().? == .tag);
+    try story.reset_errors();
+    try story.choose_path_string("knot", .{});
+    try std.testing.expectEqualStrings("Knot\n", (try story.cont()).get());
+    try std.testing.expect(story.state.check() == .ok);
+    try std.testing.expect(!story.can_continue());
+}
