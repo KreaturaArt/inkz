@@ -24,7 +24,10 @@ const Allocator = std.mem.Allocator;
 
 pub const function_lines_max = 70;
 pub const line_columns_max = 100;
-pub const assertions_per_function_min = 1;
+/// Assertion density is per module (file): at least one assertion for every this many
+/// functions, so a file states its invariants where they are established instead of in every
+/// function.
+pub const functions_per_assertion_max = 3;
 /// The library's directories; tests, harnesses, benchmarks, fuzz targets and tools assert
 /// where it helps but have no density rule.
 const density_directories = [_][]const u8{ "src/core/", "src/runtime/", "src/compiler/" };
@@ -387,13 +390,14 @@ pub const Linter = struct {
         const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
         for (functions) |function| functions_count += @intFromBool(!function.returns_type);
         if (functions_count == 0) return;
-        const required = functions_count * assertions_per_function_min;
+        const required = std.math.divCeil(u32, functions_count, functions_per_assertion_max) catch
+            unreachable;
         if (assertions_count >= required) return;
         if (std.mem.indexOf(u8, file.source, "lint: allow assertion_density:") != null) return;
         const message = try std.fmt.allocPrint(
             linter.arena,
-            "{d} assertions in {d} functions; at least {d} per function on average",
-            .{ assertions_count, functions_count, assertions_per_function_min },
+            "{d} assertions in {d} functions; at least one per {d} functions in a file",
+            .{ assertions_count, functions_count, functions_per_assertion_max },
         );
         try linter.report(file.path, 1, .assertion_density, message);
     }
@@ -823,19 +827,23 @@ test "usize struct fields are reported, usize locals are not" {
     try std.testing.expectEqual(@as(u32, 1), diagnostics[0].line);
 }
 
-test "library code below one assertion per function is reported" {
-    // The density rule, verify() counting as an assertion, and the file-level
-    // suppression. Sparse and verified samples, with and without the suppression.
+test "library code below one assertion per three functions is reported" {
+    // The per-module density rule, verify() counting as an assertion, and the file-level
+    // suppression. Sparse, one-in-three and verified samples, with and without the suppression.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const sparse =
         \\fn a() void {}
         \\fn b() void {}
+        \\fn d() void {}
         \\fn c(x: u32) void {
         \\    assert(x > 0);
         \\}
         \\
     ;
+    const third = "fn a() void {}\nfn b() void {}\nfn c(x: u32) void {\n    assert(x > 0);\n}\n";
+    const per_module = try lint_samples(arena.allocator(), &.{.{ "src/core/third.zig", third }});
+    try expect_rules(per_module, &.{});
     const without = try lint_samples(arena.allocator(), &.{.{ "src/core/sparse.zig", sparse }});
     try expect_rules(without, &.{.assertion_density});
     const verified =
