@@ -86,7 +86,6 @@ pub fn select(state: *State, target: u32) void {
         count.* = state.flow_stack(buffer).count;
     }
     current.thread_counter = state.call_stack.thread_counter;
-    current.indexed_count = state.choices.indexed_count;
     attach(state, target);
 }
 
@@ -101,7 +100,6 @@ fn attach(state: *State, target: u32) void {
         stack.count = count;
     }
     state.call_stack.thread_counter = record.thread_counter;
-    state.choices.indexed_count = record.indexed_count;
     state.current_flow = target;
 }
 
@@ -144,7 +142,6 @@ fn claim(state: *State, position: u32, name: []const u8) void {
     record.* = .{
         .counts = @splat(0),
         .thread_counter = 0,
-        .indexed_count = 0,
         .name = undefined,
         .name_length = @intCast(name.len),
         .in_use = true,

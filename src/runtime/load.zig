@@ -382,23 +382,16 @@ const Loader = struct {
     }
 
     fn choices(loader: *Loader, saved: []const Json, threads: ?Object) Error!void {
-        // ink keeps each choice's saved index; this runtime keeps whether the choices had
-        // been indexed (some index isn't 0) and recomputes the indices.
-        var indexed = false;
-        for (saved) |choice_json| {
-            const object = try as(choice_json, .object);
-            try loader.choice(object, threads);
-            if (try integer(try member(object, "index")) != 0) indexed = true;
-        }
-        const records = &loader.state().choices;
-        assert(records.count() == saved.len);
-        records.indexed_count = if (indexed) records.count() else 0;
+        for (saved) |choice_json| try loader.choice(try as(choice_json, .object), threads);
+        assert(loader.state().choices.count() == saved.len);
     }
 
     /// ink's JObjectToChoice and LoadFlowChoiceThreads.
     fn choice(loader: *Loader, object: Object, threads: ?Object) Error!void {
         const text = try loader.string(try as(try member(object, "text"), .string));
         const source = try loader.pointer_at(try member(object, "originalChoicePath"));
+        // ink keeps the saved index, even one that isn't the choice's place.
+        const choice_index = try integer(try member(object, "index"));
         const counter = try integer(try member(object, "originalThreadIndex"));
         if (counter < 0) return error.InvalidSave;
         var target = try loader.pointer_at(try member(object, "targetPath"));
@@ -421,6 +414,7 @@ const Loader = struct {
             .tags_first = tags_first,
             .snapshot = snapshot,
             .tags_count = @intCast(records.tags.count - tags_first),
+            .index = choice_index,
             .invisible_default = false,
         }) catch return error.SaveTooLarge;
     }

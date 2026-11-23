@@ -735,6 +735,7 @@ pub fn process_choice(
         .tags_first = 0,
         .snapshot = 0,
         .tags_count = 0,
+        .index = 0,
         .invisible_default = record.flags.is_invisible_default,
     };
     var tags: [ChoicePops.tags_max]StringReference = undefined;

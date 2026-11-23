@@ -38,7 +38,6 @@ pub const format_version = 21;
 const FlowView = struct {
     buffers: state_module.FlowBuffers,
     thread_counter: u32,
-    indexed_count: u32,
 };
 
 fn live_view(story: *Story) FlowView {
@@ -46,7 +45,6 @@ fn live_view(story: *Story) FlowView {
     return .{
         .buffers = state.live_flow(),
         .thread_counter = state.call_stack.thread_counter,
-        .indexed_count = state.choices.indexed_count,
     };
 }
 
@@ -56,7 +54,6 @@ fn other_view(story: *Story, flow: u32) FlowView {
     return .{
         .buffers = flows.view(&story.state, flow),
         .thread_counter = record.thread_counter,
-        .indexed_count = record.indexed_count,
     };
 }
 
@@ -125,12 +122,9 @@ fn write_flow(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void 
     try writer.writeByte(']');
     try write_choice_threads(story, writer, view);
     try writer.writeAll(",\"currentChoices\":[");
-    var visible: u32 = 0;
     for (view.buffers.choices, 0..) |choice, position| {
         if (position > 0) try writer.writeByte(',');
-        const choice_index: u32 = if (position < view.indexed_count) visible else 0;
-        if (!choice.invisible_default) visible += 1;
-        try write_choice(story, writer, view, choice, choice_index);
+        try write_choice(story, writer, view, choice);
     }
     try writer.writeAll("]}");
 }
@@ -287,12 +281,11 @@ fn write_choice(
     writer: *Writer,
     view: FlowView,
     choice: Choice,
-    choice_index: u32,
 ) Writer.Error!void {
     assert(choice.tags_first + choice.tags_count <= view.buffers.tags.len);
     try writer.writeAll("{\"text\":");
     try write_json_string(writer, text_of(story, choice.text));
-    try writer.print(",\"index\":{d},\"originalChoicePath\":", .{choice_index});
+    try writer.print(",\"index\":{d},\"originalChoicePath\":", .{choice.index});
     try write_object_path(story, writer, choice.source);
     try writer.print(",\"originalThreadIndex\":{d},\"targetPath\":", .{choice.thread_counter});
     try write_target_path(story, writer, choice.target);
