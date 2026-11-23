@@ -73,7 +73,7 @@ jobs:
       # that is the budget spent, not a failure. Zig 0.17's `zig build --fuzz` exits 0 even when
       # the test process crashed or a check failed: it prints "error: test '...' exited with
       # code 1; input saved to '.zig-cache/f/crash'" and moves on. So the job fails on that
-      # file or an error line, however the run ended.
+      # error line.
       - name: zig build fuzz
         timeout-minutes: 15
         run: |
@@ -86,7 +86,13 @@ jobs:
             -Dtest-filter="$FILTER" 2>&1 | tee fuzz.log
           status=${PIPESTATUS[0]}
           set -e
-          if [ -e .zig-cache/f/crash ] || grep -q '^error: ' fuzz.log; then
+          # A real failure prints its error line. The crash file alone counts only when the run
+          # ended by itself: stopping the fuzzer leaves the input in flight in that file.
+          crashed=no
+          if [ "$status" -ne 124 ] && [ "$status" -ne 137 ] && [ -e .zig-cache/f/crash ]; then
+            crashed=yes
+          fi
+          if [ "$crashed" = yes ] || grep -q '^error: ' fuzz.log; then
             echo "::error::fuzz target '$FILTER' failed; the input is in the fuzz-crash artifact"
             exit 1
           fi

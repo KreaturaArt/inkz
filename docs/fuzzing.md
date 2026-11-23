@@ -112,8 +112,10 @@ zig build fuzz -Doptimize=ReleaseSafe --fuzz=100M --seed=<seed> -Dtest-filter="<
 under `timeout --signal=INT 8m` (build included); `timeout` ending the run is the budget
 spent, not a failure. The seed is the run id modulo 2³² or the dispatch's `seed` input, and
 one seed gives the same inputs, so the printed command replays a CI run locally (up to where
-it got). The job fails when `.zig-cache/f/crash` exists or the log has an `error:` line,
-because the build's exit code doesn't say, and then uploads `crash.bin`, the fuzzer's
+it got). The job fails when the log has an `error:` line, because the build's exit code
+doesn't say (or when the run ended by itself and left `.zig-cache/f/crash`: stopping the
+fuzzer leaves the input in flight in that file, so after `timeout` the file alone means
+nothing; all 15 targets failed on it once), and then uploads `crash.bin`, the fuzzer's
 `libfuzzer.log`, the step's log and the target and seed as the artifact
 `fuzz-crash-<target>-<run id>` (kept 30 days). The corpus isn't kept between runs: its
 directory is named by a hash of the binary's coverage points, which changes with the code.
