@@ -56,7 +56,8 @@ pub const Observer = struct {
 
 /// A flow's directory entry. Flow names are stored inline. While the flow isn't current, it
 /// keeps the live stacks' state: each owned buffer's count, in `owned_buffers` order, the
-/// call stack's thread counter and the choices' indexed count.
+/// call stack's thread counter and the choices' indexed count. A record not in use keeps
+/// its place in ink's free list in `thread_counter` (`flows.create`).
 pub const FlowRecord = struct {
     counts: [owned_buffers.len]u32,
     thread_counter: u32,

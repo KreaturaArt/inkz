@@ -38,7 +38,10 @@ fn slot(state: *const State, flow: u32, comptime buffer: FlowBuffer) []FlowEleme
 /// which then clears them.
 pub fn reset(state: *State) void {
     assert(state.flows.len > 0);
-    for (state.flows) |*record| record.in_use = false;
+    for (state.flows) |*record| {
+        record.in_use = false;
+        record.thread_counter = never_used;
+    }
     claim(state, 0, default_name);
     attach(state, 0);
 }
@@ -102,13 +105,37 @@ fn attach(state: *State, target: u32) void {
     state.current_flow = target;
 }
 
+/// A record not in use keeps its place in ink's free list in `thread_counter`: `never_used`,
+/// or how late it was freed (1 for the first).
+const never_used = 0;
+
+/// The record for a new flow, as .NET's Dictionary (ink's `_namedFlows`) picks its entry,
+/// which orders the flows in a save and in `alive_flow_names`: the record freed last, else
+/// the first never used. A load and `reset_state` start from a dictionary without holes.
 fn create(state: *State, name: []const u8) Error!u32 {
+    var chosen: ?u32 = null;
+    var chosen_freed: u32 = never_used;
     for (state.flows, 0..) |*record, position| {
         if (record.in_use) continue;
-        claim(state, @intCast(position), name);
-        return @intCast(position);
+        if (record.thread_counter > chosen_freed or
+            (chosen == null and record.thread_counter == never_used))
+        {
+            chosen = @intCast(position);
+            chosen_freed = record.thread_counter;
+        }
     }
-    return error.FlowLimit;
+    const position = chosen orelse return error.FlowLimit;
+    claim(state, position, name);
+    return position;
+}
+
+/// How late the record freed last was freed, or `never_used`.
+fn freed_latest(state: *const State) u32 {
+    var latest: u32 = never_used;
+    for (state.flows) |*record| {
+        if (!record.in_use) latest = @max(latest, record.thread_counter);
+    }
+    return latest;
 }
 
 fn claim(state: *State, position: u32, name: []const u8) void {
@@ -158,6 +185,7 @@ pub fn remove_flow(state: *State, name: []const u8) Error!void {
         assert(!state.snapshot.active);
         select(state, 0);
     }
+    state.flows[target].thread_counter = freed_latest(state) + 1;
     state.flows[target].in_use = false;
 }
 
@@ -281,6 +309,33 @@ const NameSink = struct {
         sink.count += 1;
     }
 };
+
+test "a new flow takes the record freed last, as .NET's Dictionary takes its entry" {
+    // P19.4: with `one` and `two` removed in that order, `two` and then `one` come back in
+    // their old records (.NET 8: Keys is DEFAULT_FLOW, one, two), so a save lists them in
+    // ink's order; a record never used comes after every freed one.
+    const gpa = std.testing.allocator;
+    var program: Program = undefined;
+    var state: State = undefined;
+    try test_state(gpa, &program, &state);
+    defer program.deinit(gpa);
+    defer state.deinit(gpa);
+    try switch_flow(&state, "one");
+    try switch_flow(&state, "two");
+    try remove_flow(&state, "one");
+    try remove_flow(&state, "two");
+    try switch_flow(&state, "two");
+    try switch_flow(&state, "one");
+    try std.testing.expectEqual(@as(?u32, 1), find(&state, "one"));
+    try std.testing.expectEqual(@as(?u32, 2), find(&state, "two"));
+    try remove_flow(&state, "one");
+    try switch_flow(&state, "three");
+    try std.testing.expectEqual(@as(?u32, 1), find(&state, "three"));
+    state.reset();
+    try switch_flow(&state, "four");
+    try std.testing.expectEqual(@as(?u32, 1), find(&state, "four"));
+    try std.testing.expectEqual(Fault.ok, check(&state));
+}
 
 test "removing flows frees their records, and the limits return their errors" {
     // Bounds: switch between flows many times; remove the current one, then
