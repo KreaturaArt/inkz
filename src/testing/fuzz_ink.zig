@@ -141,10 +141,19 @@ pub const Resolution = enum { temp, ref, items, l1, collision, drop };
 ///   empty value.
 pub const Play = enum { hub, typed };
 
+/// Constructs of ink that the first generator didn't write (P18.6), each its own feature, so
+/// `Swarm.classic` keeps its choices:
+/// - `turns`: the term `TURNS()`.
+/// - `math`: the terms `POW`, `FLOOR`, `CEILING`, `INT`, `FLOAT`, `MIN` and `MAX` of
+///   numbers, variables and constants.
+/// - `list_functions`: `LIST_VALUE` (a number) and `LIST_MIN`, `LIST_MAX`, `LIST_ALL`,
+///   `LIST_INVERT`, `LIST_RANDOM`, `LIST_RANGE` and `l0(n)` (lists) of `l0`.
+pub const Construct = enum { turns, math, list_functions };
+
 /// The kinds of value a `typed` expression keeps to.
 const Kind = enum { number, string, list };
 
-/// The terms and the resolution terms of each kind: `variable` names `v0` or `v2` as a
+/// The terms and the extra terms of each kind: `variable` names `v0` or `v2` as a
 /// number and `v1` as a string.
 const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
     .number = .initMany(&.{
@@ -155,10 +164,10 @@ const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
     .string = .initMany(&.{ .string, .variable }),
     .list = .initOne(.list),
 });
-const kind_resolution_terms = std.enums.EnumArray(Kind, std.EnumSet(ResolutionTerm)).init(.{
-    .number = .initMany(&.{ .temp_read, .ref_call, .global_read }),
+const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(.{
+    .number = .initMany(&.{ .temp_read, .ref_call, .global_read, .turns, .math, .list_value }),
     .string = .empty,
-    .list = .initMany(&.{ .item_full, .item_bare, .ambiguous }),
+    .list = .initMany(&.{ .item_full, .item_bare, .ambiguous, .list_function }),
 });
 /// Ink's operators on each kind: arithmetic, comparison and logic on numbers, joining,
 /// equality and containment on strings, and the set operations and comparisons on lists.
@@ -174,7 +183,7 @@ const kind_operators = std.enums.EnumArray(Kind, std.EnumSet(Operator)).init(.{
     }),
 });
 
-const ResolutionLine = enum {
+const ExtraLine = enum {
     temp_declare,
     temp_assign,
     temp_increment,
@@ -183,7 +192,18 @@ const ResolutionLine = enum {
     collision,
 };
 
-const ResolutionTerm = enum { temp_read, item_full, item_bare, ref_call, global_read, ambiguous };
+const ExtraTerm = enum {
+    temp_read,
+    item_full,
+    item_bare,
+    ref_call,
+    global_read,
+    ambiguous,
+    turns,
+    math,
+    list_value,
+    list_function,
+};
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
 const Item = struct { []const u8, bool };
@@ -222,6 +242,7 @@ pub const Swarm = struct {
     /// collide with the gathers' labels).
     globals_extra: u8,
     play: std.EnumSet(Play),
+    constructs: std.EnumSet(Construct),
 
     pub const lines_limit = 10;
     pub const terms_limit = 4;
@@ -246,6 +267,7 @@ pub const Swarm = struct {
         .resolution = .initOne(.drop),
         .globals_extra = 0,
         .play = .empty,
+        .constructs = .empty,
     };
 
     /// Every feature at the largest bounds, but `collision` and `drop`, which would make
@@ -257,6 +279,7 @@ pub const Swarm = struct {
         swarm.resolution.remove(.drop);
         swarm.globals_extra = globals_extra_limit;
         swarm.play = .full;
+        swarm.constructs = .full;
         break :all swarm;
     };
 
@@ -275,6 +298,7 @@ pub const Swarm = struct {
         .resolution = .empty,
         .globals_extra = 0,
         .play = .empty,
+        .constructs = .empty,
     };
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
@@ -299,6 +323,7 @@ pub const Swarm = struct {
             else
                 0,
             .play = .empty,
+            .constructs = .empty,
         };
         // A collision or a drop fails the compile, so each gets ¼ of the usual probability.
         if (swarm.resolution.contains(.collision) and !choices.weighted(3, 1)) {
@@ -310,6 +335,7 @@ pub const Swarm = struct {
         // Drawn last, so the other features of a seed's draw stay as they were before it.
         if (choices.weighted(1, 3)) swarm.play.insert(.hub);
         if (choices.choose(bool)) swarm.play.insert(.typed);
+        swarm.constructs = draw_set(choices, Construct);
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -336,6 +362,7 @@ pub const Swarm = struct {
         if (!declared.contains(.l0)) {
             swarm.terms.remove(.list);
             swarm.terms.remove(.list_query);
+            swarm.constructs.remove(.list_functions);
         }
         if (!declared.contains(.l0) and !swarm.resolution.contains(.l1)) {
             swarm.resolution.remove(.items);
@@ -735,17 +762,17 @@ pub const Generator = struct {
             generator.swarm.lines.intersectWith(function_lines)
         else
             generator.swarm.lines;
-        if (enabled.count() == 0 and generator.resolution_lines().count() == 0) return;
+        if (enabled.count() == 0 and generator.extra_lines().count() == 0) return;
         const lines_max = generator.swarm.lines_max;
         var lines: u32 = 0;
         while (lines < lines_max and !!generator.choices.more(3, 1)) : (lines += 1) {
-            // A resolution line takes a choice only when one is possible, so `classic`
+            // An extra line takes a choice only when one is possible, so `classic`
             // takes the first generator's choices.
-            const kinds = generator.resolution_lines();
+            const kinds = generator.extra_lines();
             if (kinds.count() > 0 and
                 (enabled.count() == 0 or generator.choices.weighted(2, 1)))
             {
-                generator.resolution_line(kinds);
+                generator.extra_line(kinds);
                 continue;
             }
             if (enabled.count() == 0) break;
@@ -1019,12 +1046,12 @@ pub const Generator = struct {
     fn term(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
         generator.negated = false;
-        var kinds = generator.resolution_terms();
+        var kinds = generator.extra_terms();
         var set = generator.swarm.terms;
         if (generator.kind) |of| {
             const here = generator.kind_terms_here(of);
             if (here.count() > 0) {
-                kinds = here.resolution;
+                kinds = here.extra;
                 set = here.terms;
             }
         }
@@ -1036,7 +1063,7 @@ pub const Generator = struct {
             }
         }
         if (kinds.count() > 0 and (set.count() == 0 or generator.choices.weighted(2, 1))) {
-            return generator.resolution_term(kinds);
+            return generator.extra_term(kinds);
         }
         const kind = if (set.eql(.full))
             generator.choices.choose(Term)
@@ -1069,11 +1096,11 @@ pub const Generator = struct {
     }
 
     const TermsHere = struct {
-        resolution: std.EnumSet(ResolutionTerm),
+        extra: std.EnumSet(ExtraTerm),
         terms: std.EnumSet(Term),
 
         fn count(here: TermsHere) usize {
-            return here.resolution.count() + here.terms.count();
+            return here.extra.count() + here.terms.count();
         }
     };
 
@@ -1087,8 +1114,8 @@ pub const Generator = struct {
         };
         if (!variables_of) terms.remove(.variable);
         return .{
-            .resolution = generator.resolution_terms().intersectWith(
-                kind_resolution_terms.get(of),
+            .extra = generator.extra_terms().intersectWith(
+                kind_extra_terms.get(of),
             ),
             .terms = terms,
         };
@@ -1246,10 +1273,10 @@ pub const Generator = struct {
         return @popCount(generator.temps);
     }
 
-    /// The resolution lines possible here and now.
-    fn resolution_lines(generator: *const Generator) std.EnumSet(ResolutionLine) {
+    /// The extra lines (beyond `Line`) possible here and now.
+    fn extra_lines(generator: *const Generator) std.EnumSet(ExtraLine) {
         const on = generator.swarm.resolution;
-        var kinds: std.EnumSet(ResolutionLine) = .empty;
+        var kinds: std.EnumSet(ExtraLine) = .empty;
         if (on.contains(.temp)) {
             if (generator.temps_declared() < temps_count) kinds.insert(.temp_declare);
             if (generator.temps_declared() > 0) {
@@ -1260,13 +1287,13 @@ pub const Generator = struct {
         if (on.contains(.ref) and generator.ref_targets_count() > 0) kinds.insert(.ref_call);
         if (generator.swarm.globals_extra > 0) kinds.insert(.global_assign);
         if (on.contains(.collision) and !generator.collided) kinds.insert(.collision);
-        assert(kinds.count() <= std.enums.values(ResolutionLine).len);
+        assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
 
-    fn resolution_line(generator: *Generator, kinds: std.EnumSet(ResolutionLine)) void {
+    fn extra_line(generator: *Generator, kinds: std.EnumSet(ExtraLine)) void {
         assert(kinds.count() > 0);
-        switch (generator.pick_enabled(ResolutionLine, kinds)) {
+        switch (generator.pick_enabled(ExtraLine, kinds)) {
             .temp_declare => {
                 generator.used.resolution.insert(.temp);
                 var free = ~generator.temps & ((1 << temps_count) - 1);
@@ -1314,10 +1341,10 @@ pub const Generator = struct {
         return @ctz(declared_bits);
     }
 
-    /// The resolution terms possible here and now.
-    fn resolution_terms(generator: *const Generator) std.EnumSet(ResolutionTerm) {
+    /// The extra terms (beyond `Term`) possible here and now.
+    fn extra_terms(generator: *const Generator) std.EnumSet(ExtraTerm) {
         const on = generator.swarm.resolution;
-        var kinds: std.EnumSet(ResolutionTerm) = .empty;
+        var kinds: std.EnumSet(ExtraTerm) = .empty;
         if (on.contains(.temp) and (generator.temps != 0 or generator.parameter)) {
             kinds.insert(.temp_read);
         }
@@ -1329,12 +1356,19 @@ pub const Generator = struct {
         if (generator.swarm.globals_extra > 0) kinds.insert(.global_read);
         if (on.contains(.collision) and on.contains(.l1) and generator.declared(.l0) and
             !generator.collided) kinds.insert(.ambiguous);
+        const constructs = generator.swarm.constructs;
+        if (constructs.contains(.turns)) kinds.insert(.turns);
+        if (constructs.contains(.math)) kinds.insert(.math);
+        if (constructs.contains(.list_functions) and generator.declared(.l0)) {
+            kinds.insert(.list_value);
+            kinds.insert(.list_function);
+        }
         return kinds;
     }
 
-    fn resolution_term(generator: *Generator, kinds: std.EnumSet(ResolutionTerm)) void {
+    fn extra_term(generator: *Generator, kinds: std.EnumSet(ExtraTerm)) void {
         assert(kinds.count() > 0);
-        switch (generator.pick_enabled(ResolutionTerm, kinds)) {
+        switch (generator.pick_enabled(ExtraTerm, kinds)) {
             .temp_read => {
                 generator.used.resolution.insert(.temp);
                 const count = generator.temps_declared() + @intFromBool(generator.parameter);
@@ -1351,8 +1385,74 @@ pub const Generator = struct {
                 generator.collided = true;
                 generator.put("a");
             },
+            .turns => {
+                generator.used.constructs.insert(.turns);
+                generator.put("TURNS()");
+            },
+            .math => generator.math(),
+            .list_value => {
+                generator.used.constructs.insert(.list_functions);
+                generator.put(generator.pick(&.{
+                    "LIST_VALUE(l0)", "LIST_VALUE(LIST_MIN(l0))", "LIST_VALUE(LIST_RANDOM(l0))",
+                }));
+            },
+            .list_function => generator.list_function(),
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// A function of ink's on numbers, of operands that are no expressions (nothing nests).
+    fn math(generator: *Generator) void {
+        generator.used.constructs.insert(.math);
+        const unary = [_][]const u8{ "FLOOR(", "CEILING(", "INT(", "FLOAT(" };
+        switch (generator.choices.below(unary.len + 3)) {
+            0...unary.len - 1 => |index| {
+                generator.put(unary[index]);
+                generator.operand();
+            },
+            unary.len => {
+                generator.put("POW(");
+                generator.operand();
+                generator.print(", {d}", .{generator.choices.choose(u2)});
+            },
+            else => |index| {
+                generator.put(if (index == unary.len + 1) "MIN(" else "MAX(");
+                generator.operand();
+                generator.put(", ");
+                generator.operand();
+            },
+        }
+        generator.put(")");
+    }
+
+    /// A number: an integer, a float, `v0` or `c0` (when declared).
+    fn operand(generator: *Generator) void {
+        switch (generator.choices.choose(u2)) {
+            0 => generator.print("{d}", .{generator.choices.choose(i8)}),
+            1 => generator.print("{d}.5", .{generator.choices.choose(i8)}),
+            2 => generator.put(if (generator.declared(.v0)) "v0" else "1"),
+            3 => generator.put(if (generator.declared(.c0)) "c0" else "2.5"),
+        }
+    }
+
+    /// A function of ink's on lists that returns one, of `l0`.
+    fn list_function(generator: *Generator) void {
+        generator.used.constructs.insert(.list_functions);
+        switch (generator.choices.below(8)) {
+            0 => generator.put("LIST_MIN(l0)"),
+            1 => generator.put("LIST_MAX(l0)"),
+            2 => generator.put("LIST_ALL(l0)"),
+            3 => generator.put("LIST_INVERT(l0)"),
+            4 => generator.put("LIST_RANDOM(l0)"),
+            5 => generator.print("LIST_RANGE(l0, {d}, {d})", .{
+                generator.choices.choose(u2),
+                generator.choices.choose(u2),
+            }),
+            // `l0.a` is the only full name that the `items` feature doesn't own.
+            6 => generator.put("LIST_RANGE(LIST_ALL(l0), l0.a, 2)"),
+            7 => generator.print("l0({d})", .{generator.choices.range(u8, 1, 3)}),
+            else => unreachable,
+        }
     }
 
     /// One of `items` whose list is declared; the bare `a` only when it isn't ambiguous.
@@ -1571,7 +1671,23 @@ test "Swarm.classic reproduces the generator before swarms" {
 }
 
 /// Text that only the construct writes, for checking that a left-out construct is absent.
-const Marker = struct { text: []const u8, present: *const fn (Swarm) bool };
+const Marker = struct {
+    text: []const u8,
+    present: *const fn (Swarm) bool,
+    /// Text right before `text` that makes it another construct's.
+    not_after: []const u8 = "",
+
+    fn written(marker: Marker, source: []const u8) bool {
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, source, at, marker.text)) |found| : (at = found + 1) {
+            const before = source[0..found];
+            if (marker.not_after.len == 0 or !std.mem.endsWith(u8, before, marker.not_after)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
 
 fn unique_marker(
     comptime text: []const u8,
@@ -1583,6 +1699,12 @@ fn unique_marker(
             return @field(swarm, field).contains(key);
         }
     }.present };
+}
+
+fn with_not_after(marker: Marker, comptime not_after: []const u8) Marker {
+    var with = marker;
+    with.not_after = not_after;
+    return with;
 }
 
 const markers_unique = [_]Marker{
@@ -1599,11 +1721,13 @@ const markers_unique = [_]Marker{
     unique_marker("|two|}", "inlines", Inline.stopping),
     unique_marker(": yes|no}", "inlines", Inline.conditional),
     unique_marker("{f0(2)}", "inlines", Inline.calls),
-    unique_marker("RANDOM(", "terms", Term.random),
+    // `LIST_RANDOM(` and `SEED_RANDOM(` take one argument.
+    unique_marker("RANDOM(1, 3)", "terms", Term.random),
     unique_marker("TURNS_SINCE", "terms", Term.turns_since),
     unique_marker("LIST_COUNT", "terms", Term.list_query),
     unique_marker("CHOICE_COUNT", "terms", Term.choice_count),
-    unique_marker("e0(2)", "terms", Term.call_external),
+    // The assignment `~ e0(` calls it with an expression, which may be `2`.
+    with_not_after(unique_marker("e0(2)", "terms", Term.call_external), "~ "),
     unique_marker("\"str\"", "terms", Term.string),
     unique_marker(" + ", "operators", Operator.add),
     unique_marker(" * ", "operators", Operator.multiply),
@@ -1645,7 +1769,7 @@ test "a source uses only its configuration's features" {
         if (!case.swarm.eql(.all)) subsets += 1;
         for (markers_unique) |unique| {
             if (unique.present(case.swarm)) continue;
-            if (std.mem.indexOf(u8, case.source, unique.text) != null) {
+            if (unique.written(case.source)) {
                 const written = "seed {d}: '{s}' is left out but written\n";
                 std.debug.print(written, .{ seed, unique.text });
                 return error.TestUnexpectedResult;
@@ -1709,16 +1833,16 @@ test "Swarm.format round-trips through Swarm.parse" {
         "lines=text",
         "lines=nope terms=integer operators=add inlines= targets=k0 declarations= " ++
             "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
-            "globals_extra=0 play=",
+            "globals_extra=0 play= constructs=",
         // k2 names a knot that a count of 1 doesn't write.
         "lines=text terms=integer operators=add inlines= targets=k2 declarations= " ++
             "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
-            "globals_extra=0 play=",
+            "globals_extra=0 play= constructs=",
     };
     for (invalid) |bad| try std.testing.expectError(error.InvalidSwarm, Swarm.parse(bad));
     const one = "lines=text terms=integer operators=add inlines= targets=k0 declarations= " ++
         "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0 " ++
-        "play=";
+        "play= constructs=";
     var writer: std.Io.Writer = .fixed(&text);
     try writer.print("{f}", .{try Swarm.parse(one)});
     try std.testing.expectEqualStrings(one, writer.buffered());
@@ -1756,6 +1880,38 @@ test "each resolution feature appears when on and never when off" {
         }
     }
     for (seen) |count| try std.testing.expect(count > 0);
+}
+
+test "each construct appears when on and never when off" {
+    // 1,000 seeded draws: every construct is written by some source that has it on, and
+    // its text is absent from every source that has it off.
+    const checks = std.enums.EnumArray(Construct, []const []const u8).init(.{
+        .turns = &.{"TURNS()"},
+        // `MIN(` and `MAX(` are also in `LIST_MIN(` and `LIST_MAX(`.
+        .math = &.{ "POW(", "FLOOR(", "CEILING(", "INT(", "FLOAT(" },
+        .list_functions = &.{
+            "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
+            "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
+        },
+    });
+    var seen: std.enums.EnumArray(Construct, u32) = .initFill(0);
+    var buffer: [source_bytes_max]u8 = undefined;
+    for (0..1000) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{});
+        try std.testing.expect(case.swarm.covers(case.used));
+        for (std.enums.values(Construct)) |construct| {
+            var written = false;
+            for (checks.get(construct)) |text| {
+                if (std.mem.indexOf(u8, case.source, text) != null) written = true;
+            }
+            if (!case.swarm.constructs.contains(construct) and written) {
+                std.debug.print("seed {d}: {t} is off but written\n", .{ seed, construct });
+                return error.TestUnexpectedResult;
+            }
+            if (written) seen.getPtr(construct).* += 1;
+        }
+    }
+    for (std.enums.values(Construct)) |construct| try std.testing.expect(seen.get(construct) > 0);
 }
 
 test "most sources with only the resolution features compile" {
