@@ -51,7 +51,7 @@ pub const Target = enum {
     /// the host target's report.
     host_synthetic,
 
-    fn hosts(target: Target) bool {
+    pub fn hosts(target: Target) bool {
         return target == .host or target == .host_synthetic;
     }
 };
@@ -305,6 +305,16 @@ pub const Regression = struct {
 /// seed draws the plans, splits and host plans as in `run`; the story is `source`.
 pub fn replay(gpa: std.mem.Allocator, regression: Regression, source: []const u8) !?[]const u8 {
     assert(regression.target != .synthetic);
+    const case: fuzz_ink.Generator.Case = .{ .source = source, .swarm = .none, .used = .none };
+    return replay_case(gpa, regression, case);
+}
+
+/// `replay` on a case: the synthetic target's failure depends on its swarm, not its source.
+pub fn replay_case(
+    gpa: std.mem.Allocator,
+    regression: Regression,
+    case: fuzz_ink.Generator.Case,
+) !?[]const u8 {
     assert((regression.mix != null) == regression.target.hosts());
     running = .{ .target = regression.target, .seed = regression.seed };
     defer running = null;
@@ -312,7 +322,6 @@ pub fn replay(gpa: std.mem.Allocator, regression: Regression, source: []const u8
     defer gpa.free(save_buffer);
     const mix: ?Mix = if (regression.mix) |encoded| try Mix.decode(encoded) else null;
     const host: Host = .{ .plan = .draw(regression.seed, mix), .save_buffer = save_buffer };
-    const case: fuzz_ink.Generator.Case = .{ .source = source, .swarm = .none, .used = .none };
     var summary: Summary = .{};
     return check_case(gpa, regression.target, regression.seed, case, host, &summary);
 }
@@ -342,13 +351,11 @@ pub fn run(
         defer running = null;
         var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
         var mutant: ?swarm_mutate.Mutant = null;
-        const case: fuzz_ink.Generator.Case = if (target.hosts())
-            generate_hosted(seed, &buffer)
-        else if (inputs.corpus) |corpus| mutated: {
+        const case: fuzz_ink.Generator.Case = if (inputs.corpus) |corpus| mutated: {
             mutant = swarm_mutate.mutate(corpus, seed, &mutant_buffers[0]);
             for (mutant.?.mutations()) |mutation| summary.mutations.getPtr(mutation).* += 1;
             break :mutated .{ .source = mutant.?.source, .swarm = .none, .used = .none };
-        } else fuzz_ink.generate_case_seeded(seed, &buffer, .{});
+        } else generate(target, seed, null, &buffer);
         summary.runs += 1;
         summary.large += @intFromBool(case.swarm.large());
         const host: Host = .{ .plan = .draw(seed, inputs.mix), .save_buffer = save_buffer };
@@ -695,20 +702,29 @@ fn check_program(gpa: std.mem.Allocator, source: []const u8, program: *const Pro
     return null;
 }
 
-/// The seed's case for the host targets: its drawn swarm with `hub` and `typed` on, so that
-/// the host's actions act on a story that plays through choices, and without `drop` and
-/// `collision`, which fail the compile (the play targets cover them).
-fn generate_hosted(seed: u64, buffer: []u8) fuzz_ink.Generator.Case {
+/// The seed's generated case for `target` (not mutate's), with `swarm` (normalized here) in
+/// place of the drawn one when given; the draw comes first either way, so a candidate of
+/// the reducer starts from the same choices as the seed's case. The host targets' swarm has
+/// `hub` and `typed` on, so that the host's actions act on a story that plays through
+/// choices, and leaves out `drop` and `collision`, which fail the compile (the play targets
+/// cover them).
+pub fn generate(target: Target, seed: u64, swarm: ?Swarm, buffer: []u8) fuzz_ink.Generator.Case {
+    assert(target != .mutate);
     var prng: std.Random.DefaultPrng = .init(seed);
     const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+    // `-Dfuzz-swarm=off` gives the full mix without a draw.
     const options: fuzz_ink.Options = .{};
-    var swarm = options.swarm orelse Swarm.draw(choices);
-    swarm.play.insert(.hub);
-    swarm.play.insert(.typed);
-    swarm.resolution.remove(.drop);
-    swarm.resolution.remove(.collision);
-    swarm.normalize();
-    return fuzz_ink.Generator.generate_case(choices, buffer, .{ .swarm = swarm });
+    const drawn = options.swarm orelse Swarm.draw(choices);
+    var chosen = swarm orelse drawn;
+    if (swarm != null) chosen.normalize();
+    if (target.hosts()) {
+        chosen.play.insert(.hub);
+        chosen.play.insert(.typed);
+        chosen.resolution.remove(.drop);
+        chosen.resolution.remove(.collision);
+        chosen.normalize();
+    }
+    return fuzz_ink.Generator.generate_case(choices, buffer, .{ .swarm = chosen });
 }
 
 fn keep_first_error(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
@@ -1149,6 +1165,11 @@ const HostPlan = struct {
     }
 };
 
+/// The host targets' mix drawn for `seed`, as `--mix` takes it.
+pub fn drawn_mix(seed: u64) u64 {
+    return HostPlan.draw(seed, null).mix.encode();
+}
+
 /// The simulator's seed (`new Random(seed)`) for a swarm seed.
 fn simulation_seed(seed: u64) i32 {
     return @bitCast(@as(u32, @truncate(seed)));
@@ -1485,7 +1506,7 @@ test "a failing seed prints its regression entry, which replays the failure on i
     try std.testing.expect(std.mem.indexOf(u8, text, line) != null);
 
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    const source = generate_hosted(seed, &buffer).source;
+    const source = generate(.host_synthetic, seed, null, &buffer).source;
     const failure = (try replay(gpa, regression, source)).?;
     try std.testing.expectEqualStrings("synthetic set_variable", failure);
     var passing = regression;
