@@ -43,10 +43,7 @@ pub const StringHeap = struct {
     }
 
     fn object_bytes(text_length: u32) u32 {
-        const total = std.mem.alignForward(u32, header_bytes + text_length, 4);
-        assert(total >= header_bytes + text_length);
-        assert(total % 4 == 0);
-        return total;
+        return std.mem.alignForward(u32, header_bytes + text_length, 4);
     }
 
     /// Room for a string of `length` bytes, or null if it doesn't fit without compacting.
@@ -104,13 +101,11 @@ pub const StringHeap = struct {
         const raw = std.mem.readInt(u32, heap.bytes[at..][0..4], .little);
         if (raw & mark_bit != 0) return .marked;
         if (at + object_bytes(raw) > heap.used) return .object_out_of_bounds;
-        assert(at + header_bytes <= heap.used);
         return .ok;
     }
 
     /// Walks every object: lengths chain exactly to `used`, and nothing is left marked.
     pub fn check(heap: *const StringHeap) Fault {
-        assert(heap.bytes.len < mark_bit);
         if (heap.used > heap.bytes.len) return .used_exceeds_capacity;
         var at: u32 = 0;
         while (at < heap.used) {
@@ -158,7 +153,6 @@ const Marker = struct {
     lists: *ListSlab,
 
     pub fn string(marker: *Marker, reference: *StringReference) void {
-        assert(marker.strings.used <= marker.strings.bytes.len);
         if (!reference.is_heap()) return;
         const at = reference.heap_offset();
         assert(marker.strings.check_reference(reference.*) == .ok or
@@ -168,7 +162,6 @@ const Marker = struct {
     }
 
     pub fn list(marker: *Marker, reference: *ListReference) void {
-        assert(marker.lists.used <= marker.lists.words.len);
         const at = @backingInt(reference.*);
         assert(at + ListSlab.header_words <= marker.lists.used);
         // Any value other than `unmarked` means live until the plan assigns the offset.
@@ -190,7 +183,6 @@ fn plan_strings(heap: *StringHeap) void {
         at += total;
     }
     assert(at == heap.used);
-    assert(next <= heap.used);
 }
 
 fn plan_lists(slab: *ListSlab) void {
@@ -205,7 +197,6 @@ fn plan_lists(slab: *ListSlab) void {
         at += total;
     }
     assert(at == slab.used);
-    assert(next <= slab.used);
 }
 
 const Updater = struct {
@@ -213,7 +204,6 @@ const Updater = struct {
     lists: *ListSlab,
 
     pub fn string(updater: *Updater, reference: *StringReference) void {
-        assert(updater.strings.used <= updater.strings.bytes.len);
         if (!reference.is_heap()) return;
         const at = reference.heap_offset();
         const forward = std.mem.readInt(u32, updater.strings.bytes[at + 4 ..][0..4], .little);
@@ -222,7 +212,6 @@ const Updater = struct {
     }
 
     pub fn list(updater: *Updater, reference: *ListReference) void {
-        assert(updater.lists.used <= updater.lists.words.len);
         const at = @backingInt(reference.*);
         const forward = updater.lists.words[at];
         assert(forward != ListSlab.unmarked and forward <= at);
@@ -266,7 +255,6 @@ fn slide_lists(slab: *ListSlab) void {
     }
     if (std.debug.runtime_safety) @memset(slab.words[next..slab.used], ListSlab.unmarked);
     slab.used = next;
-    assert(slab.used <= slab.words.len);
 }
 
 /// A root set for the tests: a fixed array of values.
@@ -274,8 +262,6 @@ const TestRoots = struct {
     values: []value_module.Value,
 
     pub fn visit(roots: *TestRoots, visitor: anytype) void {
-        assert(@TypeOf(visitor) != void);
-        assert(roots.values.len < 1 << 16);
         for (roots.values) |*value| {
             switch (value.*) {
                 .string => |*reference| visitor.string(reference),
@@ -291,7 +277,6 @@ fn store_text(heap: *StringHeap, text: []const u8) ?StringReference {
     assert(text.len < 1 << 16);
     const reference = heap.try_allocate(@intCast(text.len)) orelse return null;
     @memcpy(heap.get(reference), text);
-    assert(heap.get(reference).len == text.len);
     return reference;
 }
 

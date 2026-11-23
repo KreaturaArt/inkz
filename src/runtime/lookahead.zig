@@ -74,7 +74,6 @@ pub fn take(state: *State) void {
         .previous_random = state.previous_random,
         .did_safe_exit = state.did_safe_exit,
     };
-    assert(active(state));
 }
 
 /// ink's RestoreStateSnapshot: the state as it was at `take`. Heap objects made since then
@@ -103,7 +102,6 @@ pub fn restore(state: *State) void {
     state.previous_random = snapshot.previous_random;
     state.did_safe_exit = snapshot.did_safe_exit;
     state.snapshot = .{};
-    assert(!active(state));
 }
 
 /// ink's DiscardSnapshot: keeps every change made since `take`.
@@ -111,7 +109,6 @@ pub fn discard(state: *State) void {
     assert(active(state));
     @memset(state.lookahead_copied, 0);
     state.snapshot = .{};
-    assert(!active(state));
 }
 
 /// Into the snapshot's copy (`out`), or from it (`back`).
@@ -121,12 +118,10 @@ const Direction = enum { out, back };
 fn global_chunks(state: *const State) u32 {
     const count: u32 = @intCast(state.globals.len);
     const chunks = (count + chunk_slots - 1) / chunk_slots; // rounded up
-    assert(chunks * chunk_slots >= count);
     return chunks;
 }
 
 fn is_copied(state: *const State, chunk: u32) bool {
-    assert(chunk / 32 < state.lookahead_copied.len);
     return state.lookahead_copied[chunk / 32] & (@as(u32, 1) << @intCast(chunk % 32)) != 0;
 }
 
@@ -136,7 +131,6 @@ fn copy_on_write(state: *State, chunk: u32) void {
     if (is_copied(state, chunk)) return;
     state.lookahead_copied[chunk / 32] |= @as(u32, 1) << @intCast(chunk % 32);
     copy_chunk(state, chunk, .out);
-    assert(is_copied(state, chunk));
 }
 
 /// Copies every copied chunk back and clears the bitset.
@@ -148,7 +142,6 @@ fn copy_back(state: *State) void {
         }
         word.* = 0;
     }
-    assert(copied_count(state) == 0);
 }
 
 fn copy_chunk(state: *State, chunk: u32, direction: Direction) void {
@@ -171,7 +164,6 @@ fn slots(chunk: u32, len: usize) struct { first: u32, end: u32 } {
     const first = chunk * chunk_slots;
     assert(first < len);
     const end: u32 = @intCast(@min(first + chunk_slots, len));
-    assert(end > first);
     return .{ .first = first, .end = end };
 }
 
@@ -186,25 +178,21 @@ fn copy_slots(comptime T: type, live: []T, saved: []T, direction: Direction) voi
 fn copied_count(state: *const State) u32 {
     var count: u32 = 0;
     for (state.lookahead_copied) |word| count += @popCount(word);
-    assert(count <= state.lookahead_copied.len * 32);
     return count;
 }
 
 pub fn set_global(state: *State, slot: index.GlobalSlot, value: Value) void {
     const at = slot.to_int();
-    assert(at < state.globals.len);
     if (active(state)) copy_on_write(state, at / chunk_slots);
     state.globals[at] = value;
 }
 
 pub fn set_visit_count(state: *State, slot: u32, count: u32) void {
-    assert(slot < state.visit_counts.len);
     if (active(state)) copy_on_write(state, global_chunks(state) + slot / chunk_slots);
     state.visit_counts[slot] = count;
 }
 
 pub fn set_turn_index(state: *State, slot: u32, turn: i32) void {
-    assert(slot < state.turn_indices.len);
     if (active(state)) copy_on_write(state, global_chunks(state) + slot / chunk_slots);
     state.turn_indices[slot] = turn;
 }
@@ -234,7 +222,6 @@ pub fn check(state: *const State) Fault {
 
 /// The heap references held by the snapshot's copies: compaction roots.
 pub fn visit(state: *State, visitor: anytype) void {
-    assert(@typeInfo(@TypeOf(visitor)) == .pointer);
     if (!active(state)) return;
     state_module.visit_flow(state.lookahead.prefix(&state.snapshot.counts), visitor);
     for (0..global_chunks(state)) |chunk| {
@@ -263,11 +250,8 @@ fn test_state(gpa: std.mem.Allocator, program: *Program, state: *State, limits: 
 }
 
 fn store_text(state: *State, text: []const u8) value_module.StringReference {
-    assert(text.len < 1 << 16);
-    assert(state.strings.used <= state.strings.bytes.len);
     const reference = state.strings.try_allocate(@intCast(text.len)).?;
     @memcpy(state.strings.get(reference), text);
-    assert(state.strings.get(reference).len == text.len);
     return reference;
 }
 

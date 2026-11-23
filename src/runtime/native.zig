@@ -51,7 +51,6 @@ fn common_kind(a: Value, b: Value) Error!Kind {
         4 => .divert_target,
         else => return error.IncompatibleTypes,
     };
-    assert(rank >= 0);
     return kind;
 }
 
@@ -62,7 +61,6 @@ fn to_integer(value: Value) Error!i32 {
         .bool => |flag| @intFromBool(flag),
         else => return error.IncompatibleTypes,
     };
-    assert(value == .integer or result <= 1);
     return result;
 }
 
@@ -74,7 +72,6 @@ fn to_float(value: Value) Error!f32 {
         .bool => |flag| if (flag) 1 else 0,
         else => return error.IncompatibleTypes,
     };
-    assert(value != .bool or result == 0 or result == 1);
     return result;
 }
 
@@ -91,7 +88,6 @@ fn to_text(context: anytype, value: Value, buffer: *[32]u8) Error![]const u8 {
         .bool => |flag| if (flag) "true" else "false",
         else => return error.IncompatibleTypes,
     };
-    assert(value == .string or text.len > 0);
     return text;
 }
 
@@ -116,7 +112,6 @@ pub fn binary(context: anytype, opcode: Opcode, a: Value, b: Value) Error!Value 
         .divert_target => try divert_binary(opcode, a, b),
         .list => unreachable,
     };
-    assert(result != .null);
     return result;
 }
 
@@ -154,50 +149,39 @@ fn numeric_binary(comptime T: type, opcode: Opcode, a: T, b: T) Error!Value {
         .pow => .{ .float = if (integer) pow(@floatFromInt(a), @floatFromInt(b)) else pow(a, b) },
         else => return error.UnsupportedOperation,
     };
-    assert(result != .null);
     return result;
 }
 
 fn integer_divide(a: i32, b: i32) Error!i32 {
     if (b == 0) return error.DivisionByZero;
     if (a == std.math.minInt(i32) and b == -1) return error.IntegerOverflow;
-    const result = @divTrunc(a, b);
-    assert(@abs(result) <= @abs(a));
-    return result;
+    return @divTrunc(a, b);
 }
 
 fn integer_modulo(a: i32, b: i32) Error!i32 {
     if (b == 0) return error.DivisionByZero;
     // .NET throws for this one too.
     if (a == std.math.minInt(i32) and b == -1) return error.IntegerOverflow;
-    const result = @rem(a, b);
-    assert(@abs(result) < @abs(b));
-    return result;
+    return @rem(a, b);
 }
 
 /// `(float)Math.Pow(x, y)`: computed in double precision, then rounded.
 fn pow(x: f32, y: f32) f32 {
-    const result: f32 = @floatCast(std.math.pow(f64, x, y));
-    assert(!std.math.isNan(result) or std.math.isNan(x) or std.math.isNan(y) or x < 0);
-    return result;
+    return @floatCast(std.math.pow(f64, x, y));
 }
 
 /// C#'s Math.Max(float, float): NaN if either is NaN, and +0 over -0.
 fn maximum(a: f32, b: f32) f32 {
     if (std.math.isNan(a) or std.math.isNan(b)) return std.math.nan(f32);
     if (a == b) return if (std.math.signbit(a)) b else a;
-    const result = if (a > b) a else b;
-    assert(result >= a and result >= b);
-    return result;
+    return if (a > b) a else b;
 }
 
 /// C#'s Math.Min(float, float): NaN if either is NaN, and -0 over +0.
 fn minimum(a: f32, b: f32) f32 {
     if (std.math.isNan(a) or std.math.isNan(b)) return std.math.nan(f32);
     if (a == b) return if (std.math.signbit(a)) a else b;
-    const result = if (a < b) a else b;
-    assert(result <= a and result <= b);
-    return result;
+    return if (a < b) a else b;
 }
 
 // lint: allow hot_path: ink's == on strings compares their text
@@ -215,7 +199,6 @@ fn string_binary(context: anytype, opcode: Opcode, a: Value, b: Value) Error!Val
         .hasnt => .{ .bool = std.mem.indexOf(u8, text_a, text_b) == null },
         else => return error.UnsupportedOperation,
     };
-    assert(result == .string or result == .bool);
     return result;
 }
 
@@ -228,7 +211,6 @@ fn divert_binary(opcode: Opcode, a: Value, b: Value) Error!Value {
         .not_equal => .{ .bool = !same },
         else => return error.UnsupportedOperation,
     };
-    assert(result == .bool);
     return result;
 }
 
@@ -242,7 +224,6 @@ pub fn unary(context: anytype, opcode: Opcode, a: Value) Error!Value {
         .float => |number| try numeric_unary(f32, opcode, number),
         else => return error.UnsupportedOperation,
     };
-    assert(result != .null);
     return result;
 }
 
@@ -258,7 +239,6 @@ fn numeric_unary(comptime T: type, opcode: Opcode, a: T) Error!Value {
         .float_cast => .{ .float = if (integer) @floatFromInt(a) else a },
         else => return error.UnsupportedOperation,
     };
-    assert(result != .null);
     return result;
 }
 
@@ -270,9 +250,7 @@ pub fn float_to_integer(a: f32) Error!i32 {
     if (truncated < -2147483648.0 or truncated >= 2147483648.0) {
         return error.FloatToIntegerOutOfRange;
     }
-    const result: i32 = @intFromFloat(truncated);
-    assert(@as(f64, @floatFromInt(result)) == truncated);
-    return result;
+    return @intFromFloat(truncated);
 }
 
 /// A context with strings in a small arena, for the tests; it has no lists.
@@ -283,50 +261,38 @@ const TestContext = struct {
     pub fn string_bytes(context: *TestContext, reference: StringReference) []const u8 {
         assert(reference.is_heap());
         const offset = reference.heap_offset();
-        assert(offset < context.strings.items.len);
         return context.strings.items[offset];
     }
 
     fn string_concat(context: *TestContext, a: []const u8, b: []const u8) Error!StringReference {
-        assert(a.len + b.len < 1 << 20);
         const allocator = context.arena.allocator();
         const text = std.mem.concat(allocator, u8, &.{ a, b }) catch return error.HeapLimit;
         context.strings.append(allocator, text) catch return error.HeapLimit;
-        assert(text.len == a.len + b.len);
         return .heap(@intCast(context.strings.items.len - 1));
     }
 
     fn string_value(context: *TestContext, text: []const u8) !Value {
-        assert(context.strings.items.len < 1 << 20);
-        assert(text.len < 1024);
         return .{ .string = try context.string_concat(text, "") };
     }
 
     // This context has no lists.
-    pub fn list_count(context: *TestContext, list: value_module.ListReference) u32 {
-        assert(context.strings.items.len < 1 << 20);
-        assert(@backingInt(list) < 1 << 31);
+    pub fn list_count(_: *TestContext, _: value_module.ListReference) u32 {
         return 0;
     }
 
-    fn list_binary(context: *TestContext, opcode: Opcode, a: Value, b: Value) Error!Value {
+    fn list_binary(_: *TestContext, _: Opcode, a: Value, b: Value) Error!Value {
         assert(a == .list or b == .list);
-        assert(@backingInt(opcode) > 0 and context.strings.items.len < 1 << 20);
         return error.UnsupportedOperation;
     }
 
-    fn list_unary(context: *TestContext, opcode: Opcode, a: Value) Error!Value {
+    fn list_unary(_: *TestContext, _: Opcode, a: Value) Error!Value {
         assert(a == .list);
-        assert(@backingInt(opcode) > 0 and context.strings.items.len < 1 << 20);
         return error.UnsupportedOperation;
     }
 };
 
 fn test_context() TestContext {
-    const context: TestContext = .{ .arena = .init(std.testing.allocator) };
-    assert(context.strings.items.len == 0);
-    assert(context.arena.queryCapacity() == 0);
-    return context;
+    return .{ .arena = .init(std.testing.allocator) };
 }
 
 test "integer arithmetic wraps like C# and faults where C# throws" {

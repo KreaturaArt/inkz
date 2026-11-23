@@ -33,36 +33,27 @@ const ContainerIndex = index.ContainerIndex;
 pub const Error = story_module.Error;
 
 pub fn current_pointer(story: *Story) Pointer {
-    assert(story.state.call_stack.frames.count > 0);
     const frame = story.state.call_stack.current_frame();
-    const containers_count = story.program.containers.len;
-    assert(frame.pointer.is_null() or frame.pointer.container.to_int() < containers_count);
     return frame.pointer;
 }
 
 fn set_current_pointer(story: *Story, pointer: Pointer) void {
-    assert(story.state.call_stack.frames.count > 0);
     assert(pointer.is_null() or pointer.container.to_int() < story.program.containers.len);
     story.state.call_stack.current_frame().pointer = pointer;
 }
 
 fn in_expression(story: *Story) bool {
-    assert(story.state.call_stack.frames.count > 0);
     const frame = story.state.call_stack.current_frame();
-    assert(frame.kind != .tunnel or frame.temps_count <= story.state.limits.temps_per_frame_max);
     return frame.in_expression_evaluation;
 }
 
 fn set_in_expression(story: *Story, value: bool) void {
-    assert(story.state.call_stack.frames.count > 0);
     const frame = story.state.call_stack.current_frame();
     frame.in_expression_evaluation = value;
-    assert(in_expression(story) == value);
 }
 
 /// The instruction a pointer is at, or null past the end or in an empty container.
 fn resolve(story: *Story, pointer: Pointer) ?Instruction {
-    assert(pointer.container.to_int() < story.program.containers.len);
     assert(!pointer.is_null());
     const count = story.program.content_count(pointer.container);
     if (pointer.index >= count) return null;
@@ -103,7 +94,6 @@ pub fn run(story: *Story, budget: u32, steps: *u32) Error!RunResult {
         }
         if (current_pointer(story).is_null()) return .ended;
     }
-    assert(taken == budget);
     return .budget_exhausted;
 }
 
@@ -113,9 +103,7 @@ pub fn run(story: *Story, budget: u32, steps: *u32) Error!RunResult {
 /// when the output ends in a newline. Anywhere else, stepping on is the same as ink's
 /// check-after-every-step.
 fn loop_must_look(story: *Story) bool {
-    assert(story.state.call_stack.frames.count > 0);
     const state = &story.state;
-    assert(state.output.items.count <= state.output.items.buffer.len);
     if (!story.can_continue()) return true;
     if (state.output.in_string_evaluation()) return false;
     return lookahead.active(state) or state.output.ends_in_newline();
@@ -123,7 +111,6 @@ fn loop_must_look(story: *Story) bool {
 
 /// ink's Step.
 pub fn step(story: *Story) Error!Signal {
-    assert(story.state.call_stack.frames.count > 0);
     var pointer = current_pointer(story);
     if (pointer.is_null()) return .ended;
     pointer = try enter_containers(story, pointer);
@@ -155,19 +142,16 @@ fn enter_containers(story: *Story, start: Pointer) Error!Pointer {
         if (story.program.content_count(child) == 0) break;
         pointer = .start_of(child);
     }
-    assert(!pointer.is_null());
     return pointer;
 }
 
 /// ink's VisitContainer.
 pub fn visit_container(story: *Story, container: ContainerIndex, at_start: bool) Error!void {
-    assert(container.to_int() < story.program.containers.len);
     const program = story.program;
     const flags = program.container_field(container, .flags);
     if (flags.count_start_only and !at_start) return;
     const slot = program.container_field(container, .count_slot);
     if (slot == container_module.no_count_slot) return;
-    assert(slot < story.state.visit_counts.len);
     const state = &story.state;
     if (flags.visits_counted) {
         lookahead.set_visit_count(state, slot, state.visit_counts[slot] +% 1);
@@ -178,10 +162,8 @@ pub fn visit_container(story: *Story, container: ContainerIndex, at_start: bool)
 }
 
 pub fn visit_count(story: *Story, container: ContainerIndex) u32 {
-    assert(container.to_int() < story.program.containers.len);
     const slot = story.program.container_field(container, .count_slot);
     if (slot == container_module.no_count_slot) return 0;
-    assert(slot < story.state.visit_counts.len);
     return story.state.visit_counts[slot];
 }
 
@@ -214,7 +196,6 @@ pub fn visit_changed_containers_due_to_divert(story: *Story) Error!void {
 /// The containers the previous pointer was in, innermost first, in the state's scratch.
 fn previous_ancestors(story: *Story, previous: Pointer) []const ContainerIndex {
     const scratch = story.state.ancestors;
-    assert(scratch.len > 0);
     if (previous.is_null()) return scratch[0..0];
     var ancestor = previous.container;
     if (resolve(story, previous)) |instruction| {
@@ -225,13 +206,11 @@ fn previous_ancestors(story: *Story, previous: Pointer) []const ContainerIndex {
         scratch[count] = ancestor;
         ancestor = story.program.parent(ancestor);
     }
-    assert(count <= scratch.len);
     return scratch[0..count];
 }
 
 /// ink's NextContent, with its tail call made a loop.
 pub fn next_content(story: *Story) Error!void {
-    assert(story.state.call_stack.frames.count > 0);
     var rounds: u32 = 0;
     while (true) : (rounds += 1) {
         assert(rounds <= story.state.limits.frames_max + story.state.limits.threads_max);
@@ -252,7 +231,6 @@ pub fn next_content(story: *Story) Error!void {
 /// Past the end of a function or thread: pops it. Returns whether something was popped.
 fn pop_after_end(story: *Story) Error!bool {
     assert(current_pointer(story).is_null());
-    assert(story.state.call_stack.depth() > 0);
     const state = &story.state;
     if (state.call_stack.can_pop(.function)) {
         try ops.pop_call_stack(story, .function);
@@ -302,7 +280,6 @@ fn limit(err: call_stack_module.Error) Error {
 
 pub fn push_evaluation(story: *Story, value: Value) Error!void {
     story.state.evaluation.push(value) catch return error.EvaluationLimit;
-    assert(story.state.evaluation.count > 0);
 }
 
 pub fn pop_evaluation(story: *Story) Error!Value {
@@ -313,7 +290,6 @@ pub fn pop_evaluation(story: *Story) Error!Value {
 
 /// ink's PerformLogicAndFlowControl, plus pushing plain content where it goes.
 fn perform(story: *Story, instruction: Instruction, pointer: Pointer) Error!Signal {
-    assert(!pointer.is_null());
     assert(pointer.index < story.program.content_count(pointer.container));
     const opcode = instruction.opcode;
     if (@backingInt(opcode) >= @backingInt(Opcode.add) and
@@ -358,7 +334,6 @@ fn push_content(story: *Story, value: Value) Error!Signal {
 fn content_text(story: *Story, instruction: Instruction) Error!Signal {
     assert(instruction.opcode == .text or instruction.opcode == .newline or
         instruction.opcode == .glue or instruction.opcode == .tag);
-    assert(story.state.call_stack.depth() > 0);
     const opcode = instruction.opcode;
     if (in_expression(story)) {
         return switch (opcode) {
@@ -439,7 +414,6 @@ fn divert(story: *Story, instruction: Instruction) Error!Signal {
 
 fn push_frame(story: *Story, kind: call_stack_module.FrameKind) Error!void {
     const state = &story.state;
-    assert(state.call_stack.depth() > 0);
     assert(kind != .function_evaluation_from_game);
     state.call_stack.push(kind, state.evaluation.count, state.output.items.count) catch
         return error.FrameLimit;
@@ -447,7 +421,6 @@ fn push_frame(story: *Story, kind: call_stack_module.FrameKind) Error!void {
 
 fn choice_point(story: *Story, instruction: Instruction, pointer: Pointer) Error!Signal {
     assert(instruction.opcode == .choice_point);
-    assert(!pointer.is_null());
     const at = @backingInt(instruction.get(.choice_point));
     const record = extra.get(instruction_module.ChoicePoint, story.program.extra, at);
     try ops.process_choice(story, record, pointer);

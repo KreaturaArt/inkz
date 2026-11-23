@@ -54,10 +54,8 @@ pub fn evaluate_function(
     const program = story.program;
     const container = program.named_child(program.root_container(), name) orelse
         return error.FunctionNotFound;
-    assert(container.to_int() < program.containers.len);
     const depth_max = story.state.limits.evaluate_depth_max;
     if (story.evaluate_depth == depth_max) return error.EvaluateDepthLimit;
-    assert(story.evaluate_depth < depth_max);
     const before = try begin_evaluation(story, container, arguments);
     const text_start = text_writer.end;
     var stepping = false;
@@ -191,7 +189,6 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
     if (frame.kind != .function_evaluation_from_game) return error.EvaluationNotComplete;
     const height = frame.evaluation_height;
     assert(height <= state.evaluation.count);
-    assert(state.call_stack.depth() > 1);
     const returned: ?Value = if (state.evaluation.count > height)
         state.evaluation.buffer[height]
     else
@@ -232,7 +229,6 @@ fn stash_output(story: *Story) Error!void {
 }
 
 fn stashed_words(state: *const state_module.State) u32 {
-    assert(state.output_stashes_count <= state_module.output_stashes_max);
     var words: u32 = 0;
     for (state.output_stashes[0..state.output_stashes_count]) |stash| {
         words += stash.items * 3 + stash.marks;
@@ -250,7 +246,6 @@ fn unstash_output(story: *Story) void {
     const words = state.output_stash[stash.first..][0 .. stash.items * 3 + stash.marks];
     const item_bytes = std.mem.sliceAsBytes(words[0 .. stash.items * 3]);
     const items: []const Item = @alignCast(std.mem.bytesAsSlice(Item, item_bytes));
-    assert(items.len == stash.items);
     state.output.clear();
     state.output.items.push_slice(items) catch unreachable;
     state.output.string_marks.push_slice(words[stash.items * 3 ..]) catch unreachable;
@@ -281,9 +276,7 @@ fn external_program(gpa: std.mem.Allocator) !Program {
         if (!is_root) try builder.end_container();
     }
     try builder.end_container();
-    const program = try builder.finish();
-    assert(program.externals.len == 1);
-    return program;
+    return try builder.finish();
 }
 
 const Probe = struct {
@@ -292,9 +285,8 @@ const Probe = struct {
     reenter: bool = false,
     reentrant_error: bool = false,
 
-    fn call(context: ?*anyopaque, story: *Story, arguments: []const HostValue) anyerror!HostValue {
+    fn call(context: ?*anyopaque, story: *Story, _: []const HostValue) anyerror!HostValue {
         const probe: *Probe = @ptrCast(@alignCast(context.?));
-        assert(arguments.len == 0);
         assert(story.callback_depth > 0);
         probe.calls += 1;
         if (probe.reenter) {

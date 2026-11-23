@@ -137,7 +137,6 @@ fn write_flow(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void 
 
 /// ink's choiceThreads: the stored thread of each choice whose thread isn't live.
 fn write_choice_threads(story: *Story, writer: *Writer, view: FlowView) Writer.Error!void {
-    assert(view.buffers.threads.len > 0);
     assert(view.buffers.snapshots.len <= story.state.choices.snapshots.capacity());
     var written = false;
     for (view.buffers.choices) |choice| {
@@ -161,7 +160,6 @@ fn write_choice_threads(story: *Story, writer: *Writer, view: FlowView) Writer.E
 }
 
 fn thread_is_live(view: FlowView, counter: u32) bool {
-    assert(view.buffers.threads.len > 0);
     for (view.buffers.threads) |thread| {
         if (thread.counter == counter) return true;
     }
@@ -213,7 +211,6 @@ fn write_thread(
 /// The path of the content object at `pointer` (ink's `pointer.Resolve().path`): a nested
 /// container's own path, or the container's path and the index.
 fn write_object_path(story: *Story, writer: *Writer, pointer: Pointer) Writer.Error!void {
-    assert(pointer.container.to_int() < story.program.containers.len);
     assert(!pointer.is_null());
     const program = story.program;
     // ink's Pointer.Resolve gives the container itself for its own index and for an empty
@@ -312,7 +309,6 @@ fn write_choice(
 
 /// A choice target: a container's path when it targets its start, else the item's path.
 fn write_target_path(story: *Story, writer: *Writer, target: Pointer) Writer.Error!void {
-    assert(target.container.to_int() < story.program.containers.len);
     assert(!target.is_null());
     if (target.index == 0) return write_json_string(writer, path_of(story, target.container));
     try write_object_path(story, writer, target);
@@ -320,7 +316,6 @@ fn write_target_path(story: *Story, writer: *Writer, target: Pointer) Writer.Err
 
 /// ink writes only globals that differ from their defaults.
 fn write_variables(story: *Story, writer: *Writer) Writer.Error!void {
-    assert(story.program.globals.len == story.state.globals.len);
     const state = &story.state;
     assert(state.globals.len == state.global_defaults.len);
     try writer.writeByte('{');
@@ -367,16 +362,13 @@ fn list_items_equal(
     for (items_a) |item| {
         if (std.mem.indexOfScalar(ListItemIndex, items_b, item) == null) return false;
     }
-    assert(items_a.len == items_b.len);
     return true;
 }
 
 const Counts = enum { visits, turns };
 
 fn write_counts(story: *Story, writer: *Writer, counts: Counts) Writer.Error!void {
-    assert(@backingInt(counts) <= 1);
     const containers = story.program.containers;
-    assert(story.state.visit_counts.len == story.state.turn_indices.len);
     try writer.writeByte('{');
     var written = false;
     var position: u32 = 0;
@@ -438,7 +430,6 @@ fn write_list(story: *Story, writer: *Writer, list: value_module.ListReference) 
     assert(story.state.lists.check_reference(list));
     const view = story.state.lists.view(list);
     const program = story.program;
-    assert(view.items.len <= program.list_items.len);
     try writer.writeAll("{\"list\":{");
     for (view.items, 0..) |item, position| {
         if (position > 0) try writer.writeByte(',');
@@ -464,7 +455,6 @@ fn write_list(story: *Story, writer: *Writer, list: value_module.ListReference) 
 /// SimpleJson's float: .NET's text, `.0` when it has no point or exponent, and ink's
 /// stand-ins for infinities and NaN.
 pub fn write_float(writer: *Writer, number: f32) Writer.Error!void {
-    assert(writer.end <= writer.buffer.len);
     if (std.math.isNan(number)) return writer.writeAll("0.0");
     if (std.math.isInf(number)) return writer.writeAll(if (number > 0) "3.4E+38" else "-3.4E+38");
     var buffer: [value_module.float_text_bytes_max]u8 = undefined;
@@ -475,7 +465,6 @@ pub fn write_float(writer: *Writer, number: f32) Writer.Error!void {
 }
 
 fn write_json_string(writer: *Writer, text: []const u8) Writer.Error!void {
-    assert(writer.end <= writer.buffer.len);
     assert(text.len < 1 << 30);
     try writer.writeByte('"');
     try write_escaped(writer, text);
@@ -485,8 +474,6 @@ fn write_json_string(writer: *Writer, text: []const u8) Writer.Error!void {
 /// SimpleJson's WriteEscapedString: `\` and `"` escaped, `\n` and `\t` as escapes, other
 /// control characters dropped.
 fn write_escaped(writer: *Writer, text: []const u8) Writer.Error!void {
-    assert(writer.end <= writer.buffer.len);
-    assert(text.len < 1 << 30);
     for (text) |character| {
         switch (character) {
             '\n' => try writer.writeAll("\\n"),

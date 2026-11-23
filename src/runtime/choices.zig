@@ -89,19 +89,15 @@ pub const Choices = struct {
     }
 
     pub fn clear(choices: *Choices) void {
-        assert(choices.records.buffer.len > 0);
         choices.records.clear();
         choices.tags.clear();
         choices.snapshots.clear();
         choices.frames.clear();
         choices.temps.clear();
         choices.indexed_count = 0;
-        assert(choices.records.is_empty());
     }
 
     pub fn count(choices: *const Choices) u32 {
-        assert(choices.records.count <= choices.records.buffer.len);
-        assert(choices.tags.count <= choices.tags.buffer.len);
         return choices.records.count;
     }
 
@@ -135,13 +131,11 @@ pub const Choices = struct {
         record.tags_count = @intCast(tags.len);
         record.snapshot = snapshot;
         choices.records.push(record) catch unreachable;
-        assert(choices.records.peek().?.snapshot < choices.snapshots.count);
     }
 
     /// The snapshot index of the current thread: the last one if it is identical, else a
     /// new copy.
     fn capture(choices: *Choices, stack: *CallStack) Error!u32 {
-        assert(stack.threads.count > 0);
         const frames = stack.current_frames();
         const first_temp = frames[0].temps_first;
         const temps = stack.temps.slice()[first_temp..];
@@ -163,7 +157,6 @@ pub const Choices = struct {
             return error.SnapshotLimit;
         assert(choices.temps.count == snapshot.temps_first + snapshot.temps_count);
         choices.snapshots.push(snapshot) catch unreachable;
-        assert(choices.snapshots.count > 0);
         return choices.snapshots.count - 1;
     }
 
@@ -236,12 +229,10 @@ pub const Choices = struct {
             if (frames_end > choices.frames.count) return .snapshot_ranges;
             if (temps_end > choices.temps.count) return .snapshot_ranges;
         }
-        assert(next_tag <= choices.tags.buffer.len);
         return .ok;
     }
 
     pub fn verify(choices: *const Choices) void {
-        assert(choices.records.buffer.len > 0);
         fault.verify(choices.check());
     }
 };
@@ -255,7 +246,6 @@ fn temps_equal(a: []const Temp, b: []const Temp) bool {
         if (left.name != right.name) return false;
         if (!left.value.identical(right.value)) return false;
     }
-    assert(a.len == b.len);
     return true;
 }
 
@@ -272,8 +262,6 @@ const TestState = struct {
     fn stack(state: *TestState) CallStack {
         var result = CallStack.init(&state.frames, &state.threads, &state.temps, 8);
         result.reset(.start_of(.from_int(0)));
-        assert(result.depth() == 1);
-        assert(result.thread_counter == 0);
         return result;
     }
 
@@ -285,14 +273,11 @@ const TestState = struct {
             .frames = &state.snapshot_frames,
             .temps = &state.snapshot_temps,
         });
-        assert(result.count() == 0);
-        assert(result.snapshots.count == 0);
         return result;
     }
 };
 
 fn test_choice(target: u32) Choice {
-    assert(target < 100);
     return .{
         .text = .heap(0),
         .target = .start_of(.from_int(target)),

@@ -21,37 +21,27 @@ pub const StringReference = enum(u32) {
     pub fn program(id: StringId) StringReference {
         const raw = id.to_int();
         assert(raw & heap_bit == 0);
-        const reference: StringReference = @fromBackingInt(@intCast(raw));
-        assert(!reference.is_heap());
-        return reference;
+        return @fromBackingInt(@intCast(raw));
     }
 
     pub fn heap(offset: u32) StringReference {
         assert(offset & heap_bit == 0);
-        const reference: StringReference = @fromBackingInt(@intCast(offset | heap_bit));
-        assert(reference.is_heap());
-        return reference;
+        return @fromBackingInt(@intCast(offset | heap_bit));
     }
 
     pub fn is_heap(reference: StringReference) bool {
         const raw = @backingInt(reference);
-        const result = raw & heap_bit != 0;
-        assert(result or raw < heap_bit);
-        return result;
+        return raw & heap_bit != 0;
     }
 
     pub fn program_id(reference: StringReference) StringId {
         assert(!reference.is_heap());
-        const id = StringId.from_int(@backingInt(reference));
-        assert(@backingInt(id) < heap_bit);
-        return id;
+        return StringId.from_int(@backingInt(reference));
     }
 
     pub fn heap_offset(reference: StringReference) u32 {
         assert(reference.is_heap());
-        const offset = @backingInt(reference) & ~heap_bit;
-        assert(offset < heap_bit);
-        return offset;
+        return @backingInt(reference) & ~heap_bit;
     }
 };
 
@@ -91,7 +81,6 @@ pub const Value = union(enum(u8)) {
             .variable_pointer => 5,
             .null, .tag => null,
         };
-        if (result) |order| assert(order >= -1 and order <= 5);
         return result;
     }
 
@@ -99,7 +88,6 @@ pub const Value = union(enum(u8)) {
     /// `context` provides `list_count(ListReference) u32` and `string_bytes(StringReference)
     /// []const u8`.
     pub fn is_truthy(value: Value, context: anytype) error{NoTruthValue}!bool {
-        assert(@typeInfo(@TypeOf(context)) == .pointer);
         return switch (value) {
             .bool => |flag| flag,
             .integer => |number| number != 0,
@@ -160,14 +148,12 @@ pub fn format_float(value: f32, buffer: *[float_text_bytes_max]u8) []const u8 {
     } else {
         write_fixed(&writer, digits, exponent) catch unreachable;
     }
-    assert(writer.end > 0);
     return writer.buffered();
 }
 
 fn copy(buffer: *[float_text_bytes_max]u8, text: []const u8) []const u8 {
     assert(text.len <= buffer.len);
     @memcpy(buffer[0..text.len], text);
-    assert(text.len > 0);
     return buffer[0..text.len];
 }
 
@@ -180,11 +166,9 @@ fn write_scientific(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !
     }
     const sign: u8 = if (exponent < 0) '-' else '+';
     try writer.print("E{c}{d:0>2}", .{ sign, @abs(exponent) });
-    assert(exponent >= 9 or exponent < -4);
 }
 
 fn write_fixed(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !void {
-    assert(digits.len > 0);
     assert(exponent >= -4 and exponent < 9);
     if (exponent < 0) {
         try writer.writeAll("0.");

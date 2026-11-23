@@ -263,7 +263,6 @@ pub const State = struct {
     };
 
     pub fn shape_of(program: *const Program) Limits.ProgramShape {
-        assert(program.containers.len > 0);
         return .{
             .count_slots = program.count_slots_count,
             .globals_count = @intCast(program.globals.len),
@@ -324,7 +323,6 @@ pub const State = struct {
             .container_depth = container_depth(state.program),
             .load_bytes = state.peaks.load_bytes,
         };
-        assert(result.frames <= state.limits.frames_max);
         return result;
     }
 
@@ -361,7 +359,6 @@ pub const State = struct {
         state: anytype,
         comptime buffer: FlowBuffer,
     ) FlowStack(@TypeOf(state), buffer) {
-        comptime assert(@typeInfo(@TypeOf(state)).pointer.child == State);
         return switch (buffer) {
             .evaluation => &state.evaluation,
             .frames => &state.call_stack.frames,
@@ -379,7 +376,6 @@ pub const State = struct {
 
     /// The used part of every live-flow buffer.
     pub fn live_flow(state: *State) FlowBuffers {
-        assert(state.call_stack.threads.count > 0);
         var buffers: FlowBuffers = undefined;
         inline for (flow_buffers) |buffer| {
             @field(buffers, @tagName(buffer)) = state.flow_stack(buffer).slice();
@@ -390,7 +386,6 @@ pub const State = struct {
     /// Calls `visitor.string` and `visitor.list` for every heap reference the state holds:
     /// the root set of heap compaction.
     pub fn visit(state: *State, visitor: anytype) void {
-        assert(@TypeOf(visitor) != void);
         visit_flow(state.live_flow(), visitor);
         for (state.globals) |*value| visit_value(value, visitor);
         for (state.global_defaults) |*value| visit_value(value, visitor);
@@ -421,7 +416,6 @@ pub const State = struct {
             .@"error" => &state.errors,
             .warning => &state.warnings,
         };
-        assert(list.buffer.len > 0);
         assert(state.diagnostic_bytes_used <= state.diagnostic_bytes.len);
         if (list.is_full()) {
             state.diagnostics_dropped += 1;
@@ -432,7 +426,6 @@ pub const State = struct {
         write_diagnostic(state.program, severity, pointer, format, arguments, &writer) catch {};
         state.diagnostic_bytes_used += @intCast(writer.end);
         list.push(.{ .start = start, .length = @intCast(writer.end) }) catch unreachable;
-        assert(list.count > 0);
     }
 
     pub fn diagnostic_text(state: *const State, diagnostic: Diagnostic) []const u8 {
@@ -442,33 +435,27 @@ pub const State = struct {
 
     /// ink's hasError, which also stops `can_continue`.
     pub fn has_error(state: *const State) bool {
-        assert(state.errors.count <= state.errors.buffer.len);
         // Limits are never zero, so a dropped error always has a kept one before it.
         assert(state.errors.buffer.len > 0);
         return state.errors.count > 0;
     }
 
     pub fn has_warning(state: *const State) bool {
-        assert(state.warnings.count <= state.warnings.buffer.len);
         return state.warnings.count > 0;
     }
 
     /// ink's ResetErrors.
     pub fn reset_errors(state: *State) void {
-        assert(state.errors.buffer.len > 0 and state.warnings.buffer.len > 0);
         state.errors.clear();
         state.warnings.clear();
         state.diagnostic_bytes_used = 0;
         state.diagnostics_dropped = 0;
-        assert(!state.has_error() and !state.has_warning());
     }
 
     /// Compacts the heap. Only `reserve` (and load) calls it, while the roots hold every
     /// live value.
     pub fn compact(state: *State) void {
-        assert(state.strings.used <= state.strings.bytes.len);
         _ = heap.compact(&state.strings, &state.lists, state);
-        assert(state.lists.used <= state.lists.words.len);
     }
 
     /// Room for `string_bytes` of heap strings (headers included) and `list_words` of lists,
@@ -480,8 +467,6 @@ pub const State = struct {
         string_bytes: u32,
         list_words: u32,
     ) error{ HeapLimit, ListLimit }!void {
-        assert(state.strings.used <= state.strings.bytes.len);
-        assert(state.lists.used <= state.lists.words.len);
         const strings_short = state.strings.bytes.len - state.strings.used < string_bytes;
         const lists_short = state.lists.words.len - state.lists.used < list_words;
         if (strings_short or lists_short or state.compact_always) state.compact();
@@ -519,7 +504,6 @@ pub const State = struct {
             @bitCast(state.current_flow), @intFromBool(state.snapshot.active),
         };
         hash_records(&hasher, &scalars);
-        assert(state.lists.used <= state.lists.words.len);
         return hasher.final();
     }
 
@@ -536,7 +520,6 @@ pub const State = struct {
         state.visit(&checker);
         if (!checker.strings_ok) return .string_reference;
         if (!checker.lists_ok) return .list_reference;
-        assert(state.turn_indices.len == state.visit_counts.len);
         return .ok;
     }
 
@@ -564,7 +547,6 @@ fn visit_items(items: []output_module.Item, visitor: anytype) void {
 
 /// Calls `visitor.string` or `visitor.list` for the heap reference `value` holds, if any.
 pub fn visit_value(value: *Value, visitor: anytype) void {
-    assert(@TypeOf(visitor) != void);
     switch (value.*) {
         .string => |*reference| visitor.string(reference),
         .tag => |*reference| visitor.string(reference),
@@ -576,7 +558,6 @@ pub fn visit_value(value: *Value, visitor: anytype) void {
 // lint: allow hot_path: State.hash, for tests
 fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
     for (values) |value| hash_value(hasher, value);
-    assert(@typeInfo(@TypeOf(hasher)) == .pointer);
 }
 
 // lint: allow hot_path: State.hash, for tests
@@ -604,7 +585,6 @@ fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
 // lint: allow hot_path: State.hash, for tests
 fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
     for (records) |record| std.hash.autoHash(hasher, record);
-    assert(@typeInfo(@TypeOf(records)) == .pointer);
 }
 
 /// Checks that every heap string reference is valid (State.check).
@@ -615,13 +595,11 @@ const ReferenceChecker = struct {
     lists_ok: bool = true,
 
     pub fn string(checker: *ReferenceChecker, reference: *StringReference) void {
-        assert(checker.strings.used <= checker.strings.bytes.len);
         if (!reference.is_heap()) return;
         if (checker.strings.check_reference(reference.*) != .ok) checker.strings_ok = false;
     }
 
     pub fn list(checker: *ReferenceChecker, reference: *value_module.ListReference) void {
-        assert(checker.lists.used <= checker.lists.words.len);
         if (!checker.lists.check_reference(reference.*)) checker.lists_ok = false;
     }
 };
@@ -665,7 +643,6 @@ fn write_diagnostic(
 
 /// The deepest nesting of containers in the program (root alone is 1).
 fn container_depth(program: *const Program) u32 {
-    assert(program.containers.len > 0);
     var deepest: u32 = 0;
     for (0..program.containers.len) |position| {
         var depth: u32 = 0;
@@ -673,7 +650,6 @@ fn container_depth(program: *const Program) u32 {
         while (!container.is_none()) : (depth += 1) container = program.parent(container);
         deepest = @max(deepest, depth);
     }
-    assert(deepest >= 1);
     return deepest;
 }
 
@@ -743,7 +719,6 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     };
     result.text_cache.text = carver.take(u8, limits.output_bytes_max);
     assert(result.text_cache.check() == .ok);
-    assert(result.globals.len == program.globals.len);
     return result;
 }
 
@@ -751,14 +726,12 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
 /// evaluation stack of `evaluation_values` values.
 fn carve_flow(carver: *Carver, limits: Limits, slots: u32, evaluation_values: u32) FlowBuffers {
     assert(carver.used % 4 == 0);
-    assert(slots > 0);
     var buffers: FlowBuffers = undefined;
     buffers.evaluation = carver.take(Value, evaluation_values);
     inline for (owned_buffers) |buffer| {
         const count = buffer.capacity(&limits) * slots;
         @field(buffers, @tagName(buffer)) = carver.take(FlowElement(buffer), count);
     }
-    assert(buffers.frames.len == limits.frames_max * slots);
     return buffers;
 }
 

@@ -32,9 +32,7 @@ pub fn pointer_at_path(story: *const Story, text: []const u8) PathError!Pointer 
     const target = path_module.resolve(story.program, origin, path) catch return error.PathNotFound;
     if (target.approximate) return error.PathNotFound;
     const position = target.content_index orelse 0;
-    const pointer: Pointer = .{ .container = target.container, .index = position };
-    assert(pointer.container.to_int() < story.program.containers.len);
-    return pointer;
+    return .{ .container = target.container, .index = position };
 }
 
 /// ink's ChoosePathString (without arguments): with `reset_callstack`, the flow is ended
@@ -86,14 +84,12 @@ pub fn visit_count_at_path_string(story: *const Story, text: []const u8) u32 {
         if (info.count_slot == container_module.no_count_slot) return 0;
         return story.state.visit_counts[info.count_slot];
     }
-    assert(position == containers.len);
     return 0;
 }
 
 /// ink's TagsAtStartOfFlowContainerWithPathString: the plain-text tags at the start of the
 /// container at `text`, each passed to `sink.tag(text)`.
 pub fn tags_at_path(story: *const Story, text: []const u8, sink: anytype) !void {
-    assert(@typeInfo(@TypeOf(sink)) == .pointer);
     assert(text.len > 0);
     const pointer = try pointer_at_path(story, text);
     try tags_at_start(story, pointer.container, sink);
@@ -101,8 +97,6 @@ pub fn tags_at_path(story: *const Story, text: []const u8, sink: anytype) !void 
 
 /// ink's globalTags: the tags at the start of the story.
 pub fn global_tags(story: *const Story, sink: anytype) !void {
-    assert(@typeInfo(@TypeOf(sink)) == .pointer);
-    assert(story.program.containers.len > 0);
     try tags_at_start(story, story.program.root_container(), sink);
 }
 
@@ -130,5 +124,4 @@ fn tags_at_start(story: *const Story, start: ContainerIndex, sink: anytype) !voi
             else => if (in_tag) return error.TagNotText else return,
         }
     }
-    assert(position == count);
 }

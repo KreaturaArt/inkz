@@ -90,7 +90,6 @@ const Scratch = struct {
 
     fn alloc(context: *anyopaque, length: usize, alignment: Alignment, caller: usize) ?[*]u8 {
         const scratch: *Scratch = @ptrCast(@alignCast(context));
-        assert(scratch.peak <= scratch.buffer.buffer.len);
         defer scratch.peak = @max(scratch.peak, @as(u32, @intCast(scratch.buffer.end_index)));
         return FixedBufferAllocator.alloc(&scratch.buffer, length, alignment, caller);
     }
@@ -103,7 +102,6 @@ const Scratch = struct {
         caller: usize,
     ) bool {
         const scratch: *Scratch = @ptrCast(@alignCast(context));
-        assert(scratch.peak <= scratch.buffer.buffer.len);
         defer scratch.peak = @max(scratch.peak, @as(u32, @intCast(scratch.buffer.end_index)));
         return FixedBufferAllocator.resize(&scratch.buffer, memory, alignment, length, caller);
     }
@@ -126,14 +124,12 @@ fn as(json: Json, comptime kind: std.meta.Tag(Json)) Error!@FieldType(Json, @tag
 }
 
 fn member(object: Object, key: []const u8) Error!Json {
-    assert(key.len > 0);
     return object.get(key) orelse error.InvalidSave;
 }
 
 /// ink writes whole floats with `.0`; a number read where an int is expected must be an int.
 fn integer(json: Json) Error!i32 {
     const text = try as(json, .number_string);
-    assert(text.len > 0);
     return std.fmt.parseInt(i32, text, 10) catch error.InvalidSave;
 }
 
@@ -141,7 +137,6 @@ const Loader = struct {
     story: *Story,
 
     fn state(loader: *Loader) *state_module.State {
-        assert(loader.story.state.memory.len > 0);
         return &loader.story.state;
     }
 
@@ -167,10 +162,8 @@ const Loader = struct {
     }
 
     fn document(loader: *Loader, top: Object) Error!void {
-        assert(loader.state().flows.len > 0);
         const version = try integer(try member(top, "inkSaveVersion"));
         if (version < save_version_min) return error.SaveVersionTooOld;
-        assert(top.count() > 0);
         if (top.get("flows")) |all| {
             try loader.flows_of(top, try as(all, .object));
         } else {
@@ -204,11 +197,9 @@ const Loader = struct {
     /// default on the next switch) is refused, since here the default flow is always record
     /// 0 by its own name. Each flow name appears once (the parser refuses a repeated key).
     fn flows_of(loader: *Loader, top: Object, all: Object) Error!void {
-        assert(loader.state().flows.len > 0);
         const count = all.count();
         if (count == 0) return error.InvalidSave;
         if (count > loader.state().flows.len) return error.SaveTooLarge;
-        assert(count >= 1);
         const current_name = if (count > 1) try member(top, "currentFlowName") else null;
         const current = if (current_name) |name| try as(name, .string) else null;
         if (!all.contains(flows.default_name)) return error.InvalidSave;
@@ -228,7 +219,6 @@ const Loader = struct {
     fn flow(loader: *Loader, object: Object, name: []const u8) Error!void {
         if (name.len == 0) return error.InvalidSave;
         if (name.len > state_module.flow_name_bytes_max) return error.SaveTooLarge;
-        assert(name.len > 0);
         const s = loader.state();
         const record = flows.record_for(s, name) catch return error.SaveTooLarge;
         if (record != s.current_flow) flows.select(s, record);
@@ -242,8 +232,6 @@ const Loader = struct {
         try loader.output_stream((try as(try member(object, "outputStream"), .array)).items);
         const threads = if (object.get("choiceThreads")) |saved| try as(saved, .object) else null;
         try loader.choices((try as(try member(object, "currentChoices"), .array)).items, threads);
-        assert(s.call_stack.threads.count > 0);
-        assert(s.choices.snapshots.count == s.choices.count());
         assert(s.current_flow == record);
     }
 
@@ -263,7 +251,6 @@ const Loader = struct {
             }) catch return error.SaveTooLarge;
         }
         if (s.call_stack.threads.count == 0) return error.InvalidSave;
-        assert(s.call_stack.frames.count >= s.call_stack.threads.count);
         s.call_stack.thread_counter = @intCast(counter);
     }
 
@@ -272,7 +259,6 @@ const Loader = struct {
 
     /// ink's Thread constructor: frames, their temps, the thread index, the previous pointer.
     fn load_thread(loader: *Loader, object: Object, destination: Destination) Error!LoadedThread {
-        assert(@backingInt(destination) <= 1);
         const counter = try integer(try member(object, "threadIndex"));
         if (counter < 0) return error.InvalidSave;
         const frames = (try as(try member(object, "callstack"), .array)).items;
@@ -284,7 +270,6 @@ const Loader = struct {
     }
 
     fn frame(loader: *Loader, object: Object, destination: Destination) Error!void {
-        assert(@backingInt(destination) <= 1);
         const kind_number = try integer(try member(object, "type"));
         if (kind_number < 0 or kind_number > 2) return error.InvalidSave;
         var pointer: Pointer = .null;
@@ -315,7 +300,6 @@ const Loader = struct {
         }
         const temps_count = temps.count - temps_first;
         if (temps_count > s.limits.temps_per_frame_max) return error.SaveTooLarge;
-        assert(temps_first + temps_count == temps.count);
         frames.push(.{
             .pointer = pointer,
             .temps_first = temps_first,
@@ -335,7 +319,6 @@ const Loader = struct {
                 return error.SaveTooLarge;
             output.items.push(item) catch return error.SaveTooLarge;
         }
-        assert(output.string_marks.count <= output.items.count);
     }
 
     fn output_item(loader: *Loader, json: Json) Error!Item {
@@ -388,7 +371,6 @@ const Loader = struct {
         const reference = s.strings.try_allocate(@intCast(text.len)) orelse
             return error.SaveTooLarge;
         @memcpy(s.strings.get(reference), text);
-        assert(s.strings.get(reference).len == text.len);
         return reference;
     }
 
@@ -423,7 +405,6 @@ const Loader = struct {
             }
         }
         const snapshot = try loader.choice_thread(@intCast(counter), threads);
-        assert(records.tags.count >= tags_first);
         records.records.push(.{
             .text = text,
             .target = target,
@@ -469,12 +450,10 @@ const Loader = struct {
             .temps_count = s.choices.temps.count - temps_first,
             .previous_pointer = previous,
         }) catch return error.SaveTooLarge;
-        assert(s.choices.snapshots.count == snapshot_index + 1);
         return snapshot_index;
     }
 
     fn variables(loader: *Loader, saved: Object) Error!void {
-        assert(loader.state().globals.len == loader.story.program.globals.len);
         const program = loader.story.program;
         for (program.globals, 0..) |global, slot| {
             const value = saved.get(program.strings.get(global.name)) orelse continue;
@@ -493,7 +472,6 @@ const Loader = struct {
     const Counts = enum { visits, turns };
 
     fn counts(loader: *Loader, saved: Object, which: Counts) Error!void {
-        assert(@backingInt(which) <= 1);
         for (saved.keys(), saved.values()) |path, number_json| {
             const number = try integer(number_json);
             // ink keeps counts by path; a path the story doesn't count is kept but unused.
@@ -586,7 +564,6 @@ const Loader = struct {
     fn container_at(loader: *Loader, json: Json) Error!ContainerIndex {
         const target = try loader.resolve(json);
         if (target.content_index != null) return error.SaveDoesNotMatchStory;
-        assert(!target.container.is_none());
         return target.container;
     }
 
@@ -595,7 +572,6 @@ const Loader = struct {
     fn pointer_at(loader: *Loader, json: Json) Error!Pointer {
         const target = try loader.resolve(json);
         const position = target.content_index orelse Pointer.container_self;
-        assert(!target.container.is_none());
         return .{ .container = target.container, .index = position };
     }
 
@@ -618,7 +594,6 @@ const Loader = struct {
 };
 
 fn live_thread(s: *state_module.State, counter: u32) ?call_stack_module.Thread {
-    assert(s.call_stack.threads.count > 0);
     for (s.call_stack.threads.slice()) |thread| {
         if (thread.counter == counter) return thread;
     }

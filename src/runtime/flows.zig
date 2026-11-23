@@ -22,15 +22,12 @@ pub const Error = error{ FlowLimit, FlowNameTooLong, CannotRemoveDefaultFlow };
 
 fn record_name(record: *const FlowRecord) []const u8 {
     assert(record.name_length <= state_module.flow_name_bytes_max);
-    const name = record.name[0..record.name_length];
-    assert(name.len == record.name_length);
-    return name;
+    return record.name[0..record.name_length];
 }
 
 /// Flow `flow`'s slot of buffer `buffer`, at full capacity.
 fn slot(state: *const State, flow: u32, comptime buffer: FlowBuffer) []FlowElement(buffer) {
     comptime assert(buffer != .evaluation);
-    assert(flow < state.flows.len);
     const storage = @field(state.flow_storage, @tagName(buffer));
     const capacity = storage.len / state.flows.len;
     assert(capacity * state.flows.len == storage.len);
@@ -44,12 +41,9 @@ pub fn reset(state: *State) void {
     for (state.flows) |*record| record.in_use = false;
     claim(state, 0, default_name);
     attach(state, 0);
-    assert(std.mem.eql(u8, current_name(state), default_name));
 }
 
 pub fn current_name(state: *const State) []const u8 {
-    assert(state.current_flow < state.flows.len);
-    assert(state.flows[0].in_use);
     const record = &state.flows[state.current_flow];
     assert(record.in_use);
     return record_name(record);
@@ -57,7 +51,6 @@ pub fn current_name(state: *const State) []const u8 {
 
 fn find(state: *const State, name: []const u8) ?u32 {
     assert(name.len > 0);
-    assert(name.len <= state_module.flow_name_bytes_max);
     for (state.flows, 0..) |*record, position| {
         if (record.in_use and std.mem.eql(u8, record_name(record), name)) return @intCast(position);
     }
@@ -78,7 +71,6 @@ pub fn switch_flow(state: *State, name: []const u8) Error!void {
         state.output.clear();
         state.choices.clear();
     }
-    assert(state.current_flow == target);
 }
 
 /// Stores the live stacks' counts in the current flow's record and points them at flow
@@ -111,7 +103,6 @@ fn attach(state: *State, target: u32) void {
 }
 
 fn create(state: *State, name: []const u8) Error!u32 {
-    assert(state.flows[0].in_use);
     for (state.flows, 0..) |*record, position| {
         if (record.in_use) continue;
         claim(state, @intCast(position), name);
@@ -121,7 +112,6 @@ fn create(state: *State, name: []const u8) Error!u32 {
 }
 
 fn claim(state: *State, position: u32, name: []const u8) void {
-    assert(name.len <= state_module.flow_name_bytes_max);
     const record = &state.flows[position];
     assert(!record.in_use);
     record.* = .{
@@ -142,9 +132,7 @@ fn claim(state: *State, position: u32, name: []const u8) void {
 /// always record 0).
 pub fn record_for(state: *State, name: []const u8) Error!u32 {
     if (name.len == 0 or name.len > state_module.flow_name_bytes_max) return error.FlowNameTooLong;
-    const record = find(state, name) orelse try create(state, name);
-    assert(state.flows[record].in_use);
-    return record;
+    return find(state, name) orelse try create(state, name);
 }
 
 /// The used part of flow `flow`'s buffers, which isn't current. Its evaluation stack is
@@ -157,7 +145,6 @@ pub fn view(state: *const State, flow: u32) state_module.FlowBuffers {
     inline for (owned_buffers, record.counts) |buffer, count| {
         @field(buffers, @tagName(buffer)) = slot(state, flow, buffer)[0..count];
     }
-    assert(buffers.threads.len > 0);
     return buffers;
 }
 
@@ -172,17 +159,14 @@ pub fn remove_flow(state: *State, name: []const u8) Error!void {
         select(state, 0);
     }
     state.flows[target].in_use = false;
-    assert(find(state, name) == null);
 }
 
 /// Calls `sink.name(text)` for every flow except the default one (ink's aliveFlowNames).
 pub fn alive_flow_names(state: *const State, sink: anytype) !void {
-    assert(state.flows[0].in_use);
     for (state.flows) |*record| {
         if (!record.in_use) continue;
         const name = record_name(record);
         if (std.mem.eql(u8, name, default_name)) continue;
-        assert(name.len > 0);
         try sink.name(name);
     }
 }
@@ -200,7 +184,6 @@ pub const Fault = enum {
 /// Checks the flow directory: the default flow is record 0 and in use, the live stacks view
 /// the current flow's slot, and the other flows' counts fit their slots, with a thread each.
 pub fn check(state: *const State) Fault {
-    assert(state.flows.len > 0);
     const default = &state.flows[0];
     if (!default.in_use) return .default_flow;
     if (!std.mem.eql(u8, default.name[0..default.name_length], default_name)) return .default_flow;
@@ -224,7 +207,6 @@ pub fn check(state: *const State) Fault {
 
 /// Visits the heap references of every flow but the current one, for compaction.
 pub fn visit_others(state: *State, visitor: anytype) void {
-    assert(state.flows.len > 0);
     for (state.flows, 0..) |*record, position| {
         if (!record.in_use or position == state.current_flow) continue;
         state_module.visit_flow(view(state, @intCast(position)), visitor);
@@ -241,7 +223,6 @@ fn test_state(gpa: std.mem.Allocator, program: *Program, state: *State) !void {
     try builder.end_container();
     program.* = try builder.finish();
     try state.init(gpa, program, .{ .flows_max = 3 });
-    assert(state.flows.len == 3);
 }
 
 test "flows keep their own call stack and output, and new flows start at the root" {
