@@ -512,3 +512,76 @@ story. The compiler is 70–80% of it, and the JSON load most of the rest.
    `load_commit`, about 45% each; read once since P17.12). Lead: a trusted-input entry point for images made at
    build time. This trades safety for speed, so the default keeps the checks.
 
+
+## Phase 17: code-bloat reduction against main (P17.24)
+
+Measured on 2026-11-23 on one Apple M3, ReleaseFast: main (873eb9b) against the end of
+Phase 17 (1ff6dad), each tree's own `bench runtime`, `bench io` and `bench profile`
+binaries, run alternately, four rounds each. The figures are the medians of the four; the
+spread of a row within one tree was mostly ±2% and at most ±5%. Play turns/s and compile
+come from `bench runtime`, load and store from `bench io`, init and saves from `bench
+profile` (time without zones). The generated sections above were left as they were.
+
+| Measurement | main | Phase 17 | Change |
+|---|---:|---:|---:|
+| Play, crime_scene (turns/s, default limits) | 353,400 | 335,000 | −5.2% |
+| Play, crime_scene (turns/s, fitted limits) | 357,100 | 337,300 | −5.5% |
+| Play, generated (turns/s, default limits) | 1,606,700 | 1,522,200 | −5.3% |
+| Play, generated (turns/s, fitted limits) | 1,609,300 | 1,538,500 | −4.4% |
+| Play, crime_scene (`profile play`, µs) | 56.2 | 57.5 | +2.3% |
+| Play, generated (`profile play`, µs) | 127.1 | 130.4 | +2.6% |
+| JSON load, crime_scene (µs) | 184.3 | 177.1 | −3.9% |
+| JSON load, generated (µs) | 3,120.6 | 2,875.5 | −7.9% |
+| JSON store, crime_scene (µs) | 69.0 | 72.4 | +5.0% |
+| JSON store, generated (µs) | 1,129.4 | 1,224.4 | +8.4% |
+| Image load, crime_scene (µs) | 10.1 | 10.1 | 0% |
+| Image load, generated (µs) | 177.4 | 176.2 | −0.6% |
+| Image store, generated (µs) | 7.6 | 7.6 | 0% |
+| Story init, crime_scene (µs) | 6.2 | 7.0 | +14% |
+| Story init, generated (µs) | 7.2 | 8.3 | +15% |
+| Save, generated (µs) | 12.8 | 12.7 | −1% |
+| Save load, crime_scene (µs) | 9.3 | 7.3 | −22% |
+| Save load, generated (µs) | 91.1 | 57.2 | −37% |
+| Compile, crime_scene (ms) | 0.57 | 0.49 | −14% |
+| Compile, generated (ms) | 11.33 | 9.73 | −14% |
+| Compile peak, crime_scene (bytes) | 230,257 | 244,167 | +6.0% |
+| Compile peak, generated (bytes) | 4,292,974 | 4,887,997 | +13.9% |
+
+Memory, the state's fixed budget at the default limits (`Limits.bytes_total`):
+
+| Budget | main | Phase 17 | Change |
+|---|---:|---:|---:|
+| Default limits, empty program | 2,206,464 | 3,974,432 | +80% |
+| Default limits, 3,000 counted containers and 200 globals | 2,236,040 | 4,029,640 | +80% |
+| crime_scene program + default state | 2,259,645 | 4,028,209 | +78% |
+| crime_scene program + fitted state | 88,037 | 105,889 | +20% |
+| generated program + default state | 2,940,939 | 4,724,423 | +61% |
+| generated program + fitted state | 758,891 | 789,031 | +4% |
+
+The default budget grows by the per-flow buffers (each of the 8 default flows owns a full
+set instead of sharing a 256 KiB parking region, +0.98 MB, P17.14), the save-load scratch
+(1 MiB for std.json instead of 16 K tokens of 16 bytes, +768 KiB, P17.12) and the
+diagnostic messages (256 bytes per kept error or warning, P17.16). `flows_max = 1` or fitted
+limits take most of it back.
+
+Regressions over 5%, and where they come from (bisected with the same binaries per commit):
+
+- **Play, −5% in `bench runtime`.** The step is commit 1cef226 (P17.16, diagnostics
+  formatted when raised): crime_scene 355k → 334k turns/s there, and 590c1af takes the
+  generated story another 2% down; every other Phase 17 commit is within noise. Play raises
+  no diagnostics, so the cost is code generation: `ops.fail` and `State.add_diagnostic` now
+  format the message at the call site, generic over each format, and that code lands inside
+  the VM's hot functions. Marking both `@branchHint(.cold)` (two lines, measured on a
+  scratch copy of 1ff6dad) brings play back to 331k–350k turns/s on crime_scene and
+  1.56–1.59M on the generated story, within noise of main. `bench profile`'s play, which
+  measures a shorter run, shows only +2–3%.
+- **JSON store, +5–8%.** Commit 618fabb (P17.10): the writer builds each container's path
+  from its stored dotted path instead of carrying it down the walk (generated story 333 →
+  313 MB/s at that commit).
+- **Story init, +1 µs (+14%).** `Story.init` carves and initialises an 80% larger default
+  budget. With fitted limits the budget is smaller than main's default.
+
+Speed-ups: save load is 22–37% faster (P17.12 reads a save once instead of validating it
+first), compiling is 14% faster and JSON load 4–8% faster (not bisected; Phase 17 changed
+the builder's inputs, the reader's key handling and the compiler's IR, and dropped about
+930 assertions, P17.23).
