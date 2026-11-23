@@ -250,6 +250,47 @@ features on in every failing run are *triggers*, and those off in every failing 
 used by passing ones are *suppressors*. `--target save --seeds 2000` takes 39 s and finds
 nothing.
 
+### Regression seeds (P19.6)
+
+A seed that once failed stays in `test/swarm_regressions.zon`, and `zig build ci` (through
+`zig build test`) replays every entry: the swarm runner's test "the swarm regressions replay
+on their stories without a failure" (`swarm_runner.replay`) runs the entry's target on its
+story, `test/swarm_regressions/<target>-<seed>.ink`, with the plans, split, host plan and
+mix the seed draws, and requires no failure. The story is kept rather than regenerated, so
+a change to the generator or to the mutate corpus doesn't turn an entry into another case;
+a change to how a seed draws its plans (`Plan.draw`, `Split.draw`, `HostPlan.draw`, the
+simulator) still can, and the mix is kept for the host targets as `--mix` takes it. An
+entry is `.{ .target = .host, .seed = 4051, .mix = 0x60901, .bug = "<commit>: <what it
+found>" }`; `bug` must not be empty.
+
+Every failure prints its entry (`regression: add .{ ... } to test/swarm_regressions.zon,
+and the story the reproducing run writes to zig-out/swarm/regressions as
+test/swarm_regressions/<target>-<seed>.ink`). The reproducing run (`--seeds 1`) writes the
+story to `zig-out/swarm/regressions/` and prints the entry before it checks the seed, so a
+seed that panics keeps them too. To add one: run the printed reproduce command, copy the
+story to `test/swarm_regressions/`, add the entry with what it found, fix the bug, and check
+that the entry fails with the fix reverted.
+
+The list started with the swarm-found bugs of Phases 18 and 19. Each was found again by
+reverting its fix on main (966566e) in a worktree and running the target in ReleaseSafe
+from seed 1 for 60 s (3672 and 143492: on from the first panic for 150 s more, a run started
+again after each panic), and each entry's replay fails with the fix reverted (Debug, the
+test above with that entry alone):
+
+| Entry | Fix | With the fix reverted |
+|---|---|---|
+| `host` 4051 | 92781ce, a limit error in the newline lookahead left a divert pending | `visit_changed_containers_due_to_divert` asserts in `choose_path_string` |
+| `host` 3672 | cac1887, `evaluate_function` with more parameters than arguments | `complete_function_evaluation` asserts (reverted with 6395d85, whose `evaluation_floor` replaced it; passes with 6395d85 alone reverted) |
+| `host` 69 | 6395d85, a nested `evaluate_function` popped below its frame | the evaluation stack asserts a step later |
+| `mutate` 143492 | d986143, ill-formed UTF-8 went into the JSON as it was | `load of its JSON` |
+| `mutate` 67029 | 38e57e6, a string in a thread's arguments inside an unclosed string | `expression_string` asserts (found by this search, a bug on main) |
+| `save` 106 | 7fc407d, a loaded save put the current flow's record last | `save round trip` |
+| `save` 19879 | 826f605, a loaded save saved visible places for choice indices | `save round trip` (seed 2977 of P19.9's notes no longer fails: the generator changed since) |
+
+The long-string save (771ed57) was found by the save fuzz target and didn't fail in 60 s of
+`--target save` with its fix reverted, so it has no entry; its unit test in `api_test.zig`
+covers it. The replay takes about 0.3 s in Debug for the seven entries.
+
 Each target's summary line also says what the runs reached, counted without allocating:
 compile failures by the first error's diagnostic code (the most frequent four), played
 stories that hit a runtime error, lines played, choices made, played stories still going
