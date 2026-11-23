@@ -198,10 +198,13 @@ pub const Output = struct {
     /// `str`, `#` and `/#` markers.
     pub fn push_command(output: *Output, kind: Kind) Error!void {
         assert(kind == .begin_string or kind == .begin_tag or kind == .end_tag);
+        // The item and its mark go in together or not at all: a mark with no `str` under
+        // it would outlive a limit error.
+        if (output.items.is_full()) return error.OutputLimit;
         if (kind == .begin_string) {
             output.string_marks.push(output.items.count) catch return error.OutputLimit;
         }
-        output.items.push(.command(kind)) catch return error.OutputLimit;
+        output.items.push(.command(kind)) catch unreachable;
     }
 
     /// A finished tag value (a v20 tag literal, or a tag rescued from string evaluation).

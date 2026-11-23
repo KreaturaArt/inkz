@@ -190,3 +190,18 @@ test "fuzz: drawn limits are valid and some are tight" {
     }
     try std.testing.expect(tight_heaps > 64 and tight_heaps < 192);
 }
+
+test "fuzz: an output limit at the start of a string evaluation leaves no string mark" {
+    // A full output stack at `str` (the line's text holds the one item): the call fails with
+    // OutputLimit, and no mark points past the items (a fuzz crash, P19 review).
+    const gpa = std.testing.allocator;
+    var program = try @import("../compiler/compile.zig").compile_source(gpa, "A{\"b{1}\"}\n");
+    defer program.deinit(gpa);
+    var story: play.Story = undefined;
+    const setup: play.Setup = .{ .random_seed = 0, .fallbacks = false, .bind_external = false };
+    try play.init_story_with(&story, gpa, &program, setup, .{ .output_items_max = 1 });
+    defer story.deinit(gpa);
+    try std.testing.expectError(error.OutputLimit, story.cont());
+    try std.testing.expectEqual(@as(u32, 0), story.state.output.string_marks.count);
+    try std.testing.expect(story.state.check() == .ok);
+}

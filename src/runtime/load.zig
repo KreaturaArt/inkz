@@ -322,9 +322,10 @@ const Loader = struct {
         const output = &loader.state().output;
         for (items) |item_json| {
             const item = try loader.output_item(item_json);
+            if (output.items.is_full()) return error.SaveTooLarge;
             if (item.kind == .begin_string) output.string_marks.push(output.items.count) catch
                 return error.SaveTooLarge;
-            output.items.push(item) catch return error.SaveTooLarge;
+            output.items.push(item) catch unreachable;
         }
     }
 
