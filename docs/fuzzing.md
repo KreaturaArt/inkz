@@ -31,6 +31,25 @@ before it. Random bytes would mostly stop at the first check.
   `typed` (drawn 1 in 2), each expression keeps to numbers, strings or lists, with the
   operators ink defines on them, so type errors don't stop play. Neither is in
   `Swarm.classic`.
+- **More of ink.** The swarm's `constructs` (P18.6, each drawn 1 in 2, none in
+  `Swarm.classic`) are what the first generator didn't write: `TURNS()`, the math functions
+  (`POW`, `FLOOR`, `CEILING`, `INT`, `FLOAT`, `MIN`, `MAX`), the list functions
+  (`LIST_VALUE`, `LIST_MIN`, `LIST_MAX`, `LIST_ALL`, `LIST_INVERT`, `LIST_RANDOM`,
+  `LIST_RANGE`, `l0(n)`), `~ SEED_RANDOM(n)`, the one-condition multi-line conditional with
+  `- else:`, tags on choices (in each part of the text, one with a value), a variable that
+  holds a divert target and is diverted to (`VAR d0 = -> k0`, `-> d0`), and knots with
+  parameters reached by tunnels, threads and diverts with arguments (`-> tunnel1(n) ->`,
+  `<- thread1(n)`, `-> jump1(n, -> k0)`, whose `-> t` diverts to its parameter). Sticky
+  and fallback choices and the multi-branch conditional with `else` were there already.
+  With `hub`, `d0` and `jump1`'s target always hold the hub, so nothing loops without a
+  choice. A differential run of 2,400 drawn stories and 400 of `Swarm.all` against ink found
+  no divergence in them. The host target found a bug with them: `evaluate_function` of a
+  knot with parameters and no arguments pops the values a story error left on the
+  evaluation stack, below its own frame, and inkz asserted; it now reports a story error
+  (ink returns null with the values gone; `host_api_test.zig`, "evaluate_function of a knot
+  with more parameters than arguments fails closed"). `--target all --seconds 60` from seed
+  1 then ran 25,821 play, 16,036 save and 27,776 host seeds without a failure (play: 2,812
+  compile failures, 4,861 runtime errors, 458,046 lines, 325,496 choices).
 - **Loader targets.** These start from a valid file (a program image, a story's JSON or a
   save) and let the fuzzer edit its words or tokens.
 
@@ -166,7 +185,7 @@ and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
 `typed`, after P18.3 bound `e0`, varied the limits and resumed saves, and after P18.4
 folded the compile checks into play and save (and `all` dropped `compile`, so play and save
 get 4.5 s each instead of 3 s), and after P18.5 added `host` (play 3.6 s, save and host 2.7 s
-each):
+each), and after P18.6 added the `constructs` (5% fewer runs: the stories hold more):
 
 | | compile failures | play: compiled | runtime errors | lines | choices | step cap |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -176,6 +195,7 @@ each):
 | after P18.3 | 1,065 / 8,968 (11.9%) | 4,177 / 4,749 | 883 | 81,110 | 58,993 | 2,018 |
 | after P18.4 | 1,095 / 9,087 (12.0%) | 4,317 / 4,911 | 922 | 83,496 | 60,718 | 2,074 |
 | after P18.5 | 818 / 6,834 (12.0%) | 3,686 / 4,188 | 775 | 72,202 | 52,738 | 1,803 |
+| after P18.6 | 706 / 6,462 (10.9%) | 3,519 / 3,961 | 793 | 68,197 | 48,073 | 1,667 |
 
 The failures left are the error features' (`name_conflict` is `collision`'s). Played
 stories now run longer, so fewer fit in the time. After P18.3 a quarter of the runtime
