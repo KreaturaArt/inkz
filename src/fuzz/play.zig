@@ -36,11 +36,29 @@ fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Valu
     return if (arguments.len > 0) arguments[0] else .null;
 }
 
+/// What `evaluating_echo` evaluates: knots with parameters among them, so an evaluation
+/// with fewer arguments than parameters runs with the external's own just below its frame.
+const evaluated = [_][]const u8{ "tunnel1", "thread1", "jump1", "k0", "f0", "f1" };
+
+/// `e0(x)` as a host that calls back in: evaluates one of `evaluated` with no arguments
+/// (picked by an integer `x`), ignores how that went, and returns its argument.
+fn evaluating_echo(context: ?*anyopaque, story: *Story, arguments: []const Value) anyerror!Value {
+    assert(context == null);
+    const echoed: Value = if (arguments.len > 0) arguments[0] else .null;
+    const at: u32 = if (echoed == .integer) @truncate(@abs(echoed.integer)) else 0;
+    var text: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&text);
+    _ = story.evaluate_function(evaluated[at % evaluated.len], &.{}, &writer) catch {};
+    return echoed;
+}
+
 /// How a story is set up; a save doesn't hold it, so a story loading one needs the same.
 pub const Setup = struct {
     random_seed: i32,
     fallbacks: bool,
     bind_external: bool,
+    /// `e0`, when bound, is `evaluating_echo` (the swarm's host target).
+    evaluate_in_external: bool = false,
 
     /// The fuzzer picks the seed, the fallback rule and whether `e0` is bound.
     pub fn pick(choices: fuzz_ink.Choices) Setup {
@@ -77,7 +95,10 @@ pub fn init_story_with(
         // and run out of content.
         .on_error = support.ignore_message,
     });
-    if (setup.bind_external) try story.bind_external_function("e0", .{}, null, echo);
+    if (setup.bind_external) {
+        const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
+        try story.bind_external_function("e0", .{}, null, function);
+    }
     assert(story.state.check() == .ok);
 }
 

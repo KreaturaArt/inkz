@@ -189,7 +189,9 @@ fn session_on(program: *const Program, choices: fuzz_ink.Choices) !Session {
     const gpa = std.testing.allocator;
     assert(program.check() == .ok);
     var story: play.Story = undefined;
-    try play.init_story(&story, gpa, program, .pick(choices));
+    var setup: play.Setup = .pick(choices);
+    setup.evaluate_in_external = choices.choose(bool);
+    try play.init_story(&story, gpa, program, setup);
     defer story.deinit(gpa);
     assert(story.program == program);
     const calls = draw_calls(choices);

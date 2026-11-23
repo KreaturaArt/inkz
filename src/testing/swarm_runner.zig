@@ -657,10 +657,13 @@ const HostPlan = struct {
         var setup: fuzz_play.Setup = .pick(choices);
         // A story without `e0` stops at its first line; the play target covers that.
         if (!setup.fallbacks) setup.bind_external = true;
+        const calls = fuzz_host.draw_calls(choices);
+        // Drawn last, so the draws before keep their seeds' values.
+        setup.evaluate_in_external = choices.choose(bool);
         return .{
             .setup = setup,
             .mix = mix orelse .draw(simulation_seed(seed)),
-            .calls = fuzz_host.draw_calls(choices),
+            .calls = calls,
         };
     }
 };
