@@ -1135,10 +1135,13 @@ fn simulation_seed(seed: u64) i32 {
     return @bitCast(@as(u32, @truncate(seed)));
 }
 
-/// What a host target's story reported: errors and the changes its observers saw.
+/// What a host target's story reported: errors, the changes its observers saw, and those
+/// whose value differed from the global's read back with `get_variable`.
 const HostTrace = struct {
+    story: *api.Story,
     errored: bool = false,
     observed: u64 = 0,
+    mismatched: u64 = 0,
 
     fn note(context: ?*anyopaque, message: []const u8, severity: api.Severity) void {
         const trace: *HostTrace = @ptrCast(@alignCast(context.?));
@@ -1149,10 +1152,27 @@ const HostTrace = struct {
     fn observe(context: ?*anyopaque, name: []const u8, value: api.Value) void {
         const trace: *HostTrace = @ptrCast(@alignCast(context.?));
         assert(name.len > 0);
-        _ = value;
         trace.observed += 1;
+        // An observer is told the global's value now, which get_variable reads too.
+        const read = trace.story.get_variable(name) orelse unreachable;
+        if (!same_value(value, read.get())) trace.mismatched += 1;
     }
 };
+
+/// Whether two host values are the same: floats by their bits (a NaN is itself), strings by
+/// their bytes.
+fn same_value(a: api.Value, b: api.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .integer => |number| number == b.integer,
+        .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
+        .bool => |flag| flag == b.bool,
+        .string => |text| std.mem.eql(u8, text, b.string),
+        .list => |list| list == b.list,
+        .divert_target => |target| target == b.divert_target,
+    };
+}
 
 /// Plays `program`'s story as the seed's host plan says: an observer on every global, the
 /// simulator's mix (seeded choices, lines, and one action of the mix per turn), then a
@@ -1172,7 +1192,7 @@ fn play_host(
     var story: api.Story = undefined;
     try fuzz_play.init_story(&story, gpa, program, plan.setup);
     defer story.deinit(gpa);
-    var trace: HostTrace = .{};
+    var trace: HostTrace = .{ .story = &story };
     story.on_error = HostTrace.note;
     story.on_error_context = &trace;
     for (0..story.global_variable_count()) |position| {
@@ -1225,6 +1245,7 @@ fn play_host(
     summary.host_calls += count;
     summary.observed += trace.observed;
     summary.runtime_errors += @intFromBool(trace.errored);
+    if (trace.mismatched > 0) return "an observer's value differs from get_variable";
     return null;
 }
 
@@ -1357,6 +1378,7 @@ test "the host target passes a few seeds, and reports a failing action with its 
     const passed = try run(gpa, &out.writer, .host, 1, .{ .seeds = 6 }, .{});
     try std.testing.expectEqual(@as(u32, 0), passed.failures);
     try std.testing.expect(passed.host_calls > 0);
+    try std.testing.expect(passed.observed > 0);
     var actions: u32 = 0;
     for (passed.actions.values) |count| actions += count;
     try std.testing.expect(actions > 0);
@@ -1387,6 +1409,29 @@ test "the host target passes a few seeds, and reports a failing action with its 
     without.weights.set(.set_variable, 0);
     const passes = try run(gpa, &out.writer, .host_synthetic, seed, budget, .{ .mix = without });
     try std.testing.expectEqual(@as(u32, 0), passes.failures);
+}
+
+test "the host target's observers compare what they are told with get_variable" {
+    // P19.7: an observed global changed by the story and by the host is the value
+    // get_variable reads; a value that differs counts as a mismatch.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa, "VAR x = 1\n~ x = 2.5\nA {x}\n-> END\n");
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    var trace: HostTrace = .{ .story = &story };
+    try story.observe_variable("x", &trace, HostTrace.observe);
+    _ = try story.cont();
+    try story.set_variable("x", .{ .string = "text" });
+    try std.testing.expectEqual(@as(u64, 2), trace.observed);
+    try std.testing.expectEqual(@as(u64, 0), trace.mismatched);
+    HostTrace.observe(&trace, "x", .{ .string = "other" });
+    HostTrace.observe(&trace, "x", .{ .integer = 2 });
+    try std.testing.expectEqual(@as(u64, 2), trace.mismatched);
+    try std.testing.expect(same_value(.{ .float = std.math.nan(f32) }, .{
+        .float = std.math.nan(f32),
+    }));
 }
 
 test "a failing seed prints its regression entry, which replays the failure on its story" {
