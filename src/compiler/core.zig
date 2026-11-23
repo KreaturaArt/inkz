@@ -296,6 +296,7 @@ pub fn Machine(comptime Grammar: type) type {
             assert(machine.frames_count == 0);
             const gas_max: u64 = 64 * (@as(u64, machine.source.len) + 64);
             var gas: u64 = 0;
+            var again = false;
             try machine.push(start);
             while (machine.frames_count > 0) : (gas += 1) {
                 if (gas == gas_max) {
@@ -308,10 +309,14 @@ pub fn Machine(comptime Grammar: type) type {
                 assert(machine.at <= machine.source.len);
                 assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
                 assert(machine.nodes_count <= machine.workspace.node_tags.len);
+                // A frame past its entry phase resumes after its callee returned and reads
+                // the callee's outcome; only a frame just entered or run `.again` sees none.
+                if (machine.outcome == .none) assert(frame.phase == 0 or again);
                 const action = if (machine.abandoned) Action(Rule).fail else Grammar.step(
                     machine,
                     frame,
                 );
+                again = action == .again;
                 try machine.apply(action);
             }
             assert(machine.outcome != .none);

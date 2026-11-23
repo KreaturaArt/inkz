@@ -119,7 +119,6 @@ pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Acti
         },
         else => {
             assert(frame.phase == 1);
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) return .fail;
             const marker = frame.checkpoint.scratch;
             const workspace = machine.workspace;
@@ -158,7 +157,6 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
             return .{ .call = .inline_logic_or_glue_or_start_tag };
         },
         1 => {
-            assert(machine.outcome != .none);
             const got_logic = machine.outcome == .succeeded;
             const got_text = try content_text(machine);
             if ((got_logic or got_text) and !grammar.at_end(machine)) {
@@ -174,7 +172,6 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
         },
         else => {
             assert(frame.phase == 2);
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) {
                 const diverts = frame.locals[1];
                 // The diverts went on top of the line's content.
@@ -212,7 +209,6 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
         return .{ .call = .inline_logic };
     }
     assert(frame.phase == 1);
-    assert(machine.outcome != .none);
     if (machine.outcome == .succeeded) return .succeed;
     const start = grammar.at(machine);
     if (grammar.parse_string(machine, "<>")) {
@@ -251,7 +247,6 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
             return .{ .call = .inner_logic };
         },
         else => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) {
                 grammar.report_expected(machine, .inner_logic);
                 return .fail;
@@ -294,7 +289,6 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
             return .succeed;
         },
         2 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) {
                 return grammar.call(machine, frame, 3, .inner_conditional_content, 1);
             }
@@ -304,7 +298,6 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
             return .{ .call = full_alternatives[0] };
         },
         3 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return .succeed;
             grammar.report_expected(machine, .conditional_content);
             return .fail;
@@ -346,7 +339,6 @@ pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
     if (frame.phase == 0) {
         return grammar.call(machine, frame, 1, .expression, 0);
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) return .fail;
     disallow_increment(machine, frame.checkpoint.scratch);
     try machine.wrap(.inline_value, frame.checkpoint.scratch);
@@ -368,7 +360,6 @@ pub fn condition_expression(machine: *Machine, frame: *Frame) Error!Action {
     if (frame.phase == 0) {
         return grammar.call(machine, frame, 1, .expression, 0);
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) return .fail;
     disallow_increment(machine, frame.checkpoint.scratch);
     _ = grammar.whitespace(machine);
@@ -411,7 +402,6 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
             return grammar.call(machine, frame, 21, .statements, @backingInt(Level.inner_block));
         },
         21 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) return .fail;
             // The query slot, then the sole branch's empty condition and its statements.
             assert(machine.scratch_count >= frame.locals[1] + 3);
@@ -441,7 +431,6 @@ fn inline_branch_next(machine: *Machine, frame: *Frame) Error!Action {
 /// InlineConditionalBranches: Interleave(MixedTextAndLogic, Exclude(String("|"))).
 fn inline_branch(machine: *Machine, frame: *Frame) Error!Action {
     assert(frame.phase == 10);
-    assert(machine.outcome != .none);
     const branches = frame.locals[1] + 1;
     // Each branch starts with its condition slot, above the query slot.
     assert(frame.locals[2] > branches);
@@ -538,13 +527,11 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
             return .{ .call = .condition_expression };
         },
         1 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) try grammar.push_none(machine);
             return grammar.call(machine, frame, 2, .statements, @backingInt(Level.inner_block));
         },
         else => {
             assert(frame.phase == 2);
-            assert(machine.outcome != .none);
             const is_else = frame.locals[1] == 1;
             const marker = frame.checkpoint.scratch;
             if (machine.outcome == .failed) {
@@ -651,7 +638,6 @@ pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
         frame.phase = 1;
         return .{ .call = .inner_sequence_objects };
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) return .fail;
     // InnerSequenceObjects leaves a branches list on top: its count node is read.
     assert(grammar.top_tag(machine, frame.checkpoint.scratch) == .branches);
@@ -677,7 +663,6 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
             return .{ .call = .mixed_text_and_logic };
         },
         1 => {
-            assert(machine.outcome != .none);
             const element: grammar.Rule = .single_multiline_sequence_element;
             if (machine.outcome == .succeeded) return .{ .call = element };
             if (machine.scratch_count == frame.checkpoint.scratch) return .fail;
@@ -711,7 +696,6 @@ pub fn single_multiline_sequence_element(machine: *Machine, frame: *Frame) Error
         try machine.push_node(.newline, 0);
         return grammar.call(machine, frame, 1, .statements, @backingInt(Level.inner_block));
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) {
         machine.scratch_count = frame.checkpoint.scratch;
         _ = grammar.multiline_whitespace(machine);

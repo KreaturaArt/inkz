@@ -71,14 +71,12 @@ pub fn expression(machine: *Machine, frame: *Frame) Error!Action {
             return .{ .call = .expression_unary };
         },
         1 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) return .fail;
             _ = grammar.whitespace(machine);
             return infix(machine, frame);
         },
         else => {
             assert(frame.phase == 2);
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) {
                 grammar.report_expected(machine, .right_operand);
                 return .fail;
@@ -113,9 +111,7 @@ fn infix(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionUnary: a divert target, or prefix operators and an operand, then `++`/`--`.
 /// locals: the marker and 1 + the prefix tag (0 if none).
 pub fn expression_unary(machine: *Machine, frame: *Frame) Error!Action {
-    // Every phase after the first follows a call.
     assert(frame.phase <= 5);
-    if (frame.phase > 0) assert(machine.outcome != .none);
     switch (frame.phase) {
         0 => {
             frame.phase = 1;
@@ -190,7 +186,6 @@ pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
         return .{ .call = .single_divert };
     }
     assert(frame.phase == 1);
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) return .fail;
     if (grammar.top_tag(machine, frame.checkpoint.scratch) == .thread) return .fail;
     _ = grammar.whitespace(machine);
@@ -204,7 +199,6 @@ pub fn expression_paren(machine: *Machine, frame: *Frame) Error!Action {
         if (!grammar.parse_string(machine, "(")) return .fail;
         return grammar.call(machine, frame, 1, .expression, 0);
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) return .fail;
     // The inner expression is the paren's one value.
     assert(machine.scratch_count == frame.checkpoint.scratch + 1);
@@ -221,7 +215,6 @@ pub fn expression_function_call(machine: *Machine, frame: *Frame) Error!Action {
         frame.phase = 1;
         return .{ .call = .function_call_arguments };
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) return .fail;
     // The name and the arguments.
     assert(machine.scratch_count == frame.checkpoint.scratch + 2);
@@ -236,7 +229,6 @@ pub fn function_call_arguments(machine: *Machine, frame: *Frame) Error!Action {
         if (!grammar.parse_string(machine, "(")) return .fail;
         return grammar.call(machine, frame, 1, .expression, 0);
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .succeeded and grammar.parse_string(machine, ",")) {
         if (!grammar.at_end(machine)) {
             machine.argument = 0;
@@ -257,7 +249,6 @@ pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
         frame.phase = 1;
         return .{ .call = .mixed_text_and_logic };
     }
-    assert(machine.outcome != .none);
     // Set before the call; the callee's backtracking restores it to that.
     assert(machine.flags & grammar.parsing_string != 0);
     if (!grammar.parse_string(machine, "\"")) grammar.report_expected(machine, .closing_quote);

@@ -25,9 +25,7 @@ const choice_conditions_shift = 8;
 /// Choice: bullets, a label, conditions, then start, choice-only and inner content (the
 /// content after `]`, the diverts and a "\n").
 pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
-    // Every phase after the first follows a call.
     assert(frame.phase <= 5);
-    if (frame.phase > 0) assert(machine.outcome != .none);
     switch (frame.phase) {
         0 => {
             var bits: u32 = 0;
@@ -183,7 +181,6 @@ pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
         if (!grammar.parse_string(machine, "{")) return .fail;
         return grammar.call(machine, frame, 1, .expression, 0);
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) {
         grammar.report_expected(machine, .choice_condition);
         grammar.expect_string(machine, "}", .closing_brace);
@@ -233,9 +230,7 @@ pub fn dash_not_arrow(machine: *Machine) bool {
 /// MultiDivert: a thread, or arrows and targets (diverts, tunnels, `->->`, a bare `->`).
 /// locals: the marker, how many arrows and targets, and 1 + the index of the first `->->`.
 pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
-    // Every phase after the first follows a call.
     assert(frame.phase <= 2);
-    if (frame.phase > 0) assert(machine.outcome != .none);
     switch (frame.phase) {
         0 => {
             _ = grammar.whitespace(machine);
@@ -345,7 +340,6 @@ pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!
         frame.phase = 1;
         return .{ .call = .function_call_arguments };
     }
-    assert(machine.outcome != .none);
     if (machine.outcome == .failed) try grammar.push_none(machine);
     // The path and the arguments (or none).
     assert(machine.scratch_count == frame.checkpoint.scratch + 2);
@@ -378,7 +372,7 @@ pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
         frame.phase = 1;
         return .{ .call = .multi_divert };
     }
-    assert(machine.outcome != .none);
+    assert(frame.phase == 1);
     if (machine.outcome == .failed) return .fail;
     if (machine.scratch_count != frame.checkpoint.scratch + 1) return .fail;
     const tag = grammar.top_tag(machine, frame.checkpoint.scratch).?;
