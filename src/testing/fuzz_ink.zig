@@ -177,6 +177,9 @@ pub const Play = enum { hub, typed };
 /// - `mistyped_divert`: `VAR d1` holds no divert target (5, 0, 2.5 or a string), and one
 ///   place per source uses it as one: `-> d1` (outside functions), `TURNS_SINCE(d1)` or
 ///   `READ_COUNT(d1)`, ink's runtime errors.
+/// - `string_calls`: a choice whose text calls `e0` (`f1` without `e0`), which ink
+///   evaluates as a string: the host target's `e0`, when not lookahead-safe, is ink's error
+///   there.
 pub const Construct = enum {
     turns,
     math,
@@ -192,6 +195,7 @@ pub const Construct = enum {
     lexical,
     scientific,
     mistyped_divert,
+    string_calls,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -1071,6 +1075,11 @@ pub const Generator = struct {
         }
         if (generator.swarm.constructs.contains(.choice_tags) and generator.choices.choose(bool)) {
             return generator.choice_tagged();
+        }
+        if (generator.swarm.constructs.contains(.string_calls) and generator.choices.choose(bool)) {
+            generator.used.constructs.insert(.string_calls);
+            const call = if (generator.declared(.e0)) "e0(1)" else "f1()";
+            return generator.print(" Call {{{s}}} [now]\n", .{call});
         }
         switch (generator.choices.choose(u2)) {
             0 => generator.put(" Start [choice] end\n"),
@@ -2246,6 +2255,7 @@ test "each construct appears when on and never when off" {
         .lexical = &.{ "//", "/*", "TODO:", "größe", "Grüße" },
         .scientific = &.{"0000"},
         .mistyped_divert = &.{ "VAR d1", "(d1)", "-> d1" },
+        .string_calls = &.{" Call {"},
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
