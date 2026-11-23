@@ -8,7 +8,10 @@ before it. Random bytes would mostly stop at the first check.
 - **Ink-based targets.** These use the ink source generator `src/testing/fuzz_ink.zig`. The
   fuzzer's choices pick each construct: knots, stitches, functions, declarations, weave,
   diverts, tunnels, threads, conditionals and expressions. All names come from a small pool
-  that the generator declares, so about 70% of the sources compile.
+  that the generator declares, so every source compiles unless its swarm turns on one of the
+  two error features: `drop` leaves declarations, knots and functions out while terms still
+  name them, and `collision` declares a name ink rejects. Each is drawn 1 in 8, so about 89%
+  of the swarm's sources compile.
 - **Swarm testing.** Each generated source first draws a configuration (`Swarm` in
   `fuzz_ink.zig`, after Groce et al., "Swarm Testing", ISSTA 2012): the line kinds, terms,
   operators, inline constructs, divert targets and declarations it may use, and its bounds
@@ -17,8 +20,9 @@ before it. Random bytes would mostly stop at the first check.
   whole source makes the rest dense and keeps suppressors such as an early `-> END` out of
   the configurations that need depth. The generator picks only enabled features, with no
   retries. `Swarm.format` writes a configuration as one line and `Swarm.parse` reads it
-  back, for failure reports and reproduce commands. `Swarm.all` takes the same choices as
-  the generator before swarms, so its seeds still give the same sources.
+  back, for failure reports and reproduce commands. `Swarm.classic` (the full mix with
+  `drop`) takes the same choices as the generator before swarms, so its seeds still give the
+  same sources; `Swarm.all` is the full mix without the error features.
 - **Loader targets.** These start from a valid file (a program image, a story's JSON or a
   save) and let the fuzzer edit its words or tokens.
 
@@ -116,6 +120,19 @@ ends with the **triage** (`src/testing/swarm_triage.zig`, after the swarm paper'
 features on in every failing run are *triggers*, and those off in every failing run but
 used by passing ones are *suppressors*. `--target save --seeds 2000` takes 39 s and finds
 nothing.
+
+Each target's summary line also says what the runs reached, counted without allocating:
+compile failures by the first error's diagnostic code (the most frequent four), played
+stories that hit a runtime error, lines played, choices made, and played stories still
+going after the 64 calls a play gets (`step cap`). `--target all --seconds 9` from seed 1
+(ReleaseSafe, Apple M-series), before and after P18.1 made dropping names a swarm feature:
+
+| | compile failures | play: compiled | runtime errors | lines | choices | step cap |
+| --- | --- | --- | --- | --- | --- | --- |
+| before | 4,363 / 13,842 (31.5%) | 5,336 / 7,800 | 2,350 | 13,164 | 411 | 114 |
+| after P18.1 | 1,413 / 12,278 (11.5%) | 6,255 / 7,085 | 2,991 | 16,887 | 442 | 154 |
+
+The failures left are the error features' (`name_conflict` is `collision`'s).
 
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.

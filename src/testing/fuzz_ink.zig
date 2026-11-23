@@ -5,9 +5,10 @@
 //!
 //! Every name comes from a small pool that the generator declares (knots `k0`–`k2`, stitch
 //! `k0.s0`, functions `f0(x)`, `f1()` and the external `e0(x)` with its fallback, variables
-//! `v0`–`v2`, `c0` and the list `l0`), so most sources parse and resolve and reach the later
-//! stages. The fuzzer can still drop a declaration or splice raw bytes in, for the stages that
-//! must reject broken input. Nothing recurses: expressions are flat chains of terms, and
+//! `v0`–`v2`, `c0` and the list `l0`), so the sources parse and resolve and reach the later
+//! stages. For the stages that must reject broken input, a swarm with `drop` or `collision`
+//! (each drawn 1 in 8) leaves names out or reuses them, and the parser targets splice raw
+//! bytes in. Nothing recurses: expressions are flat chains of terms, and
 //! nesting is bounded by a depth counter.
 
 const std = @import("std");
@@ -117,7 +118,10 @@ const words = [_][]const u8{ "Hello", "the cat", "a", "", "!", "  spaced  ", "x\
 /// - `collision`: one name ink rejects per source (a temp named like a global, a list item or
 ///   a knot, or the ambiguous bare `a`), for comparing compile errors. It is drawn with
 ///   probability 1/8 and is not in `Swarm.all`.
-pub const Resolution = enum { temp, ref, items, l1, collision };
+/// - `drop`: each declaration, knot, stitch and function left out with probability 1/16
+///   while the terms still name them, so the source fails to resolve. Drawn with probability
+///   1/8 and not in `Swarm.all`; `Swarm.classic` has it, as the first generator dropped.
+pub const Resolution = enum { temp, ref, items, l1, collision, drop };
 
 const ResolutionLine = enum {
     temp_declare,
@@ -173,9 +177,9 @@ pub const Swarm = struct {
     pub const knots_limit = 3;
     pub const globals_extra_limit = 64;
 
-    /// The first generator's full mix: every feature but the resolution ones, at the largest
-    /// bounds. It takes the same choices as that generator did, so its seeds give the same
-    /// sources.
+    /// The first generator's full mix: every feature but the resolution ones (`drop` aside,
+    /// which that generator did), at the largest bounds. It takes the same choices as that
+    /// generator did, so its seeds give the same sources.
     pub const classic: Swarm = .{
         .lines = .full,
         .terms = .full,
@@ -187,16 +191,17 @@ pub const Swarm = struct {
         .terms_max = terms_limit,
         .choice_depth_max = choice_depth_limit,
         .knots_count = knots_limit,
-        .resolution = .empty,
+        .resolution = .initOne(.drop),
         .globals_extra = 0,
     };
 
-    /// Every feature at the largest bounds, but `collision`, which would make each source
-    /// fail to compile.
+    /// Every feature at the largest bounds, but `collision` and `drop`, which would make
+    /// sources fail to compile.
     pub const all: Swarm = all: {
         var swarm = classic;
         swarm.resolution = .full;
         swarm.resolution.remove(.collision);
+        swarm.resolution.remove(.drop);
         swarm.globals_extra = globals_extra_limit;
         break :all swarm;
     };
@@ -239,9 +244,12 @@ pub const Swarm = struct {
             else
                 0,
         };
-        // A collision fails the compile, so it gets ¼ of the usual probability.
+        // A collision or a drop fails the compile, so each gets ¼ of the usual probability.
         if (swarm.resolution.contains(.collision) and !choices.weighted(3, 1)) {
             swarm.resolution.remove(.collision);
+        }
+        if (swarm.resolution.contains(.drop) and !choices.weighted(3, 1)) {
+            swarm.resolution.remove(.drop);
         }
         swarm.normalize();
         assert(swarm.valid());
@@ -586,10 +594,13 @@ pub const Generator = struct {
         return @tagName(generator.pick_enabled(Declaration, set));
     }
 
-    /// Mostly true: the fuzzer can still leave a declaration out.
+    /// True, but with `drop` on, where the fuzzer can still leave a declaration out.
     fn keep(generator: *Generator) bool {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        return generator.choices.weighted(1, 15);
+        if (!generator.swarm.resolution.contains(.drop)) return true;
+        if (generator.choices.weighted(1, 15)) return true;
+        generator.used.resolution.insert(.drop);
+        return false;
     }
 
     fn declarations(generator: *Generator) void {
@@ -1490,6 +1501,42 @@ test "most sources with only the resolution features compile" {
     }
     try std.testing.expect(resolving * 2 > seeds);
     try std.testing.expect(compiled * 10 >= seeds * 6);
+}
+
+test "drawn sources compile unless an error feature is on, and with one they fail" {
+    // 500 seeded draws: fewer than 5% of the sources without `collision` and `drop` fail to
+    // compile (none did in 2,000), and `drop` still leaves names unresolved.
+    const gpa = std.testing.allocator;
+    var buffer: [source_bytes_max]u8 = undefined;
+    var clean: u32 = 0;
+    var clean_failed: u32 = 0;
+    var dropped: u32 = 0;
+    var dropped_failed: u32 = 0;
+    for (0..500) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{ .swarm = null });
+        // A collision always fails; a drop fails when it left out a name in use.
+        if (case.swarm.resolution.contains(.collision)) continue;
+        const erroneous = case.swarm.resolution.contains(.drop);
+        if (erroneous and !case.used.resolution.contains(.drop)) continue;
+        const failed = if (compile.compile_source(gpa, case.source)) |program| failed: {
+            var compiled = program;
+            compiled.deinit(gpa);
+            break :failed false;
+        } else |err| switch (err) {
+            error.CompileFailed => true,
+            else => return err,
+        };
+        if (erroneous) {
+            dropped += 1;
+            dropped_failed += @intFromBool(failed);
+        } else {
+            clean += 1;
+            clean_failed += @intFromBool(failed);
+        }
+    }
+    try std.testing.expect(clean > 300);
+    try std.testing.expect(clean_failed * 20 < clean);
+    try std.testing.expect(dropped > 0 and dropped_failed > 0);
 }
 
 test "64 extra globals stay below the source bound" {
