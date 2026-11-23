@@ -283,9 +283,18 @@ pub fn push_evaluation(story: *Story, value: Value) Error!void {
 }
 
 pub fn pop_evaluation(story: *Story) Error!Value {
-    const value = story.state.evaluation.pop() orelse
+    assert(story.state.evaluation.count >= story.evaluation_floor);
+    if (story.state.evaluation.count == story.evaluation_floor) {
         return ops.fail(story, ops.evaluation_stack_empty, .{});
-    return value;
+    }
+    return story.state.evaluation.pop().?;
+}
+
+/// The top value, if it is above `Story.evaluation_floor`.
+pub fn peek_evaluation(story: *const Story) ?Value {
+    assert(story.state.evaluation.count >= story.evaluation_floor);
+    if (story.state.evaluation.count == story.evaluation_floor) return null;
+    return story.state.evaluation.peek().?;
 }
 
 /// ink's PerformLogicAndFlowControl, plus pushing plain content where it goes.
@@ -466,7 +475,7 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
         .eval_output => return ops.eval_output(story),
         .nop, .start_thread => {},
         .duplicate => {
-            const top = state.evaluation.peek() orelse
+            const top = peek_evaluation(story) orelse
                 return ops.fail(story, ops.evaluation_stack_empty, .{});
             try push_evaluation(story, top);
         },

@@ -229,6 +229,10 @@ pub const Story = struct {
     lookahead_depth: u32 = 0,
     /// evaluate_function calls running now.
     evaluate_depth: u32 = 0,
+    /// The evaluation stack's height below which the innermost evaluate_function may not
+    /// pop: what lies below is its caller's (an external's arguments, say), so a knot with
+    /// more parameters than arguments is a story error, not a pop of someone else's values.
+    evaluation_floor: u32 = 0,
     /// A limit or host error stopped a step half done: the story fails closed until
     /// `reset_state` or `load_json`.
     failed: bool = false,

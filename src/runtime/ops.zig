@@ -157,7 +157,8 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
 /// `out`: the top value as text, if the expression left one.
 pub fn eval_output(story: *Story) Error!vm.Signal {
     const state = &story.state;
-    const value = state.evaluation.pop() orelse return .none;
+    if (vm.peek_evaluation(story) == null) return .none;
+    const value = state.evaluation.pop().?;
     switch (value) {
         .null => return .none,
         .string => |reference| {
@@ -775,7 +776,7 @@ const ChoicePops = struct {
         if (popped != .string) return fail(story, story_error, .{});
         pops.values[slot] = popped;
         var popped_tags: u32 = 0;
-        while (story.state.evaluation.peek()) |top| : (popped_tags += 1) {
+        while (vm.peek_evaluation(story)) |top| : (popped_tags += 1) {
             if (top != .tag) break;
             if (pops.tags_count == tags_max) return error.TagLimit;
             const tag = story.state.evaluation.pop().?;
@@ -1061,7 +1062,10 @@ fn call_bound(
         "Too many arguments for an external function.",
         .{},
     );
-    if (state.evaluation.count < count) return fail(story, evaluation_stack_empty, .{});
+    assert(state.evaluation.count >= story.evaluation_floor);
+    if (state.evaluation.count - story.evaluation_floor < count) {
+        return fail(story, evaluation_stack_empty, .{});
+    }
     var arguments: [story_module.external_arguments_max]story_module.HostValue = undefined;
     const first = state.evaluation.count - count;
     for (state.evaluation.slice()[first..], 0..) |value, position| {
@@ -1075,7 +1079,10 @@ fn call_bound(
     defer story.external_callback_depth = external_callback_depth;
     const result = function(context, story, arguments[0..count]) catch
         return error.ExternalFunctionFailed;
-    assert(state.evaluation.count >= first + count);
+    // A nested evaluate_function can't pop below its frame (`Story.evaluation_floor`) and
+    // puts the stack back as it found it, but for one that failed the story half done.
+    if (story.failed) return error.StoryFailed;
+    assert(state.evaluation.count == first + count);
     state.evaluation.count = first;
     var value: [1]Value = undefined;
     try values_of_host(story, &.{result}, &value);

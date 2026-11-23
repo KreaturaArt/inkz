@@ -59,10 +59,12 @@ pub fn evaluate_function(
     const before = try begin_evaluation(story, container, arguments);
     const text_start = text_writer.end;
     var stepping = false;
-    const result = run_evaluation(story, text_writer, &stepping) catch |err| {
+    const result = run_evaluation(story, before, text_writer, &stepping) catch |err| {
         abandon_evaluation(story, before, err != error.StoryError and stepping);
+        assert(story.evaluation_floor == before.evaluation_floor);
         return err;
     };
+    assert(story.evaluation_floor == before.evaluation_floor);
     if (story.events.on_complete_evaluate_function) |event| {
         // The text is what the writer still buffers (all of it for a fixed or allocating
         // writer).
@@ -88,6 +90,7 @@ pub fn evaluate_function(
 const Before = struct {
     call_stack: call_stack_module.CallStack.Mark,
     evaluation_height: u32,
+    evaluation_floor: u32,
 };
 
 /// ink's StartFunctionEvaluationFromGame: the output set aside, the frame and the
@@ -105,6 +108,7 @@ fn begin_evaluation(
     const before: Before = .{
         .call_stack = state.call_stack.mark(),
         .evaluation_height = state.evaluation.count,
+        .evaluation_floor = story.evaluation_floor,
     };
     // With on_complete_evaluate_function, a second copy of the arguments is pinned below
     // the frame, so the event gets them valid however the heap moved.
@@ -124,13 +128,20 @@ fn begin_evaluation(
     state.call_stack.current_frame().pointer = .start_of(container);
     state.evaluation.push_slice(values[0..pins_count]) catch unreachable;
     state.evaluation.push_slice(values[0..arguments.len]) catch unreachable;
+    // The function's parameters pop its arguments, never what lies below its frame.
+    story.evaluation_floor = frame_height;
     assert(state.call_stack.frames.count == before.call_stack.frames + 1);
     return before;
 }
 
 /// The Continue loop until the function ends, then its result. `stepping` is true while a
 /// line runs.
-fn run_evaluation(story: *Story, text_writer: *std.Io.Writer, stepping: *bool) Error!HostValue {
+fn run_evaluation(
+    story: *Story,
+    before: Before,
+    text_writer: *std.Io.Writer,
+    stepping: *bool,
+) Error!HostValue {
     assert(story.state.call_stack.depth() > 1);
     const callback_depth = story.callback_depth;
     const external_callback_depth = story.external_callback_depth;
@@ -149,6 +160,7 @@ fn run_evaluation(story: *Story, text_writer: *std.Io.Writer, stepping: *bool) E
         text_writer.writeAll(line) catch return error.OutputLimit;
     }
     const result = try complete_function_evaluation(story);
+    story.evaluation_floor = before.evaluation_floor;
     unstash_output(story);
     return result;
 }
@@ -163,16 +175,16 @@ fn abandon_evaluation(story: *Story, before: Before, half_done: bool) void {
     assert(story.state.output_stashes_count > 0);
     unstash_output(story);
     const state = &story.state;
+    // Nothing below the frame was popped (`Story.evaluation_floor`).
+    assert(state.evaluation.count >= story.evaluation_floor);
+    assert(story.evaluation_floor >= before.evaluation_height);
+    story.evaluation_floor = before.evaluation_floor;
+    state.evaluation.count = before.evaluation_height;
     if (half_done) {
         story.failed = true;
         return;
     }
     const ended = state.call_stack.depth() == 1 and vm.current_pointer(story).is_null();
-    if (state.evaluation.count < before.evaluation_height) {
-        if (!ended) story.failed = true;
-        return;
-    }
-    state.evaluation.count = before.evaluation_height;
     if (ended) return;
     if (!state.call_stack.unwind(before.call_stack, .function_evaluation_from_game)) {
         story.failed = true;
@@ -188,10 +200,10 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
     const frame = state.call_stack.current_frame();
     if (frame.kind != .function_evaluation_from_game) return error.EvaluationNotComplete;
     const height = frame.evaluation_height;
-    // A knot or function with more parameters than the host passed pops values left below
-    // its frame (a story error leaves its expression's values, as in ink). ink returns null
-    // with them gone; inkz fails closed, with ink's message for a pop of too many.
-    if (state.evaluation.count < height) return ops.fail(story, ops.evaluation_stack_empty, .{});
+    // A knot or function with more parameters than the host passed can't pop below its
+    // frame (`Story.evaluation_floor`): the pop is a story error, ink's "trying to pop too
+    // many objects".
+    assert(height == story.evaluation_floor);
     assert(height <= state.evaluation.count);
     const returned: ?Value = if (state.evaluation.count > height)
         state.evaluation.buffer[height]

@@ -423,9 +423,10 @@ test "host misuse returns errors" {
 
 test "evaluate_function of a knot with more parameters than arguments fails closed" {
     // A story error leaves its expression's values on the evaluation stack, as in ink; a
-    // knot evaluated with too few arguments pops them as its parameters, below its own
+    // knot evaluated with too few arguments popped them as its parameters, below its own
     // frame. ink returns null with the values gone; inkz asserted, and now reports a story
-    // error (found by the swarm's host target with P18.6's knots with parameters).
+    // error at the pop and leaves the values alone (found by the swarm's host target with
+    // P18.6's knots with parameters).
     const gpa = std.testing.allocator;
     const source =
         \\VAR a = 0
@@ -457,5 +458,59 @@ test "evaluate_function of a knot with more parameters than arguments fails clos
     try std.testing.expect(!story.failed);
     try std.testing.expect(!story.can_continue());
     try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
-    try std.testing.expect(story.state.evaluation.count < left);
+    try std.testing.expectEqual(left, story.state.evaluation.count);
+}
+
+const Popper = struct {
+    result: ?anyerror = null,
+
+    fn call(context: ?*anyopaque, story: *api.Story, arguments: []const Value) anyerror!Value {
+        assert(arguments.len == 2);
+        const popper: *Popper = @ptrCast(@alignCast(context.?));
+        var buffer: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buffer);
+        _ = evaluate.evaluate_function(story, "knot", &.{}, &writer) catch |err| {
+            popper.result = err;
+            return .null;
+        };
+        return .null;
+    }
+};
+
+test "evaluate_function from an external can't pop the external's arguments" {
+    // P17 review: inside a bound external its arguments sit just below the evaluation's
+    // frame. A knot with more parameters than arguments popped them, the story error
+    // returned without the stack's height back, the external swallowed it and call_bound
+    // asserted on fewer values than it pushed (in ReleaseFast it raised the count over
+    // stale slots). Now the pop below the frame is the story error.
+    const gpa = std.testing.allocator;
+    const source =
+        \\EXTERNAL ext(a, b)
+        \\Hello
+        \\~ ext(5, 6)
+        \\World
+        \\-> DONE
+        \\== knot(x, y, z) ==
+        \\Knot {x}
+        \\-> DONE
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    var popper: Popper = .{};
+    try story.bind_external_function("ext", .{ .lookahead_safe = true }, &popper, Popper.call);
+    // The newline lookahead runs the external, so the first line already fails.
+    try std.testing.expectError(error.StoryError, story.cont());
+    try std.testing.expectEqual(@as(?anyerror, error.StoryError), popper.result);
+    try std.testing.expect(!story.failed);
+    try std.testing.expectEqual(@as(u32, 0), story.evaluation_floor);
+    // The flow ended at the pop, so the outer line runs out of content too.
+    try std.testing.expectEqual(@as(u32, 2), story.error_count());
+    var message: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&message);
+    try story.write_error(0, &writer);
+    const expected = "trying to pop too many objects";
+    try std.testing.expect(std.mem.endsWith(u8, writer.buffered(), expected));
 }
