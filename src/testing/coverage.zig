@@ -50,12 +50,13 @@ fn section(comptime T: type, comptime name: []const u8) []T {
 /// Resolves every instrumented block and writes the report to `path`; prints the per-module
 /// totals to `summary`.
 pub fn write_report(
-    gpa: std.mem.Allocator,
     io: std.Io,
     path: []const u8,
     summary: *std.Io.Writer,
 ) !void {
-    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    // Not the program's allocator: resolving holds the debug info's lock, and a Debug
+    // allocator that captures stack traces would take it again.
+    var arena_state: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const counters = section(u8, "__sancov_cntrs");

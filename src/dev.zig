@@ -167,7 +167,7 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
     // The coverage build (`zig build swarm-coverage`) reports what the run reached.
     if (build_options.coverage) {
         const path = "zig-out/coverage/swarm.txt";
-        try coverage.write_report(gpa, io, path, &file_writer.interface);
+        try coverage.write_report(io, path, &file_writer.interface);
         try file_writer.interface.print("coverage: wrote {s}\n", .{path});
     }
     try file_writer.interface.flush();

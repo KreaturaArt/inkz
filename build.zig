@@ -266,6 +266,8 @@ fn add_swarm_coverage(
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/dev.zig"),
             .target = target,
+            // ReleaseSafe runs about ten times the seeds of Debug in the same time and
+            // instruments the same blocks.
             .optimize = .ReleaseSafe,
             .fuzz = true,
         }),
