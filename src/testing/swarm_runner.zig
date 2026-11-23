@@ -38,6 +38,9 @@ pub const Summary = struct {
     choices: u64 = 0,
     /// Played stories still going after `play_steps_max` calls.
     step_cap: u32 = 0,
+    /// Played stories that ended before it without an error: at END or DONE, or with
+    /// neither content nor choices left.
+    ended: u32 = 0,
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("{d} runs, {d} failures; compile failures {d}", .{
@@ -46,11 +49,13 @@ pub const Summary = struct {
             summary.compile_failures,
         });
         try summary.codes.write_top(writer, 4);
-        try writer.print("; runtime errors {d}, lines {d}, choices {d}, step cap {d}", .{
+        try writer.print("; runtime errors {d}, lines {d}, choices {d}, step cap {d}, " ++
+            "ended {d}", .{
             summary.runtime_errors,
             summary.lines,
             summary.choices,
             summary.step_cap,
+            summary.ended,
         });
     }
 };
@@ -244,6 +249,7 @@ fn play(
         if (story.state.check() != .ok) return "State.check";
     }
     if (steps == play_steps_max) summary.step_cap += 1;
+    if (steps < play_steps_max and !errored) summary.ended += 1;
     if (!round_trip or story.failed) return null;
     var first: std.Io.Writer.Allocating = .init(gpa);
     defer first.deinit();
@@ -305,6 +311,23 @@ test "the summary counts what the runs reached, and the run prints it" {
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "swarm play: 16 runs, 0 failures; " ++
         "compile failures ") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "step cap ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "ended ") != null);
+}
+
+test "played stories make many choices and reach the step cap, and some still end" {
+    // P18.2: with `hub` and `typed`, the compiled stories of 500 seeds make 8 choices or
+    // more on average, 35% or more reach the step cap, and 10% or more end (at END or DONE,
+    // or out of content) without an error.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .play, 1, .{ .seeds = 500 });
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    const compiled = summary.runs - summary.compile_failures;
+    try std.testing.expect(compiled > 400);
+    try std.testing.expect(summary.choices >= 8 * @as(u64, compiled));
+    try std.testing.expect(summary.step_cap * 100 >= compiled * 35);
+    try std.testing.expect(summary.ended * 10 >= compiled);
 }
 
 test "codes keep the most frequent first, and count past their capacity as other" {
