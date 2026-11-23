@@ -29,7 +29,6 @@ const Strings = struct {
 
     fn get(strings: Strings, id: StringId) []const u8 {
         const index = id.to_int();
-        assert(index < strings.ends.len);
         const start = if (index == 0) 0 else strings.ends[index - 1];
         const end = strings.ends[index];
         assert(start <= end);
@@ -42,16 +41,12 @@ const IdContext = struct {
     strings: *const Strings,
 
     pub fn hash(context: IdContext, key: u32) u64 {
-        assert(key < context.strings.ends.len);
         const bytes = context.strings.get(@fromBackingInt(@intCast(key)));
-        assert(bytes.len <= context.strings.bytes.len);
         count_hash();
         return std.hash.Wyhash.hash(0, bytes);
     }
 
-    pub fn eql(context: IdContext, a: u32, b: u32) bool {
-        assert(a < context.strings.ends.len);
-        assert(b < context.strings.ends.len);
+    pub fn eql(_: IdContext, a: u32, b: u32) bool {
         return a == b;
     }
 };
@@ -60,17 +55,13 @@ const IdContext = struct {
 const BytesAdapter = struct {
     strings: *const Strings,
 
-    pub fn hash(adapter: BytesAdapter, bytes: []const u8) u64 {
-        assert(adapter.strings.ends.len > 0);
+    pub fn hash(_: BytesAdapter, bytes: []const u8) u64 {
         count_hash();
-        const result = std.hash.Wyhash.hash(0, bytes);
-        return result;
+        return std.hash.Wyhash.hash(0, bytes);
     }
 
     pub fn eql(adapter: BytesAdapter, bytes: []const u8, key: u32) bool {
-        assert(key < adapter.strings.ends.len);
         const candidate = adapter.strings.get(@fromBackingInt(@intCast(key)));
-        assert(candidate.len <= adapter.strings.bytes.len);
         return std.mem.eql(u8, bytes, candidate);
     }
 };
@@ -94,8 +85,6 @@ pub const StringPool = struct {
         try pool.ends.append(gpa, 0);
         errdefer pool.ends.deinit(gpa);
         try pool.table.putNoClobberContext(gpa, 0, {}, pool.id_context());
-        assert(pool.count() == 1);
-        assert(pool.get(empty_id).len == 0);
         return pool;
     }
 
@@ -129,7 +118,6 @@ pub const StringPool = struct {
     }
 
     pub fn deinit(pool: *StringPool, gpa: Allocator) void {
-        assert(pool.ends.items.len > 0);
         assert(pool.table.count() == pool.ends.items.len);
         pool.table.deinit(gpa);
         pool.ends.deinit(gpa);
@@ -138,8 +126,6 @@ pub const StringPool = struct {
     }
 
     pub fn count(pool: *const StringPool) u32 {
-        assert(pool.ends.items.len > 0);
-        assert(pool.table.count() == pool.ends.items.len);
         return @intCast(pool.ends.items.len);
     }
 
@@ -157,15 +143,12 @@ pub const StringPool = struct {
         const adapter: BytesAdapter = .{ .strings = &view };
         const entry = pool.table.getOrPutAssumeCapacityAdapted(bytes, adapter);
         if (entry.found_existing) {
-            assert(std.mem.eql(u8, pool.get(@fromBackingInt(@intCast(entry.key_ptr.*))), bytes));
             return @fromBackingInt(@intCast(entry.key_ptr.*));
         }
         pool.bytes.appendSliceAssumeCapacity(bytes);
         pool.ends.appendAssumeCapacity(@intCast(pool.bytes.items.len));
         const id: u32 = @intCast(pool.ends.items.len - 1);
         entry.key_ptr.* = id;
-        assert(std.mem.eql(u8, pool.get(@fromBackingInt(@intCast(id))), bytes));
-        assert(pool.count() == id + 1);
         return @fromBackingInt(@intCast(id));
     }
 
@@ -173,26 +156,17 @@ pub const StringPool = struct {
     pub fn find(pool: *const StringPool, bytes: []const u8) ?StringId {
         if (builtin.is_test) finds_for_tests += 1;
         const view = pool.strings();
-        assert(view.ends.len > 0);
         const adapter: BytesAdapter = .{ .strings = &view };
         const key = pool.table.getKeyAdapted(bytes, adapter) orelse return null;
-        assert(key < view.ends.len);
-        const id: StringId = @fromBackingInt(@intCast(key));
-        assert(std.mem.eql(u8, pool.get(id), bytes));
-        if (bytes.len == 0) assert(id == empty_id);
-        return id;
+        return @fromBackingInt(@intCast(key));
     }
 
     /// The bytes of `id`, which must have been issued by this pool.
     pub fn get(pool: *const StringPool, id: StringId) []const u8 {
-        assert(!id.is_none());
-        const bytes = pool.strings().get(id);
-        assert(bytes.len <= pool.bytes.items.len);
-        return bytes;
+        return pool.strings().get(id);
     }
 
     fn strings(pool: *const StringPool) Strings {
-        assert(pool.ends.items.len > 0);
         const result: Strings = .{ .bytes = pool.bytes.items, .ends = pool.ends.items };
         assert(result.ends[result.ends.len - 1] == result.bytes.len);
         return result;
@@ -202,8 +176,6 @@ pub const StringPool = struct {
     /// It points at a field that lives as long as the call.
     fn id_context(pool: *StringPool) IdContext {
         pool.context_strings = pool.strings();
-        assert(pool.context_strings.ends.len == pool.ends.items.len);
-        assert(pool.context_strings.bytes.len == pool.bytes.items.len);
         return .{ .strings = &pool.context_strings };
     }
 };

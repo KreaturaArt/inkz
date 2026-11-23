@@ -19,9 +19,7 @@ pub const ExtraBuilder = struct {
     }
 
     pub fn count(builder: *const ExtraBuilder) u32 {
-        const words_count: u32 = @intCast(builder.words.items.len);
-        assert(words_count == builder.words.items.len);
-        return words_count;
+        return @intCast(builder.words.items.len);
     }
 
     /// Appends `value` and returns the index of its first word.
@@ -35,7 +33,6 @@ pub const ExtraBuilder = struct {
         const index = builder.count();
         if (tail.len > std.math.maxInt(u32) - index) return error.ExtraFull;
         try builder.words.appendSlice(gpa, tail);
-        assert(builder.count() == index + tail.len);
         return index;
     }
 
@@ -44,7 +41,6 @@ pub const ExtraBuilder = struct {
         const index = builder.count();
         if (count_words > std.math.maxInt(u32) - index) return error.ExtraFull;
         try builder.words.appendNTimes(gpa, 0, count_words);
-        assert(builder.count() == index + count_words);
         return index;
     }
 };

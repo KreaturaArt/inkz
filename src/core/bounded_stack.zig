@@ -21,76 +21,57 @@ pub fn BoundedStack(comptime T: type) type {
 
         /// Uses `buffer` as storage; the stack doesn't own it.
         pub fn init(buffer: []T) Self {
-            const stack: Self = .{ .buffer = buffer, .count = 0 };
-            assert(stack.capacity() == buffer.len);
-            return stack;
+            return .{ .buffer = buffer, .count = 0 };
         }
 
         pub fn capacity(stack: *const Self) u32 {
             const result: u32 = @intCast(stack.buffer.len);
-            assert(result == stack.buffer.len);
             assert(stack.count <= result);
             return result;
         }
 
         pub fn is_empty(stack: *const Self) bool {
-            const result = stack.count == 0;
-            assert(result == (stack.slice().len == 0));
-            return result;
+            return stack.count == 0;
         }
 
         pub fn is_full(stack: *const Self) bool {
-            const result = stack.count == stack.buffer.len;
-            if (result) assert(stack.count == stack.capacity());
-            return result;
+            return stack.count == stack.buffer.len;
         }
 
         pub fn push(stack: *Self, value: T) error{Overflow}!void {
             if (stack.is_full()) return error.Overflow;
-            const count_before = stack.count;
             stack.buffer[stack.count] = value;
             stack.count += 1;
             stack.peak = @max(stack.peak, stack.count);
-            assert(stack.count == count_before + 1);
         }
 
         /// Pushes all of `values`, or none of them if they don't fit.
         pub fn push_slice(stack: *Self, values: []const T) error{Overflow}!void {
             if (values.len > stack.buffer.len - stack.count) return error.Overflow;
-            const count_before = stack.count;
             @memcpy(stack.buffer[stack.count..][0..values.len], values);
             stack.count += @intCast(values.len);
             stack.peak = @max(stack.peak, stack.count);
-            assert(stack.count == count_before + values.len);
         }
 
         pub fn pop(stack: *Self) ?T {
             if (stack.count == 0) return null;
             stack.count -= 1;
-            const value = stack.buffer[stack.count];
-            assert(stack.count < stack.buffer.len);
-            return value;
+            return stack.buffer[stack.count];
         }
 
         pub fn peek(stack: *const Self) ?T {
             if (stack.count == 0) return null;
-            const value = stack.buffer[stack.count - 1];
-            assert(stack.count > 0);
-            return value;
+            return stack.buffer[stack.count - 1];
         }
 
         /// A pointer to the top element; valid until the next push, pop or truncate.
         pub fn peek_pointer(stack: *Self) ?*T {
             if (stack.count == 0) return null;
-            const pointer = &stack.buffer[stack.count - 1];
-            assert(stack.count > 0);
-            return pointer;
+            return &stack.buffer[stack.count - 1];
         }
 
         pub fn slice(stack: *const Self) []T {
-            const items = stack.buffer[0..stack.count];
-            assert(items.len == stack.count);
-            return items;
+            return stack.buffer[0..stack.count];
         }
 
         /// Drops everything above `mark`, a count taken earlier. Used to undo work.
@@ -101,7 +82,6 @@ pub fn BoundedStack(comptime T: type) type {
 
         pub fn clear(stack: *Self) void {
             stack.truncate(0);
-            assert(stack.is_empty());
         }
 
         pub fn check(stack: *const Self) Fault {

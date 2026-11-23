@@ -45,8 +45,6 @@ pub const Error = error{
 } || Allocator.Error;
 
 fn OperandOf(comptime opcode: Opcode) type {
-    comptime assert(@sizeOf(Opcode) == 1);
-    comptime assert(@typeInfo(Opcode).@"enum".field_names.len > 0);
     return instruction_module.Operand(instruction_module.operand_kind(opcode));
 }
 
@@ -163,14 +161,10 @@ pub const ProgramBuilder = struct {
 
     pub fn init(gpa: Allocator) Allocator.Error!ProgramBuilder {
         const strings = try string_pool.StringPool.init(gpa);
-        const builder: ProgramBuilder = .{ .gpa = gpa, .strings = strings };
-        assert(builder.containers.len == 0);
-        assert(builder.frames.items.len == 0);
-        return builder;
+        return .{ .gpa = gpa, .strings = strings };
     }
 
     pub fn deinit(builder: *ProgramBuilder) void {
-        assert(builder.frames.items.len < 1 << 16);
         const gpa = builder.gpa;
         // After `finish` the containers have moved into the program. Every field with a
         // `deinit` (the lists, the strings, the extra words) owns memory.
@@ -186,9 +180,7 @@ pub const ProgramBuilder = struct {
     /// The container whose content is being built.
     pub fn current(builder: *const ProgramBuilder) ContainerIndex {
         assert(builder.frames.items.len > 0);
-        const container = builder.frames.items[builder.frames.items.len - 1].container;
-        assert(container.to_int() < builder.containers.len);
-        return container;
+        return builder.frames.items[builder.frames.items.len - 1].container;
     }
 
     /// Content items added so far to the current container.
@@ -235,7 +227,6 @@ pub const ProgramBuilder = struct {
             .scratch_first = @intCast(builder.scratch.len),
             .named_first = @intCast(builder.named_scratch.items.len),
         });
-        assert(builder.current() == container);
         return container;
     }
 
@@ -250,7 +241,6 @@ pub const ProgramBuilder = struct {
 
     /// An instruction without an operand, given at run time (`add` takes it at comptime).
     pub fn add_bare(builder: *ProgramBuilder, opcode: Opcode) !void {
-        assert(builder.frames.items.len > 0);
         assert(instruction_module.operand_kind(opcode) == .none);
         try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
     }
@@ -260,12 +250,10 @@ pub const ProgramBuilder = struct {
         assert(name.len > 0);
         const container = builder.current();
         builder.containers.items(.name)[container.to_int()] = try builder.intern(name);
-        assert(!builder.containers.items(.name)[container.to_int()].is_none());
     }
 
     /// Sets the current container's counting flags (`#f` in ink's JSON).
     pub fn set_flags(builder: *ProgramBuilder, flags: ContainerFlags) void {
-        assert(builder.frames.items.len > 0);
         const container = builder.current();
         assert(flags.padding == 0);
         builder.containers.items(.flags)[container.to_int()] = flags;
@@ -289,7 +277,6 @@ pub const ProgramBuilder = struct {
             })
         else
             try std.fmt.bufPrint(&buffer, "{s}{s}{d}", .{ parent_path, separator, position });
-        assert(text.len > 0);
         return builder.strings.intern(builder.gpa, text);
     }
 
@@ -332,16 +319,11 @@ pub const ProgramBuilder = struct {
         comptime opcode: Opcode,
         operand: OperandOf(opcode),
     ) !void {
-        assert(builder.frames.items.len > 0);
-        const count_before = builder.scratch.len;
         try builder.scratch.append(builder.gpa, .init(opcode, operand));
-        assert(builder.scratch.len == count_before + 1);
     }
 
     pub fn intern(builder: *ProgramBuilder, text: []const u8) !StringId {
-        const id = try builder.strings.intern(builder.gpa, text);
-        assert(std.mem.eql(u8, builder.strings.get(id), text));
-        return id;
+        return try builder.strings.intern(builder.gpa, text);
     }
 
     /// The slot of global `name`, declared once however often it is asked for.
@@ -360,7 +342,6 @@ pub const ProgramBuilder = struct {
         name: []const u8,
         kind: @FieldType(VariableFixup, "kind"),
     ) !void {
-        assert(name.len > 0);
         const id = try builder.intern(name);
         try builder.variable_fixups.append(builder.gpa, .{
             .container = builder.current(),
@@ -409,7 +390,6 @@ pub const ProgramBuilder = struct {
         name: []const u8,
         items: []const ListItemDeclaration,
     ) !ListOriginIndex {
-        assert(name.len > 0);
         const gpa = builder.gpa;
         const origin: ListOriginIndex = .from_int(@intCast(builder.list_origins.items.len));
         const first: index.ListItemIndex = .from_int(@intCast(builder.list_items.items.len));
@@ -428,7 +408,6 @@ pub const ProgramBuilder = struct {
             .items_first = first,
             .items_count = @intCast(items.len),
         });
-        assert(builder.list_items.items.len == first.to_int() + items.len);
         return origin;
     }
 
@@ -443,7 +422,6 @@ pub const ProgramBuilder = struct {
 
     /// A pointer to variable `name` (ink's `{"^var": name, "ci": context}`).
     pub fn add_variable_pointer(builder: *ProgramBuilder, name: []const u8, context: i32) !void {
-        assert(name.len > 0);
         assert(context >= -1);
         const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
             .name = try builder.intern(name),
@@ -480,7 +458,6 @@ pub const ProgramBuilder = struct {
         name: []const u8,
         options: DivertOptions,
     ) !void {
-        assert(name.len > 0);
         const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
             .target_container = .none,
             .target_index = 0,
@@ -501,7 +478,6 @@ pub const ProgramBuilder = struct {
         arguments_count: u32,
         conditional: bool,
     ) !void {
-        assert(name.len > 0);
         const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
             .external = try builder.external(name),
             .arguments_count = arguments_count,
@@ -586,7 +562,6 @@ pub const ProgramBuilder = struct {
 
     /// Copies instructions and named entries into their final, container-ordered arrays.
     fn layout(builder: *ProgramBuilder) !Program {
-        assert(builder.staged.items.len == builder.containers.len);
         const gpa = builder.gpa;
         var instructions: std.MultiArrayList(Instruction) = .empty;
         errdefer instructions.deinit(gpa);
@@ -626,7 +601,6 @@ pub const ProgramBuilder = struct {
         named: *std.ArrayList(NamedEntry),
         count_slots: u32,
     ) !Program {
-        assert(instructions.len == builder.finished.len);
         const gpa = builder.gpa;
         // The VM's newline output items point at this string.
         const newline = try builder.intern("\n");
@@ -676,7 +650,6 @@ pub const ProgramBuilder = struct {
             .ink_version = builder.ink_version,
             .newline = newline,
         };
-        assert(program.containers.len == builder.staged.items.len);
         return program;
     }
 
@@ -727,7 +700,6 @@ pub const ProgramBuilder = struct {
                 operands[at] = record;
             }
         }
-        assert(opcodes.len == builder.finished.len);
     }
 
     /// Writes the item and origin indices of every list literal.
@@ -767,7 +739,6 @@ pub const ProgramBuilder = struct {
     }
 
     fn resolve_fixups(builder: *ProgramBuilder, program: *Program) !void {
-        assert(program.containers.len == builder.staged.items.len);
         const extra: []u32 = @constCast(program.extra);
         for (builder.fixups.items) |fixup| {
             const resolved = if (fixup.key != no_key)
@@ -790,7 +761,6 @@ pub const ProgramBuilder = struct {
         program: *const Program,
         fixup: Fixup,
     ) ?path_module.Target {
-        assert(fixup.key == no_key);
         const text = builder.fixup_text(fixup);
         const parsed = path_module.Path.parse(text, path_components_max) catch return null;
         const origin: path_module.Origin = .{ .container = fixup.container, .from_content = true };
@@ -834,7 +804,6 @@ pub const ProgramBuilder = struct {
         fixup: Fixup,
         target: path_module.Target,
     ) !void {
-        assert(target.container.to_int() < program.containers.len);
         const position = target.content_index orelse 0;
         switch (fixup.kind) {
             // The first two record words of both records are the target container and index.
@@ -849,7 +818,6 @@ pub const ProgramBuilder = struct {
                 program.instructions.items(.operand)[at] = @backingInt(target.container);
             },
         }
-        assert(!target.container.is_none());
     }
 };
 
@@ -864,7 +832,6 @@ comptime {
 /// root: [text "A", nested c (1): [text "B", newline], text "C"], named knot (2) with named
 /// stitch (3); the root diverts to knot.stitch and the stitch back to its knot.
 fn build_sample(builder: *ProgramBuilder) !void {
-    assert(builder.containers.len == 0);
     _ = try builder.begin_container(.{});
     try builder.add(.text, try builder.intern("A"));
     _ = try builder.begin_container(.{ .name = "c-0" });

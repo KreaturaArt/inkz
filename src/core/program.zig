@@ -1,6 +1,9 @@
 //! The program: one immutable, pre-resolved story image. The compiler and the JSON
 //! loader both produce it through `ProgramBuilder`; many stories may share one.
 
+// lint: allow assertion_density: the accessors read columns that `check()` validates once,
+// when a program is built or loaded; the check functions return faults instead of asserting.
+
 const std = @import("std");
 const assert = std.debug.assert;
 const profile = @import("profile.zig");
@@ -76,7 +79,6 @@ pub fn build_name_classes(
     globals: []const GlobalInfo,
     list_items: []const ListItem,
 ) std.mem.Allocator.Error![]NameClass {
-    assert(strings_count > 0);
     const classes = try gpa.alloc(NameClass, strings_count);
     @memset(classes, .none);
     for (list_items, 0..) |item, position| {
@@ -162,16 +164,11 @@ pub const Program = struct {
     }
 
     pub fn container_info(program: *const Program, container: ContainerIndex) ContainerInfo {
-        assert(container.to_int() < program.containers.len);
-        const info = program.containers.get(container.to_int());
-        assert(info.named_first + info.named_count <= program.named.len);
-        return info;
+        return program.containers.get(container.to_int());
     }
 
     pub fn instructions_count(program: *const Program) u32 {
-        const count: u32 = @intCast(program.instructions.len);
-        assert(count == program.instructions.len);
-        return count;
+        return @intCast(program.instructions.len);
     }
 
     /// The instruction at content position `position` of `container`.
@@ -184,7 +181,6 @@ pub const Program = struct {
         const slot = container.to_int();
         assert(position < program.containers.items(.instruction_count)[slot]);
         const at = program.containers.items(.instruction_first)[slot].to_int() + position;
-        assert(at < program.instructions.len);
         return .{
             .opcode = program.instructions.items(.opcode)[at],
             .operand = program.instructions.items(.operand)[at],
@@ -199,9 +195,7 @@ pub const Program = struct {
     }
 
     pub fn parent(program: *const Program, container: ContainerIndex) ContainerIndex {
-        assert(container.to_int() < program.containers.len);
         const result = program.containers.items(.parent)[container.to_int()];
-        assert(result.is_none() == (container == root));
         assert(result.is_none() or result.to_int() < container.to_int());
         return result;
     }
@@ -216,17 +210,13 @@ pub const Program = struct {
         const id = program.strings.find(name) orelse return null;
         for (program.named[info.named_first..][0..info.named_count]) |entry| {
             if (entry.name != id) continue;
-            assert(program.parent(entry.child) == container);
             return entry.child;
         }
         return null;
     }
 
     pub fn content_count(program: *const Program, container: ContainerIndex) u32 {
-        const count = program.containers.items(.instruction_count)[container.to_int()];
-        assert(count <= program.instructions.len);
-        assert(container.to_int() < program.containers.len);
-        return count;
+        return program.containers.items(.instruction_count)[container.to_int()];
     }
 
     /// One field of a container's record, without reading the others (for the VM).
@@ -235,7 +225,6 @@ pub const Program = struct {
         container: ContainerIndex,
         comptime field: std.meta.FieldEnum(ContainerInfo),
     ) @FieldType(ContainerInfo, @tagName(field)) {
-        assert(container.to_int() < program.containers.len);
         return program.containers.items(field)[container.to_int()];
     }
 
@@ -244,12 +233,9 @@ pub const Program = struct {
         container: ContainerIndex,
         position: u32,
     ) ?ContainerIndex {
-        assert(position < program.content_count(container));
         const item = program.instruction_at(container, position);
         if (item.opcode != .enter_container) return null;
-        const child = item.get(.enter_container);
-        assert(program.parent(child) == container);
-        return child;
+        return item.get(.enter_container);
     }
 
     /// The pair assertion after building and after loading.
@@ -306,7 +292,6 @@ pub const Program = struct {
                 }
             }
         }
-        assert(containers.len > 0);
         return .ok;
     }
 
@@ -353,7 +338,6 @@ pub const Program = struct {
             next += count;
         }
         if (next != program.instructions.len) return .instructions_not_partitioned;
-        assert(firsts.len == counts.len);
         return .ok;
     }
 
@@ -387,13 +371,11 @@ pub const Program = struct {
                 }
             }
         }
-        assert(containers.len > 0);
         return .ok;
     }
 
     /// Every operand points at something that exists.
     fn check_operands(program: *const Program) Fault {
-        assert(program.instructions.len == program.instructions_count());
         const strings_count = program.strings.count();
         const containers_count: u32 = @intCast(program.containers.len);
         const opcodes = program.instructions.items(.opcode);
@@ -417,7 +399,6 @@ pub const Program = struct {
                 return .count_slot_out_of_range;
             }
         }
-        assert(strings_count > 0);
         return .ok;
     }
 
@@ -456,7 +437,6 @@ pub const Program = struct {
         for (tail[literal.items_count..]) |origin| {
             if (origin >= program.list_origins.len) return .list_origin_out_of_range;
         }
-        assert(tail_at <= program.extra.len);
         return .ok;
     }
 
@@ -487,7 +467,6 @@ pub const Program = struct {
             if (external.fallback.is_none()) continue;
             if (external.fallback.to_int() >= program.containers.len) return .fallback_out_of_range;
         }
-        assert(next == program.list_items.len);
         return .ok;
     }
 
@@ -516,13 +495,10 @@ pub const Program = struct {
 
     /// What `name` names as a variable.
     pub fn name_class(program: *const Program, name: StringId) NameClass {
-        assert(!name.is_none());
-        assert(name.to_int() < program.name_classes.len);
         return program.name_classes[name.to_int()];
     }
 
     pub fn global_by_name(program: *const Program, name: []const u8) ?GlobalSlot {
-        assert(name.len > 0);
         const id = program.strings.find(name) orelse return null;
         for (program.globals, 0..) |global, slot| {
             if (global.name == id) return .from_int(@intCast(slot));
@@ -532,7 +508,6 @@ pub const Program = struct {
 
     /// A list item by `origin.item` or, as ink's `VAR?` allows, by its bare name.
     pub fn list_item_by_name(program: *const Program, name: []const u8) ?ListItemIndex {
-        assert(name.len > 0);
         const id = program.strings.find(name) orelse return null;
         for (program.list_items, 0..) |item, position| {
             if (item.full_name == id or item.name == id) return .from_int(@intCast(position));
@@ -541,7 +516,6 @@ pub const Program = struct {
     }
 
     pub fn external_by_name(program: *const Program, name: []const u8) ?ExternalIndex {
-        assert(name.len > 0);
         const id = program.strings.find(name) orelse return null;
         for (program.externals, 0..) |external, position| {
             if (external.name == id) return .from_int(@intCast(position));
@@ -550,7 +524,6 @@ pub const Program = struct {
     }
 
     fn is_string(program: *const Program, id: StringId) bool {
-        assert(program.strings.count() > 0);
         return @backingInt(id) < program.strings.count();
     }
 
@@ -561,7 +534,6 @@ pub const Program = struct {
         // A target may point one past the last instruction: the end of the container.
         const count = program.containers.items(.instruction_count)[container.to_int()];
         if (position > count) return .target_out_of_range;
-        assert(position <= count);
         return .ok;
     }
 

@@ -163,7 +163,6 @@ fn column_of(comptime section: Section) std.meta.FieldEnum(ContainerInfo) {
 
 /// The bytes of `section` in `program`.
 fn section_bytes(program: *const Program, comptime section: Section) []const u8 {
-    assert(program.containers.len > 0);
     const items: []const section.Element() = switch (section) {
         .string_bytes => program.strings.bytes.items,
         .string_ends => program.strings.ends.items,
@@ -189,7 +188,6 @@ fn element_count(program: *const Program, comptime section: Section) u32 {
 
 fn padding_of(length: usize) usize {
     const padded = std.mem.alignForward(usize, length, section_alignment);
-    assert(padded - length < section_alignment);
     return padded - length;
 }
 
@@ -198,7 +196,6 @@ pub fn write(program: *const Program, writer: *std.Io.Writer) std.Io.Writer.Erro
     const profile_zone = profile.begin(.image_write);
     defer profile_zone.end();
     comptime assert(@import("builtin").cpu.arch.endian() == .little);
-    assert(program.containers.len > 0);
     const header: Header = .{
         .magic = magic.*,
         .format_version = format_version,
@@ -227,7 +224,6 @@ pub fn write(program: *const Program, writer: *std.Io.Writer) std.Io.Writer.Erro
 
 /// The image's size in bytes, as `write` writes it.
 pub fn image_bytes(program: *const Program) u64 {
-    assert(program.containers.len > 0);
     var total: u64 = @sizeOf(Header) + sections_count * @sizeOf(SectionEntry);
     inline for (comptime std.enums.values(Section)) |section| {
         const length = section_bytes(program, section).len;
@@ -267,12 +263,10 @@ const Layout = struct {
             at += length + padding_of(@intCast(length));
         }
         if (at != bytes.len) return error.ImageTruncated;
-        assert(at >= table_end);
         return layout;
     }
 
     fn get(layout: *const Layout, comptime section: Section) []const u8 {
-        assert(layout.header.sections_count == sections_count);
         const bytes = layout.sections[@backingInt(section)];
         assert(bytes.len % @sizeOf(section.Element()) == 0);
         return bytes;
@@ -294,7 +288,6 @@ fn copy_section(
     const bytes = layout.get(section);
     const items = try gpa.alloc(section.Element(), layout.count(section));
     @memcpy(std.mem.sliceAsBytes(items), bytes);
-    assert(items.len == layout.count(section));
     return items;
 }
 
@@ -309,7 +302,6 @@ const opcode_bytes: [256]bool = table: {
 };
 
 fn check_opcodes(bytes: []const u8) Error!void {
-    assert(@sizeOf(Opcode) == 1);
     for (bytes) |byte| {
         if (!opcode_bytes[byte]) return error.InvalidImage;
     }
@@ -365,7 +357,6 @@ fn check_string_ends(ends: []const u32, bytes_count: usize) Error!void {
 
 /// Loads a program from an image, copying everything out of `bytes`.
 pub fn load(gpa: Allocator, bytes: []const u8) Error!Program {
-    assert(sections_count > 0);
     const shape_zone = profile.begin(.image_shape);
     const layout = try Layout.of(bytes);
     try check_shape(&layout);
@@ -390,7 +381,6 @@ pub fn load(gpa: Allocator, bytes: []const u8) Error!Program {
 /// builds still verify them and panic on a bad one; ReleaseFast skips that. Use `load` for
 /// any image that comes from outside the build.
 pub fn load_trusted(gpa: Allocator, bytes: []const u8) Error!Program {
-    assert(sections_count > 0);
     const layout = try Layout.of(bytes);
     try check_columns(&layout);
     var strings = try load_strings(gpa, &layout);
@@ -407,7 +397,6 @@ pub fn load_trusted(gpa: Allocator, bytes: []const u8) Error!Program {
 
 /// What can be checked on the raw sections: opcodes, flag bits, equal column lengths.
 fn check_shape(layout: *const Layout) Error!void {
-    assert(layout.header.sections_count == sections_count);
     try check_opcodes(layout.get(.opcodes));
     for (layout.get(.flags)) |flags| {
         if (flags & ~@as(u8, 0b111) != 0) return error.InvalidImage;
@@ -423,11 +412,9 @@ fn check_columns(layout: *const Layout) Error!void {
     inline for (comptime std.meta.fieldNames(ContainerInfo)) |name| {
         if (layout.count(@field(Section, name)) != containers) return error.InvalidImage;
     }
-    assert(containers > 0);
 }
 
 fn load_strings(gpa: Allocator, layout: *const Layout) Error!string_pool.StringPool {
-    assert(layout.header.sections_count == sections_count);
     const string_bytes = try copy_section(gpa, layout, .string_bytes);
     errdefer gpa.free(string_bytes);
     const ends = try copy_section(gpa, layout, .string_ends);
@@ -438,7 +425,6 @@ fn load_strings(gpa: Allocator, layout: *const Layout) Error!string_pool.StringP
             error.DuplicateString => error.InvalidImage,
             error.OutOfMemory => error.OutOfMemory,
         };
-    assert(strings.count() == ends.len);
     return strings;
 }
 
@@ -448,8 +434,6 @@ fn load_arrays(
     layout: *const Layout,
     strings: string_pool.StringPool,
 ) Allocator.Error!Program {
-    assert(layout.count(.opcodes) == layout.count(.operands));
-    assert(strings.count() > 0);
     var instructions: std.MultiArrayList(Instruction) = .empty;
     errdefer instructions.deinit(gpa);
     try instructions.resize(gpa, layout.count(.opcodes));

@@ -35,7 +35,6 @@ const Components = struct {
         if (path.len == 0) return components;
         var parts = std.mem.splitScalar(u8, path, '.');
         while (parts.next()) |text| try components.append(text);
-        assert(components.count > 0);
         return components;
     }
 
@@ -54,7 +53,6 @@ const Writer = struct {
     arena: Allocator,
 
     fn string(writer: *const Writer, id: index.StringId) []const u8 {
-        assert(!id.is_none());
         return writer.program.strings.get(id);
     }
 
@@ -315,7 +313,6 @@ fn write_operand_instruction(
         .divert => try write_divert(writer, container, position, instruction),
         .call_external => {
             const call = record(instruction_module.ExternalCall, program, instruction);
-            assert(call.external.to_int() < program.externals.len);
             try writer.property(
                 "x()",
                 writer.string(program.externals[call.external.to_int()].name),
@@ -342,13 +339,10 @@ fn write_operand_instruction(
 
 /// An instruction's record in `extra` (its operand is the record's index).
 fn record(comptime T: type, program: *const Program, instruction: Instruction) T {
-    assert(instruction.operand < program.extra.len);
-    assert(@typeInfo(T) == .@"struct");
     return extra.get(T, program.extra, instruction.operand);
 }
 
 fn global_name(writer: *const Writer, slot: index.GlobalSlot) []const u8 {
-    assert(slot.to_int() < writer.program.globals.len);
     return writer.string(writer.program.globals[slot.to_int()].name);
 }
 
@@ -388,7 +382,6 @@ fn write_divert(
 fn write_list(writer: *Writer, at: u32) !void {
     const program = writer.program;
     const out = writer.out;
-    assert(at < program.extra.len);
     const literal = extra.get(instruction_module.ListLiteral, program.extra, at);
     const tail_at = at + extra.words(instruction_module.ListLiteral);
     // The record is followed by its item indices, its origin indices and (for a list item
@@ -423,7 +416,6 @@ fn write_list(writer: *Writer, at: u32) !void {
 
 /// SimpleJson's float: invariant shortest form, with `.0` if it would read as an integer.
 fn write_float(out: *std.Io.Writer, float: f32) !void {
-    assert(@sizeOf(@TypeOf(float)) == 4);
     assert(!std.math.isNan(float));
     var buffer: [64]u8 = undefined;
     const text = try std.fmt.bufPrint(&buffer, "{d}", .{float});

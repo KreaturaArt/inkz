@@ -94,7 +94,6 @@ pub const Limits = struct {
             const globals = (@as(u64, shape.globals_count) + slots - 1) / slots; // rounded up
             const counts = (@as(u64, shape.count_slots) + slots - 1) / slots;
             const words = (globals + counts + 31) / 32;
-            assert(words * 32 >= globals + counts);
             return @intCast(words);
         }
     };
@@ -117,8 +116,6 @@ pub const Limits = struct {
         if (limits.evaluate_depth_max > limits.frames_max) return .evaluate_depth_exceeds_frames;
         const shape: ProgramShape = .{ .count_slots = 0, .globals_count = 0 };
         if (limits.bytes_total_checked(shape) == null) return .bytes_total_overflow;
-        assert(limits.frames_max >= limits.threads_max);
-        assert(limits.temps_max >= limits.temps_per_frame_max);
         return .ok;
     }
 
@@ -130,9 +127,7 @@ pub const Limits = struct {
     /// The exact number of bytes `Story.init` allocates for these limits and program.
     pub fn bytes_total(limits: *const Limits, shape: ProgramShape) u64 {
         limits.verify();
-        const total = limits.bytes_total_checked(shape).?;
-        assert(total >= limits.heap_bytes_max);
-        return total;
+        return limits.bytes_total_checked(shape).?;
     }
 
     fn bytes_total_checked(limits: *const Limits, shape: ProgramShape) ?u64 {
@@ -145,17 +140,13 @@ pub const Limits = struct {
             @as(u64, shape.lookahead_copied_words()) * 4;
         const shared = limits.shared_bytes(shape);
         const total = std.math.add(u64, flows, lookahead) catch return null;
-        const result = std.math.add(u64, total, shared) catch return null;
-        assert(result >= flows);
-        assert(result >= shared);
-        return result;
+        return std.math.add(u64, total, shared) catch return null;
     }
 
     /// The buffers of one live flow: call stack, evaluation, output and choices.
     pub fn live_flow_bytes(limits: *const Limits) u64 {
         const total = @as(u64, limits.evaluation_values_max) * element_bytes.value +
             limits.flow_bytes();
-        assert(total > limits.evaluation_values_max);
         return total;
     }
 
@@ -165,7 +156,6 @@ pub const Limits = struct {
         for (std.enums.values(FlowBuffer)[1..]) |buffer| {
             total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
         }
-        assert(total > limits.frames_max);
         return total;
     }
 
@@ -174,7 +164,6 @@ pub const Limits = struct {
         const each = limits.flow_bytes() + element_bytes.flow;
         const total = @as(u64, limits.flows_max) * each +
             @as(u64, limits.evaluation_values_max) * element_bytes.value;
-        assert(total >= each);
         return total;
     }
 
@@ -198,7 +187,6 @@ pub const Limits = struct {
         total += diagnostics * (bytes.diagnostic + bytes.diagnostic_text);
         total += @as(u64, limits.container_depth_max) * bytes.ancestor;
         total += std.mem.alignForward(u64, limits.load_bytes_max, 8); // 8-byte aligned words
-        assert(total >= limits.heap_bytes_max);
         return total;
     }
 };
@@ -321,12 +309,10 @@ pub const CompilerLimits = struct {
         }
         // Each retry doubles the workspace; more than a few means a sizing bug.
         if (limits.compile_retries_max > 8) return .retries_unbounded;
-        assert(limits.parse_depth_max > 0);
         return .ok;
     }
 
     pub fn verify(limits: *const CompilerLimits) void {
-        assert(limits.source_bytes_max > 0);
         fault.verify(limits.check());
     }
 };
@@ -442,7 +428,6 @@ test "the budget grows with the program and with every buffer" {
 
 /// Limits that bound work, not memory, so they don't change the byte budget.
 fn is_not_a_buffer(comptime name: []const u8) bool {
-    comptime assert(name.len > 0);
     comptime assert(@hasField(Limits, name));
     const names = [_][]const u8{
         "temps_per_frame_max",

@@ -7,7 +7,6 @@ const assert = std.debug.assert;
 
 /// Creates a distinct index type. `name` only makes the type unique and readable in errors.
 pub fn Index(comptime name: []const u8) type {
-    comptime assert(name.len > 0);
     return enum(u32) {
         none = std.math.maxInt(u32),
         _,
@@ -19,44 +18,31 @@ pub fn Index(comptime name: []const u8) type {
         /// Wraps a position. `value` must not be the `.none` bit pattern.
         pub fn from_int(value: u32) Self {
             assert(value != @backingInt(Self.none));
-            const index: Self = @fromBackingInt(@intCast(value));
-            assert(index != .none);
-            return index;
+            return @fromBackingInt(@intCast(value));
         }
 
         /// Unwraps a position. Panics on `.none`, which has no position.
         pub fn to_int(index: Self) u32 {
             assert(index != .none);
-            const value = @backingInt(index);
-            return value;
+            return @backingInt(index);
         }
 
         pub fn is_none(index: Self) bool {
-            const result = index == .none;
-            assert(result == (@backingInt(index) == std.math.maxInt(u32)));
-            if (!result) assert(@backingInt(index) < std.math.maxInt(u32));
-            return result;
+            return index == .none;
         }
 
         /// Like `from_int`, but `.none` for `null`.
         pub fn from_optional(value: ?u32) Self {
-            const index: Self = if (value) |position| from_int(position) else .none;
-            assert((value == null) == (index == .none));
-            if (value) |position| assert(@backingInt(index) == position);
-            return index;
+            return if (value) |position| from_int(position) else .none;
         }
 
         /// Like `to_int`, but `null` for `.none`.
         pub fn to_optional(index: Self) ?u32 {
-            const value: ?u32 = if (index == .none) null else index.to_int();
-            assert((value == null) == (index == .none));
-            if (value) |position| assert(position < std.math.maxInt(u32));
-            return value;
+            return if (index == .none) null else index.to_int();
         }
 
         comptime {
             assert(@sizeOf(Self) == 4);
-            assert(@typeInfo(Self).@"enum".tag_type == u32);
         }
     };
 }

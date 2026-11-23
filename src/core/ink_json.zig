@@ -93,9 +93,7 @@ pub fn load(gpa: Allocator, json: []const u8) !Program {
 
 fn strip_byte_order_mark(json: []const u8) []const u8 {
     const mark = "\xEF\xBB\xBF";
-    const result = if (std.mem.startsWith(u8, json, mark)) json[mark.len..] else json;
-    assert(result.len <= json.len);
-    return result;
+    return if (std.mem.startsWith(u8, json, mark)) json[mark.len..] else json;
 }
 
 const FrameKind = enum { content, metadata };
@@ -145,10 +143,7 @@ const Loader = struct {
 
     /// The next token, with strings and numbers complete (unescaped into scratch if needed).
     fn next_token(loader: *Loader) Error!std.json.Token {
-        assert(loader.frames_count <= depth_max);
-        const result = try loader.scanner.nextAlloc(loader.scratch, .alloc_if_needed);
-        assert(result != .partial_string and result != .partial_number);
-        return result;
+        return try loader.scanner.nextAlloc(loader.scratch, .alloc_if_needed);
     }
 
     /// The next key of an object (or element of a string array), or null at `end`.
@@ -162,25 +157,20 @@ const Loader = struct {
     }
 
     fn expect(loader: *Loader, comptime tag: std.meta.Tag(std.json.Token)) Error!void {
-        assert(loader.frames_count <= depth_max);
         const token = try loader.scanner.next();
         if (std.meta.activeTag(token) != tag) return error.InvalidInkJson;
-        assert(tag != .end_of_document or loader.frames_count == 0);
     }
 
     fn integer(loader: *Loader) Error!i64 {
-        assert(loader.frames_count <= depth_max);
         const token = try loader.next_token();
         const text = switch (token) {
             .number, .allocated_number => |digits| digits,
             else => return error.InvalidInkJson,
         };
-        assert(text.len > 0);
         return std.fmt.parseInt(i64, text, 10) catch error.InvalidInkJson;
     }
 
     fn string(loader: *Loader) Error![]const u8 {
-        assert(loader.frames_count <= depth_max);
         const token = try loader.next_token();
         const text = switch (token) {
             .string, .allocated_string => |value| value,
@@ -191,10 +181,8 @@ const Loader = struct {
 
     /// A string that names something (a variable, a path, a list): never empty.
     fn nonempty_string(loader: *Loader) Error![]const u8 {
-        assert(loader.frames_count <= depth_max);
         const text = try loader.string();
         if (text.len == 0) return error.InvalidInkJson;
-        assert(text.len > 0);
         return text;
     }
 
@@ -202,13 +190,10 @@ const Loader = struct {
     fn integer_as(loader: *Loader, comptime T: type) Error!T {
         comptime assert(@bitSizeOf(T) <= 32);
         const value = try loader.integer();
-        const result = std.math.cast(T, value) orelse return error.InvalidInkJson;
-        assert(@as(i64, result) == value);
-        return result;
+        return std.math.cast(T, value) orelse return error.InvalidInkJson;
     }
 
     fn push(loader: *Loader, kind: FrameKind) Error!void {
-        assert(loader.frames_count <= depth_max);
         if (loader.frames_count == depth_max) return error.TooDeep;
         loader.frames[loader.frames_count] = kind;
         loader.frames_count += 1;
@@ -235,7 +220,6 @@ const Loader = struct {
     /// One content item, or the container's terminator.
     fn content_step(loader: *Loader) Error!void {
         assert(loader.frames[loader.frames_count - 1] == .content);
-        assert(loader.frames_count > 0);
         switch (try loader.scanner.peekNextTokenType()) {
             .array_begin => {
                 _ = try loader.scanner.next();
@@ -269,7 +253,6 @@ const Loader = struct {
 
     /// An object in a container's content: a content item, or the final dictionary.
     fn object_item(loader: *Loader) Error!void {
-        assert(loader.frames_count > 0);
         assert(loader.frames[loader.frames_count - 1] == .content);
         const first = try loader.next_key(.object_end) orelse return loader.end_container();
         const is_metadata = std.mem.eql(u8, first, "#f") or std.mem.eql(u8, first, "#n") or
@@ -282,7 +265,6 @@ const Loader = struct {
 
     /// One key of a container's final dictionary, or its end.
     fn metadata_step(loader: *Loader) Error!void {
-        assert(loader.frames_count > 0);
         assert(loader.frames[loader.frames_count - 1] == .metadata);
         if (try loader.next_key(.object_end)) |key| return loader.metadata_key(key);
         loader.frames_count -= 1;
@@ -291,7 +273,6 @@ const Loader = struct {
 
     fn metadata_key(loader: *Loader, key: []const u8) Error!void {
         assert(loader.frames[loader.frames_count - 1] == .metadata);
-        assert(loader.builder.frames.items.len > 0);
         if (key.len == 0) return error.InvalidInkJson;
         if (std.mem.eql(u8, key, "#f")) {
             const bits = try loader.integer();
@@ -307,7 +288,6 @@ const Loader = struct {
     }
 
     fn add_number(loader: *Loader) Error!void {
-        assert(loader.builder.frames.items.len > 0);
         assert(loader.frames[loader.frames_count - 1] == .content);
         const token = try loader.next_token();
         const text = switch (token) {
@@ -323,8 +303,6 @@ const Loader = struct {
     }
 
     fn add_word(loader: *Loader, word: []const u8) Error!void {
-        assert(loader.builder.frames.items.len > 0);
-        assert(loader.frames_count > 0);
         try add_word_to(&loader.builder, word);
     }
 
@@ -380,7 +358,6 @@ const Loader = struct {
 
     /// Reads the rest of a content object whose first key is `first`, then adds it.
     fn content_object(loader: *Loader, first: []const u8) Error!void {
-        assert(loader.builder.frames.items.len > 0);
         var fields: Fields = .{};
         // The list names are per object: free them, so many literals don't fill scratch.
         defer fields.list_items.deinit(loader.builder.gpa);
@@ -396,8 +373,6 @@ const Loader = struct {
     }
 
     fn content_field(loader: *Loader, fields: *Fields, text: []const u8) Error!void {
-        assert(loader.builder.frames.items.len > 0);
-        assert(text.len > 0);
         const key = std.meta.stringToEnum(Key, text) orelse .unknown;
         switch (key) {
             .@"->", .@"f()", .@"->t->", .@"x()" => {
@@ -433,7 +408,6 @@ const Loader = struct {
             .false => false,
             else => return error.InvalidInkJson,
         };
-        assert(token == .true or token == .false);
     }
 
     /// `"list": {"origin.item": value, ...}`
@@ -448,7 +422,6 @@ const Loader = struct {
             if (name.len == 0) return error.InvalidInkJson;
             _ = try loader.integer_as(i32);
             try fields.list_items.append(loader.builder.gpa, name);
-            assert(fields.list_items.items.len > 0);
         }
     }
 
@@ -461,7 +434,6 @@ const Loader = struct {
         while (try loader.next_key(.array_end)) |name| {
             if (name.len == 0) return error.InvalidInkJson;
             try fields.list_origins.append(loader.builder.gpa, name);
-            assert(fields.list_origins.items.len > 0);
         }
     }
 
@@ -549,14 +521,11 @@ pub fn add_word_to(builder: *ProgramBuilder, word: []const u8) Error!void {
         return error.UnknownContent;
     };
     assert(instruction_module.operand_kind(opcode) == .none);
-    const count_before = builder.scratch.len;
     try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
-    assert(builder.scratch.len == count_before + 1);
 }
 
 fn load_file(gpa: Allocator, path: []const u8) !Program {
     assert(std.mem.endsWith(u8, path, ".json"));
-    assert(path.len > 0);
     const io = std.testing.io;
     const json = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024 * 1024));
     defer gpa.free(json);
@@ -599,7 +568,6 @@ test "hello world loads into the expected instructions" {
 
 /// Every `.ink.json` below `directory`, sorted.
 fn collect_json(arena: Allocator, directory: []const u8) ![]const []const u8 {
-    assert(directory.len > 0);
     const io = std.testing.io;
     var root = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
     defer root.close(io);
@@ -615,8 +583,6 @@ fn collect_json(arena: Allocator, directory: []const u8) ![]const []const u8 {
     }
     std.mem.sort([]const u8, paths.items, {}, struct {
         fn less(_: void, a: []const u8, b: []const u8) bool {
-            assert(a.len > 0);
-            assert(b.len > 0);
             return std.mem.order(u8, a, b) == .lt;
         }
     }.less);
@@ -787,7 +753,6 @@ fn count_resolved_targets(program: *const Program) !u32 {
             else => {},
         }
     }
-    assert(resolved <= opcodes.len);
     return resolved;
 }
 

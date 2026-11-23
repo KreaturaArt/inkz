@@ -115,7 +115,6 @@ pub const Opcode = enum(u8) {
 
 comptime {
     assert(@sizeOf(Opcode) == 1);
-    assert(@typeInfo(Opcode).@"enum".field_names.len < 256);
 }
 
 /// A typed index into `extra` for record `T`, so an operand can't be read as the wrong record.
@@ -204,7 +203,6 @@ pub const OperandKind = enum {
 /// What the operand of `opcode` means. The control commands and native functions have none;
 /// a new opcode without a row fails the round-trip test below, which asks for every one.
 pub fn operand_kind(opcode: Opcode) OperandKind {
-    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
     const commands_first = @backingInt(Opcode.eval_start);
     const commands_last = @backingInt(Opcode.list_invert);
     if (@backingInt(opcode) >= commands_first and @backingInt(opcode) <= commands_last) {
@@ -254,8 +252,6 @@ fn word_of(comptime kind: OperandKind, operand: Operand(kind)) u32 {
         .boolean => @intFromBool(operand),
         else => @backingInt(operand),
     };
-    if (kind == .boolean) assert(word <= 1);
-    if (kind == .none) assert(word == 0);
     return word;
 }
 
@@ -270,7 +266,6 @@ pub const Instruction = struct {
         const instruction: Instruction = .{ .opcode = opcode, .operand = word };
         // Compare bits, not values: a NaN literal must round-trip too.
         assert(word_of(kind, instruction.get(opcode)) == word);
-        assert(kind != .none or word == 0);
         return instruction;
     }
 

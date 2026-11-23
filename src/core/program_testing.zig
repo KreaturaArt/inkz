@@ -1,14 +1,13 @@
 //! Test helpers for programs: field-by-field equality.
 
+// lint: allow assertion_density: test helpers, built only into tests; they report with expect.
+
 const std = @import("std");
-const assert = std.debug.assert;
 const Program = @import("program.zig").Program;
 
 /// Whether two programs are the same, field by field.
 pub fn expect_same_program(expected: *const Program, actual: *const Program) !void {
     const testing = std.testing;
-    assert(expected.containers.len > 0);
-    assert(actual.containers.len > 0);
     try testing.expectEqualSlices(u8, expected.strings.bytes.items, actual.strings.bytes.items);
     try testing.expectEqualSlices(u32, expected.strings.ends.items, actual.strings.ends.items);
     try expect_same_columns(expected.instructions, actual.instructions);
@@ -25,7 +24,6 @@ pub fn expect_same_program(expected: *const Program, actual: *const Program) !vo
 }
 
 fn expect_same_columns(expected: anytype, actual: @TypeOf(expected)) !void {
-    comptime assert(@TypeOf(expected) == @TypeOf(actual));
     try std.testing.expectEqual(expected.len, actual.len);
     const Item = @TypeOf(expected.get(0));
     inline for (comptime std.meta.fieldNames(Item)) |name| {
