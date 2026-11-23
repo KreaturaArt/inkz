@@ -574,7 +574,9 @@ Regressions over 5%, and where they come from (bisected with the same binaries p
   the VM's hot functions. Marking both `@branchHint(.cold)` (two lines, measured on a
   scratch copy of 1ff6dad) brings play back to 331k–350k turns/s on crime_scene and
   1.56–1.59M on the generated story, within noise of main. `bench profile`'s play, which
-  measures a shorter run, shows only +2–3%.
+  measures a shorter run, shows only +2–3%. Both hints are now in the tree; a run after
+  them gave 340k / 347k turns/s on crime_scene (default / fitted) and 1.571M on the
+  generated story.
 - **JSON store, +5–8%.** Commit 618fabb (P17.10): the writer builds each container's path
   from its stored dotted path instead of carrying it down the walk (generated story 333 →
   313 MB/s at that commit).

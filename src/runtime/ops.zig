@@ -68,6 +68,7 @@ fn lists_of(story: *Story) lists_module.Lists {
 /// the flow (ink's ForceEnd: "in a broken state don't need to know about any other errors")
 /// and returns `error.StoryError`.
 pub fn fail(story: *Story, comptime format: []const u8, arguments: anytype) Error {
+    @branchHint(.cold);
     story.state.add_diagnostic(.@"error", vm.current_pointer(story), format, arguments);
     force_end(story);
     assert(story.state.has_error());

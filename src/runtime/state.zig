@@ -412,6 +412,7 @@ pub const State = struct {
         comptime format: []const u8,
         arguments: anytype,
     ) void {
+        @branchHint(.cold);
         const list = switch (severity) {
             .@"error" => &state.errors,
             .warning => &state.warnings,
