@@ -12,15 +12,20 @@ const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
 const fuzz_play = @import("../fuzz/play.zig");
 const fuzz_limits = @import("../fuzz/limits.zig");
+const ink_json = @import("../core/ink_json.zig");
+const program_image = @import("../core/program_image.zig");
+const program_testing = @import("../core/program_testing.zig");
 const limits_module = @import("../core/limits.zig");
 const Limits = limits_module.Limits;
 const Swarm = fuzz_ink.Swarm;
 
 pub const Target = enum {
-    /// Compiles; a compiled program passes `Program.check` and compiles the same twice.
+    /// Compiles; the program must pass `check_program`: the same program compiled twice and
+    /// after JSON and image round trips.
     compile,
-    /// Compiles and plays with seeded choices; the state checks after every call. Most seeds
-    /// play again under other limits (`Plan`): the same calls, or a limit stops it.
+    /// Compiles (`check_program`, as the compile target) and plays with seeded choices; the
+    /// state checks after every call. Most seeds play again under other limits (`Plan`): the
+    /// same calls, or a limit stops it.
     play,
     /// Plays to a drawn call, saves, loads the save into a fresh story (which saves the
     /// same), and plays both on: the same calls, and the same save at the end.
@@ -205,16 +210,43 @@ fn check_case(
         else => return err,
     };
     defer program.deinit(gpa);
-    if (program.check() != .ok) return "Program.check";
+    if (try check_program(gpa, case.source, &program)) |failure| return failure;
     switch (target) {
-        .compile => {
-            var again = try compile.compile_source(gpa, case.source);
-            defer again.deinit(gpa);
-            if (again.instructions.len != program.instructions.len) return "not deterministic";
-        },
+        .compile => {},
         .play, .save => return play(gpa, &program, seed, target == .save, summary),
         .synthetic => unreachable,
     }
+    return null;
+}
+
+/// Null when `program` (compiled from `source`) passes `Program.check` and is the same
+/// program, array by array, compiled again, serialized to JSON and loaded, and written to
+/// an image and loaded; otherwise what failed.
+fn check_program(gpa: std.mem.Allocator, source: []const u8, program: *const Program) !?[]const u8 {
+    if (program.check() != .ok) return "Program.check";
+    var again = try compile.compile_source(gpa, source);
+    defer again.deinit(gpa);
+    if (program_testing.first_difference(program, &again) != null) return "not deterministic";
+
+    var json: std.Io.Writer.Allocating = .init(gpa);
+    defer json.deinit();
+    try ink_json.serialize(gpa, program, &json.writer);
+    var from_json = ink_json.load(gpa, json.written()) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return "load of its JSON";
+    };
+    defer from_json.deinit(gpa);
+    if (program_testing.first_difference(program, &from_json) != null) return "JSON round trip";
+
+    var image: std.Io.Writer.Allocating = .init(gpa);
+    defer image.deinit();
+    try program_image.write(program, &image.writer);
+    var from_image = program_image.load(gpa, image.written()) catch |err| {
+        if (err == error.OutOfMemory) return err;
+        return "load of its image";
+    };
+    defer from_image.deinit(gpa);
+    if (program_testing.first_difference(program, &from_image) != null) return "image round trip";
     return null;
 }
 
