@@ -23,6 +23,14 @@ before it. Random bytes would mostly stop at the first check.
   back, for failure reports and reproduce commands. `Swarm.classic` (the full mix with
   `drop`) takes the same choices as the generator before swarms, so its seeds still give the
   same sources; `Swarm.all` is the full mix without the error features.
+- **Stories that play long.** Two swarm features shape a source for the play targets. With
+  `hub` (drawn 3 in 4), the root diverts to a knot `hub` of choices, and every knot ends in
+  a block of mostly sticky choices that divert to the hub and the knots, so play loops
+  through choices; other choices follow a sticky fallback to the hub, tunnels call a knot
+  that only tunnels reach, and diverts and threads outside choices only go forward. With
+  `typed` (drawn 1 in 2), each expression keeps to numbers, strings or lists, with the
+  operators ink defines on them, so type errors don't stop play. Neither is in
+  `Swarm.classic`.
 - **Loader targets.** These start from a valid file (a program image, a story's JSON or a
   save) and let the fuzzer edit its words or tokens.
 
@@ -123,16 +131,21 @@ nothing.
 
 Each target's summary line also says what the runs reached, counted without allocating:
 compile failures by the first error's diagnostic code (the most frequent four), played
-stories that hit a runtime error, lines played, choices made, and played stories still
-going after the 64 calls a play gets (`step cap`). `--target all --seconds 9` from seed 1
-(ReleaseSafe, Apple M-series), before and after P18.1 made dropping names a swarm feature:
+stories that hit a runtime error, lines played, choices made, played stories still going
+after the 64 calls a play gets (`step cap`), and those that ended without an error before
+it (`ended`). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
+and after P18.1 made dropping names a swarm feature, and after P18.2 added `hub` and
+`typed`:
 
 | | compile failures | play: compiled | runtime errors | lines | choices | step cap |
 | --- | --- | --- | --- | --- | --- | --- |
 | before | 4,363 / 13,842 (31.5%) | 5,336 / 7,800 | 2,350 | 13,164 | 411 | 114 |
 | after P18.1 | 1,413 / 12,278 (11.5%) | 6,255 / 7,085 | 2,991 | 16,887 | 442 | 154 |
+| after P18.2 | 1,085 / 9,144 (11.9%) | 5,239 / 5,963 | 1,795 | 84,115 | 63,192 | 2,138 |
 
-The failures left are the error features' (`name_conflict` is `collision`'s).
+The failures left are the error features' (`name_conflict` is `collision`'s). Played
+stories now run longer, so fewer fit in the time. Of the runtime errors left, most are the
+unbound external `e0` (no play binds it yet).
 
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.
