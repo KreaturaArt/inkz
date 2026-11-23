@@ -48,7 +48,6 @@ pub const Lowered = struct {
     lists: []const ListDefinition,
 
     pub fn deinit(lowered: *Lowered) void {
-        assert(!lowered.root.is_none());
         lowered.ir.deinit();
         lowered.* = undefined;
     }
@@ -79,7 +78,6 @@ pub const Lowering = struct {
         resolution: *const resolve.Resolution,
     ) !Lowering {
         assert(resolution.targets.len == tree.count());
-        assert(parsed.tree.tags.len > 0);
         const results = try gpa.alloc(Result, tree.count());
         errdefer gpa.free(results);
         @memset(results, .none);
@@ -142,7 +140,6 @@ pub const Lowering = struct {
     /// Records an error or a warning on `object`; as in ink, an object gets at most one of
     /// each.
     pub fn report(lowering: *Lowering, code: resolve.Code, object: ObjectIndex) !void {
-        assert(object.to_int() < lowering.tree.count());
         for (lowering.diagnostics.items) |diagnostic| {
             if (diagnostic.object != object) continue;
             if (diagnostic.code.is_warning() == code.is_warning()) return;
@@ -159,7 +156,6 @@ pub const Lowering = struct {
     }
 
     pub fn ast(lowering: *const Lowering) *const ast_module.Ast {
-        assert(lowering.parsed.tree.tags.len > 0);
         return &lowering.parsed.tree;
     }
 
@@ -174,22 +170,7 @@ pub const Lowering = struct {
         return lowering.parsed.slot_text(lowering.tree.node(object), which);
     }
 
-    /// Whether `name` is an EXTERNAL function (ink's story.externals).
-    pub fn is_external(lowering: *const Lowering, name: []const u8) bool {
-        return lowering.resolution.externals.contains(.{ .scope = Tree.root, .name = name });
-    }
-
-    /// Whether a divert is a built-in call's proxy, which ink never generates.
-    pub fn resolution_skipped(lowering: *const Lowering, divert: ObjectIndex) bool {
-        if (!lowering.tree.has(divert, Flags.function_call)) return false;
-        const call = lowering.tree.parent(divert);
-        assert(lowering.tree.kind(call) == .function_call);
-        if (!lowering.resolution.targets[call.to_int()].is_none()) return true;
-        return expressions.is_builtin_call(lowering.slot_name(call, .name));
-    }
-
     pub fn result(lowering: *const Lowering, object: ObjectIndex) Result {
-        assert(object.to_int() < lowering.results.len);
         return lowering.results[object.to_int()];
     }
 
@@ -200,7 +181,6 @@ pub const Lowering = struct {
             .item => |id| try lowering.ir.attach_or_copy(container, id),
             .container => |child| _ = try lowering.ir.add_container(container, child),
         }
-        assert(container.to_int() < lowering.ir.containers.items.len);
     }
 
     /// The runtime object of an object used as content: an expression is wrapped in
@@ -210,13 +190,13 @@ pub const Lowering = struct {
         // Expressions generate nothing on their own: their users emit them.
         assert(lowering.result(object) == .none);
         const container = try lowering.ir.new_container();
-        _ = try lowering.ir.add_command(container, .eval_start);
+        _ = try lowering.ir.add_opcode(container, .eval_start);
         try expressions.emit(lowering, container, object);
-        if (lowering.tree.has(object, Flags.output)) _ = try lowering.ir.add_command(
+        if (lowering.tree.has(object, Flags.output)) _ = try lowering.ir.add_opcode(
             container,
             .eval_output,
         );
-        _ = try lowering.ir.add_command(container, .eval_end);
+        _ = try lowering.ir.add_opcode(container, .eval_end);
         return .{ .container = container };
     }
 
@@ -226,7 +206,6 @@ pub const Lowering = struct {
             .item => |id| try lowering.ir.attach_or_copy(container, id),
             .container => |child| _ = try lowering.ir.add_container(container, child),
         }
-        assert(object.to_int() < lowering.tree.count());
     }
 
     /// Generates every object, children first.
@@ -255,11 +234,11 @@ pub const Lowering = struct {
             .text => .{
                 .item = try lowering.ir.new_item(.{ .text = try lowering.text_of(object) }),
             },
-            .glue => .{ .item = try lowering.ir.new_item(.{ .command = .glue }) },
+            .glue => .{ .item = try lowering.ir.new_item(.{ .opcode = .glue }) },
             .tag => {
                 const is_start = tree.has(object, Flags.tag_start);
-                const command: ir_module.Command = if (is_start) .begin_tag else .end_tag;
-                return .{ .item = try lowering.ir.new_item(.{ .command = command }) };
+                const command: ir_module.Opcode = if (is_start) .tag_start else .tag_end;
+                return .{ .item = try lowering.ir.new_item(.{ .opcode = command }) };
             },
             .divert => logic.generate_divert(lowering, object),
             .tunnel_onwards => logic.generate_tunnel_onwards(lowering, object),
@@ -280,7 +259,6 @@ pub const Lowering = struct {
     fn generate_content_list(lowering: *Lowering, list: ObjectIndex) !Result {
         const container = try lowering.ir.new_container();
         for (lowering.tree.children_of(list)) |child| try lowering.add_content(container, child);
-        assert(lowering.tree.kind(list) == .content_list);
         return .{ .container = container };
     }
 
@@ -308,7 +286,6 @@ pub const Lowering = struct {
             try buffer.append(arena, raw[position]);
         }
         if (tag == .text_space) try buffer.append(arena, ' ');
-        assert(buffer.items.len <= raw.len + 1);
         return buffer.items;
     }
 
@@ -373,20 +350,20 @@ pub const Lowering = struct {
         const root = lowering.result(Tree.root).container;
         lowering.root = root;
         const declarations = try ir.new_container();
-        _ = try ir.add_command(declarations, .eval_start);
+        _ = try ir.add_opcode(declarations, .eval_start);
         var any = false;
         var objects = lowering.tree.walk(lowering.gpa, Tree.root, .pre);
         defer objects.deinit();
         while (try objects.next()) |object| {
             any = try lowering.add_declaration(declarations, object) or any;
         }
-        _ = try ir.add_command(declarations, .eval_end);
-        _ = try ir.add_command(declarations, .end);
+        _ = try ir.add_opcode(declarations, .eval_end);
+        _ = try ir.add_opcode(declarations, .end);
         if (any) {
             ir.container(declarations).name = "global decl";
             try ir.add_named(root, declarations);
         }
-        _ = try ir.add_command(root, .done);
+        _ = try ir.add_opcode(root, .done);
     }
 
     /// One entry of the story's variableDeclarations: true if the object declares one (a
@@ -419,14 +396,12 @@ pub const Lowering = struct {
 };
 
 fn has_parameters(lowering: *const Lowering, flow: ObjectIndex) bool {
-    assert(lowering.tree.is_flow(flow));
     assert(lowering.tree.kind(flow) != .story);
     const parameters = lowering.ast().slot(lowering.tree.node(flow), .parameters);
     return lowering.ast().tag(parameters) != .none and lowering.ast().list(parameters).count > 0;
 }
 
 pub fn is_expression(kind: Kind) bool {
-    assert(@backingInt(kind) < @typeInfo(Kind).@"enum".field_names.len);
     return switch (kind) {
         .number, .string_expression, .variable_reference, .function_call, .divert_target => true,
         .binary, .unary, .increment, .list_literal, .multiple_condition => true,

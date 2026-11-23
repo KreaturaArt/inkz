@@ -2,8 +2,9 @@
 //! exactly `Limits.bytes_total()` bytes, made in `init`; nothing allocates afterwards.
 //!
 //! The live flow (evaluation stack, call stack, output, choices) is what the lookahead
-//! snapshot copies and what flows park. Globals, counts, the heap, the random
-//! state and the diagnostics are shared by every flow.
+//! snapshot copies; each flow owns its own call stack, output and choices buffers. Globals,
+//! counts, the evaluation stack, the heap, the random state and the diagnostics are shared
+//! by every flow.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -22,7 +23,6 @@ const call_stack_module = @import("call_stack.zig");
 const output_module = @import("output.zig");
 const choices_module = @import("choices.zig");
 const flows = @import("flows.zig");
-const json_tree = @import("json_tree.zig");
 const lookahead_module = @import("lookahead.zig");
 const text_cache_module = @import("text_cache.zig");
 const Limits = limits_module.Limits;
@@ -38,80 +38,13 @@ const CallStack = call_stack_module.CallStack;
 const Output = output_module.Output;
 const Choices = choices_module.Choices;
 
-/// A runtime error or warning, as ink's currentErrors and currentWarnings hold them.
+/// A kept runtime error or warning (ink's currentErrors and currentWarnings): its message,
+/// formatted when it was raised, is `State.diagnostic_bytes[start..][0..length]`.
 pub const Diagnostic = struct {
-    /// A string argument, such as a variable name, or a reference to nothing.
-    argument: StringReference,
-    /// A second string the message prints, such as the value a divert variable held.
-    detail: StringReference = .none,
-    /// Numbers the message prints, such as RANDOM's bounds.
-    number: i32 = 0,
-    other_number: i32 = 0,
-    /// Where the story was (ink prints `state.currentPointer.path`), or null.
-    pointer: call_stack_module.Pointer = .null,
-    code: Code,
-    severity: Severity,
+    start: u32,
+    length: u32,
 
     pub const Severity = enum(u8) { @"error", warning };
-    /// Filled in by the VM's error handling.
-    pub const Code = enum(u16) {
-        story_error,
-        evaluation_stack_empty,
-        glue_in_expression,
-        divert_variable_not_found,
-        divert_variable_not_target,
-        turns_since_expected_target,
-        tunnel_return_not_target,
-        pop_mismatch,
-        /// ink's "Found <popped>, when expected <current>": `number` the popped FrameKind,
-        /// `other_number` the current frame's, or 2 when the stack can't pop.
-        pop_unexpected,
-        unmatched_end_string,
-        unexpected_command_in_tag,
-        no_truth_value,
-        division_by_zero,
-        integer_overflow,
-        float_to_integer_out_of_range,
-        void_operand,
-        unsupported_operation,
-        /// ink's "Cannot perform operation": `number` the opcode, `other_number` the rank
-        /// (`Value.rank`) of the type the operands were coerced to.
-        operation_not_for_type,
-        /// `number`: the opcode; `other_number`: the operands' Value tags, left << 8 | right.
-        list_operand_types,
-        variable_not_found,
-        variable_pointer_cycle,
-        temp_not_found,
-        choice_text_not_string,
-        random_invalid_minimum,
-        random_invalid_maximum,
-        random_range_too_large,
-        random_range_empty,
-        seed_invalid,
-        shuffle_invalid,
-        thread_left_to_pop,
-        unexpected_end_of_tunnel,
-        unexpected_end_of_function,
-        ran_out_of_content,
-        unexpected_end_unknown,
-        list_from_int_not_int,
-        list_not_found,
-        list_range_arguments,
-        list_random_not_list,
-        external_unsafe_in_string,
-        external_not_bound,
-        external_fallback_missing,
-        too_many_arguments,
-        unsupported,
-        _,
-    };
-};
-
-/// One undo record of the lookahead change log: what a shared value was before.
-pub const PatchEntry = struct {
-    /// What changed; see lookahead.zig.
-    target: u32,
-    old: Value,
 };
 
 /// A variable observer registered by the host.
@@ -121,12 +54,14 @@ pub const Observer = struct {
     slot: GlobalSlot,
 };
 
-/// A flow's directory entry. Flow names are stored inline.
+/// A flow's directory entry. Flow names are stored inline. While the flow isn't current, it
+/// keeps the live stacks' state: each owned buffer's count, in `owned_buffers` order, the
+/// call stack's thread counter and the choices' indexed count.
 pub const FlowRecord = struct {
-    name: [flow_name_bytes_max]u8,
-    parked_first: u32,
-    parked_words: u32,
+    counts: [owned_buffers.len]u32,
     thread_counter: u32,
+    indexed_count: u32,
+    name: [flow_name_bytes_max]u8,
     name_length: u8,
     in_use: bool,
 };
@@ -143,7 +78,8 @@ comptime {
 
 pub const output_stashes_max = 8;
 
-/// A parked output stream: `items` items then `marks` string marks, from word `first`.
+/// A set-aside output stream: `items` items then `marks` string marks, from word `first` of
+/// `State.output_stash`.
 pub const OutputStash = struct {
     first: u32,
     items: u32,
@@ -154,10 +90,9 @@ pub const OutputStash = struct {
 pub const never_visited: i32 = std.math.minInt(i32);
 
 comptime {
-    // What flows park, the lookahead snapshots and saves rebuild is copied by value: no
+    // What the lookahead snapshots and saves rebuild is copied by value: no
     // pointers (F11, docs/Guidelines.md).
     for (flow_buffers) |buffer| assert(pointer_free.has_no_pointers(FlowElement(buffer)));
-    assert(pointer_free.has_no_pointers(PatchEntry));
     assert(pointer_free.has_no_pointers(Value));
     assert(pointer_free.has_no_pointers(Diagnostic));
     assert(pointer_free.has_no_pointers(FlowRecord));
@@ -166,7 +101,6 @@ comptime {
 
 comptime {
     assert(@sizeOf(Diagnostic) == element_bytes.diagnostic);
-    assert(@sizeOf(PatchEntry) == element_bytes.patch_entry);
     assert(@sizeOf(Observer) == element_bytes.observer);
     assert(@sizeOf(FlowRecord) == element_bytes.flow);
     assert(@sizeOf(choices_module.Snapshot) == element_bytes.snapshot);
@@ -201,8 +135,8 @@ pub const FlowBuffers = struct {
 pub const FlowBuffer = limits_module.FlowBuffer;
 /// Every per-flow buffer, in the order of `FlowBuffers`' fields.
 pub const flow_buffers = std.enums.values(FlowBuffer);
-/// The buffers a parked flow keeps: all but the evaluation stack, which flows share.
-pub const parked_buffers = flow_buffers[1..];
+/// The buffers each flow owns: all but the evaluation stack, which flows share.
+pub const owned_buffers = flow_buffers[1..];
 
 pub fn FlowElement(comptime buffer: FlowBuffer) type {
     return @typeInfo(@FieldType(FlowBuffers, @tagName(buffer))).pointer.child;
@@ -217,12 +151,11 @@ fn FlowStack(comptime StatePointer: type, comptime buffer: FlowBuffer) type {
 comptime {
     const names = @typeInfo(FlowBuffers).@"struct".field_names;
     assert(names.len == flow_buffers.len);
-    assert(parked_buffers[0] != .evaluation);
+    assert(owned_buffers[0] != .evaluation);
     for (names, flow_buffers) |name, buffer| {
         assert(std.mem.eql(u8, name, @tagName(buffer)));
         assert(@sizeOf(FlowElement(buffer)) == buffer.bytes_per_element());
-        // Parking packs the buffers as words.
-        assert(@sizeOf(FlowElement(buffer)) % 4 == 0);
+        // Carved after the 8-byte aligned buffers.
         assert(@alignOf(FlowElement(buffer)) <= 4);
     }
 }
@@ -232,7 +165,7 @@ pub const State = struct {
     limits: Limits,
     memory: []align(8) u8,
 
-    // The live flow.
+    // The live flow: the current flow's slot of `flow_storage`, and the evaluation stack.
     evaluation: BoundedStack(Value),
     call_stack: CallStack,
     output: Output,
@@ -266,31 +199,41 @@ pub const State = struct {
     /// `reset_errors` clears them once `cont()` has reported them.
     errors: BoundedStack(Diagnostic),
     warnings: BoundedStack(Diagnostic),
+    /// The kept diagnostics' messages, in the order they were raised.
+    diagnostic_bytes: []u8,
+    diagnostic_bytes_used: u32 = 0,
     /// Diagnostics that didn't fit; reported as a count after the kept ones.
     diagnostics_dropped: u32 = 0,
     /// Scratch for the visit-counting walk.
     ancestors: []ContainerIndex,
-    /// The fixed scratch `load_json` tokenizes a save into.
-    load_nodes: []json_tree.Node,
+    /// The fixed scratch `load_json` parses a save into: 8-byte aligned, so the same save
+    /// takes the same bytes in every story.
+    load_scratch: []u8,
 
-    // The lookahead snapshot and parked flows.
+    // The lookahead snapshot and the flows.
     lookahead: FlowBuffers,
-    patch: []PatchEntry,
-    /// One bit per slot the undo log can target (globals, then visit counts, then turn
-    /// indices): set while the active snapshot has logged that slot, so it logs each slot
-    /// once (the first old value is the one restore needs). Clear when no snapshot is active.
-    patch_logged: []u32,
+    /// The snapshot's copies of the shared arrays, as they were at `take`.
+    lookahead_globals: []Value,
+    lookahead_visit_counts: []u32,
+    lookahead_turn_indices: []i32,
+    /// One bit per chunk of the shared arrays (`lookahead.chunk_slots` globals, or visit
+    /// counts and turn indices): set once the active snapshot has copied that chunk. Clear
+    /// when no snapshot is active.
+    lookahead_copied: []u32,
     flows: []FlowRecord,
-    parking: []u32,
+    /// Every flow's buffers: each owned buffer holds `flows_max` slots of its capacity, flow
+    /// record `i`'s at slot `i` (`flows.zig`). The evaluation field is empty.
+    flow_storage: FlowBuffers,
     current_flow: u32 = 0,
-    /// Output streams set aside by evaluate_function (ink's outputStreamBefore), parked
-    /// after the flows in `parking`; compaction roots.
+    /// Output streams set aside by evaluate_function (ink's outputStreamBefore), packed in
+    /// `output_stash`; compaction roots.
+    output_stash: []u32,
     output_stashes: [output_stashes_max]OutputStash = undefined,
     output_stashes_count: u32 = 0,
     /// ink's didSafeExit: the flow ended at `DONE` or `END`, not by running out.
     did_safe_exit: bool = false,
-    /// For the simulator: compact before every heap allocation, so a reference held
-    /// across an allocation without being a root shows up at once.
+    /// For the simulator: compact whenever room is reserved, so a reference held across a
+    /// reservation without being a root shows up at once.
     compact_always: bool = false,
     snapshot: lookahead_module.Snapshot = .{},
     /// High-water marks of the buffers that aren't stacks (the stacks keep their own, and
@@ -298,11 +241,10 @@ pub const State = struct {
     peaks: Peaks = .{},
 
     pub const Peaks = struct {
-        parking_words: u32 = 0,
-        patch_entries: u32 = 0,
+        output_stash_words: u32 = 0,
         line_bytes: u32 = 0,
         tag_bytes: u32 = 0,
-        load_nodes: u32 = 0,
+        load_bytes: u32 = 0,
         flows: u32 = 1,
     };
 
@@ -321,7 +263,6 @@ pub const State = struct {
     };
 
     pub fn shape_of(program: *const Program) Limits.ProgramShape {
-        assert(program.containers.len > 0);
         return .{
             .count_slots = program.count_slots_count,
             .globals_count = @intCast(program.globals.len),
@@ -334,9 +275,11 @@ pub const State = struct {
         const profile_zone = profile.begin(.state_init);
         defer profile_zone.end();
         limits.verify();
-        if (limits.heap_bytes_max % 4 != 0 or limits.flow_parking_bytes_max % 4 != 0) {
-            return error.InvalidLimits;
-        }
+        const word_limits = [_]u32{
+            limits.heap_bytes_max,
+            limits.output_stash_bytes_max,
+        };
+        for (word_limits) |bytes| if (bytes % 4 != 0) return error.InvalidLimits;
         const total = limits.bytes_total(shape_of(program));
         const memory = try gpa.alignedAlloc(u8, .@"8", @intCast(total));
         var carver: Carver = .{ .memory = memory };
@@ -371,23 +314,22 @@ pub const State = struct {
             .heap_bytes = state.strings.peak,
             .list_words = state.lists.peak,
             .flows = state.peaks.flows,
-            .flow_parking_bytes = state.peaks.parking_words * 4,
+            .output_stash_bytes = state.peaks.output_stash_words * 4,
             .choice_snapshot_frames = choices.frames.peak,
             .choice_snapshot_temps = choices.temps.peak,
-            .patch_entries = state.peaks.patch_entries,
             .observer_events = state.observer_events.peak,
             .errors = state.errors.peak,
             .warnings = state.warnings.peak,
             .container_depth = container_depth(state.program),
-            .load_nodes = state.peaks.load_nodes,
+            .load_bytes = state.peaks.load_bytes,
         };
-        assert(result.frames <= state.limits.frames_max);
         return result;
     }
 
     /// The story's starting state: one thread at the root, empty output and choices, zeroed
     /// counts, globals undefined until the global declaration has run.
     pub fn reset(state: *State) void {
+        flows.reset(state);
         state.evaluation.clear();
         state.call_stack.fresh(.start_of(Program.root));
         state.output.clear();
@@ -408,8 +350,7 @@ pub const State = struct {
         state.did_safe_exit = false;
         state.output_stashes_count = 0;
         state.snapshot = .{};
-        @memset(state.patch_logged, 0);
-        flows.reset(state);
+        @memset(state.lookahead_copied, 0);
         state.verify();
     }
 
@@ -418,7 +359,6 @@ pub const State = struct {
         state: anytype,
         comptime buffer: FlowBuffer,
     ) FlowStack(@TypeOf(state), buffer) {
-        comptime assert(@typeInfo(@TypeOf(state)).pointer.child == State);
         return switch (buffer) {
             .evaluation => &state.evaluation,
             .frames => &state.call_stack.frames,
@@ -436,7 +376,6 @@ pub const State = struct {
 
     /// The used part of every live-flow buffer.
     pub fn live_flow(state: *State) FlowBuffers {
-        assert(state.call_stack.threads.count > 0);
         var buffers: FlowBuffers = undefined;
         inline for (flow_buffers) |buffer| {
             @field(buffers, @tagName(buffer)) = state.flow_stack(buffer).slice();
@@ -447,21 +386,12 @@ pub const State = struct {
     /// Calls `visitor.string` and `visitor.list` for every heap reference the state holds:
     /// the root set of heap compaction.
     pub fn visit(state: *State, visitor: anytype) void {
-        assert(@TypeOf(visitor) != void);
         visit_flow(state.live_flow(), visitor);
-        visit_values(state.globals, visitor);
-        visit_values(state.global_defaults, visitor);
-        for (state.errors.slice()) |*diagnostic| {
-            visitor.string(&diagnostic.argument);
-            visitor.string(&diagnostic.detail);
-        }
-        for (state.warnings.slice()) |*diagnostic| {
-            visitor.string(&diagnostic.argument);
-            visitor.string(&diagnostic.detail);
-        }
-        flows.visit_parked(state, visitor);
+        for (state.globals) |*value| visit_value(value, visitor);
+        for (state.global_defaults) |*value| visit_value(value, visitor);
+        flows.visit_others(state, visitor);
         for (state.output_stashes[0..state.output_stashes_count]) |stash| {
-            const words = state.parking[stash.first..][0 .. stash.items * 3];
+            const words = state.output_stash[stash.first..][0 .. stash.items * 3];
             visit_items(@alignCast(std.mem.bytesAsSlice(
                 output_module.Item,
                 std.mem.sliceAsBytes(words),
@@ -470,96 +400,108 @@ pub const State = struct {
         lookahead_module.visit(state, visitor);
     }
 
-    /// ink's AddError. When the list is full the diagnostic is counted, not kept: the first
-    /// ones are usually the cause of the rest.
-    pub fn add_diagnostic(state: *State, diagnostic: Diagnostic) void {
-        const list = switch (diagnostic.severity) {
+    /// ink's AddError: formats the message now, with ink's prefix from Story.AddError. Compiled
+    /// JSON has no debug metadata, so the prefix is `RUNTIME ERROR: (<pointer path>): ` while
+    /// the story has a pointer, else `RUNTIME ERROR: `. When the list is full the diagnostic
+    /// is counted, not kept: the first ones are usually the cause of the rest. A message
+    /// longer than the bytes left is cut short.
+    pub fn add_diagnostic(
+        state: *State,
+        severity: Diagnostic.Severity,
+        pointer: call_stack_module.Pointer,
+        comptime format: []const u8,
+        arguments: anytype,
+    ) void {
+        @branchHint(.cold);
+        const list = switch (severity) {
             .@"error" => &state.errors,
             .warning => &state.warnings,
         };
-        assert(list.buffer.len > 0);
-        assert(list.count <= list.buffer.len);
-        list.push(diagnostic) catch {
+        assert(state.diagnostic_bytes_used <= state.diagnostic_bytes.len);
+        if (list.is_full()) {
             state.diagnostics_dropped += 1;
-        };
-        assert(list.count > 0 or list.buffer.len == 0);
+            return;
+        }
+        const start = state.diagnostic_bytes_used;
+        var writer: std.Io.Writer = .fixed(state.diagnostic_bytes[start..]);
+        write_diagnostic(state.program, severity, pointer, format, arguments, &writer) catch {};
+        state.diagnostic_bytes_used += @intCast(writer.end);
+        list.push(.{ .start = start, .length = @intCast(writer.end) }) catch unreachable;
+    }
+
+    pub fn diagnostic_text(state: *const State, diagnostic: Diagnostic) []const u8 {
+        assert(diagnostic.start + diagnostic.length <= state.diagnostic_bytes_used);
+        return state.diagnostic_bytes[diagnostic.start..][0..diagnostic.length];
     }
 
     /// ink's hasError, which also stops `can_continue`.
     pub fn has_error(state: *const State) bool {
-        assert(state.errors.count <= state.errors.buffer.len);
         // Limits are never zero, so a dropped error always has a kept one before it.
         assert(state.errors.buffer.len > 0);
         return state.errors.count > 0;
     }
 
     pub fn has_warning(state: *const State) bool {
-        assert(state.warnings.count <= state.warnings.buffer.len);
         return state.warnings.count > 0;
     }
 
-    /// ink's ResetErrors.
+    /// The diagnostics a lookahead snapshot holds (none without one): a nested ResetErrors
+    /// (a function evaluated from an external during the lookahead) keeps them, entries and
+    /// bytes, since `lookahead.restore` puts their counts back.
+    pub const DiagnosticMarks = struct {
+        errors: u32 = 0,
+        warnings: u32 = 0,
+        bytes: u32 = 0,
+        dropped: u32 = 0,
+    };
+
+    pub fn diagnostic_marks(state: *const State) DiagnosticMarks {
+        if (!lookahead_module.active(state)) return .{};
+        const snapshot = &state.snapshot;
+        assert(snapshot.errors <= state.errors.count);
+        assert(snapshot.warnings <= state.warnings.count);
+        assert(snapshot.diagnostic_bytes <= state.diagnostic_bytes_used);
+        assert(snapshot.diagnostics_dropped <= state.diagnostics_dropped);
+        return .{
+            .errors = snapshot.errors,
+            .warnings = snapshot.warnings,
+            .bytes = snapshot.diagnostic_bytes,
+            .dropped = snapshot.diagnostics_dropped,
+        };
+    }
+
+    /// ink's ResetErrors, down to `diagnostic_marks`: in ink the lookahead runs on a copy of
+    /// the state, so a reset there leaves the original's diagnostics alone.
     pub fn reset_errors(state: *State) void {
-        assert(state.errors.buffer.len > 0 and state.warnings.buffer.len > 0);
-        state.errors.clear();
-        state.warnings.clear();
-        state.diagnostics_dropped = 0;
-        assert(!state.has_error() and !state.has_warning());
+        const marks = state.diagnostic_marks();
+        state.errors.count = marks.errors;
+        state.warnings.count = marks.warnings;
+        state.diagnostic_bytes_used = marks.bytes;
+        state.diagnostics_dropped = marks.dropped;
     }
 
-    /// Compacts the heap; the lookahead snapshot's heap tops follow their objects. `keep`
-    /// holds values the caller is still using that no root holds, such as popped operands;
-    /// they are updated in place.
-    pub fn compact(state: *State, keep: []Value) void {
-        assert(state.strings.used <= state.strings.bytes.len);
-        var string_tops = [1]u32{state.snapshot.strings_top};
-        var list_tops = [1]u32{state.snapshot.lists_top};
-        const marks: heap.Marks = if (state.snapshot.active)
-            .{ .strings = &string_tops, .lists = &list_tops }
-        else
-            .{};
-        var roots: KeepingRoots = .{ .state = state, .keep = keep };
-        _ = heap.compact(&state.strings, &state.lists, &roots, marks);
-        assert(state.lists.used <= state.lists.words.len);
-        if (state.snapshot.active) {
-            state.snapshot.strings_top = string_tops[0];
-            state.snapshot.lists_top = list_tops[0];
-        }
-        assert(state.snapshot.strings_top <= state.strings.used or !state.snapshot.active);
+    /// Compacts the heap. Only `reserve` (and load) calls it, while the roots hold every
+    /// live value.
+    pub fn compact(state: *State) void {
+        _ = heap.compact(&state.strings, &state.lists, state);
     }
 
-    /// Room for a heap string of `length` bytes, compacting once if the heap is full
-    ///. `error.HeapLimit` when even the compacted heap has no room.
-    pub fn allocate_string(
+    /// Room for `string_bytes` of heap strings (headers included) and `list_words` of lists,
+    /// compacting first if either is short. Compaction moves what it can reach from the
+    /// roots, so the caller must hold no heap value outside them: an instruction reserves
+    /// before it pops its operands. `usage` counts the room asked for.
+    pub fn reserve(
         state: *State,
-        length: u32,
-        keep: []Value,
-    ) error{HeapLimit}!StringReference {
-        assert(state.strings.used <= state.strings.bytes.len);
-        assert(keep.len < std.math.maxInt(u16));
-        if (state.compact_always) state.compact(keep);
-        if (state.strings.try_allocate(length)) |reference| return reference;
-        state.compact(keep);
-        const reference = state.strings.try_allocate(length) orelse return error.HeapLimit;
-        assert(reference.is_heap());
-        return reference;
-    }
-
-    /// Stores a list, compacting once if the slab is full. `error.ListLimit` when even the
-    /// compacted slab has no room.
-    pub fn store_list(
-        state: *State,
-        items: []const index.ListItemIndex,
-        origins: []const index.ListOriginIndex,
-        keep: []Value,
-    ) error{ListLimit}!value_module.ListReference {
-        assert(state.lists.used <= state.lists.words.len);
-        if (state.compact_always) state.compact(keep);
-        if (state.lists.store(items, origins)) |reference| return reference else |_| {}
-        state.compact(keep);
-        const reference = try state.lists.store(items, origins);
-        assert(state.lists.check_reference(reference));
-        return reference;
+        string_bytes: u32,
+        list_words: u32,
+    ) error{ HeapLimit, ListLimit }!void {
+        const strings_short = state.strings.bytes.len - state.strings.used < string_bytes;
+        const lists_short = state.lists.words.len - state.lists.used < list_words;
+        if (strings_short or lists_short or state.compact_always) state.compact();
+        state.strings.note_need(string_bytes);
+        state.lists.note_need(list_words);
+        if (state.strings.bytes.len - state.strings.used < string_bytes) return error.HeapLimit;
+        if (state.lists.words.len - state.lists.used < list_words) return error.ListLimit;
     }
 
     // lint: allow hot_path: tests and fuzz targets compare states; the step never hashes
@@ -590,7 +532,6 @@ pub const State = struct {
             @bitCast(state.current_flow), @intFromBool(state.snapshot.active),
         };
         hash_records(&hasher, &scalars);
-        assert(state.lists.used <= state.lists.words.len);
         return hasher.final();
     }
 
@@ -607,7 +548,6 @@ pub const State = struct {
         state.visit(&checker);
         if (!checker.strings_ok) return .string_reference;
         if (!checker.lists_ok) return .list_reference;
-        assert(state.turn_indices.len == state.visit_counts.len);
         return .ok;
     }
 
@@ -616,15 +556,15 @@ pub const State = struct {
     }
 };
 
-/// Visits the heap references in one flow's buffers, live, copied or parked.
+/// Visits the heap references in one flow's buffers, live, copied or not current.
 pub fn visit_flow(buffers: FlowBuffers, visitor: anytype) void {
     assert(buffers.snapshots.len <= buffers.choices.len);
-    visit_values(buffers.evaluation, visitor);
-    visit_temps(buffers.temps, visitor);
+    for (buffers.evaluation) |*value| visit_value(value, visitor);
+    for (buffers.temps) |*temp| visit_value(&temp.value, visitor);
     visit_items(buffers.items, visitor);
     for (buffers.choices) |*choice| visitor.string(&choice.text);
     for (buffers.tags) |*tag| visitor.string(tag);
-    visit_temps(buffers.snapshot_temps, visitor);
+    for (buffers.snapshot_temps) |*temp| visit_value(&temp.value, visitor);
 }
 
 fn visit_items(items: []output_module.Item, visitor: anytype) void {
@@ -633,34 +573,19 @@ fn visit_items(items: []output_module.Item, visitor: anytype) void {
     }
 }
 
-pub fn visit_values(values: []Value, visitor: anytype) void {
-    assert(@TypeOf(visitor) != void);
-    for (values) |*value| {
-        switch (value.*) {
-            .string => |*reference| visitor.string(reference),
-            .tag => |*reference| visitor.string(reference),
-            .list => |*reference| visitor.list(reference),
-            else => {},
-        }
-    }
-}
-
-pub fn visit_temps(temps: []Temp, visitor: anytype) void {
-    assert(@TypeOf(visitor) != void);
-    for (temps) |*temp| {
-        switch (temp.value) {
-            .string => |*reference| visitor.string(reference),
-            .tag => |*reference| visitor.string(reference),
-            .list => |*reference| visitor.list(reference),
-            else => {},
-        }
+/// Calls `visitor.string` or `visitor.list` for the heap reference `value` holds, if any.
+pub fn visit_value(value: *Value, visitor: anytype) void {
+    switch (value.*) {
+        .string => |*reference| visitor.string(reference),
+        .tag => |*reference| visitor.string(reference),
+        .list => |*reference| visitor.list(reference),
+        else => {},
     }
 }
 
 // lint: allow hot_path: State.hash, for tests
 fn hash_values(hasher: *std.hash.Wyhash, values: []const Value) void {
     for (values) |value| hash_value(hasher, value);
-    assert(@typeInfo(@TypeOf(hasher)) == .pointer);
 }
 
 // lint: allow hot_path: State.hash, for tests
@@ -688,21 +613,7 @@ fn hash_temps(hasher: *std.hash.Wyhash, temps: []const Temp) void {
 // lint: allow hot_path: State.hash, for tests
 fn hash_records(hasher: *std.hash.Wyhash, records: anytype) void {
     for (records) |record| std.hash.autoHash(hasher, record);
-    assert(@typeInfo(@TypeOf(records)) == .pointer);
 }
-
-/// State's roots plus values the caller holds outside the state.
-const KeepingRoots = struct {
-    state: *State,
-    keep: []Value,
-
-    pub fn visit(roots: *KeepingRoots, visitor: anytype) void {
-        assert(roots.keep.len < std.math.maxInt(u16));
-        assert(@typeInfo(@TypeOf(visitor)) == .pointer);
-        roots.state.visit(visitor);
-        visit_values(roots.keep, visitor);
-    }
-};
 
 /// Checks that every heap string reference is valid (State.check).
 const ReferenceChecker = struct {
@@ -712,13 +623,11 @@ const ReferenceChecker = struct {
     lists_ok: bool = true,
 
     pub fn string(checker: *ReferenceChecker, reference: *StringReference) void {
-        assert(checker.strings.used <= checker.strings.bytes.len);
         if (!reference.is_heap()) return;
         if (checker.strings.check_reference(reference.*) != .ok) checker.strings_ok = false;
     }
 
     pub fn list(checker: *ReferenceChecker, reference: *value_module.ListReference) void {
-        assert(checker.lists.used <= checker.lists.words.len);
         if (!checker.lists.check_reference(reference.*)) checker.lists_ok = false;
     }
 };
@@ -739,9 +648,29 @@ const Carver = struct {
     }
 };
 
+fn write_diagnostic(
+    program: *const Program,
+    severity: Diagnostic.Severity,
+    pointer: call_stack_module.Pointer,
+    comptime format: []const u8,
+    arguments: anytype,
+    writer: *std.Io.Writer,
+) std.Io.Writer.Error!void {
+    const kind = if (severity == .@"error") "ERROR" else "WARNING";
+    try writer.print("RUNTIME {s}: ", .{kind});
+    if (!pointer.is_null()) {
+        const path = program.strings.get(program.container_info(pointer.container).path);
+        if (path.len == 0) {
+            try writer.print("({d}): ", .{pointer.index});
+        } else {
+            try writer.print("({s}.{d}): ", .{ path, pointer.index });
+        }
+    }
+    try writer.print(format, arguments);
+}
+
 /// The deepest nesting of containers in the program (root alone is 1).
 fn container_depth(program: *const Program) u32 {
-    assert(program.containers.len > 0);
     var deepest: u32 = 0;
     for (0..program.containers.len) |position| {
         var depth: u32 = 0;
@@ -749,7 +678,6 @@ fn container_depth(program: *const Program) u32 {
         while (!container.is_none()) : (depth += 1) container = program.parent(container);
         deepest = @max(deepest, depth);
     }
-    assert(deepest >= 1);
     return deepest;
 }
 
@@ -759,13 +687,22 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
     // 8-byte aligned first.
     const observers = carver.take(Observer, limits.observers_max);
     const binding_words = carver.take(u64, shape.externals_count * binding_words_each);
-    const live = carve_flow(carver, limits);
-    const lookahead = carve_flow(carver, limits);
+    const load_words = carver.take(u64, std.math.divCeil(u32, limits.load_bytes_max, 8) catch
+        unreachable);
+    const evaluation = carver.take(Value, limits.evaluation_values_max);
+    const storage = carve_flow(carver, limits, limits.flows_max, 0);
+    const lookahead = carve_flow(carver, limits, 1, limits.evaluation_values_max);
+    // Flow record 0's slot is the first of each buffer (`flows.reset` selects it again).
+    var live = lookahead;
+    inline for (owned_buffers) |buffer| {
+        const name = @tagName(buffer);
+        @field(live, name) = @field(storage, name)[0..@field(lookahead, name).len];
+    }
     var result: State = .{
         .program = program,
         .limits = limits,
         .memory = memory,
-        .evaluation = .init(live.evaluation),
+        .evaluation = .init(evaluation),
         .call_stack = .init(live.frames, live.threads, live.temps, limits.temps_per_frame_max),
         .output = .init(live.items, live.marks),
         .choices = .init(.{
@@ -779,17 +716,19 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .global_defaults = carver.take(Value, shape.globals_count),
         .visit_counts = carver.take(u32, shape.count_slots),
         .turn_indices = carver.take(i32, shape.count_slots),
-        .patch_logged = carver.take(u32, shape.patch_logged_words()),
+        .lookahead_globals = carver.take(Value, shape.globals_count),
+        .lookahead_visit_counts = carver.take(u32, shape.count_slots),
+        .lookahead_turn_indices = carver.take(i32, shape.count_slots),
+        .lookahead_copied = carver.take(u32, shape.lookahead_copied_words()),
         .lists = .init(carver.take(u32, limits.list_words_max)),
         .observer_events = .init(carver.take(GlobalSlot, limits.observer_events_max)),
         .errors = .init(carver.take(Diagnostic, limits.errors_max)),
         .warnings = .init(carver.take(Diagnostic, limits.warnings_max)),
         .ancestors = carver.take(ContainerIndex, limits.container_depth_max),
-        .load_nodes = carver.take(json_tree.Node, limits.load_nodes_max),
         .lookahead = lookahead,
-        .patch = carver.take(PatchEntry, limits.patch_entries_max),
         .flows = carver.take(FlowRecord, limits.flows_max),
-        .parking = carver.take(u32, limits.flow_parking_bytes_max / 4),
+        .flow_storage = storage,
+        .output_stash = carver.take(u32, limits.output_stash_bytes_max / 4),
         // The cache's items here, for alignment; its bytes after `line_bytes`.
         .text_cache = .{
             .items = carver.take(output_module.Item, limits.output_items_max),
@@ -798,23 +737,29 @@ fn carve(carver: *Carver, program: *const Program, limits: Limits, memory: []ali
         .strings = .init(carver.take(u8, limits.heap_bytes_max)),
         .line_bytes = carver.take(u8, limits.output_bytes_max),
         .tag_bytes = carver.take(u8, limits.tag_bytes_max),
+        .diagnostic_bytes = carver.take(
+            u8,
+            (limits.errors_max + limits.warnings_max) * element_bytes.diagnostic_text,
+        ),
         .observers = observers,
         .binding_words = binding_words,
+        .load_scratch = std.mem.sliceAsBytes(load_words),
     };
     result.text_cache.text = carver.take(u8, limits.output_bytes_max);
     assert(result.text_cache.check() == .ok);
-    assert(result.globals.len == program.globals.len);
     return result;
 }
 
-fn carve_flow(carver: *Carver, limits: Limits) FlowBuffers {
+/// `slots` flows' worth of every owned flow buffer, each buffer's slots together, and an
+/// evaluation stack of `evaluation_values` values.
+fn carve_flow(carver: *Carver, limits: Limits, slots: u32, evaluation_values: u32) FlowBuffers {
     assert(carver.used % 4 == 0);
     var buffers: FlowBuffers = undefined;
-    inline for (flow_buffers) |buffer| {
-        const count = buffer.capacity(&limits);
+    buffers.evaluation = carver.take(Value, evaluation_values);
+    inline for (owned_buffers) |buffer| {
+        const count = buffer.capacity(&limits) * slots;
         @field(buffers, @tagName(buffer)) = carver.take(FlowElement(buffer), count);
     }
-    assert(buffers.frames.len == limits.frames_max);
     return buffers;
 }
 
@@ -850,7 +795,7 @@ test "init allocates exactly the byte budget, once" {
 }
 
 test "the flow buffer table covers every FlowBuffers field, each with its own live stack" {
-    // Lookahead, parking, save and load iterate `flow_buffers`, so a buffer missing
+    // Lookahead, flows, save and load iterate `flow_buffers`, so a buffer missing
     // from it would silently not be copied. Every FlowBuffers field has a tag whose
     // live stack and lookahead copy are sized from its limit, and no two tags share a stack.
     const gpa = std.testing.allocator;
@@ -904,7 +849,7 @@ test "check catches a dangling heap string" {
 
 test "errors and warnings are bounded and reset together" {
     // Ink's AddError, hasError and ResetErrors, within errors_max: add
-    // more errors than fit, then a warning, then reset.
+    // more errors than fit, then a warning, then reset. Messages are formatted when added.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
     defer program.deinit(gpa);
@@ -912,43 +857,73 @@ test "errors and warnings are bounded and reset together" {
     try state.init(gpa, &program, .{ .errors_max = 2, .warnings_max = 1 });
     defer state.deinit(gpa);
     try std.testing.expect(!state.has_error());
-    const diagnostic: Diagnostic =
-        .{ .argument = .none, .number = 0, .code = .story_error, .severity = .@"error" };
-    for (0..3) |_| state.add_diagnostic(diagnostic);
+    for (0..3) |position| state.add_diagnostic(.@"error", .null, "error {d}", .{position});
     try std.testing.expect(state.has_error() and !state.has_warning());
     try std.testing.expectEqual(@as(u32, 2), state.errors.count);
     try std.testing.expectEqual(@as(u32, 1), state.diagnostics_dropped);
-    var warning = diagnostic;
-    warning.severity = .warning;
-    state.add_diagnostic(warning);
+    const second = state.diagnostic_text(state.errors.slice()[1]);
+    try std.testing.expectEqualStrings("RUNTIME ERROR: error 1", second);
+    state.add_diagnostic(.warning, .start_of(Program.root), "careful", .{});
     try std.testing.expect(state.has_warning());
+    const warning = state.diagnostic_text(state.warnings.slice()[0]);
+    try std.testing.expectEqualStrings("RUNTIME WARNING: (0): careful", warning);
     state.reset_errors();
     try std.testing.expect(!state.has_error() and !state.has_warning());
     try std.testing.expectEqual(@as(u32, 0), state.diagnostics_dropped);
+    try std.testing.expectEqual(@as(u32, 0), state.diagnostic_bytes_used);
 }
 
-test "a full heap compacts once and keeps the caller's operands" {
-    // Trigger; an allocation that fails compacts, then retries, and a value only
-    // the caller holds survives. Fill a small heap with garbage and one kept string.
+test "a reset during a lookahead keeps the snapshot's diagnostics" {
+    // P17 review: a function evaluated from an external during the newline lookahead
+    // reports and resets errors; resetting to zero let its new message overwrite a kept
+    // warning's bytes, and the restore brought back the count over the other text.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{ .warnings_max = 4 });
+    defer state.deinit(gpa);
+    state.add_diagnostic(.warning, .null, "kept", .{});
+    lookahead_module.take(&state);
+    state.add_diagnostic(.warning, .null, "nested", .{});
+    state.reset_errors();
+    try std.testing.expectEqual(@as(u32, 1), state.warnings.count);
+    state.add_diagnostic(.warning, .null, "again", .{});
+    const again = state.diagnostic_text(state.warnings.slice()[1]);
+    try std.testing.expectEqualStrings("RUNTIME WARNING: again", again);
+    lookahead_module.restore(&state);
+    try std.testing.expectEqual(@as(u32, 1), state.warnings.count);
+    const kept = state.diagnostic_text(state.warnings.slice()[0]);
+    try std.testing.expectEqualStrings("RUNTIME WARNING: kept", kept);
+    state.reset_errors();
+    try std.testing.expectEqual(@as(u32, 0), state.diagnostic_bytes_used);
+}
+
+test "a reservation compacts only when short, and the roots keep their values" {
+    // Trigger; room is reserved before an instruction pops anything, so a
+    // value on a root survives the compaction and garbage goes. Fill a small heap with
+    // garbage and one string in a global.
     const gpa = std.testing.allocator;
     var program = try test_program(gpa);
     defer program.deinit(gpa);
     var state: State = undefined;
     try state.init(gpa, &program, .{ .heap_bytes_max = 64, .list_words_max = 8 });
     defer state.deinit(gpa);
-    _ = try state.allocate_string(16, &.{}); // 24 bytes with the header
-    var keep = [_]Value{.{ .string = try state.allocate_string(4, &.{}) }};
-    @memcpy(state.strings.get(keep[0].string), "kept");
-    _ = try state.allocate_string(12, &.{}); // 56 of 64 bytes used
-    const fresh = try state.allocate_string(24, &keep);
-    try std.testing.expectEqualStrings("kept", state.strings.get(keep[0].string));
-    try std.testing.expectEqual(@as(u32, 0), keep[0].string.heap_offset());
-    try std.testing.expectEqual(@as(u32, 12), fresh.heap_offset());
-    try std.testing.expectError(error.HeapLimit, state.allocate_string(56, &keep));
-    _ = try state.store_list(&.{.from_int(1)}, &.{}, &.{});
-    keep[0] = .{ .list = try state.store_list(&.{.from_int(2)}, &.{}, &.{}) };
-    _ = try state.store_list(&.{.from_int(3)}, &.{}, &keep);
-    try std.testing.expectEqual(@as(u32, 2), state.lists.view(keep[0].list).items[0].to_int());
-    const long = [_]index.ListItemIndex{ .from_int(1), .from_int(2), .from_int(3) };
-    try std.testing.expectError(error.ListLimit, state.store_list(&long, &.{}, &keep));
+    _ = state.strings.try_allocate(16).?; // 24 bytes with the header
+    const kept = state.strings.try_allocate(4).?;
+    @memcpy(state.strings.get(kept), "kept");
+    state.globals[0] = .{ .string = kept };
+    _ = state.strings.try_allocate(12).?; // 56 of 64 bytes used
+    try state.reserve(8, 0);
+    try std.testing.expectEqual(@as(u32, 56), state.strings.used); // it fit: no compaction
+    try state.reserve(32, 0);
+    try std.testing.expectEqual(@as(u32, 12), state.strings.used);
+    try std.testing.expectEqualStrings("kept", state.strings.get(state.globals[0].string));
+    try std.testing.expectError(error.HeapLimit, state.reserve(56, 0));
+    _ = try state.lists.store(&.{.from_int(1)}, &.{});
+    state.globals[0] = .{ .list = try state.lists.store(&.{.from_int(2)}, &.{}) };
+    try state.reserve(0, 4);
+    const items = state.lists.view(state.globals[0].list).items;
+    try std.testing.expectEqual(@as(u32, 2), items[0].to_int());
+    try std.testing.expectError(error.ListLimit, state.reserve(0, 5));
 }

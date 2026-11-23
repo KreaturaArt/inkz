@@ -1,20 +1,17 @@
 //! The structural gate: every ground-truth case (test/ground_truth, compiled by
 //! ink v1.2.1) is compiled from its `.ink` by the compiler, serialized with
 //! ink_json.serialize, and must equal inklecate's `.ink.json` exactly (which covers container
-//! names, nesting, flags and every instruction), or be in the divergence ledger (corpus
-//! `structure`). Also the verified pair:
-//! load(serialize(compile(source))) is compile(source).
+//! names, nesting, flags and every instruction), and loading that JSON must give the compiled
+//! program back (the verified pair: load(serialize(compile(source))) is compile(source)). So
+//! the ground-truth gate, which plays inklecate's JSON, also plays what the compiler makes.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const oracle = @import("oracle.zig");
 const cases = @import("cases.zig");
 const compile = @import("../compiler/compile.zig");
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const program_testing = @import("../core/program_testing.zig");
-
-const file_bytes_max = 16 * 1024 * 1024;
 
 /// The case's `.ink` compiled from its directory (so INCLUDEs resolve as in inklecate).
 fn compile_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !Program {
@@ -44,15 +41,11 @@ fn compile_case_with(
     return compile.compile_file_with(arena, io, directory, std.fs.path.basename(path), options);
 }
 
-/// Null when the case's serialized program equals inklecate's JSON; otherwise why not.
+/// Null when the case's serialized program equals inklecate's JSON and loads back as the
+/// same program; otherwise why not.
 fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const u8 {
     assert(std.mem.indexOf(u8, id, "..") == null);
-    const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-        cases.cases_directory,
-        id,
-    });
-    const limit: std.Io.Limit = .limited(file_bytes_max);
-    const raw = try std.Io.Dir.cwd().readFileAlloc(io, json_path, arena, limit);
+    const raw = try cases.read_json(arena, io, id);
     const bom = "\xEF\xBB\xBF";
     const expected = if (std.mem.startsWith(u8, raw, bom)) raw[bom.len..] else raw;
     var program = compile_case(arena, io, id) catch |err| {
@@ -61,7 +54,13 @@ fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const 
     var out: std.Io.Writer.Allocating = .init(arena);
     try ink_json.serialize(arena, &program, &out.writer);
     const actual = out.written();
-    if (std.mem.eql(u8, actual, expected)) return null;
+    if (std.mem.eql(u8, actual, expected)) {
+        var loaded = try ink_json.load(arena, actual);
+        program_testing.expect_same_program(&program, &loaded) catch |err| {
+            return try std.fmt.allocPrint(arena, "the loaded JSON differs: {t}", .{err});
+        };
+        return null;
+    }
     var at: usize = 0;
     while (at < @min(actual.len, expected.len) and actual[at] == expected[at]) at += 1;
     const from = at -| 24;
@@ -72,28 +71,18 @@ fn compare_case(arena: std.mem.Allocator, io: std.Io, id: []const u8) !?[]const 
     });
 }
 
-test "every ground-truth case compiles to inklecate's JSON, or is ledgered" {
+test "every ground-truth case compiles to inklecate's JSON and loads back the same" {
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
-    const ledger = try oracle.read_ledger(arena, io);
     var problems: u32 = 0;
     var compared: u32 = 0;
     for (try cases.ids(arena, io)) |id| {
-        const json_path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        std.Io.Dir.cwd().access(io, json_path, .{}) catch continue;
         compared += 1;
         const difference = try compare_case(arena, io, id);
-        const ledgered = find(ledger, id) != null;
-        if (difference != null and !ledgered) {
-            std.debug.print("structure: new difference in {s}: {s}\n", .{ id, difference.? });
-            problems += 1;
-        } else if (difference == null and ledgered) {
-            std.debug.print("structure: stale ledger entry: {s} now matches\n", .{id});
+        if (difference) |text| {
+            std.debug.print("structure: difference in {s}: {s}\n", .{ id, text });
             problems += 1;
         }
     }
@@ -101,17 +90,10 @@ test "every ground-truth case compiles to inklecate's JSON, or is ledgered" {
     try std.testing.expectEqual(@as(u32, 0), problems);
 }
 
-fn find(ledger: []const oracle.Entry, id: []const u8) ?oracle.Entry {
-    for (ledger) |entry| {
-        if (entry.corpus != .structure) continue;
-        if (std.mem.eql(u8, entry.case, id)) return entry;
-    }
-    return null;
-}
-
 test "the verified pair: loading the serialized program gives the same program" {
-    // The image round trip: for stories covering every kind of content, the
-    // program compiled from source equals the one loaded from its serialized JSON.
+    // The image round trip on small stories covering every kind of content; the gate
+    // above checks it for every ground-truth case, crime_scene.ink and
+    // simple_taster_tutorial.ink among them.
     const gpa = std.testing.allocator;
     const sources = [_][]const u8{
         "Hello.\n* [A] -> k\n* B\n- (g) {g} -> k\n== k ==\n{&a|b} {x: y|z}\n-> DONE\nVAR x = 1\n",
@@ -132,28 +114,30 @@ test "the verified pair: loading the serialized program gives the same program" 
     }
 }
 
-test "the verified pair holds for whole stories" {
-    // The round trip keeps even the string table's order on stories with
-    // nested named content. Crime_scene.ink and simple_taster_tutorial.ink compiled,
-    // serialized and loaded give the same program.
+test "program equality names an array that differs in one element" {
+    // P18.4: the check the swarm's round trips use looks at every array, not only lengths.
     const gpa = std.testing.allocator;
-    const paths = [_][]const u8{
-        "test/fixture/crime_scene.ink",
-        "test/fixture/simple_taster_tutorial.ink",
-    };
-    for (paths) |path| {
-        const limit: std.Io.Limit = .limited(1 << 20);
-        const source = try std.Io.Dir.cwd().readFileAlloc(std.testing.io, path, gpa, limit);
-        defer gpa.free(source);
-        var compiled = try compile.compile_source(gpa, source);
-        defer compiled.deinit(gpa);
-        var out: std.Io.Writer.Allocating = .init(gpa);
-        defer out.deinit();
-        try ink_json.serialize(gpa, &compiled, &out.writer);
-        var loaded = try ink_json.load(gpa, out.written());
-        defer loaded.deinit(gpa);
-        try program_testing.expect_same_program(&compiled, &loaded);
-    }
+    var compiled = try compile.compile_source(gpa, "VAR x = 1\n== k ==\n{x} -> DONE\n");
+    defer compiled.deinit(gpa);
+    try std.testing.expect(program_testing.first_difference(&compiled, &compiled) == null);
+
+    var globals = try gpa.dupe(@TypeOf(compiled.globals[0]), compiled.globals);
+    defer gpa.free(globals);
+    try std.testing.expectEqual(@as(usize, 1), globals.len);
+    globals[0].name = compiled.newline;
+    var other = compiled;
+    other.globals = globals;
+    const globals_differ = program_testing.first_difference(&compiled, &other).?;
+    try std.testing.expectEqualStrings("globals", globals_differ);
+
+    var named = try gpa.dupe(@TypeOf(compiled.named[0]), compiled.named);
+    defer gpa.free(named);
+    try std.testing.expect(named.len > 0);
+    named[named.len - 1].name = compiled.newline;
+    other = compiled;
+    other.named = named;
+    const named_differ = program_testing.first_difference(&compiled, &other).?;
+    try std.testing.expectEqualStrings("named", named_differ);
 }
 
 test "every ground-truth story compiles without a workspace retry" {

@@ -14,49 +14,48 @@ const ObjectIndex = sema.ObjectIndex;
 pub const ContainerId = index.Index("runtime container");
 pub const ItemId = index.Index("runtime item");
 
-/// ink's ControlCommand types (and glue), by their JSON words.
-pub const Command = enum {
-    eval_start,
-    eval_end,
-    eval_output,
-    pop,
-    pop_tunnel,
-    pop_function,
-    duplicate,
-    no_op,
-    begin_string,
-    end_string,
-    void,
-    visit_index,
-    sequence_shuffle_index,
-    start_thread,
-    choice_count,
-    turns,
-    turns_since,
-    read_count,
-    random,
-    seed_random,
-    list_from_int,
-    list_range,
-    list_random,
-    begin_tag,
-    end_tag,
-    done,
-    end,
-    glue,
+/// An instruction without an operand: a control command, glue or a native function call.
+pub const Opcode = @import("../core/instruction.zig").Opcode;
 
-    pub fn word(command: Command) []const u8 {
-        assert(@backingInt(command) < @typeInfo(Command).@"enum".field_names.len);
-        const words = [_][]const u8{
-            "ev",   "/ev",  "out",     "pop",   "->->",   "~ret",      "du",   "nop",   "str",
-            "/str", "void", "visit",   "seq",   "thread", "choiceCnt", "turn", "turns", "readc",
-            "rnd",  "srnd", "listInt", "range", "lrnd",   "#",         "/#",   "done",  "end",
-            "<>",
-        };
-        comptime assert(words.len == @typeInfo(Command).@"enum".field_names.len);
-        return words[@backingInt(command)];
-    }
+/// A built-in called by name: a native function (Runtime.NativeFunctionCall) or a control
+/// command. Its arguments come first either way.
+pub const Builtin = struct { name: []const u8, arity: u32, opcode: Opcode };
+
+pub const builtins = [_]Builtin{
+    .{ .name = "_", .arity = 1, .opcode = .negate },
+    .{ .name = "MIN", .arity = 2, .opcode = .min },
+    .{ .name = "MAX", .arity = 2, .opcode = .max },
+    .{ .name = "POW", .arity = 2, .opcode = .pow },
+    .{ .name = "FLOOR", .arity = 1, .opcode = .floor },
+    .{ .name = "CEILING", .arity = 1, .opcode = .ceiling },
+    .{ .name = "INT", .arity = 1, .opcode = .int },
+    .{ .name = "FLOAT", .arity = 1, .opcode = .float_cast },
+    .{ .name = "LIST_MIN", .arity = 1, .opcode = .list_min },
+    .{ .name = "LIST_MAX", .arity = 1, .opcode = .list_max },
+    .{ .name = "LIST_ALL", .arity = 1, .opcode = .list_all },
+    .{ .name = "LIST_COUNT", .arity = 1, .opcode = .list_count },
+    .{ .name = "LIST_VALUE", .arity = 1, .opcode = .list_value },
+    .{ .name = "LIST_INVERT", .arity = 1, .opcode = .list_invert },
+    .{ .name = "CHOICE_COUNT", .arity = 0, .opcode = .choice_count },
+    .{ .name = "TURNS", .arity = 0, .opcode = .turns },
+    .{ .name = "TURNS_SINCE", .arity = 1, .opcode = .turns_since },
+    .{ .name = "READ_COUNT", .arity = 1, .opcode = .read_count_of_target },
+    .{ .name = "RANDOM", .arity = 2, .opcode = .random },
+    .{ .name = "SEED_RANDOM", .arity = 1, .opcode = .seed_random },
+    .{ .name = "LIST_RANGE", .arity = 3, .opcode = .list_range },
+    .{ .name = "LIST_RANDOM", .arity = 1, .opcode = .list_random },
 };
+
+/// The built-in called `name`, if any (FunctionCall.IsBuiltIn). ink's other operators are
+/// built-ins too, but only `_` (negation) is an identifier, so no call or declaration can
+/// be named like the others.
+pub fn builtin(name: []const u8) ?Builtin {
+    assert(name.len == 0 or name[0] != ' ');
+    for (builtins) |entry| {
+        if (std.mem.eql(u8, name, entry.name)) return entry;
+    }
+    return null;
+}
 
 /// What a divert, divert target or read count points at.
 pub const Target = union(enum) {
@@ -69,15 +68,15 @@ pub const Target = union(enum) {
     object: ObjectIndex,
 };
 
-pub const DivertKind = enum { plain, function, tunnel };
+pub const DivertKind = @import("../core/instruction.zig").DivertKind;
 
 pub const Divert = struct {
     target: Target = .none,
-    /// ink's variableDivertName.
-    variable: ?[]const u8 = null,
-    /// An external function call (ink's isExternal): its name and arguments count.
-    external: ?[]const u8 = null,
+    /// ink's variableDivertName, or an external function's name.
+    name: ?[]const u8 = null,
+    /// An external function call (ink's isExternal) with this many arguments.
     external_arguments: u32 = 0,
+    external: bool = false,
     kind: DivertKind = .plain,
     conditional: bool = false,
 };
@@ -88,9 +87,7 @@ pub const ListItem = struct { origin: []const u8, name: []const u8, value: i32 }
 /// of the IR's arena.
 pub const Item = union(enum) {
     container: ContainerId,
-    command: Command,
-    /// A native function call (`+`, `MIN`, ...).
-    native: []const u8,
+    opcode: Opcode,
     /// A StringValue: text, "\n", or a string in evaluation.
     text: []const u8,
     integer: i32,
@@ -111,32 +108,10 @@ pub const Assignment = struct { name: []const u8, global: bool, new: bool };
 pub const VariablePointer = struct { name: []const u8, context: i32 };
 pub const List = struct { items: []const ListItem, origins: []const []const u8 };
 
-/// How an item is stored: 24 bytes, the larger payloads in side arrays.
-const Stored = union(enum) {
-    container: ContainerId,
-    command: Command,
-    native: []const u8,
-    text: []const u8,
-    integer: i32,
-    float: f32,
-    boolean: bool,
-    divert: u32,
-    divert_target: Target,
-    variable_reference: []const u8,
-    read_count: Target,
-    assignment: u32,
-    variable_pointer: u32,
-    choice_point: ChoicePoint,
-    list: u32,
-};
-
 comptime {
-    // One IR item: a 16-byte payload (a slice at most) and its tag.
-    assert(@sizeOf(Stored) == 24);
-}
-
-comptime {
-    assert(@sizeOf(Stored) <= 24);
+    // One IR item: a divert (a target, a name and its flags) is the largest payload.
+    assert(@sizeOf(Divert) == 32);
+    assert(@sizeOf(Item) == 40);
 }
 
 /// ink's container flags (Runtime.Container.CountFlags).
@@ -164,21 +139,15 @@ pub const Ir = struct {
     /// Names, texts and list literals.
     arena: std.heap.ArenaAllocator,
     containers: std.ArrayList(Container) = .empty,
-    items: std.ArrayList(Stored) = .empty,
+    items: std.ArrayList(Item) = .empty,
     /// The next item in the same container (none at the end).
     next: std.ArrayList(ItemId) = .empty,
     /// Whether an item is in a container (an item is in at most one).
     placed: std.ArrayList(bool) = .empty,
     /// Every kept container's content after flattening, one run per container.
     flat: std.ArrayList(ItemId) = .empty,
-    diverts: std.ArrayList(Divert) = .empty,
-    assignments: std.ArrayList(Assignment) = .empty,
-    pointers: std.ArrayList(VariablePointer) = .empty,
-    lists: std.ArrayList(List) = .empty,
 
     pub fn init(gpa: Allocator) Ir {
-        assert(@sizeOf(Container) > 0);
-        assert(@sizeOf(Item) > 0);
         return .{ .gpa = gpa, .arena = .init(gpa) };
     }
 
@@ -190,103 +159,57 @@ pub const Ir = struct {
         ir.flat.deinit(gpa);
         ir.containers.deinit(gpa);
         ir.items.deinit(gpa);
-        ir.diverts.deinit(gpa);
-        ir.assignments.deinit(gpa);
-        ir.pointers.deinit(gpa);
-        ir.lists.deinit(gpa);
         ir.arena.deinit();
         ir.* = undefined;
     }
 
     pub fn container(ir: *Ir, id: ContainerId) *Container {
-        assert(id.to_int() < ir.containers.items.len);
-        assert(ir.containers.items.len > 0);
         return &ir.containers.items[id.to_int()];
     }
 
     pub fn item(ir: *const Ir, id: ItemId) Item {
-        assert(id.to_int() < ir.items.items.len);
-        assert(ir.items.items.len > 0);
-        return switch (ir.items.items[id.to_int()]) {
-            .divert => |at| .{ .divert = ir.diverts.items[at] },
-            .assignment => |at| .{ .assignment = ir.assignments.items[at] },
-            .variable_pointer => |at| .{ .variable_pointer = ir.pointers.items[at] },
-            .list => |at| .{ .list = ir.lists.items[at] },
-            inline else => |payload, tag| @unionInit(Item, @tagName(tag), payload),
-        };
+        return ir.items.items[id.to_int()];
     }
 
     /// A divert item's divert, to set its target later.
     pub fn divert_of(ir: *Ir, id: ItemId) *Divert {
-        assert(id.to_int() < ir.items.items.len);
-        const at = ir.items.items[id.to_int()].divert;
-        assert(at < ir.diverts.items.len);
-        return &ir.diverts.items[at];
-    }
-
-    fn store(ir: *Ir, value: Item) !Stored {
-        const gpa = ir.gpa;
-        switch (value) {
-            .divert => |divert| {
-                try ir.diverts.append(gpa, divert);
-                return .{ .divert = @intCast(ir.diverts.items.len - 1) };
-            },
-            .assignment => |assignment| {
-                try ir.assignments.append(gpa, assignment);
-                return .{ .assignment = @intCast(ir.assignments.items.len - 1) };
-            },
-            .variable_pointer => |pointer| {
-                try ir.pointers.append(gpa, pointer);
-                return .{ .variable_pointer = @intCast(ir.pointers.items.len - 1) };
-            },
-            .list => |list| {
-                try ir.lists.append(gpa, list);
-                return .{ .list = @intCast(ir.lists.items.len - 1) };
-            },
-            inline else => |payload, tag| return @unionInit(Stored, @tagName(tag), payload),
-        }
+        return &ir.items.items[id.to_int()].divert;
     }
 
     pub fn new_container(ir: *Ir) !ContainerId {
         const id: ContainerId = .from_int(@intCast(ir.containers.items.len));
         try ir.containers.append(ir.gpa, .{});
-        assert(ir.containers.items.len == id.to_int() + 1);
         return id;
     }
 
     pub fn new_item(ir: *Ir, value: Item) !ItemId {
         const id: ItemId = .from_int(@intCast(ir.items.items.len));
-        try ir.items.append(ir.gpa, try ir.store(value));
+        try ir.items.append(ir.gpa, value);
         try ir.next.append(ir.gpa, .none);
         try ir.placed.append(ir.gpa, false);
-        assert(ir.items.items.len == id.to_int() + 1);
         return id;
     }
 
     /// Container.AddContent.
     pub fn add(ir: *Ir, to: ContainerId, value: Item) !ItemId {
-        assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
         try ir.attach(to, id);
         return id;
     }
 
-    pub fn add_command(ir: *Ir, to: ContainerId, command: Command) !ItemId {
-        assert(to.to_int() < ir.containers.items.len);
-        assert(@backingInt(command) < @typeInfo(Command).@"enum".field_names.len);
-        return ir.add(to, .{ .command = command });
+    pub fn add_opcode(ir: *Ir, to: ContainerId, opcode: Opcode) !ItemId {
+        assert(@import("../core/instruction.zig").operand_kind(opcode) == .none);
+        return ir.add(to, .{ .opcode = opcode });
     }
 
     /// Adds a container as content.
     pub fn add_container(ir: *Ir, to: ContainerId, child: ContainerId) !ItemId {
         assert(to != child);
-        assert(child.to_int() < ir.containers.items.len);
         return ir.add(to, .{ .container = child });
     }
 
     /// Container.InsertContent at index 0 (the only position ink inserts at).
     pub fn prepend(ir: *Ir, to: ContainerId, value: Item) !ItemId {
-        assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
         ir.placed.items[id.to_int()] = true;
         const container_entry = ir.container(to);
@@ -317,21 +240,17 @@ pub const Ir = struct {
             target.first = first;
         } else ir.next.items[target.last.to_int()] = first;
         target.last = last;
-        assert(!ir.container(to).first.is_none());
     }
 
     /// Adds an item made earlier; one already in a container is copied (as ink copies a
     /// constant's runtime objects each time it is used).
     pub fn attach_or_copy(ir: *Ir, to: ContainerId, id: ItemId) !void {
-        assert(id.to_int() < ir.items.items.len);
-        assert(to.to_int() < ir.containers.items.len);
         if (!ir.placed.items[id.to_int()]) return ir.attach(to, id);
         _ = try ir.add(to, ir.item(id));
     }
 
     /// The content of a container after flattening.
     pub fn content_of(ir: *const Ir, id: ContainerId) []const ItemId {
-        assert(id.to_int() < ir.containers.items.len);
         const entry = ir.containers.items[id.to_int()];
         assert(entry.flat_first + entry.flat_count <= ir.flat.items.len);
         return ir.flat.items[entry.flat_first..][0..entry.flat_count];
@@ -339,7 +258,6 @@ pub const Ir = struct {
 
     /// Adds an existing (unplaced) item to the end of a container's content.
     pub fn attach(ir: *Ir, to: ContainerId, id: ItemId) !void {
-        assert(id.to_int() < ir.items.items.len);
         assert(!ir.placed.items[id.to_int()]);
         ir.placed.items[id.to_int()] = true;
         ir.next.items[id.to_int()] = .none;
@@ -351,9 +269,8 @@ pub const Ir = struct {
     /// Each target that is a parsed object becomes that object's runtime container (from
     /// `containers`, by object), so emission needs nothing from the object tree.
     pub fn resolve_objects(ir: *Ir, containers: []const ContainerId) void {
-        assert(ir.diverts.items.len <= ir.items.items.len);
-        for (ir.diverts.items) |*divert| divert.target = resolved(divert.target, containers);
-        for (ir.items.items) |*stored| switch (stored.*) {
+        for (ir.items.items) |*entry| switch (entry.*) {
+            .divert => |*divert| divert.target = resolved(divert.target, containers),
             .divert_target, .read_count => |*target| target.* = resolved(target.*, containers),
             .choice_point => |*choice| choice.target = resolved(choice.target, containers),
             else => {},
@@ -371,7 +288,6 @@ pub const Ir = struct {
         ir.items.shrinkAndFree(gpa, ir.items.items.len);
         ir.flat.shrinkAndFree(gpa, ir.flat.items.len);
         ir.containers.shrinkAndFree(gpa, ir.containers.items.len);
-        ir.diverts.shrinkAndFree(gpa, ir.diverts.items.len);
         for (ir.containers.items) |*entry| {
             entry.first = .none;
             entry.last = .none;
@@ -381,13 +297,6 @@ pub const Ir = struct {
 
 fn resolved(target: Target, containers: []const ContainerId) Target {
     if (target != .object) return target;
-    assert(target.object.to_int() < containers.len);
     const container = containers[target.object.to_int()];
     return if (container.is_none()) .none else .{ .container = container };
-}
-
-test "commands have ink's words" {
-    try std.testing.expectEqualStrings("ev", Command.eval_start.word());
-    try std.testing.expectEqualStrings("choiceCnt", Command.choice_count.word());
-    try std.testing.expectEqualStrings("<>", Command.glue.word());
 }

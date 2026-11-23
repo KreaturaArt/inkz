@@ -8,15 +8,6 @@ const grammar = @import("grammar.zig");
 const sema = @import("sema.zig");
 const ast = @import("ast.zig");
 
-/// The bytes one element of each of a struct's slices costs (the struct holds SoA slices).
-fn slice_element_bytes(comptime T: type) comptime_int {
-    var total: comptime_int = 0;
-    for (@typeInfo(T).@"struct".field_types) |Field| {
-        total += @sizeOf(@typeInfo(Field).pointer.child);
-    }
-    return total;
-}
-
 test "the parser's frame, checkpoint, diagnostic and token stay small" {
     try std.testing.expectEqual(20, @sizeOf(grammar.Machine.Checkpoint));
     try std.testing.expectEqual(36, @sizeOf(grammar.Machine.Frame));
@@ -26,8 +17,10 @@ test "the parser's frame, checkpoint, diagnostic and token stay small" {
     try std.testing.expectEqual(5, @sizeOf(ast.Tag) + @sizeOf(u32));
 }
 
-test "a sema object costs 27 bytes across its arrays" {
-    // kinds 1, flags 2, parents 4, nodes 4, children_first 4, children_count 4, one entry
-    // in `children` 4 (each object but the root is one child) and indents 4.
-    try std.testing.expectEqual(27, slice_element_bytes(sema.Tree));
+test "a sema object costs 23 bytes across its arrays" {
+    // kind 1, flags 2, parent 4, node 4, children_first 4, children_count 4, and one entry
+    // in `children` 4 (each object but the root is one child).
+    comptime var bytes: usize = @sizeOf(sema.ObjectIndex);
+    inline for (@typeInfo(sema.Object).@"struct".field_types) |Field| bytes += @sizeOf(Field);
+    try std.testing.expectEqual(23, bytes);
 }

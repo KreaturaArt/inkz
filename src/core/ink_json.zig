@@ -93,9 +93,7 @@ pub fn load(gpa: Allocator, json: []const u8) !Program {
 
 fn strip_byte_order_mark(json: []const u8) []const u8 {
     const mark = "\xEF\xBB\xBF";
-    const result = if (std.mem.startsWith(u8, json, mark)) json[mark.len..] else json;
-    assert(result.len <= json.len);
-    return result;
+    return if (std.mem.startsWith(u8, json, mark)) json[mark.len..] else json;
 }
 
 const FrameKind = enum { content, metadata };
@@ -112,29 +110,31 @@ const Loader = struct {
         try loader.expect(.object_begin);
         var saw_root = false;
         var saw_list_definitions = false;
-        while (true) {
-            const key = switch (try loader.next_token()) {
-                .object_end => break,
-                .string, .allocated_string => |name| name,
-                else => return error.InvalidInkJson,
-            };
-            if (std.mem.eql(u8, key, "inkVersion")) {
-                const version = try loader.integer();
-                if (version < ink_version_minimum or version > ink_version_maximum) {
-                    return error.UnsupportedInkVersion;
-                }
-                loader.builder.ink_version = @intCast(version);
-            } else if (std.mem.eql(u8, key, "root")) {
-                // A second root or listDefs would add to the first: not ink's JSON.
-                if (saw_root) return error.InvalidInkJson;
-                try loader.load_containers();
-                saw_root = true;
-            } else if (std.mem.eql(u8, key, "listDefs")) {
-                if (saw_list_definitions) return error.InvalidInkJson;
-                try loader.load_list_definitions();
-                saw_list_definitions = true;
-            } else {
+        while (try loader.next_key(.object_end)) |key| {
+            const DocumentKey = enum { inkVersion, root, listDefs };
+            const known = std.meta.stringToEnum(DocumentKey, key) orelse {
                 try loader.scanner.skipValue();
+                continue;
+            };
+            switch (known) {
+                .inkVersion => {
+                    const version = try loader.integer();
+                    if (version < ink_version_minimum or version > ink_version_maximum) {
+                        return error.UnsupportedInkVersion;
+                    }
+                    loader.builder.ink_version = @intCast(version);
+                },
+                // A second root or listDefs would add to the first: not ink's JSON.
+                .root => {
+                    if (saw_root) return error.InvalidInkJson;
+                    try loader.load_containers();
+                    saw_root = true;
+                },
+                .listDefs => {
+                    if (saw_list_definitions) return error.InvalidInkJson;
+                    try loader.load_list_definitions();
+                    saw_list_definitions = true;
+                },
             }
         }
         if (!saw_root) return error.InvalidInkJson;
@@ -143,32 +143,34 @@ const Loader = struct {
 
     /// The next token, with strings and numbers complete (unescaped into scratch if needed).
     fn next_token(loader: *Loader) Error!std.json.Token {
-        assert(loader.frames_count <= depth_max);
-        const result = try loader.scanner.nextAlloc(loader.scratch, .alloc_if_needed);
-        assert(result != .partial_string and result != .partial_number);
-        return result;
+        return try loader.scanner.nextAlloc(loader.scratch, .alloc_if_needed);
+    }
+
+    /// The next key of an object (or element of a string array), or null at `end`.
+    fn next_key(loader: *Loader, comptime end: std.meta.Tag(std.json.Token)) Error!?[]const u8 {
+        comptime assert(end == .object_end or end == .array_end);
+        return switch (try loader.next_token()) {
+            end => null,
+            .string, .allocated_string => |key| key,
+            else => error.InvalidInkJson,
+        };
     }
 
     fn expect(loader: *Loader, comptime tag: std.meta.Tag(std.json.Token)) Error!void {
-        assert(loader.frames_count <= depth_max);
         const token = try loader.scanner.next();
         if (std.meta.activeTag(token) != tag) return error.InvalidInkJson;
-        assert(tag != .end_of_document or loader.frames_count == 0);
     }
 
     fn integer(loader: *Loader) Error!i64 {
-        assert(loader.frames_count <= depth_max);
         const token = try loader.next_token();
         const text = switch (token) {
             .number, .allocated_number => |digits| digits,
             else => return error.InvalidInkJson,
         };
-        assert(text.len > 0);
         return std.fmt.parseInt(i64, text, 10) catch error.InvalidInkJson;
     }
 
     fn string(loader: *Loader) Error![]const u8 {
-        assert(loader.frames_count <= depth_max);
         const token = try loader.next_token();
         const text = switch (token) {
             .string, .allocated_string => |value| value,
@@ -179,10 +181,8 @@ const Loader = struct {
 
     /// A string that names something (a variable, a path, a list): never empty.
     fn nonempty_string(loader: *Loader) Error![]const u8 {
-        assert(loader.frames_count <= depth_max);
         const text = try loader.string();
         if (text.len == 0) return error.InvalidInkJson;
-        assert(text.len > 0);
         return text;
     }
 
@@ -190,13 +190,10 @@ const Loader = struct {
     fn integer_as(loader: *Loader, comptime T: type) Error!T {
         comptime assert(@bitSizeOf(T) <= 32);
         const value = try loader.integer();
-        const result = std.math.cast(T, value) orelse return error.InvalidInkJson;
-        assert(@as(i64, result) == value);
-        return result;
+        return std.math.cast(T, value) orelse return error.InvalidInkJson;
     }
 
     fn push(loader: *Loader, kind: FrameKind) Error!void {
-        assert(loader.frames_count <= depth_max);
         if (loader.frames_count == depth_max) return error.TooDeep;
         loader.frames[loader.frames_count] = kind;
         loader.frames_count += 1;
@@ -223,7 +220,6 @@ const Loader = struct {
     /// One content item, or the container's terminator.
     fn content_step(loader: *Loader) Error!void {
         assert(loader.frames[loader.frames_count - 1] == .content);
-        assert(loader.frames_count > 0);
         switch (try loader.scanner.peekNextTokenType()) {
             .array_begin => {
                 _ = try loader.scanner.next();
@@ -257,13 +253,8 @@ const Loader = struct {
 
     /// An object in a container's content: a content item, or the final dictionary.
     fn object_item(loader: *Loader) Error!void {
-        assert(loader.frames_count > 0);
         assert(loader.frames[loader.frames_count - 1] == .content);
-        const first = switch (try loader.next_token()) {
-            .object_end => return loader.end_container(),
-            .string, .allocated_string => |key| key,
-            else => return error.InvalidInkJson,
-        };
+        const first = try loader.next_key(.object_end) orelse return loader.end_container();
         const is_metadata = std.mem.eql(u8, first, "#f") or std.mem.eql(u8, first, "#n") or
             try loader.scanner.peekNextTokenType() == .array_begin;
         if (!is_metadata) return loader.content_object(first);
@@ -274,21 +265,14 @@ const Loader = struct {
 
     /// One key of a container's final dictionary, or its end.
     fn metadata_step(loader: *Loader) Error!void {
-        assert(loader.frames_count > 0);
         assert(loader.frames[loader.frames_count - 1] == .metadata);
-        switch (try loader.next_token()) {
-            .object_end => {
-                loader.frames_count -= 1;
-                try loader.end_container();
-            },
-            .string, .allocated_string => |key| try loader.metadata_key(key),
-            else => return error.InvalidInkJson,
-        }
+        if (try loader.next_key(.object_end)) |key| return loader.metadata_key(key);
+        loader.frames_count -= 1;
+        try loader.end_container();
     }
 
     fn metadata_key(loader: *Loader, key: []const u8) Error!void {
         assert(loader.frames[loader.frames_count - 1] == .metadata);
-        assert(loader.builder.frames.items.len > 0);
         if (key.len == 0) return error.InvalidInkJson;
         if (std.mem.eql(u8, key, "#f")) {
             const bits = try loader.integer();
@@ -304,7 +288,6 @@ const Loader = struct {
     }
 
     fn add_number(loader: *Loader) Error!void {
-        assert(loader.builder.frames.items.len > 0);
         assert(loader.frames[loader.frames_count - 1] == .content);
         const token = try loader.next_token();
         const text = switch (token) {
@@ -320,14 +303,41 @@ const Loader = struct {
     }
 
     fn add_word(loader: *Loader, word: []const u8) Error!void {
-        assert(loader.builder.frames.items.len > 0);
-        assert(loader.frames_count > 0);
         try add_word_to(&loader.builder, word);
     }
 
+    /// The keys of ink's content objects.
+    const Key = enum {
+        // A divert of each kind and an external call; the value is the target.
+        @"->",
+        @"f()",
+        @"->t->",
+        @"x()",
+        // Fields that go with another key.
+        @"var",
+        c,
+        re,
+        exArgs,
+        flg,
+        ci,
+        list,
+        origins,
+        // Keys whose value is a string: they say what the object is.
+        @"*",
+        @"^->",
+        @"CNT?",
+        @"VAR?",
+        @"#",
+        @"VAR=",
+        @"temp=",
+        @"^var",
+        /// A key ink doesn't define.
+        unknown,
+    };
+
     /// The fields of a content object; ink defines which keys appear together.
     const Fields = struct {
-        divert_key: ?[]const u8 = null,
+        divert: ?Key = null,
         target: ?[]const u8 = null,
         variable: bool = false,
         conditional: bool = false,
@@ -335,8 +345,9 @@ const Loader = struct {
         choice_flags: u32 = 0,
         reassignment: bool = false,
         context: i32 = -1,
+        /// The last string-valued key or `list`, with its value (none for `list`).
+        key: ?Key = null,
         value: ?[]const u8 = null,
-        key: []const u8 = "",
         list_items: std.ArrayList([]const u8) = .empty,
         /// Whether "list" and "origins" were read: later keys overwrite `key`, and either
         /// may be empty, so neither `key` nor a count tells a repeat.
@@ -347,61 +358,46 @@ const Loader = struct {
 
     /// Reads the rest of a content object whose first key is `first`, then adds it.
     fn content_object(loader: *Loader, first: []const u8) Error!void {
-        assert(loader.builder.frames.items.len > 0);
         var fields: Fields = .{};
         // The list names are per object: free them, so many literals don't fill scratch.
         defer fields.list_items.deinit(loader.builder.gpa);
         defer fields.list_origins.deinit(loader.builder.gpa);
-        var key = first;
-        while (true) {
+        var key: ?[]const u8 = first;
+        while (key) |text| : (key = try loader.next_key(.object_end)) {
             // No ink key is empty (found by fuzzing).
-            if (key.len == 0) return error.InvalidInkJson;
-            try loader.content_field(&fields, key);
-            key = switch (try loader.next_token()) {
-                .object_end => break,
-                .string, .allocated_string => |next| next,
-                else => return error.InvalidInkJson,
-            };
+            if (text.len == 0) return error.InvalidInkJson;
+            try loader.content_field(&fields, text);
         }
         try loader.add_object(&fields);
-        assert(fields.key.len > 0);
+        assert(fields.key != null or fields.divert != null);
     }
 
-    fn content_field(loader: *Loader, fields: *Fields, key: []const u8) Error!void {
-        assert(loader.builder.frames.items.len > 0);
-        assert(key.len > 0);
-        const divert_keys = [_][]const u8{ "->", "f()", "->t->", "x()" };
-        for (divert_keys) |divert_key| {
-            if (std.mem.eql(u8, key, divert_key)) {
-                fields.divert_key = divert_key;
+    fn content_field(loader: *Loader, fields: *Fields, text: []const u8) Error!void {
+        const key = std.meta.stringToEnum(Key, text) orelse .unknown;
+        switch (key) {
+            .@"->", .@"f()", .@"->t->", .@"x()" => {
+                fields.divert = key;
                 fields.target = try loader.nonempty_string();
-                fields.key = divert_key;
-                return;
-            }
-        }
-        if (std.mem.eql(u8, key, "var")) return loader.flag(&fields.variable);
-        if (std.mem.eql(u8, key, "c")) return loader.flag(&fields.conditional);
-        if (std.mem.eql(u8, key, "re")) return loader.flag(&fields.reassignment);
-        if (std.mem.eql(u8, key, "exArgs")) {
-            fields.external_arguments = try loader.integer_as(u16);
-            return;
-        }
-        if (std.mem.eql(u8, key, "flg")) {
+            },
+            .@"var" => try loader.flag(&fields.variable),
+            .c => try loader.flag(&fields.conditional),
+            .re => try loader.flag(&fields.reassignment),
+            .exArgs => fields.external_arguments = try loader.integer_as(u16),
             // Five flag bits; anything above them is not ink's.
-            fields.choice_flags = try loader.integer_as(u5);
-            return;
+            .flg => fields.choice_flags = try loader.integer_as(u5),
+            .ci => {
+                fields.context = try loader.integer_as(i32);
+                // -1 unknown, 0 global, n > 0 a call-stack frame.
+                if (fields.context < -1) return error.InvalidInkJson;
+            },
+            .list => try loader.list_items(fields),
+            .origins => try loader.list_origins(fields),
+            .@"*", .@"^->", .@"CNT?", .@"VAR?", .@"#", .@"VAR=", .@"temp=", .@"^var", .unknown => {
+                if (key == .unknown) std.log.debug("unknown content object key: {s}", .{text});
+                fields.key = key;
+                fields.value = try loader.nonempty_string();
+            },
         }
-        if (std.mem.eql(u8, key, "ci")) {
-            fields.context = try loader.integer_as(i32);
-            // -1 unknown, 0 global, n > 0 a call-stack frame.
-            if (fields.context < -1) return error.InvalidInkJson;
-            return;
-        }
-        if (std.mem.eql(u8, key, "list")) return loader.list_items(fields);
-        if (std.mem.eql(u8, key, "origins")) return loader.list_origins(fields);
-        // A key whose value is a string: "*", "^->", "^var", "VAR?", "CNT?", "VAR=", ...
-        fields.key = key;
-        fields.value = try loader.nonempty_string();
     }
 
     fn flag(loader: *Loader, field: *bool) Error!void {
@@ -412,7 +408,6 @@ const Loader = struct {
             .false => false,
             else => return error.InvalidInkJson,
         };
-        assert(token == .true or token == .false);
     }
 
     /// `"list": {"origin.item": value, ...}`
@@ -422,17 +417,11 @@ const Loader = struct {
         fields.saw_list = true;
         assert(fields.list_items.items.len == 0);
         try loader.expect(.object_begin);
-        fields.key = "list";
-        while (true) {
-            const name = switch (try loader.next_token()) {
-                .object_end => return,
-                .string, .allocated_string => |item| item,
-                else => return error.InvalidInkJson,
-            };
+        fields.key = .list;
+        while (try loader.next_key(.object_end)) |name| {
             if (name.len == 0) return error.InvalidInkJson;
             _ = try loader.integer_as(i32);
             try fields.list_items.append(loader.builder.gpa, name);
-            assert(fields.list_items.items.len > 0);
         }
     }
 
@@ -442,71 +431,62 @@ const Loader = struct {
         fields.saw_origins = true;
         assert(fields.list_origins.items.len == 0);
         try loader.expect(.array_begin);
-        while (true) {
-            const name = switch (try loader.next_token()) {
-                .array_end => return,
-                .string, .allocated_string => |origin| origin,
-                else => return error.InvalidInkJson,
-            };
+        while (try loader.next_key(.array_end)) |name| {
             if (name.len == 0) return error.InvalidInkJson;
             try fields.list_origins.append(loader.builder.gpa, name);
-            assert(fields.list_origins.items.len > 0);
         }
     }
 
     fn add_object(loader: *Loader, fields: *Fields) Error!void {
         assert(loader.builder.frames.items.len > 0);
         const builder = &loader.builder;
-        if (fields.divert_key != null) return loader.add_divert_object(fields);
-        const key = fields.key;
-        if (std.mem.eql(u8, key, "list")) {
-            return builder.add_list_literal(fields.list_items.items, fields.list_origins.items);
+        if (fields.divert) |divert| {
+            const target = fields.target.?;
+            const options: ProgramBuilder.DivertOptions = .{
+                .kind = switch (divert) {
+                    .@"->" => .plain,
+                    .@"f()" => .function,
+                    .@"->t->" => .tunnel,
+                    .@"x()" => return builder.add_external_call(
+                        target,
+                        fields.external_arguments,
+                        fields.conditional,
+                    ),
+                    else => unreachable,
+                },
+                .conditional = fields.conditional,
+            };
+            if (fields.variable) return builder.add_divert_variable(target, options);
+            return builder.add_divert(target, options);
         }
-        const value = fields.value orelse {
-            std.log.debug("content object without a value: {s}", .{fields.key});
+        const key = fields.key orelse {
+            std.log.debug("content object without a value", .{});
             return error.UnknownContent;
         };
-        if (std.mem.eql(u8, key, "*")) {
-            return builder.add_choice_point(value, @bitCast(fields.choice_flags));
+        if (key == .list) {
+            return builder.add_list_literal(fields.list_items.items, fields.list_origins.items);
         }
-        if (std.mem.eql(u8, key, "^->")) return builder.add_container_operand(
-            .divert_target,
-            value,
-        );
-        if (std.mem.eql(u8, key, "CNT?")) return builder.add_container_operand(.read_count, value);
-        if (std.mem.eql(u8, key, "VAR?")) return builder.add_variable(value, .get);
-        if (std.mem.eql(u8, key, "#")) return builder.add(.tag, try builder.intern(value));
-        if (std.mem.eql(u8, key, "VAR=")) {
-            if (fields.reassignment) return builder.add_variable(value, .assign);
-            return builder.add(.global_declare, try builder.global(value));
+        // Every other key in `fields.key` came with its value.
+        const value = fields.value.?;
+        switch (key) {
+            .@"*" => return builder.add_choice_point(value, @bitCast(fields.choice_flags)),
+            .@"^->" => return builder.add_container_operand(.divert_target, value),
+            .@"CNT?" => return builder.add_container_operand(.read_count, value),
+            .@"VAR?" => return builder.add_variable(value, .get),
+            .@"#" => return builder.add(.tag, try builder.intern(value)),
+            .@"VAR=" => {
+                if (fields.reassignment) return builder.add_variable(value, .assign);
+                return builder.add(.global_declare, try builder.global(value));
+            },
+            .@"temp=" => {
+                const name = try builder.intern(value);
+                if (fields.reassignment) return builder.add(.temp_assign, name);
+                return builder.add(.temp_declare, name);
+            },
+            .@"^var" => return builder.add_variable_pointer(value, fields.context),
+            .unknown => return error.UnknownContent,
+            else => unreachable,
         }
-        if (std.mem.eql(u8, key, "temp=")) {
-            const name = try builder.intern(value);
-            if (fields.reassignment) return builder.add(.temp_assign, name);
-            return builder.add(.temp_declare, name);
-        }
-        if (std.mem.eql(u8, key, "^var")) return loader.add_variable_pointer(value, fields.context);
-        assert(key.len > 0);
-        std.log.debug("unknown content object key: {s}", .{key});
-        return error.UnknownContent;
-    }
-
-    fn add_variable_pointer(loader: *Loader, name: []const u8, context: i32) Error!void {
-        assert(name.len > 0);
-        assert(loader.frames_count > 0);
-        try add_variable_pointer_to(&loader.builder, name, context);
-    }
-
-    fn add_divert_object(loader: *Loader, fields: *const Fields) Error!void {
-        assert(fields.target != null);
-        assert(fields.divert_key != null);
-        try add_divert_object_to(&loader.builder, .{
-            .key = fields.divert_key.?,
-            .target = fields.target.?,
-            .conditional = fields.conditional,
-            .variable = fields.variable,
-            .external_arguments = fields.external_arguments,
-        });
     }
 
     /// `"listDefs": {"origin": {"item": value, ...}, ...}`
@@ -515,21 +495,11 @@ const Loader = struct {
         try loader.expect(.object_begin);
         var items: std.ArrayList(ProgramBuilder.ListItemDeclaration) = .empty;
         defer items.deinit(loader.builder.gpa);
-        while (true) {
-            const origin = switch (try loader.next_token()) {
-                .object_end => break,
-                .string, .allocated_string => |text| text,
-                else => return error.InvalidInkJson,
-            };
+        while (try loader.next_key(.object_end)) |origin| {
             if (origin.len == 0) return error.InvalidInkJson;
             try loader.expect(.object_begin);
             items.clearRetainingCapacity();
-            while (true) {
-                const item = switch (try loader.next_token()) {
-                    .object_end => break,
-                    .string, .allocated_string => |text| text,
-                    else => return error.InvalidInkJson,
-                };
+            while (try loader.next_key(.object_end)) |item| {
                 if (item.len == 0) return error.InvalidInkJson;
                 const value = try loader.integer_as(i32);
                 try items.append(loader.builder.gpa, .{ .name = item, .value = value });
@@ -551,66 +521,11 @@ pub fn add_word_to(builder: *ProgramBuilder, word: []const u8) Error!void {
         return error.UnknownContent;
     };
     assert(instruction_module.operand_kind(opcode) == .none);
-    const count_before = builder.scratch.len;
     try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
-    assert(builder.scratch.len == count_before + 1);
-}
-
-/// `{"^var": name, "ci": context}`.
-pub fn add_variable_pointer_to(
-    builder: *ProgramBuilder,
-    name: []const u8,
-    context: i32,
-) Error!void {
-    assert(name.len > 0);
-    const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
-        .name = try builder.intern(name),
-        .context = context,
-    });
-    try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
-    assert(at < builder.extra.count());
-}
-
-/// A divert-like content object: `->`, `f()`, `->t->` or `x()` with its fields.
-pub const DivertObject = struct {
-    key: []const u8,
-    target: []const u8,
-    conditional: bool = false,
-    variable: bool = false,
-    external_arguments: u32 = 0,
-};
-
-pub fn add_divert_object_to(builder: *ProgramBuilder, object: DivertObject) Error!void {
-    assert(object.target.len > 0);
-    assert(builder.frames.items.len > 0);
-    const key = object.key;
-    const target = object.target;
-    if (std.mem.eql(u8, key, "x()")) {
-        const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
-            .external = try builder.external(target),
-            .arguments_count = object.external_arguments,
-            .conditional = object.conditional,
-        });
-        return builder.add(.call_external, @fromBackingInt(@intCast(at)));
-    }
-    const kind: instruction_module.DivertKind = if (std.mem.eql(u8, key, "f()"))
-        .function
-    else if (std.mem.eql(u8, key, "->t->"))
-        .tunnel
-    else
-        .plain;
-    const flags: instruction_module.DivertFlags = .{
-        .kind = kind,
-        .conditional = object.conditional,
-        .variable = object.variable,
-    };
-    if (object.variable) return builder.add_divert_variable(target, flags);
-    try builder.add_divert(target, flags);
 }
 
 fn load_file(gpa: Allocator, path: []const u8) !Program {
     assert(std.mem.endsWith(u8, path, ".json"));
-    assert(path.len > 0);
     const io = std.testing.io;
     const json = try std.Io.Dir.cwd().readFileAlloc(io, path, gpa, .limited(16 * 1024 * 1024));
     defer gpa.free(json);
@@ -618,8 +533,8 @@ fn load_file(gpa: Allocator, path: []const u8) !Program {
 }
 
 test "hello world loads into the expected instructions" {
-    // The basic mapping of content items to instructions: load a tiny story and
-    // dump it.
+    // The basic mapping of content items to instructions: load a tiny story, check its
+    // layout, and write it back (the divert comes back in its shorter, absolute form).
     const gpa = std.testing.allocator;
     const json =
         \\{"inkVersion":21,"root":[["^Hello",{"->":".^.^.knot"},["done",{"#f":5,"#n":"g-0"}],null],
@@ -627,30 +542,32 @@ test "hello world loads into the expected instructions" {
     ;
     var program = try load(gpa, json);
     defer program.deinit(gpa);
+    // Containers in index order are the instruction layout: root, "0", "0.g-0", "knot".
+    try std.testing.expectEqual(4, program.containers.len);
+    const opcodes = program.instructions.items(.opcode);
+    try std.testing.expectEqualSlices(Opcode, &.{
+        .enter_container, .done, .text,    .divert, .enter_container,
+        .done,            .text, .newline, .end,
+    }, opcodes);
+    const gather = program.container_info(.from_int(2));
+    try std.testing.expectEqualStrings("0.g-0", program.strings.get(gather.path));
+    try std.testing.expect(gather.flags.visits_counted and gather.flags.count_start_only);
+    const divert = program.instruction_at(.from_int(1), 1);
+    const extra = @import("extra.zig");
+    const record = extra.get(instruction_module.Divert, program.extra, divert.operand);
+    try std.testing.expectEqual(3, record.target_container.to_int());
     var output: std.Io.Writer.Allocating = .init(gpa);
     defer output.deinit();
-    try @import("program_dump.zig").dump(&program, &output.writer);
+    try serialize(gpa, &program, &output.writer);
     try std.testing.expectEqualStrings(
-        \\container 0 "" depth 0
-        \\  0 enter_container 1
-        \\  1 done
-        \\container 1 "0" parent 0 depth 1
-        \\  0 text "Hello"
-        \\  1 divert plain -> 3:0
-        \\  2 enter_container 2
-        \\container 2 "0.g-0" parent 1 depth 2 visits start_only
-        \\  0 done
-        \\container 3 "knot" parent 0 depth 1 named
-        \\  0 text "K"
-        \\  1 newline
-        \\  2 end
-        \\
+        \\{"inkVersion":21,"root":[["^Hello",{"->":"knot"},["done",{"#f":5,"#n":"g-0"}],null],
+    ++
+        \\"done",{"knot":["^K","\n","end",null]}],"listDefs":{}}
     , output.written());
 }
 
 /// Every `.ink.json` below `directory`, sorted.
 fn collect_json(arena: Allocator, directory: []const u8) ![]const []const u8 {
-    assert(directory.len > 0);
     const io = std.testing.io;
     var root = try std.Io.Dir.cwd().openDir(io, directory, .{ .iterate = true });
     defer root.close(io);
@@ -666,8 +583,6 @@ fn collect_json(arena: Allocator, directory: []const u8) ![]const []const u8 {
     }
     std.mem.sort([]const u8, paths.items, {}, struct {
         fn less(_: void, a: []const u8, b: []const u8) bool {
-            assert(a.len > 0);
-            assert(b.len > 0);
             return std.mem.order(u8, a, b) == .lt;
         }
     }.less);
@@ -807,7 +722,7 @@ test "loading frees everything when an allocation fails" {
         \\{"inkVersion":21,"root":[{"list":{"l.a":1,"l.b":2}},{"list":{},"origins":["l"]},
         \\{"^var":"x","ci":0},"done",null],"listDefs":{"l":{"a":1,"b":2}}}
     ;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, load_and_free, .{json});
+    try @import("allocation_failures.zig").check(load_and_free, .{json});
 }
 
 /// Counts the resolved targets in `program`, failing on any divert or choice that has none.
@@ -820,14 +735,14 @@ fn count_resolved_targets(program: *const Program) !u32 {
     for (opcodes, program.instructions.items(.operand)) |opcode, operand| {
         switch (opcode) {
             .divert => {
-                const divert = extra.get(instruction_module.Divert, program.extra, operand).data;
+                const divert = extra.get(instruction_module.Divert, program.extra, operand);
                 if (divert.flags.variable) continue;
                 if (divert.target_container.is_none()) return error.UnresolvedTarget;
                 resolved += 1;
             },
             .choice_point => {
                 const Choice = instruction_module.ChoicePoint;
-                const choice = extra.get(Choice, program.extra, operand).data;
+                const choice = extra.get(Choice, program.extra, operand);
                 if (choice.target_container.is_none()) return error.UnresolvedTarget;
                 resolved += 1;
             },
@@ -838,7 +753,6 @@ fn count_resolved_targets(program: *const Program) !u32 {
             else => {},
         }
     }
-    assert(resolved <= opcodes.len);
     return resolved;
 }
 
@@ -890,7 +804,7 @@ fn expect_paths_match(gpa: Allocator, program: *const Program, listing: []const 
                 10,
             );
         }
-        const info = program.table().get(container);
+        const info = program.container_info(container);
         try std.testing.expectEqual(hash, info.path_hash);
         try std.testing.expectEqual(flags, info.flags);
         try std.testing.expectEqual(content, info.instruction_count);

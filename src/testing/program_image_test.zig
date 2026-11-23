@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const ink_json = @import("../core/ink_json.zig");
 const program_image = @import("../core/program_image.zig");
 const program_testing = @import("../core/program_testing.zig");
 const Program = @import("../core/program.zig").Program;
@@ -37,16 +36,12 @@ test "every ground-truth case round-trips through an image" {
     var json_total: u64 = 0;
     var image_total: u64 = 0;
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = ink_json.load(std.testing.allocator, json) catch continue;
+    var programs: cases.Programs = try .init(arena, std.testing.allocator, io);
+    while (try programs.next()) |case| {
+        var program = case.program;
         defer program.deinit(std.testing.allocator);
         image_total += try round_trip(std.testing.allocator, &program);
-        json_total += json.len;
+        json_total += case.json.len;
         checked += 1;
     }
     try std.testing.expect(checked > 150);
@@ -122,15 +117,17 @@ const ListOrigin = @import("../core/program.zig").ListOrigin;
 const Opcode = @import("../core/instruction.zig").Opcode;
 
 /// A root with a list literal of two items, a variable pointer `x` (context 0), a plain
-/// divert to the knot `k` and a text, over the lists `letters = a, b` and an empty `none`.
+/// divert to the knot `k`, a text and a `true`, over the lists `letters = a, b` and an empty
+/// `none`.
 fn build_records(gpa: std.mem.Allocator) !Program {
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
     _ = try builder.begin_container(.{});
     try builder.add_list_literal(&.{ "letters.a", "letters.b" }, &.{});
-    try ink_json.add_variable_pointer_to(&builder, "x", 0);
-    try builder.add_divert("k", .{ .kind = .plain, .conditional = false, .variable = false });
+    try builder.add_variable_pointer("x", 0);
+    try builder.add_divert("k", .{});
     try builder.add(.text, try builder.intern("A"));
+    try builder.add(.bool, true);
     _ = try builder.list_origin("letters", &.{
         .{ .name = "a", .value = 1 },
         .{ .name = "b", .value = 2 },
@@ -153,7 +150,7 @@ fn record_at(program: *const Program, opcode: Opcode) u32 {
 /// Expects `program` to fail its check with `fault` and its image to be rejected on load.
 fn expect_rejected(program: *const Program, fault: Program.Fault) !void {
     const gpa = std.testing.allocator;
-    if (fault != .ok) try std.testing.expectEqual(fault, program.check());
+    try std.testing.expectEqual(fault, program.check());
     var image: std.Io.Writer.Allocating = .init(gpa);
     defer image.deinit();
     try program_image.write(program, &image.writer);
@@ -189,10 +186,38 @@ test "an image's list literals are checked word by word" {
     try std.testing.expectEqual(Program.Fault.ok, program.check());
 }
 
+test "a list item read as a variable has its written name in the image" {
+    // One item and one origin is a list item read as a variable, followed by the name it
+    // was written with (ink_json_write reads it): a literal last in `extra` claiming that
+    // shape has no name word, a fault and a rejected image instead of a read past the end.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add_list_literal(&.{ "letters.a", "letters.b" }, &.{});
+    _ = try builder.list_origin("letters", &.{
+        .{ .name = "a", .value = 1 },
+        .{ .name = "b", .value = 2 },
+    });
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
+    const extra: []u32 = @constCast(program.extra);
+    const list = record_at(&program, .list);
+    try std.testing.expectEqual(extra.len, list + 4);
+    // Item 0, then item 1's index read as origin 0.
+    extra[list] = 1;
+    extra[list + 1] = 1;
+    extra[list + 3] = 0;
+    try expect_rejected(&program, .extra_out_of_range);
+}
+
 test "an image's variable pointers, divert kinds and newline are checked" {
     // A variable pointer's name must be a string and its context at least -1; a divert's
-    // kind must be one of three in its two bits; the newline string must be "\n". Corrupt
-    // each, expect a rejected image, restore it; the untouched image loads.
+    // kind must be one of three in its two bits; the newline string must be "\n"; a bool
+    // operand is 0 or 1 and an opcode without one has 0. Corrupt each, expect a rejected
+    // image, restore it; the untouched image loads.
     const gpa = std.testing.allocator;
     var program = try build_records(gpa);
     defer program.deinit(gpa);
@@ -213,13 +238,47 @@ test "an image's variable pointers, divert kinds and newline are checked" {
     extra[flags_at] = flags;
     const newline = program.newline;
     program.newline = program.strings.find("A").?;
-    try expect_rejected(&program, .ok);
+    try expect_rejected(&program, .newline_not_newline);
     program.newline = newline;
+    // A bool past 1 or a no-operand word not 0: `Instruction.get` asserts both.
+    const opcodes = program.instructions.items(.opcode);
+    const operands = program.instructions.items(.operand);
+    const boolean = std.mem.indexOfScalar(Opcode, opcodes, .bool).?;
+    operands[boolean] = 2;
+    try expect_rejected(&program, .operand_not_encodable);
+    operands[boolean] = 1;
+    const done = std.mem.indexOfScalar(Opcode, opcodes, .done).?;
+    operands[done] = 1;
+    try expect_rejected(&program, .operand_not_encodable);
+    operands[done] = 0;
     var image: std.Io.Writer.Allocating = .init(gpa);
     defer image.deinit();
     try program_image.write(&program, &image.writer);
     var loaded = try program_image.load(gpa, image.written());
     loaded.deinit(gpa);
+}
+
+test "an image's container ranges and string ids are checked" {
+    // An instruction range or a named range past its array, and a string id past the
+    // strings, are named faults and rejected images.
+    const gpa = std.testing.allocator;
+    var program = try build_records(gpa);
+    defer program.deinit(gpa);
+    const counts = program.containers.items(.instruction_count);
+    const knot_count = counts[1];
+    counts[1] = std.math.maxInt(u32);
+    try expect_rejected(&program, .instructions_not_partitioned);
+    counts[1] = knot_count;
+    const named_firsts = program.containers.items(.named_first);
+    named_firsts[0] = std.math.maxInt(u32);
+    try expect_rejected(&program, .named_range_out_of_bounds);
+    named_firsts[0] = 0;
+    const paths = program.containers.items(.path);
+    const knot_path = paths[1];
+    paths[1] = .from_int(9999);
+    try expect_rejected(&program, .string_out_of_range);
+    paths[1] = knot_path;
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
 }
 
 test "list origin item counts that overflow u32 are rejected" {
@@ -240,13 +299,10 @@ test "a trusted load gives the same program as a checked one" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     var loaded_count: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const cwd = std.Io.Dir.cwd();
-        const json = cwd.readFileAlloc(io, path, arena, .limited(16 << 20)) catch continue;
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
         var image: std.Io.Writer.Allocating = .init(arena);
-        try program_image.write(&program, &image.writer);
+        try program_image.write(&case.program, &image.writer);
         var checked = try program_image.load(arena, image.written());
         var trusted = try program_image.load_trusted(arena, image.written());
         try program_testing.expect_same_program(&checked, &trusted);

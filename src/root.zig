@@ -2,7 +2,7 @@
 //! `compiler` compiles ink source to a Program, `core` holds the shared program image.
 //!
 //! Stability. The stable host API (docs/RunningYourInk.md) is:
-//! - the top-level declarations re-exported from `runtime/api.zig`: `Story`, `Value`,
+//! - the top-level declarations re-exported from `runtime/story.zig`: `Story`, `Value`,
 //!   `Choice`, `ChooseOptions`, `BindOptions`, `Limits`, `Usage`, `fitted_limits`, `Events`,
 //!   `ErrorHandler`, `Observer`, `ExternalFunction`, `Severity`, `Error`, `SetError`,
 //!   `Borrowed`;
@@ -10,15 +10,15 @@
 //! - `compiler`'s entry points: `compile_source`, `compile_file`, `compile_file_with`
 //!   (with `Options`), `compile_to_json` and `Error`;
 //! - `ink_json.load` and `program_image.load` / `program_image.write`;
-//! - from `runtime`, only `runtime.story.Story` (the story an external function receives) and
-//!   `runtime.evaluate.evaluate_function` (for calling ink from inside one).
+//! - `Story`'s `pub` methods; its fields and the other functions of `runtime/story.zig` are
+//!   internal.
 //!
-//! Everything else reachable from here is internal and may change without notice: the other
+//! Everything else reachable from here is internal and may change without notice: the
 //! declarations of `runtime` (VM, heap, state, flows, lookahead, save/load internals) and of
 //! `compiler`, and all of `core` (instructions, containers, builder, string pool, profile
 //! zones). They are exported for the tests, the benchmarks and the tools in this repository.
 
-const api = @import("runtime/api.zig");
+const api = @import("runtime/story.zig");
 
 // Stable host API.
 pub const Story = api.Story;
@@ -38,8 +38,7 @@ pub const Error = api.Error;
 pub const SetError = api.SetError;
 pub const Borrowed = api.Borrowed;
 
-/// Unstable internals, except `runtime.story.Story` and `runtime.evaluate.evaluate_function`
-/// (see the file comment).
+/// Unstable internals (see the file comment).
 pub const runtime = @import("runtime/root.zig");
 /// Stable: `compile_source`, `compile_file`, `compile_file_with`, `Options`,
 /// `compile_to_json`, `Error`. The rest is internal.

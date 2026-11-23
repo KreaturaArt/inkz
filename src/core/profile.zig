@@ -49,7 +49,6 @@ pub const Zone = enum(u8) {
     image_shape,
     image_strings,
     image_arrays,
-    image_references,
     image_write,
     program_check,
     // Runtime.
@@ -70,7 +69,7 @@ pub const Zone = enum(u8) {
     // Saves.
     save_write,
     load_parse,
-    load_validate,
+    /// Reading the parsed save into the state, in one pass.
     load_commit,
 };
 
@@ -180,7 +179,6 @@ pub fn totals() Totals {
 }
 
 fn to_ns(count: u64) u64 {
-    assert(recorder.ticks_per_ns > 0);
     return @intFromFloat(@as(f64, @floatFromInt(count)) / recorder.ticks_per_ns);
 }
 

@@ -1,4 +1,4 @@
-// The bench's generated story (src/bench.zig generate_story), compiled by ink for the new runtime.
+// The bench's generated story (knots with text, a variable update and two choices), compiled by ink for the new runtime.
 VAR score = 0
 -> knot_0
 === knot_0 ===

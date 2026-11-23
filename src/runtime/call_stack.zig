@@ -157,14 +157,10 @@ pub const CallStack = struct {
     pub fn fresh(call_stack: *CallStack, start: Pointer) void {
         call_stack.reset(start);
         call_stack.thread_counter = 0;
-        assert(call_stack.depth() == 1);
     }
 
     pub fn current_thread(call_stack: *CallStack) *Thread {
-        assert(!call_stack.threads.is_empty());
-        const thread = call_stack.threads.peek_pointer().?;
-        assert(thread.frame_count > 0);
-        return thread;
+        return call_stack.threads.peek_pointer().?;
     }
 
     /// The frames of the current thread, bottom first.
@@ -180,15 +176,12 @@ pub const CallStack = struct {
     pub fn current_frame(call_stack: *CallStack) *Frame {
         const count = call_stack.frames.count;
         assert(count > 0 and count <= call_stack.frames.buffer.len);
-        assert(call_stack.threads.count > 0);
         return &call_stack.frames.buffer[count - 1];
     }
 
     /// Frames in the current thread: ink's `depth`.
     pub fn depth(call_stack: *CallStack) u32 {
-        const count = call_stack.current_thread().frame_count;
-        assert(count > 0);
-        return count;
+        return call_stack.current_thread().frame_count;
     }
 
     /// The frame of context `context` (1-based), or the current frame for -1.
@@ -201,9 +194,7 @@ pub const CallStack = struct {
 
     pub fn can_pop(call_stack: *CallStack, kind: ?FrameKind) bool {
         if (call_stack.depth() <= 1) return false;
-        const result = if (kind) |wanted| call_stack.current_frame().kind == wanted else true;
-        assert(call_stack.depth() > 1);
-        return result;
+        return if (kind) |wanted| call_stack.current_frame().kind == wanted else true;
     }
 
     /// A new frame continuing from the current pointer (ink's Push).
@@ -213,7 +204,6 @@ pub const CallStack = struct {
         evaluation_height: u32,
         output_length: u32,
     ) Error!void {
-        assert(call_stack.threads.count > 0);
         const pointer = call_stack.current_frame().pointer;
         call_stack.frames.push(.{
             .pointer = pointer,
@@ -225,7 +215,6 @@ pub const CallStack = struct {
             .in_expression_evaluation = false,
         }) catch return error.FrameLimit;
         call_stack.current_thread().frame_count += 1;
-        assert(call_stack.current_frame().kind == kind);
     }
 
     pub fn pop(call_stack: *CallStack, kind: ?FrameKind) Error!void {
@@ -233,14 +222,12 @@ pub const CallStack = struct {
         const frame = call_stack.frames.pop().?;
         call_stack.temps.truncate(frame.temps_first);
         call_stack.current_thread().frame_count -= 1;
-        assert(call_stack.temps.count == frame.temps_first);
     }
 
     /// The stacks' heights, for `unwind`.
     pub const Mark = struct { frames: u32, threads: u32, temps: u32, frame_count: u32 };
 
     pub fn mark(call_stack: *CallStack) Mark {
-        assert(call_stack.threads.count > 0);
         return .{
             .frames = call_stack.frames.count,
             .threads = call_stack.threads.count,
@@ -292,7 +279,6 @@ pub const CallStack = struct {
     pub fn can_pop_thread(call_stack: *CallStack) bool {
         const result = call_stack.threads.count > 1 and
             call_stack.current_frame().kind != .function_evaluation_from_game;
-        assert(!result or call_stack.threads.count > 1);
         return result;
     }
 
@@ -302,8 +288,6 @@ pub const CallStack = struct {
         const temps_first = call_stack.frames.slice()[thread.frame_first].temps_first;
         call_stack.frames.truncate(thread.frame_first);
         call_stack.temps.truncate(temps_first);
-        const current = call_stack.current_thread();
-        assert(current.frame_first + current.frame_count == call_stack.frames.count);
     }
 
     /// A temp of context `context` (-1 for the current frame).
@@ -349,10 +333,8 @@ pub const CallStack = struct {
 
     /// ink's ContextForVariableNamed: the current frame's context if it has the temp, else 0.
     pub fn context_for(call_stack: *CallStack, name: StringId) i32 {
-        assert(!name.is_none());
         const depth_now = call_stack.depth();
         const has = call_stack.temp_get(name, -1) != null;
-        assert(depth_now > 0);
         return if (has) @intCast(depth_now) else 0;
     }
 
@@ -369,13 +351,10 @@ pub const CallStack = struct {
             next_frame += thread.frame_count;
         }
         if (next_frame != call_stack.frames.count) return .frames_not_covered;
-        const result = call_stack.check_temps();
-        assert(result != .storage);
-        return result;
+        return call_stack.check_temps();
     }
 
     fn check_temps(call_stack: *const CallStack) Fault {
-        assert(call_stack.temps_per_frame_max > 0);
         const frames = call_stack.frames.buffer[0..call_stack.frames.count];
         var next_temp: u32 = 0;
         for (frames) |frame| {
@@ -384,12 +363,10 @@ pub const CallStack = struct {
             next_temp += frame.temps_count;
         }
         if (next_temp != call_stack.temps.count) return .temps_not_covered;
-        assert(next_temp <= call_stack.temps.buffer.len);
         return .ok;
     }
 
     pub fn verify(call_stack: *const CallStack) void {
-        assert(call_stack.temps_per_frame_max > 0);
         fault.verify(call_stack.check());
     }
 };
@@ -403,7 +380,6 @@ const TestStorage = struct {
         var result = CallStack.init(&storage.frames, &storage.threads, &storage.temps, 4);
         result.reset(.start_of(.from_int(0)));
         assert(result.depth() == 1);
-        assert(result.threads.count == 1);
         return result;
     }
 };

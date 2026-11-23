@@ -31,78 +31,47 @@ pub const Builder = struct {
     parsed: *const grammar.Parsed,
     /// The files of the compilation, for INCLUDE (none: a single file).
     space: ?*const source_space.Space = null,
-    kinds: std.ArrayList(Kind) = .empty,
-    flags: std.ArrayList(u16) = .empty,
-    parents: std.ArrayList(ObjectIndex) = .empty,
-    nodes: std.ArrayList(NodeIndex) = .empty,
-    children_first: std.ArrayList(u32) = .empty,
-    children_count: std.ArrayList(u32) = .empty,
-    indents: std.ArrayList(u32) = .empty,
-    /// A weave's run of `items` (other objects: 0, 0).
-    items_first: std.ArrayList(u32) = .empty,
-    items_count: std.ArrayList(u32) = .empty,
+    objects: std.MultiArrayList(sema.Object) = .empty,
+    /// A weave's run of `items` and base indentation, by object (other objects: zeros).
+    runs: std.ArrayList(Run) = .empty,
     children: std.ArrayList(ObjectIndex) = .empty,
     items: std.ArrayList(u32) = .empty,
     /// Objects whose children are still to be created.
     work: std.ArrayList(ObjectIndex) = .empty,
 
+    const Run = struct { first: u32 = 0, count: u32 = 0, indent: u32 = 0 };
+
     pub fn deinit(builder: *Builder) void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
         const gpa = builder.gpa;
-        builder.kinds.deinit(gpa);
-        builder.flags.deinit(gpa);
-        builder.parents.deinit(gpa);
-        builder.nodes.deinit(gpa);
-        builder.children_first.deinit(gpa);
-        builder.children_count.deinit(gpa);
-        builder.indents.deinit(gpa);
-        builder.items_first.deinit(gpa);
-        builder.items_count.deinit(gpa);
+        builder.objects.deinit(gpa);
+        builder.runs.deinit(gpa);
         builder.children.deinit(gpa);
         builder.items.deinit(gpa);
         builder.work.deinit(gpa);
     }
 
     fn tree(builder: *const Builder) *const Ast {
-        assert(builder.parsed.tree.tags.len > 0);
-        assert(builder.parsed.tree.tags.len == builder.parsed.tree.data.len);
         return &builder.parsed.tree;
     }
 
     /// Creates the story and expands every object from a work list.
     pub fn run(builder: *Builder) !void {
-        assert(builder.kinds.items.len == 0);
+        assert(builder.objects.len == 0);
         const story = try builder.create(.story, 0, .none, builder.tree().root);
         try builder.work.append(builder.gpa, story);
         var steps: u32 = 0;
         while (builder.work.pop()) |object| : (steps += 1) {
-            assert(steps <= builder.kinds.items.len);
+            assert(steps <= builder.objects.len);
             try builder.expand(object);
         }
-        assert(builder.children.items.len + 1 == builder.kinds.items.len);
+        assert(builder.children.items.len + 1 == builder.objects.len);
     }
 
     pub fn finish(builder: *Builder) !sema.Tree {
-        const gpa = builder.gpa;
         assert(builder.work.items.len == 0);
-        assert(builder.kinds.items.len > 0);
-        // The tree's columns are parallel: one entry per object in each.
-        assert(builder.flags.items.len == builder.kinds.items.len);
-        assert(builder.parents.items.len == builder.kinds.items.len);
-        assert(builder.nodes.items.len == builder.kinds.items.len);
-        assert(builder.children_first.items.len == builder.kinds.items.len);
-        assert(builder.children_count.items.len == builder.kinds.items.len);
-        assert(builder.indents.items.len == builder.kinds.items.len);
-        return .{
-            .kinds = try builder.kinds.toOwnedSlice(gpa),
-            .flags = try builder.flags.toOwnedSlice(gpa),
-            .parents = try builder.parents.toOwnedSlice(gpa),
-            .nodes = try builder.nodes.toOwnedSlice(gpa),
-            .children_first = try builder.children_first.toOwnedSlice(gpa),
-            .children_count = try builder.children_count.toOwnedSlice(gpa),
-            .children = try builder.children.toOwnedSlice(gpa),
-            .indents = try builder.indents.toOwnedSlice(gpa),
-        };
+        assert(builder.runs.items.len == builder.objects.len);
+        const children = try builder.children.toOwnedSlice(builder.gpa);
+        return .{ .objects = builder.objects.toOwnedSlice(), .children = children };
     }
 
     /// A new object without children yet.
@@ -114,40 +83,34 @@ pub const Builder = struct {
         node: NodeIndex,
     ) !ObjectIndex {
         const gpa = builder.gpa;
-        const object: ObjectIndex = .from_int(@intCast(builder.kinds.items.len));
-        try builder.kinds.append(gpa, kind);
-        try builder.flags.append(gpa, flags);
-        try builder.parents.append(gpa, parent);
-        try builder.nodes.append(gpa, node);
-        try builder.children_first.append(gpa, 0);
-        try builder.children_count.append(gpa, 0);
-        try builder.indents.append(gpa, 0);
-        try builder.items_first.append(gpa, 0);
-        try builder.items_count.append(gpa, 0);
-        assert(builder.kinds.items.len == builder.items_count.items.len);
+        const object: ObjectIndex = .from_int(@intCast(builder.objects.len));
+        try builder.objects.append(gpa, .{
+            .kind = kind,
+            .flags = flags,
+            .parent = parent,
+            .node = node,
+        });
+        try builder.runs.append(gpa, .{});
         return object;
     }
 
     /// Adds a child (to the run being written for its parent) and queues it.
     fn adopt(builder: *Builder, child: ObjectIndex) !void {
-        assert(!builder.parents.items[child.to_int()].is_none());
+        assert(!builder.objects.items(.parent)[child.to_int()].is_none());
         try builder.children.append(builder.gpa, child);
         try builder.work.append(builder.gpa, child);
-        assert(builder.children.items.len > 0);
     }
 
     fn add_child(builder: *Builder, parent: ObjectIndex, node: NodeIndex) !void {
         assert(!node.is_none());
-        assert(parent.to_int() < builder.kinds.items.len);
         try builder.adopt(try builder.create_from_node(parent, node));
     }
 
     /// Creates `object`'s children, as ink's constructor for its kind does.
     fn expand(builder: *Builder, object: ObjectIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
         const first: u32 = @intCast(builder.children.items.len);
-        const node = builder.nodes.items[object.to_int()];
-        switch (builder.kinds.items[object.to_int()]) {
+        const node = builder.objects.items(.node)[object.to_int()];
+        switch (builder.objects.items(.kind)[object.to_int()]) {
             .story, .knot, .stitch => try builder.expand_flow(object, node),
             .weave => try builder.expand_weave(object),
             .choice => try builder.expand_choice(object, node),
@@ -163,9 +126,9 @@ pub const Builder = struct {
             },
             else => if (!node.is_none()) try builder.expand_by_tag(object, node),
         }
-        builder.children_first.items[object.to_int()] = first;
         const end: u32 = @intCast(builder.children.items.len);
-        builder.children_count.items[object.to_int()] = end - first;
+        builder.objects.items(.children_first)[object.to_int()] = first;
+        builder.objects.items(.children_count)[object.to_int()] = end - first;
     }
 
     /// FlowBase.SplitWeaveAndSubFlowContent: the weave first, then the sub-flows.
@@ -233,7 +196,6 @@ pub const Builder = struct {
         const first: u32 = @intCast(builder.items.items.len);
         try builder.append_story_items(includes.statements_of(builder.tree(), story));
         const count = @as(u32, @intCast(builder.items.items.len)) - first;
-        assert(count > 0);
         return builder.create_weave(parent, first, count, 0);
     }
 
@@ -268,9 +230,7 @@ pub const Builder = struct {
         assert(count > 0);
         assert(first + count <= builder.items.items.len);
         const weave = try builder.create(.weave, 0, parent, .none);
-        builder.indents.items[weave.to_int()] = indent;
-        builder.items_first.items[weave.to_int()] = first;
-        builder.items_count.items[weave.to_int()] = count;
+        builder.runs.items[weave.to_int()] = .{ .first = first, .count = count, .indent = indent };
         return weave;
     }
 
@@ -307,9 +267,10 @@ pub const Builder = struct {
 
     /// Weave.ConstructWeaveHierarchyFromIndentation over the weave's item run.
     fn expand_weave(builder: *Builder, weave: ObjectIndex) !void {
-        const base = builder.indents.items[weave.to_int()];
-        const first = builder.items_first.items[weave.to_int()];
-        const end = first + builder.items_count.items[weave.to_int()];
+        const weave_run = builder.runs.items[weave.to_int()];
+        const base = weave_run.indent;
+        const first = weave_run.first;
+        const end = first + weave_run.count;
         var position = first;
         while (position < end) {
             const item = builder.items.items[position];
@@ -336,7 +297,6 @@ pub const Builder = struct {
     }
 
     fn create_item(builder: *Builder, parent: ObjectIndex, item: u32) !ObjectIndex {
-        assert(parent.to_int() < builder.kinds.items.len);
         if (item == item_gather) return builder.create(.gather, 0, parent, .none);
         if (item == item_done) return builder.create(.divert, Flags.done, parent, .none);
         if (item == item_newline) return builder.create(.text, Flags.newline, parent, .none);
@@ -372,13 +332,11 @@ pub const Builder = struct {
             const branch: NodeIndex = at(branches, position);
             try builder.add_child(conditional, branch);
         }
-        assert(ast.tag(ast.slot(node, .branches)) == .branches);
     }
 
     /// ConditionalSingleBranch: a weave of its content (if any), then its own condition (ink
     /// sets ownExpression after construction, so it comes last).
     fn expand_branch(builder: *Builder, branch: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
         const ast = builder.tree();
         const is_else = ast.tag(node) == .else_branch;
         const content = ast.slot(node, .content);
@@ -412,7 +370,6 @@ pub const Builder = struct {
 
     /// The children of the other kinds, from their syntax node's shape.
     fn expand_by_tag(builder: *Builder, object: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
         const ast = builder.tree();
         switch (ast.tag(node)) {
             .content_list, .string, .conditions => {
@@ -435,12 +392,11 @@ pub const Builder = struct {
     }
 
     fn expand_fixed(builder: *Builder, object: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
         const ast = builder.tree();
         const tag = ast.tag(node);
         switch (tag) {
             .divert, .tunnel, .thread, .function_call => {
-                if (builder.kinds.items[object.to_int()] == .function_call) {
+                if (builder.objects.items(.kind)[object.to_int()] == .function_call) {
                     // ink's proxy divert carries the call's arguments.
                     const proxy = try builder.create(.divert, Flags.function_call, object, node);
                     return builder.adopt(proxy);
@@ -498,76 +454,77 @@ pub const Builder = struct {
             node = ast.slot(node, .inner);
         }
         const mapped = map_tag(ast.tag(node));
-        assert(ast.tag(node) != .inline_value);
         return builder.create(mapped.kind, mapped.flags | extra, parent, node);
     }
 };
 
 const Mapped = struct { kind: Kind, flags: u16 = 0 };
 
-fn map_tag(tag: Tag) Mapped {
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
-    assert(tag != .inline_value and tag != .call_statement);
-    return switch (tag) {
-        .knot => .{ .kind = .knot },
-        .function => .{ .kind = .knot, .flags = Flags.function },
-        .stitch => .{ .kind = .stitch },
-        .function_stitch => .{ .kind = .stitch, .flags = Flags.function },
-        .choice => .{ .kind = .choice },
-        .sticky_choice => .{ .kind = .choice, .flags = Flags.sticky },
-        .gather => .{ .kind = .gather },
-        .content_list => .{ .kind = .content_list },
-        .text, .text_space, .error_text => .{ .kind = .text },
-        .newline => .{ .kind = .text, .flags = Flags.newline },
-        .glue => .{ .kind = .glue },
-        .tag_start => .{ .kind = .tag, .flags = Flags.tag_start },
-        .tag_end => .{ .kind = .tag },
-        .divert => .{ .kind = .divert },
-        .tunnel => .{ .kind = .divert, .flags = Flags.tunnel },
-        .thread => .{ .kind = .divert, .flags = Flags.thread },
-        .empty_divert => .{ .kind = .divert, .flags = Flags.empty },
-        .tunnel_onwards => .{ .kind = .tunnel_onwards },
-        .conditional => .{ .kind = .conditional },
-        .inline_conditional => .{ .kind = .conditional, .flags = Flags.inline_conditional },
-        .conditional_branch => .{ .kind = .conditional_branch },
-        .else_branch => .{ .kind = .conditional_branch, .flags = Flags.@"else" },
-        .sequence => .{ .kind = .sequence },
-        else => map_tag_other(tag),
+/// ink's class for each syntax tag that makes an object; the tags not listed are the binary
+/// operators.
+const tag_map = map: {
+    var map: std.EnumArray(Tag, Mapped) = .initFill(.{ .kind = .binary });
+    const entries = [_]struct { Tag, Kind, u16 }{
+        .{ .knot, .knot, 0 },
+        .{ .function, .knot, Flags.function },
+        .{ .stitch, .stitch, 0 },
+        .{ .function_stitch, .stitch, Flags.function },
+        .{ .choice, .choice, 0 },
+        .{ .sticky_choice, .choice, Flags.sticky },
+        .{ .gather, .gather, 0 },
+        .{ .content_list, .content_list, 0 },
+        .{ .text, .text, 0 },
+        .{ .text_space, .text, 0 },
+        .{ .error_text, .text, 0 },
+        .{ .newline, .text, Flags.newline },
+        .{ .glue, .glue, 0 },
+        .{ .tag_start, .tag, Flags.tag_start },
+        .{ .tag_end, .tag, 0 },
+        .{ .divert, .divert, 0 },
+        .{ .tunnel, .divert, Flags.tunnel },
+        .{ .thread, .divert, Flags.thread },
+        .{ .empty_divert, .divert, Flags.empty },
+        .{ .tunnel_onwards, .tunnel_onwards, 0 },
+        .{ .conditional, .conditional, 0 },
+        .{ .inline_conditional, .conditional, Flags.inline_conditional },
+        .{ .conditional_branch, .conditional_branch, 0 },
+        .{ .else_branch, .conditional_branch, Flags.@"else" },
+        .{ .sequence, .sequence, 0 },
+        .{ .temp_declaration, .variable_assignment, Flags.new_temporary },
+        .{ .assignment, .variable_assignment, 0 },
+        .{ .variable_declaration, .variable_assignment, Flags.global },
+        .{ .list_declaration, .variable_assignment, Flags.global | Flags.list },
+        .{ .const_declaration, .constant_declaration, 0 },
+        .{ .external_declaration, .external_declaration, 0 },
+        .{ .@"return", .@"return", 0 },
+        .{ .author_warning, .author_warning, 0 },
+        .{ .include, .included_file, 0 },
+        .{ .integer, .number, 0 },
+        .{ .float, .number, 0 },
+        .{ .true, .number, 0 },
+        .{ .false, .number, 0 },
+        .{ .string, .string_expression, 0 },
+        .{ .variable_reference, .variable_reference, 0 },
+        .{ .function_call, .function_call, 0 },
+        .{ .divert_target, .divert_target, 0 },
+        .{ .negate, .unary, 0 },
+        .{ .not, .unary, 0 },
+        .{ .increment, .increment, 0 },
+        .{ .decrement, .increment, Flags.decrement },
+        .{ .add_assignment, .increment, Flags.by_expression },
+        .{ .subtract_assignment, .increment, Flags.by_expression | Flags.decrement },
+        .{ .list_literal, .list_literal, 0 },
+        .{ .conditions, .multiple_condition, 0 },
     };
-}
+    for (entries) |entry| map.set(entry[0], .{ .kind = entry[1], .flags = entry[2] });
+    break :map map;
+};
 
-fn map_tag_other(tag: Tag) Mapped {
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
-    return switch (tag) {
-        .temp_declaration => .{ .kind = .variable_assignment, .flags = Flags.new_temporary },
-        .assignment => .{ .kind = .variable_assignment },
-        .variable_declaration => .{ .kind = .variable_assignment, .flags = Flags.global },
-        .list_declaration => .{ .kind = .variable_assignment, .flags = Flags.global | Flags.list },
-        .const_declaration => .{ .kind = .constant_declaration },
-        .external_declaration => .{ .kind = .external_declaration },
-        .@"return" => .{ .kind = .@"return" },
-        .author_warning => .{ .kind = .author_warning },
-        .include => .{ .kind = .included_file },
-        .integer, .float, .true, .false => .{ .kind = .number },
-        .string => .{ .kind = .string_expression },
-        .variable_reference => .{ .kind = .variable_reference },
-        .function_call => .{ .kind = .function_call },
-        .divert_target => .{ .kind = .divert_target },
-        .negate, .not => .{ .kind = .unary },
-        .increment => .{ .kind = .increment },
-        .decrement => .{ .kind = .increment, .flags = Flags.decrement },
-        .add_assignment => .{ .kind = .increment, .flags = Flags.by_expression },
-        .subtract_assignment => .{
-            .kind = .increment,
-            .flags = Flags.by_expression | Flags.decrement,
-        },
-        .list_literal => .{ .kind = .list_literal },
-        .conditions => .{ .kind = .multiple_condition },
-        else => {
-            assert(is_binary(tag));
-            return .{ .kind = .binary };
-        },
-    };
+fn map_tag(tag: Tag) Mapped {
+    assert(tag != .inline_value and tag != .call_statement);
+    const mapped = tag_map.get(tag);
+    assert(mapped.kind != .binary or is_binary(tag));
+    return mapped;
 }
 
 /// Item `position` of a listed range (`Ast.list`).
@@ -577,14 +534,10 @@ fn at(items: anytype, position: usize) NodeIndex {
 }
 
 fn is_flow_tag(tag: Tag) bool {
-    assert(@sizeOf(Tag) == 1);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return tag == .knot or tag == .function or tag == .stitch or tag == .function_stitch;
 }
 
 fn is_binary(tag: Tag) bool {
-    assert(@sizeOf(Tag) == 1);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return switch (tag) {
         .add, .subtract, .multiply, .divide, .modulo, .equal, .not_equal, .less, .greater => true,
         .less_equal, .greater_equal, .@"and", .@"or", .has, .hasnt, .intersect => true,

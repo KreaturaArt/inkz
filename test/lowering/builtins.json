@@ -1,0 +1,1 @@
+﻿{"inkVersion":21,"root":[["ev",1,"_","pop","/ev","\n","ev",2,"_","out","/ev","^ ","ev",3,4,"MIN","out","/ev","^ ","ev",1.5,"FLOOR","out","/ev","^ ","ev","turn","out","/ev","^ ","ev","choiceCnt","out","/ev","\n","ev",5,"srnd","pop","/ev","\n",["done",{"#n":"g-0"}],null],"done",null],"listDefs":{}}

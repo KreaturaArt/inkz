@@ -26,7 +26,7 @@ flowchart LR
 
     program --> story1["Story A<br/>State + Continue loop"]
     program --> story2["Story B"]
-    story1 <--> host["host via inkz.Story<br/>(runtime/api.zig)"]
+    story1 <--> host["host via inkz.Story<br/>(runtime/story.zig)"]
     story1 <--> save["save format v10<br/>to_json / load_json"]
 ```
 
@@ -38,7 +38,7 @@ nothing is a pointer, and every target is resolved when the program is built.
 ```mermaid
 classDiagram
     class Program {
-        strings: FrozenStringPool
+        strings: StringPool
         instructions: MultiArrayList~Instruction~
         containers: MultiArrayList~ContainerInfo~
         named: []NamedEntry
@@ -139,8 +139,6 @@ stateDiagram-v2
     [*] --> Step: push frame(rule, checkpoint)
     Step --> Call: .call / .peek(rule)
     Call --> Step: push callee frame
-    Step --> Again: .again (phase changed)
-    Again --> Step
     Step --> Succeed: .succeed
     Step --> Fail: .fail
     Succeed --> Resume: pop frame, keep nodes<br/>(peek undoes the input)
@@ -191,13 +189,13 @@ stateDiagram-v2
     Running --> Check: vm.run returns (output changed, choice, ended)
     Check --> Running: in string evaluation, or nothing new
     Check --> Snapshot: output ends in newline<br/>and can continue
-    Snapshot --> Lookahead: copy live-flow prefixes,<br/>start the undo log
+    Snapshot --> Lookahead: copy live-flow prefixes
     Lookahead --> Check2: vm.run returns
     Check2 --> Lookahead: only whitespace after the newline
     Check2 --> Restore: new text or tags,<br/>or an unsafe external function
     Check2 --> Discard: glue removed the newline
     Discard --> Running
-    Restore --> Finish: copy buffers back, undo the log,<br/>truncate the heap
+    Restore --> Finish: copy buffers and written chunks back<br/>(heap garbage waits for compaction)
     Check --> Finish: can't continue (choices, DONE, END,<br/>or out of content)
     Finish --> [*]: the cleaned line, report errors,<br/>notify queued observers
 ```
@@ -207,11 +205,12 @@ whole output stream. `runtime/text_cache.zig` (P10.1) keeps it between checks, w
 cleaner's state and a copy of the items it came from. While the output only grows and no
 heap string changes (`StringHeap.generation`), only new items are cleaned. Any other change
 cleans from the start: glue, trimming, `/str`, a restore, a flow switch, a load, heap
-truncation or compaction. Debug builds compare every cached line with a full clean. Before
+shrinking or compaction. Debug builds compare every cached line with a full clean. Before
 the cache, cleaning took about half of play time; with it, play is 1.5–1.8× faster.
 
-While a snapshot is active, writes to shared arrays (globals, visit counts, turn indices,
-the random state) go through the undo log, so a restore needs no copy of them. When the
+While a snapshot is active, the first write to a chunk of 64 slots of a shared array
+(globals, or visit counts and turn indices) copies that chunk out, and a restore copies the
+written chunks back, so a line pays only for the chunks its lookahead writes. When the
 pointer runs out, an all-invisible default choice is followed automatically; otherwise ink's
 end-of-content errors and warnings are raised.
 
@@ -225,8 +224,8 @@ the next mutating call.
 ```mermaid
 flowchart TB
     subgraph block["one allocation: Limits.bytes_total(shape)"]
-        subgraph live["live flow"]
-            evaluation["evaluation stack<br/>Value, 12 B"]
+        evaluation["evaluation stack<br/>Value, 12 B, shared by all flows"]
+        subgraph live["flows_max flow slots; the live stacks view the current one"]
             calls["call stack: threads,<br/>frames (24 B), temps (16 B)"]
             output["output items (12 B),<br/>string marks"]
             choices["choices, choice tags,<br/>thread snapshots"]
@@ -238,20 +237,22 @@ flowchart TB
             diagnostics["errors, warnings,<br/>observers, observer queue"]
             line["text cache: cleaned line (the cont() view)<br/>+ its items; line bytes (scratch)"]
         end
-        lookahead["lookahead copy of the live flow<br/>+ undo log (patch entries)"]
-        parking["flow parking region<br/>(inactive flows, set-aside output)"]
+        lookahead["lookahead copy of the live flow,<br/>globals and counts"]
+        stash["output stash<br/>(output set aside by evaluate_function)"]
         scratch["load scratch (save tokens),<br/>ancestor scratch"]
     end
     live -- "take / restore" --> lookahead
-    live -- "switch_flow packs / unpacks used prefixes" --> parking
+    live -- "switch_flow stores the counts, points the stacks at another slot" --> live
     heap -. "compaction roots: values in every box above" .- live
 ```
 
-The heap is compacted only when an allocation doesn't fit. Compaction keeps allocation
-order, so heap marks recorded by the lookahead snapshot stay valid after relocation.
+The heap is compacted only when an instruction reserves room that isn't free
+(`State.reserve`), before it pops its operands, so every live value is on a root; an
+allocation itself never compacts. A lookahead restore leaves the heap objects the lookahead
+made; the next compaction finds them unreachable.
 Running out of any buffer returns a named error (`error.HeapLimit`, `error.FlowLimit`, ...).
 
 Every buffer records its peak (P10.2). `Story.usage()` reports them, and `Limits.fitted(usage,
-margin)` sizes a story's limits from them. The default budget is about 2.2 MB per story.
+margin)` sizes a story's limits from them. The default budget is about 3 MB per story.
 Fitted limits need about 40–50 KB for the stories measured, at the same speed, because play
 speed doesn't depend on the budget.

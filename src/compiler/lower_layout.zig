@@ -45,7 +45,6 @@ pub fn set_count_flags(lowering: *Lowering) void {
             else => {},
         }
     }
-    assert(lowering.runtime_containers.len == tree.count());
 }
 
 fn flag(lowering: *Lowering, object: ObjectIndex, flags: u8) void {
@@ -115,7 +114,6 @@ pub const Layout = struct {
     item_position: []u32,
 
     pub fn deinit(layout: *Layout) void {
-        assert(layout.item_container.len == layout.item_position.len);
         layout.gpa.free(layout.item_container);
         layout.gpa.free(layout.item_position);
     }
@@ -123,7 +121,6 @@ pub const Layout = struct {
 
 /// Sets each container's parent and records every item's position.
 pub fn lay_out(lowered: *Lowered) !Layout {
-    assert(!lowered.root.is_none());
     assert(lowered.ir.flat.items.len <= lowered.ir.items.items.len);
     const ir = &lowered.ir;
     const gpa = ir.gpa;

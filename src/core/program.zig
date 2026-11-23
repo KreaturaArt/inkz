@@ -1,6 +1,9 @@
 //! The program: one immutable, pre-resolved story image. The compiler and the JSON
 //! loader both produce it through `ProgramBuilder`; many stories may share one.
 
+// lint: allow assertion_density: the accessors read columns that `check()` validates once,
+// when a program is built or loaded; the check functions return faults instead of asserting.
+
 const std = @import("std");
 const assert = std.debug.assert;
 const profile = @import("profile.zig");
@@ -16,7 +19,6 @@ const Instruction = instruction_module.Instruction;
 const Opcode = instruction_module.Opcode;
 const ContainerInfo = container_module.ContainerInfo;
 const NamedEntry = container_module.NamedEntry;
-const ContainerTable = container_module.ContainerTable;
 const GlobalSlot = index.GlobalSlot;
 const ListItemIndex = index.ListItemIndex;
 const ListOriginIndex = index.ListOriginIndex;
@@ -77,7 +79,6 @@ pub fn build_name_classes(
     globals: []const GlobalInfo,
     list_items: []const ListItem,
 ) std.mem.Allocator.Error![]NameClass {
-    assert(strings_count > 0);
     const classes = try gpa.alloc(NameClass, strings_count);
     @memset(classes, .none);
     for (list_items, 0..) |item, position| {
@@ -95,7 +96,7 @@ pub fn build_name_classes(
 }
 
 pub const Program = struct {
-    strings: string_pool.FrozenStringPool,
+    strings: string_pool.StringPool,
     /// What each string names as a variable (`build_name_classes`), so the VM resolves a
     /// name with one read instead of scanning the globals and hashing for list items.
     name_classes: []const NameClass,
@@ -119,7 +120,15 @@ pub const Program = struct {
 
     pub const Fault = enum {
         ok,
-        containers,
+        no_containers,
+        root_has_parent,
+        root_depth_not_zero,
+        parent_out_of_range,
+        parent_after_child,
+        depth_not_parent_plus_one,
+        named_range_out_of_bounds,
+        named_child_out_of_range,
+        named_child_has_other_parent,
         instructions_not_partitioned,
         enter_container_child_mismatch,
         index_in_parent_mismatch,
@@ -134,9 +143,12 @@ pub const Program = struct {
         name_classes_mismatch,
         list_item_origin_mismatch,
         fallback_out_of_range,
+        newline_not_newline,
         list_item_out_of_range,
         list_origin_out_of_range,
         variable_pointer_context_out_of_range,
+        /// A `.bool` operand past 1 or a `.none` operand not 0 (`Instruction.get` asserts).
+        operand_not_encodable,
     };
 
     pub fn deinit(program: *Program, gpa: std.mem.Allocator) void {
@@ -153,19 +165,12 @@ pub const Program = struct {
         program.* = undefined;
     }
 
-    pub fn table(program: *const Program) ContainerTable {
-        const result: ContainerTable = .{
-            .containers = program.containers,
-            .named = program.named,
-        };
-        assert(result.named.len == program.named.len);
-        return result;
+    pub fn container_info(program: *const Program, container: ContainerIndex) ContainerInfo {
+        return program.containers.get(container.to_int());
     }
 
     pub fn instructions_count(program: *const Program) u32 {
-        const count: u32 = @intCast(program.instructions.len);
-        assert(count == program.instructions.len);
-        return count;
+        return @intCast(program.instructions.len);
     }
 
     /// The instruction at content position `position` of `container`.
@@ -178,7 +183,6 @@ pub const Program = struct {
         const slot = container.to_int();
         assert(position < program.containers.items(.instruction_count)[slot]);
         const at = program.containers.items(.instruction_first)[slot].to_int() + position;
-        assert(at < program.instructions.len);
         return .{
             .opcode = program.instructions.items(.opcode)[at],
             .operand = program.instructions.items(.operand)[at],
@@ -188,34 +192,33 @@ pub const Program = struct {
     // The container-table interface of `path.zig`.
 
     pub fn root_container(program: *const Program) ContainerIndex {
-        assert(program.table().parent(root).is_none());
+        assert(program.containers.items(.parent)[0].is_none());
         return root;
     }
 
     pub fn parent(program: *const Program, container: ContainerIndex) ContainerIndex {
-        assert(container.to_int() < program.containers.len);
-        const result = program.table().parent(container);
+        const result = program.containers.items(.parent)[container.to_int()];
         assert(result.is_none() or result.to_int() < container.to_int());
         return result;
     }
 
+    /// The named child `name` of `container`: one string lookup, then id compares only.
     pub fn named_child(
         program: *const Program,
         container: ContainerIndex,
         name: []const u8,
     ) ?ContainerIndex {
-        assert(container.to_int() < program.containers.len);
+        const info = program.container_info(container);
         const id = program.strings.find(name) orelse return null;
-        const child = program.table().named_child(container, id) orelse return null;
-        assert(program.table().parent(child) == container);
-        return child;
+        for (program.named[info.named_first..][0..info.named_count]) |entry| {
+            if (entry.name != id) continue;
+            return entry.child;
+        }
+        return null;
     }
 
     pub fn content_count(program: *const Program, container: ContainerIndex) u32 {
-        const count = program.containers.items(.instruction_count)[container.to_int()];
-        assert(count <= program.instructions.len);
-        assert(container.to_int() < program.containers.len);
-        return count;
+        return program.containers.items(.instruction_count)[container.to_int()];
     }
 
     /// One field of a container's record, without reading the others (for the VM).
@@ -224,7 +227,6 @@ pub const Program = struct {
         container: ContainerIndex,
         comptime field: std.meta.FieldEnum(ContainerInfo),
     ) @FieldType(ContainerInfo, @tagName(field)) {
-        assert(container.to_int() < program.containers.len);
         return program.containers.items(field)[container.to_int()];
     }
 
@@ -233,33 +235,98 @@ pub const Program = struct {
         container: ContainerIndex,
         position: u32,
     ) ?ContainerIndex {
-        assert(position < program.content_count(container));
         const item = program.instruction_at(container, position);
         if (item.opcode != .enter_container) return null;
-        const child = item.get(.enter_container);
-        assert(program.table().parent(child) == container);
-        return child;
+        return item.get(.enter_container);
     }
 
     /// The pair assertion after building and after loading.
     pub fn check(program: *const Program) Fault {
         const profile_zone = profile.begin(.program_check);
         defer profile_zone.end();
-        const instructions_total = program.instructions_count();
-        if (program.table().check(instructions_total) != .ok) return .containers;
+        const tree = program.check_containers();
+        if (tree != .ok) return tree;
+        const names = program.check_names();
+        if (names != .ok) return names;
         const partition = program.check_partition();
         if (partition != .ok) return partition;
         const structure = program.check_children();
         if (structure != .ok) return structure;
         const operands = program.check_operands();
         if (operands != .ok) return operands;
-        const tables = program.check_tables();
-        assert(tables != .containers);
-        return tables;
+        return program.check_tables();
     }
 
     pub fn verify(program: *const Program) void {
         fault.verify(program.check());
+    }
+
+    /// The tree: the root first, parents before children, depths one more than the parent's,
+    /// and each named range in bounds and naming children of its container.
+    fn check_containers(program: *const Program) Fault {
+        const containers = program.containers;
+        if (containers.len == 0) return .no_containers;
+        const parents = containers.items(.parent);
+        const depths = containers.items(.depth);
+        if (!parents[0].is_none()) return .root_has_parent;
+        if (depths[0] != 0) return .root_depth_not_zero;
+        for (parents[1..], depths[1..], 1..) |container_parent, depth, position| {
+            if (container_parent.is_none()) return .parent_out_of_range;
+            // Parents come first, so one forward pass can check depths.
+            if (container_parent.to_int() >= position) return .parent_after_child;
+            // Widened: a parent at the u16 maximum must be a fault, not an overflow.
+            if (depth != @as(u32, depths[container_parent.to_int()]) + 1) {
+                return .depth_not_parent_plus_one;
+            }
+        }
+        for (0..containers.len) |position| {
+            const named_first = containers.items(.named_first)[position];
+            const named_count = containers.items(.named_count)[position];
+            if (@as(u64, named_first) + named_count > program.named.len) {
+                return .named_range_out_of_bounds;
+            }
+            for (program.named[named_first..][0..named_count]) |entry| {
+                if (entry.child.is_none() or entry.child.to_int() >= containers.len) {
+                    return .named_child_out_of_range;
+                }
+                if (parents[entry.child.to_int()] != ContainerIndex.from_int(@intCast(position))) {
+                    return .named_child_has_other_parent;
+                }
+            }
+        }
+        return .ok;
+    }
+
+    /// Every string id in the tables names a string, and the newline string is "\n".
+    fn check_names(program: *const Program) Fault {
+        const containers = program.containers;
+        for (containers.items(.name), containers.items(.path)) |name, path| {
+            if (!name.is_none() and !program.is_string(name)) return .string_out_of_range;
+            if (!program.is_string(path)) return .string_out_of_range;
+        }
+        for (program.named) |entry| if (!program.is_string(entry.name)) return .string_out_of_range;
+        for (program.globals) |global| {
+            if (!program.is_string(global.name)) return .string_out_of_range;
+        }
+        for (program.externals) |external| {
+            if (!program.is_string(external.name)) return .string_out_of_range;
+        }
+        for (program.list_origins) |origin| {
+            if (!program.is_string(origin.name)) return .string_out_of_range;
+        }
+        for (program.list_items) |item| {
+            if (!program.is_string(item.name) or !program.is_string(item.full_name)) {
+                return .string_out_of_range;
+            }
+        }
+        if (!program.global_declaration.is_none() and
+            program.global_declaration.to_int() >= containers.len) return .container_out_of_range;
+        // Newline output items are one-byte slices of this string.
+        if (!program.is_string(program.newline)) return .string_out_of_range;
+        if (!std.mem.eql(u8, program.strings.get(program.newline), "\n")) {
+            return .newline_not_newline;
+        }
+        return .ok;
     }
 
     /// Containers' instructions are laid out back to back in container order, so every
@@ -269,11 +336,10 @@ pub const Program = struct {
         const counts = program.containers.items(.instruction_count);
         var next: u64 = 0;
         for (firsts, counts) |first, count| {
-            if (first.to_int() != next) return .instructions_not_partitioned;
+            if (@backingInt(first) != next) return .instructions_not_partitioned;
             next += count;
         }
         if (next != program.instructions.len) return .instructions_not_partitioned;
-        assert(firsts.len == counts.len);
         return .ok;
     }
 
@@ -307,13 +373,11 @@ pub const Program = struct {
                 }
             }
         }
-        assert(containers.len > 0);
         return .ok;
     }
 
     /// Every operand points at something that exists.
     fn check_operands(program: *const Program) Fault {
-        assert(program.instructions.len == program.instructions_count());
         const strings_count = program.strings.count();
         const containers_count: u32 = @intCast(program.containers.len);
         const opcodes = program.instructions.items(.opcode);
@@ -328,7 +392,9 @@ pub const Program = struct {
                 .variable_pointer => program.check_variable_pointer(operand),
                 .list => program.check_list_literal(operand),
                 .global => if (operand >= program.globals.len) .global_out_of_range else .ok,
-                .none, .integer, .float, .boolean => .ok,
+                .none => if (operand != 0) .operand_not_encodable else .ok,
+                .boolean => if (operand > 1) .operand_not_encodable else .ok,
+                .integer, .float => .ok,
             };
             if (result != .ok) return result;
         }
@@ -337,21 +403,26 @@ pub const Program = struct {
                 return .count_slot_out_of_range;
             }
         }
-        assert(strings_count > 0);
         return .ok;
+    }
+
+    /// The `Data` record at `at` in `extra`, or null if it runs past the end or a word
+    /// doesn't decode (images are untrusted; `extra.get` asserts both).
+    fn record(
+        program: *const Program,
+        comptime Data: type,
+        at: u32,
+    ) ?Data {
+        if (!extra_module.decodable(Data, program.extra, at)) return null;
+        return extra_module.get(Data, program.extra, at);
     }
 
     fn check_variable_pointer(program: *const Program, at: u32) Fault {
         const Data = instruction_module.VariablePointer;
-        const words = @typeInfo(Data).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
-        const pointer = extra_module.get(Data, program.extra, at).data;
-        if (pointer.name.is_none() or pointer.name.to_int() >= program.strings.count()) {
-            return .string_out_of_range;
-        }
+        const pointer = program.record(Data, at) orelse return .extra_out_of_range;
+        if (!program.is_string(pointer.name)) return .string_out_of_range;
         // ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
         if (pointer.context < -1) return .variable_pointer_context_out_of_range;
-        assert(words == 2);
         return .ok;
     }
 
@@ -359,33 +430,31 @@ pub const Program = struct {
     /// the VM slices and stores without further checks.
     fn check_list_literal(program: *const Program, at: u32) Fault {
         const Data = instruction_module.ListLiteral;
-        const words = @typeInfo(Data).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
-        const decoded = extra_module.get(Data, program.extra, at);
-        const record = decoded.data;
-        const tail_words = @as(u64, record.items_count) + record.origins_count;
-        if (tail_words > program.extra.len - decoded.end) return .extra_out_of_range;
-        const tail = program.extra[decoded.end..][0..@intCast(tail_words)];
-        for (tail[0..record.items_count]) |item| {
+        const literal = program.record(Data, at) orelse return .extra_out_of_range;
+        const tail_at = at + extra_module.words(Data);
+        const tail_words = @as(u64, literal.items_count) + literal.origins_count;
+        if (tail_words > program.extra.len - tail_at) return .extra_out_of_range;
+        const tail = program.extra[tail_at..][0..@intCast(tail_words)];
+        for (tail[0..literal.items_count]) |item| {
             if (item >= program.list_items.len) return .list_item_out_of_range;
         }
-        for (tail[record.items_count..]) |origin| {
+        for (tail[literal.items_count..]) |origin| {
             if (origin >= program.list_origins.len) return .list_origin_out_of_range;
         }
-        assert(decoded.end <= program.extra.len);
+        // A list item read as a variable (one item, one origin) is followed by the name it
+        // was written with, which the JSON writer reads.
+        if (literal.items_count == 1 and literal.origins_count == 1) {
+            const name_at = tail_at + 2;
+            if (name_at >= program.extra.len) return .extra_out_of_range;
+            if (program.extra[name_at] >= program.strings.count()) return .string_out_of_range;
+        }
         return .ok;
     }
 
     fn check_external_call(program: *const Program, at: u32) Fault {
-        const words = @typeInfo(instruction_module.ExternalCall).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.ExternalCall;
-        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
-        const call = extra_module.get(instruction_module.ExternalCall, program.extra, at).data;
-        if (call.external.is_none() or call.external.to_int() >= program.externals.len) {
-            return .external_out_of_range;
-        }
-        assert(words == 3);
+        const call = program.record(Data, at) orelse return .extra_out_of_range;
+        if (@backingInt(call.external) >= program.externals.len) return .external_out_of_range;
         return .ok;
     }
 
@@ -395,12 +464,12 @@ pub const Program = struct {
         // 64 bits: untrusted counts may sum past u32.
         var next: u64 = 0;
         for (program.list_origins, 0..) |origin, origin_index| {
-            if (origin.items_first.to_int() != next) return .list_items_not_partitioned;
+            if (@backingInt(origin.items_first) != next) return .list_items_not_partitioned;
             next += origin.items_count;
             if (next > program.list_items.len) return .list_items_not_partitioned;
             const items = program.list_items[origin.items_first.to_int()..][0..origin.items_count];
             for (items) |item| {
-                if (item.origin.to_int() != origin_index) return .list_item_origin_mismatch;
+                if (@backingInt(item.origin) != origin_index) return .list_item_origin_mismatch;
             }
         }
         if (next != program.list_items.len) return .list_items_not_partitioned;
@@ -409,7 +478,6 @@ pub const Program = struct {
             if (external.fallback.is_none()) continue;
             if (external.fallback.to_int() >= program.containers.len) return .fallback_out_of_range;
         }
-        assert(next == program.list_items.len);
         return .ok;
     }
 
@@ -438,13 +506,10 @@ pub const Program = struct {
 
     /// What `name` names as a variable.
     pub fn name_class(program: *const Program, name: StringId) NameClass {
-        assert(!name.is_none());
-        assert(name.to_int() < program.name_classes.len);
         return program.name_classes[name.to_int()];
     }
 
     pub fn global_by_name(program: *const Program, name: []const u8) ?GlobalSlot {
-        assert(name.len > 0);
         const id = program.strings.find(name) orelse return null;
         for (program.globals, 0..) |global, slot| {
             if (global.name == id) return .from_int(@intCast(slot));
@@ -454,7 +519,6 @@ pub const Program = struct {
 
     /// A list item by `origin.item` or, as ink's `VAR?` allows, by its bare name.
     pub fn list_item_by_name(program: *const Program, name: []const u8) ?ListItemIndex {
-        assert(name.len > 0);
         const id = program.strings.find(name) orelse return null;
         for (program.list_items, 0..) |item, position| {
             if (item.full_name == id or item.name == id) return .from_int(@intCast(position));
@@ -463,7 +527,6 @@ pub const Program = struct {
     }
 
     pub fn external_by_name(program: *const Program, name: []const u8) ?ExternalIndex {
-        assert(name.len > 0);
         const id = program.strings.find(name) orelse return null;
         for (program.externals, 0..) |external, position| {
             if (external.name == id) return .from_int(@intCast(position));
@@ -471,11 +534,8 @@ pub const Program = struct {
         return null;
     }
 
-    fn check_extra(program: *const Program, at: u32, words: u32) Fault {
-        assert(words > 0);
-        if (at > program.extra.len or words > program.extra.len - at) return .extra_out_of_range;
-        assert(at + words <= program.extra.len);
-        return .ok;
+    fn is_string(program: *const Program, id: StringId) bool {
+        return @backingInt(id) < program.strings.count();
     }
 
     fn check_target(program: *const Program, container: ContainerIndex, position: u32) Fault {
@@ -485,33 +545,22 @@ pub const Program = struct {
         // A target may point one past the last instruction: the end of the container.
         const count = program.containers.items(.instruction_count)[container.to_int()];
         if (position > count) return .target_out_of_range;
-        assert(position <= count);
         return .ok;
     }
 
     fn check_divert(program: *const Program, at: u32) Fault {
-        const words = @typeInfo(instruction_module.Divert).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.Divert;
-        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
-        const divert = extra_module.get(instruction_module.Divert, program.extra, at).data;
-        if (divert.flags.variable) {
-            if (divert.name.is_none() or divert.name.to_int() >= program.strings.count()) {
-                return .string_out_of_range;
-            }
-            return .ok;
+        const divert = program.record(Data, at) orelse return .extra_out_of_range;
+        if (!divert.flags.variable) {
+            return program.check_target(divert.target_container, divert.target_index);
         }
-        assert(!divert.flags.variable);
-        return program.check_target(divert.target_container, divert.target_index);
+        if (!program.is_string(divert.name)) return .string_out_of_range;
+        return .ok;
     }
 
     fn check_choice_point(program: *const Program, at: u32) Fault {
-        const words = @typeInfo(instruction_module.ChoicePoint).@"struct".field_names.len;
-        if (program.check_extra(at, words) != .ok) return .extra_out_of_range;
         const Data = instruction_module.ChoicePoint;
-        if (!extra_module.decodable(Data, program.extra, at)) return .extra_out_of_range;
-        const choice = extra_module.get(instruction_module.ChoicePoint, program.extra, at).data;
-        assert(words == 3);
+        const choice = program.record(Data, at) orelse return .extra_out_of_range;
         return program.check_target(choice.target_container, choice.target_index);
     }
 };

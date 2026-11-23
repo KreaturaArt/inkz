@@ -9,6 +9,7 @@ on:
 jobs:
   ci:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -17,10 +18,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep in step with mise.toml (tools/ci_test.zig checks it).
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: 0.17.1
+      # Installs minimum_zig_version from build.zig.zon, the oldest Zig the project supports.
+      - uses: EuroZig/setup-zig@v3
 
       - name: zig build ci
         run: zig build ci --summary failures
+
+  # Five minutes of seeded swarm runs (play, save and host in turn) once ci passes; the
+  # seed changes every run, and a failure prints the command that reproduces it.
+  swarm:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EuroZig/setup-zig@v3
+
+      - name: zig build swarm
+        run: >-
+          zig build swarm -Doptimize=ReleaseSafe --
+          --target all --seconds 300 --seed ${{ github.run_id }}

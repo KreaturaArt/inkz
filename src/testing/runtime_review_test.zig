@@ -1,38 +1,22 @@
 //! Runtime fixes from the final review (P15.1), each checked through a whole story: the
 //! lookahead's undo log, long tags, glue in choice tags, lists that print long, and ink's
-//! list-and-int operation errors. The stories are compiled from the ink in each test.
+//! list-and-int operation errors; and (P17.15) a nearly full heap compacting between
+//! instructions. The stories are compiled from the ink in each test.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const Program = @import("../core/program.zig").Program;
 const string_pool = @import("../core/string_pool.zig");
+const support = @import("support.zig");
 
-/// A story on `program` with `limits`, owned by the caller.
-fn start(gpa: std.mem.Allocator, program: *const Program, limits: api.Limits) !*api.Story {
-    assert(program.containers.len > 0);
-    const story = try gpa.create(api.Story);
-    errdefer gpa.destroy(story);
-    try story.init(gpa, program, .{ .limits = limits });
-    return story;
-}
-
-fn stop(gpa: std.mem.Allocator, story: *api.Story) void {
-    story.deinit(gpa);
-    gpa.destroy(story);
-}
+const start = support.start;
+const stop = support.stop;
 
 /// The story's whole output until it stops or asks for a choice, owned by the caller.
 fn play(gpa: std.mem.Allocator, story: *api.Story) ![]u8 {
-    var text: std.Io.Writer.Allocating = .init(gpa);
-    errdefer text.deinit();
-    var lines: u32 = 0;
-    while (story.can_continue()) : (lines += 1) {
-        assert(lines < 1000);
-        try text.writer.writeAll((try story.cont()).get());
-    }
-    return text.toOwnedSlice();
+    return support.play_alloc(gpa, story, .{ .list = &.{} });
 }
 
 /// The first story error's message, written into `buffer`.
@@ -166,12 +150,12 @@ test "assigning a popped string to a temp named like a list item allocates nothi
     defer gpa.destroy(story);
     try story.init_from_json(gpa, renamed, .{});
     defer story.deinit(gpa);
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     const text = try play(gpa, story);
     defer gpa.free(text);
     // `{a}` reads the list item, as ink's GetRawVariableWithName looks for one before temps.
     try std.testing.expectEqualStrings("a\n", text);
-    story.core.state.verify();
+    story.state.verify();
 }
 
 /// A line with one shuffle of `elements` alternatives, owned by the caller.
@@ -331,17 +315,14 @@ test "name classes from the builder equal the ones an image load rebuilds" {
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const io = std.testing.io;
-    const ink_json = @import("../core/ink_json.zig");
     const program_image = @import("../core/program_image.zig");
     const cases = @import("cases.zig");
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const cwd = std.Io.Dir.cwd();
-        const json = cwd.readFileAlloc(io, path, arena, .limited(16 << 20)) catch continue;
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
+        const program = &case.program;
         var image: std.Io.Writer.Allocating = .init(arena);
-        try program_image.write(&program, &image.writer);
+        try program_image.write(program, &image.writer);
         var loaded = try program_image.load(arena, image.written());
         try std.testing.expectEqualSlices(
             u32,
@@ -359,4 +340,52 @@ test "name classes from the builder equal the ones an image load rebuilds" {
         try std.testing.expectEqual(Program.Fault.name_classes_mismatch, loaded.check());
     }
     try std.testing.expect(checked > 100);
+}
+
+test "a nearly full heap compacts between instructions, and string and list ops come out right" {
+    // Compaction happens only where room is reserved, before an instruction pops
+    // its operands, so values in flight are on the evaluation stack. A loop makes about
+    // 2 KB of strings and lists in a 256-byte heap and a 32-word slab, so it compacts
+    // over and over; with `compact_always` it compacts at every reservation too.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\LIST colours = red, green, blue
+        \\VAR s = ""
+        \\VAR l = ()
+        \\~ temp i = 0
+        \\- (top)
+        \\~ s = "x{i}"
+        \\~ s = s + "-" + s
+        \\~ l = (red, blue)
+        \\~ l = l - red
+        \\~ l = l + LIST_MIN(LIST_INVERT(l))
+        \\~ i = i + 1
+        \\{ i < 40: -> top }
+        \\{s} {l} {LIST_COUNT(LIST_ALL(l))}
+        \\* [{s}!] done
+        \\
+    );
+    defer program.deinit(gpa);
+    var roomy: api.Story = undefined;
+    try roomy.init(gpa, &program, .{});
+    defer roomy.deinit(gpa);
+    const expected = try play(gpa, &roomy);
+    defer gpa.free(expected);
+    try std.testing.expect(std.mem.endsWith(u8, expected, "x39-x39 red, blue 3\n"));
+    try std.testing.expect(roomy.state.strings.peak > 2048); // without compaction
+    for ([_]bool{ false, true }) |compact_always| {
+        var story: api.Story = undefined;
+        try story.init(gpa, &program, .{
+            .limits = .{ .heap_bytes_max = 256, .list_words_max = 32 },
+        });
+        defer story.deinit(gpa);
+        story.state.compact_always = compact_always;
+        const text = try play(gpa, &story);
+        defer gpa.free(text);
+        try std.testing.expectEqualStrings(expected, text);
+        try std.testing.expectEqual(@as(u32, 1), story.current_choices_count());
+        try std.testing.expectEqualStrings("x39-x39!", (try story.current_choice(0)).get().text);
+        try std.testing.expect(story.state.strings.peak <= 256);
+        story.state.verify();
+    }
 }

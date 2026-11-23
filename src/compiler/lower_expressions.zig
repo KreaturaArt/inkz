@@ -9,6 +9,7 @@ const sema = @import("sema.zig");
 const values = @import("values.zig");
 const ast_module = @import("ast.zig");
 const ir_module = @import("lower_ir.zig");
+const ink_json = @import("../core/ink_json.zig");
 const logic = @import("lower_logic.zig");
 const Lowering = lower.Lowering;
 const ObjectIndex = sema.ObjectIndex;
@@ -22,7 +23,6 @@ const frames_max = 256;
 
 /// Emits `expression` into `container`.
 pub fn emit(lowering: *Lowering, container: ContainerId, expression: ObjectIndex) !void {
-    assert(!container.is_none());
     assert(lower.is_expression(lowering.tree.kind(expression)));
     var frames: [frames_max]Frame = undefined;
     var depth: u32 = 1;
@@ -38,7 +38,6 @@ pub fn emit(lowering: *Lowering, container: ContainerId, expression: ObjectIndex
             depth += 1;
         } else if (frame.stage == done) depth -= 1;
     }
-    assert(depth == 0);
 }
 
 /// A frame's stage once it has emitted everything.
@@ -55,7 +54,7 @@ fn step(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectInde
         .binary => return binary(lowering, container, frame, children),
         .multiple_condition => {
             // Each condition after the first is joined with && once it is emitted.
-            if (frame.stage >= 2) _ = try lowering.ir.add(container, .{ .native = "&&" });
+            if (frame.stage >= 2) _ = try lowering.ir.add_opcode(container, .@"and");
             if (frame.stage == children.len) {
                 frame.stage = done;
                 return null;
@@ -81,7 +80,7 @@ fn step(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectInde
                 return children[0];
             }
             const negate = lowering.ast().tag(tree.node(object)) == .negate;
-            _ = try lowering.ir.add(container, .{ .native = if (negate) "_" else "!" });
+            _ = try lowering.ir.add_opcode(container, if (negate) .negate else .not);
             frame.stage = done;
             return null;
         },
@@ -107,9 +106,10 @@ fn binary(
         frame.stage += 1;
         return children[frame.stage - 1];
     }
-    _ = try lowering.ir.add(container, .{
-        .native = native_name(lowering.ast().tag(lowering.tree.node(frame.object))),
-    });
+    const name = native_name(lowering.ast().tag(lowering.tree.node(frame.object)));
+    // ink writes NativeFunctionCall "^" as "L^".
+    const word = if (std.mem.eql(u8, name, "^")) "L^" else name;
+    _ = try lowering.ir.add_opcode(container, ink_json.words.get(word).?);
     frame.stage = done;
     return null;
 }
@@ -117,7 +117,6 @@ fn binary(
 /// BinaryExpression's NativeNameForOp.
 pub fn native_name(tag: Tag) []const u8 {
     assert(ast_module.shape(tag) != .leaf);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return switch (tag) {
         .add => "+",
         .subtract => "-",
@@ -141,7 +140,6 @@ pub fn native_name(tag: Tag) []const u8 {
 
 fn literal_item(value: values.Literal) Item {
     assert(value != .string and value != .divert_target);
-    assert(@backingInt(std.meta.activeTag(value)) < 5);
     return switch (value) {
         .integer => |integer| .{ .integer = integer },
         .float => |float| .{ .float = float },
@@ -161,9 +159,9 @@ fn leaf(lowering: *Lowering, container: ContainerId, object: ObjectIndex) !void 
             _ = try ir.add(container, literal_item(value));
         },
         .string_expression => {
-            _ = try ir.add_command(container, .begin_string);
+            _ = try ir.add_opcode(container, .string_start);
             for (tree.children_of(object)) |child| try lowering.add_result(container, child);
-            _ = try ir.add_command(container, .end_string);
+            _ = try ir.add_opcode(container, .string_end);
         },
         .divert_target => {
             const divert = tree.children_of(object)[0];
@@ -186,7 +184,6 @@ pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const
     // The components are one run of the source (`a.b`), so the name is that range.
     const start = @intFromPtr(first.ptr) - @intFromPtr(lowering.parsed.source.ptr);
     const end = @intFromPtr(last.ptr) + last.len - @intFromPtr(lowering.parsed.source.ptr);
-    assert(start <= end and end <= lowering.parsed.source.len);
     return lowering.parsed.source[start..end];
 }
 
@@ -194,7 +191,6 @@ pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const
 /// (GenerateConstantIntoContainer): the constant's expression is the next frame.
 fn variable_reference(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectIndex {
     const reference = frame.object;
-    assert(lowering.tree.kind(reference) == .variable_reference);
     const target = lowering.resolution.targets[reference.to_int()];
     if (frame.stage == 1) {
         frame.stage = done;
@@ -225,7 +221,6 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
     const tree = lowering.tree;
     const ir = &lowering.ir;
     const object = frame.object;
-    assert(tree.kind(object) == .increment);
     const node = tree.node(object);
     const name = if (tree.has(object, Flags.by_expression))
         lowering.parsed.slot_text(node, .name)
@@ -238,7 +233,7 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
         if (children.len > 0) return children[0];
         _ = try ir.add(container, .{ .integer = 1 });
     }
-    _ = try ir.add(container, .{ .native = if (tree.has(object, Flags.decrement)) "-" else "+" });
+    _ = try ir.add_opcode(container, if (tree.has(object, Flags.decrement)) .subtract else .add);
     const global = lowering.resolution.references[object.to_int()] == .global;
     _ = try ir.add(container, .{ .assignment = .{ .name = name, .global = global, .new = false } });
     frame.stage = done;
@@ -264,108 +259,38 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
     assert(tree.kind(proxy) == .divert);
     const arguments = tree.children_of(proxy);
     const is_list = !lowering.resolution.targets[call.to_int()].is_none();
-    if (is_builtin_call(name) or (is_list and arguments.len == 1)) {
+    const builtin = ir_module.builtin(name);
+    if (builtin != null or (is_list and arguments.len == 1)) {
         if (frame.stage == 0 and is_list) _ = try ir.add(container, .{ .text = name });
         if (frame.stage < arguments.len) {
             frame.stage += 1;
             return arguments[frame.stage - 1];
         }
         if (is_list) {
-            _ = try ir.add_command(container, .list_from_int);
-        } else if (builtin_command(name)) |command| {
-            _ = try ir.add_command(container, command);
-        } else _ = try ir.add(container, .{ .native = name });
+            _ = try ir.add_opcode(container, .list_from_int);
+        } else _ = try ir.add_opcode(container, builtin.?.opcode);
     } else if (is_list) {
         const origins = try ir.arena.allocator().dupe([]const u8, &.{name});
         _ = try ir.add(container, .{ .list = .{ .items = &.{}, .origins = origins } });
     } else try lowering.add_result(container, proxy);
-    if (tree.has(call, Flags.pop_result)) _ = try ir.add_command(container, .pop);
+    if (tree.has(call, Flags.pop_result)) _ = try ir.add_opcode(container, .pop);
     frame.stage = done;
     return null;
 }
 
-/// Whether a call is to a built-in (a control command or a native function).
-pub fn is_builtin_call(name: []const u8) bool {
-    assert(name.len == 0 or name[0] != ' ');
-    return builtin_command(name) != null or is_native(name);
-}
-
-/// The built-ins that are control commands (their arguments come first).
-fn builtin_command(name: []const u8) ?ir_module.Command {
-    assert(name.len == 0 or name[0] != '.');
-    const names = [_][]const u8{
-        "CHOICE_COUNT", "TURNS",       "TURNS_SINCE", "READ_COUNT",
-        "RANDOM",       "SEED_RANDOM", "LIST_RANGE",  "LIST_RANDOM",
-    };
-    const commands = [_]ir_module.Command{
-        .choice_count, .turns,       .turns_since, .read_count,
-        .random,       .seed_random, .list_range,  .list_random,
-    };
-    for (names, commands) |builtin, command| {
-        if (std.mem.eql(u8, name, builtin)) return command;
-    }
-    return null;
-}
-
-/// Runtime.NativeFunctionCall.CallExistsWithName, for names written as calls.
-fn is_native(name: []const u8) bool {
-    assert(name.len == 0 or name[0] != '.');
-    const names = [_][]const u8{
-        "MIN",      "MAX",      "POW",        "FLOOR",      "CEILING",     "INT",      "FLOAT",
-        "LIST_MIN", "LIST_MAX", "LIST_COUNT", "LIST_VALUE", "LIST_INVERT", "LIST_ALL",
-    };
-    for (names) |native| {
-        if (std.mem.eql(u8, name, native)) return true;
-    }
-    return false;
-}
-
 /// List.GenerateIntoContainer: each item by its list and value.
 fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
-    const ast = lowering.ast();
-    const node = lowering.tree.node(literal);
-    assert(ast.tag(node) == .list_literal);
-    const arena = lowering.ir.arena.allocator();
-    var items: std.ArrayList(ir_module.ListItem) = .empty;
-    for (0..ast.list(node).count) |position| {
-        const text = lowering.parsed.leaf_text(ast.item(node, position));
-        const dot = std.mem.indexOfScalar(u8, text, '.');
-        const list_name: ?[]const u8 = if (dot) |at| text[0..at] else null;
-        const item_name = if (dot) |at| text[at + 1 ..] else text;
-        const found = find_list_item(lowering, list_name, item_name) orelse continue;
-        const origin = lowering.slot_name(lowering.tree.parent(found.definition), .name);
-        // ink warns about a duplicate item and keeps the first.
-        if (contains_item(items.items, origin, item_name)) continue;
-        const value = lowering.resolution.item_values[found.element.to_int()];
-        try items.append(arena, .{ .origin = origin, .name = item_name, .value = value });
+    const elements = lowering.resolution.list_literal_items(literal);
+    const items = try lowering.ir.arena.allocator().alloc(ir_module.ListItem, elements.len);
+    for (elements, items) |element, *item| {
+        const definition = lowering.tree.parent(element);
+        item.* = .{
+            .origin = lowering.slot_name(lowering.tree.parent(definition), .name),
+            .name = lowering.slot_name(element, .name),
+            .value = lowering.resolution.item_values[element.to_int()],
+        };
     }
-    return .{ .list = .{ .items = items.items, .origins = &.{} } };
-}
-
-fn contains_item(items: []const ir_module.ListItem, origin: []const u8, name: []const u8) bool {
-    assert(origin.len > 0);
-    for (items) |item| {
-        if (std.mem.eql(u8, item.origin, origin) and std.mem.eql(u8, item.name, name)) return true;
-    }
-    return false;
-}
-
-const Found = struct { definition: ObjectIndex, element: ObjectIndex };
-
-/// Story.ResolveListItem (its ambiguity error was reported when resolving).
-fn find_list_item(lowering: *const Lowering, list_name: ?[]const u8, item: []const u8) ?Found {
-    assert(item.len > 0);
-    for (lowering.resolution.lists) |definition| {
-        if (list_name) |name| {
-            const own = lowering.slot_name(lowering.tree.parent(definition), .name);
-            if (!std.mem.eql(u8, name, own)) continue;
-        }
-        for (lowering.tree.children_of(definition)) |element| {
-            if (!std.mem.eql(u8, item, lowering.slot_name(element, .name))) continue;
-            return .{ .definition = definition, .element = element };
-        }
-    }
-    return null;
+    return .{ .list = .{ .items = items, .origins = &.{} } };
 }
 
 /// ListDefinition.GenerateRuntimeObject: the list's initial value (its selected items).
@@ -375,7 +300,6 @@ pub fn list_definition_value(
     origin: []const u8,
 ) !Item {
     assert(lowering.tree.kind(definition) == .list_definition);
-    assert(origin.len > 0);
     const ast = lowering.ast();
     const arena = lowering.ir.arena.allocator();
     var items: std.ArrayList(ir_module.ListItem) = .empty;

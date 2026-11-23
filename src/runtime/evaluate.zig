@@ -9,7 +9,6 @@ const assert = std.debug.assert;
 const story_module = @import("story.zig");
 const output_module = @import("output.zig");
 const state_module = @import("state.zig");
-const flows = @import("flows.zig");
 const ops = @import("ops.zig");
 const vm = @import("vm.zig");
 const Value = @import("value.zig").Value;
@@ -23,8 +22,8 @@ pub const Error = story_module.Error || error{
     /// ink's "Function doesn't exist".
     FunctionNotFound,
     EvaluateDepthLimit,
-    /// The parking region has no room to set the output aside.
-    FlowParkingLimit,
+    /// `Limits.output_stash_bytes_max` has no room to set the output aside.
+    OutputStashLimit,
     /// ink's "Expected external function evaluation to be complete".
     EvaluationNotComplete,
 };
@@ -42,8 +41,8 @@ pub fn evaluate_function(
     text_writer: *std.Io.Writer,
 ) Error!HostValue {
     assert(name.len > 0);
-    story.invalidate_views();
-    if (!story.may_evaluate()) return error.Reentrant;
+    story_module.invalidate_views(story);
+    if (!story_module.may_evaluate(story)) return error.Reentrant;
     if (story.failed) return error.StoryFailed;
     // Kept errors stop the story from continuing, so the function couldn't run.
     if (story.state.has_error()) return error.StoryError;
@@ -55,17 +54,17 @@ pub fn evaluate_function(
     const program = story.program;
     const container = program.named_child(program.root_container(), name) orelse
         return error.FunctionNotFound;
-    assert(container.to_int() < program.containers.len);
     const depth_max = story.state.limits.evaluate_depth_max;
     if (story.evaluate_depth == depth_max) return error.EvaluateDepthLimit;
-    assert(story.evaluate_depth < depth_max);
     const before = try begin_evaluation(story, container, arguments);
     const text_start = text_writer.end;
     var stepping = false;
-    const result = run_evaluation(story, text_writer, &stepping) catch |err| {
+    const result = run_evaluation(story, before, text_writer, &stepping) catch |err| {
         abandon_evaluation(story, before, err != error.StoryError and stepping);
+        assert(story.evaluation_floor == before.evaluation_floor);
         return err;
     };
+    assert(story.evaluation_floor == before.evaluation_floor);
     if (story.events.on_complete_evaluate_function) |event| {
         // The text is what the writer still buffers (all of it for a fixed or allocating
         // writer).
@@ -91,6 +90,7 @@ pub fn evaluate_function(
 const Before = struct {
     call_stack: call_stack_module.CallStack.Mark,
     evaluation_height: u32,
+    evaluation_floor: u32,
 };
 
 /// ink's StartFunctionEvaluationFromGame: the output set aside, the frame and the
@@ -108,6 +108,7 @@ fn begin_evaluation(
     const before: Before = .{
         .call_stack = state.call_stack.mark(),
         .evaluation_height = state.evaluation.count,
+        .evaluation_floor = story.evaluation_floor,
     };
     // With on_complete_evaluate_function, a second copy of the arguments is pinned below
     // the frame, so the event gets them valid however the heap moved.
@@ -127,13 +128,20 @@ fn begin_evaluation(
     state.call_stack.current_frame().pointer = .start_of(container);
     state.evaluation.push_slice(values[0..pins_count]) catch unreachable;
     state.evaluation.push_slice(values[0..arguments.len]) catch unreachable;
+    // The function's parameters pop its arguments, never what lies below its frame.
+    story.evaluation_floor = frame_height;
     assert(state.call_stack.frames.count == before.call_stack.frames + 1);
     return before;
 }
 
 /// The Continue loop until the function ends, then its result. `stepping` is true while a
 /// line runs.
-fn run_evaluation(story: *Story, text_writer: *std.Io.Writer, stepping: *bool) Error!HostValue {
+fn run_evaluation(
+    story: *Story,
+    before: Before,
+    text_writer: *std.Io.Writer,
+    stepping: *bool,
+) Error!HostValue {
     assert(story.state.call_stack.depth() > 1);
     const callback_depth = story.callback_depth;
     const external_callback_depth = story.external_callback_depth;
@@ -147,11 +155,12 @@ fn run_evaluation(story: *Story, text_writer: *std.Io.Writer, stepping: *bool) E
     }
     while (story.can_continue()) {
         stepping.* = true;
-        const line = try story.next_line();
+        const line = try story_module.next_line(story);
         stepping.* = false;
         text_writer.writeAll(line) catch return error.OutputLimit;
     }
     const result = try complete_function_evaluation(story);
+    story.evaluation_floor = before.evaluation_floor;
     unstash_output(story);
     return result;
 }
@@ -166,16 +175,16 @@ fn abandon_evaluation(story: *Story, before: Before, half_done: bool) void {
     assert(story.state.output_stashes_count > 0);
     unstash_output(story);
     const state = &story.state;
+    // Nothing below the frame was popped (`Story.evaluation_floor`).
+    assert(state.evaluation.count >= story.evaluation_floor);
+    assert(story.evaluation_floor >= before.evaluation_height);
+    story.evaluation_floor = before.evaluation_floor;
+    state.evaluation.count = before.evaluation_height;
     if (half_done) {
         story.failed = true;
         return;
     }
     const ended = state.call_stack.depth() == 1 and vm.current_pointer(story).is_null();
-    if (state.evaluation.count < before.evaluation_height) {
-        if (!ended) story.failed = true;
-        return;
-    }
-    state.evaluation.count = before.evaluation_height;
     if (ended) return;
     if (!state.call_stack.unwind(before.call_stack, .function_evaluation_from_game)) {
         story.failed = true;
@@ -191,8 +200,11 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
     const frame = state.call_stack.current_frame();
     if (frame.kind != .function_evaluation_from_game) return error.EvaluationNotComplete;
     const height = frame.evaluation_height;
+    // A knot or function with more parameters than the host passed can't pop below its
+    // frame (`Story.evaluation_floor`): the pop is a story error, ink's "trying to pop too
+    // many objects".
+    assert(height == story.evaluation_floor);
     assert(height <= state.evaluation.count);
-    assert(state.call_stack.depth() > 1);
     const returned: ?Value = if (state.evaluation.count > height)
         state.evaluation.buffer[height]
     else
@@ -203,7 +215,7 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
     assert(state.evaluation.count == height);
     const value = returned orelse return .null;
     return switch (value) {
-        .divert_target => |target| .{ .string = story.path_of(target) },
+        .divert_target => |target| .{ .string = story_module.path_of(story, target) },
         else => ops.host_value(story, value),
     };
 }
@@ -211,16 +223,16 @@ fn complete_function_evaluation(story: *Story) Error!HostValue {
 fn stash_output(story: *Story) Error!void {
     const state = &story.state;
     assert(state.output_stashes_count <= state_module.output_stashes_max);
-    assert(state.parking.len > 0);
+    assert(state.output_stash.len > 0);
     if (state.output_stashes_count == state_module.output_stashes_max) {
         return error.EvaluateDepthLimit;
     }
-    const first = flows.parking_used(state) + stashed_words(state);
+    const first = stashed_words(state);
     const items = state.output.items.slice();
     const marks = state.output.string_marks.slice();
     const words: u32 = @intCast(items.len * 3 + marks.len);
-    if (first + words > state.parking.len) return error.FlowParkingLimit;
-    const target = state.parking[first..][0..words];
+    if (first + words > state.output_stash.len) return error.OutputStashLimit;
+    const target = state.output_stash[first..][0..words];
     @memcpy(target[0 .. items.len * 3], std.mem.bytesAsSlice(u32, std.mem.sliceAsBytes(items)));
     @memcpy(target[items.len * 3 ..], marks);
     state.output_stashes[state.output_stashes_count] = .{
@@ -229,15 +241,15 @@ fn stash_output(story: *Story) Error!void {
         .marks = @intCast(marks.len),
     };
     state.output_stashes_count += 1;
+    state.peaks.output_stash_words = @max(state.peaks.output_stash_words, first + words);
 }
 
 fn stashed_words(state: *const state_module.State) u32 {
-    assert(state.output_stashes_count <= state_module.output_stashes_max);
     var words: u32 = 0;
     for (state.output_stashes[0..state.output_stashes_count]) |stash| {
         words += stash.items * 3 + stash.marks;
     }
-    assert(words <= state.parking.len);
+    assert(words <= state.output_stash.len);
     return words;
 }
 
@@ -247,10 +259,9 @@ fn unstash_output(story: *Story) void {
     assert(state.output_stashes_count > 0);
     state.output_stashes_count -= 1;
     const stash = state.output_stashes[state.output_stashes_count];
-    const words = state.parking[stash.first..][0 .. stash.items * 3 + stash.marks];
+    const words = state.output_stash[stash.first..][0 .. stash.items * 3 + stash.marks];
     const item_bytes = std.mem.sliceAsBytes(words[0 .. stash.items * 3]);
     const items: []const Item = @alignCast(std.mem.bytesAsSlice(Item, item_bytes));
-    assert(items.len == stash.items);
     state.output.clear();
     state.output.items.push_slice(items) catch unreachable;
     state.output.string_marks.push_slice(words[stash.items * 3 ..]) catch unreachable;
@@ -268,7 +279,7 @@ fn external_program(gpa: std.mem.Allocator) !Program {
     const call = try builder.extra.add(gpa, instruction_module.ExternalCall{
         .external = external,
         .arguments_count = 0,
-        .conditional = false,
+        .flags = .{ .conditional = false },
     });
     _ = try builder.begin_container(.{});
     inline for (.{ true, false }) |is_root| {
@@ -281,9 +292,7 @@ fn external_program(gpa: std.mem.Allocator) !Program {
         if (!is_root) try builder.end_container();
     }
     try builder.end_container();
-    const program = try builder.finish();
-    assert(program.externals.len == 1);
-    return program;
+    return try builder.finish();
 }
 
 const Probe = struct {
@@ -292,9 +301,8 @@ const Probe = struct {
     reenter: bool = false,
     reentrant_error: bool = false,
 
-    fn call(context: ?*anyopaque, story: *Story, arguments: []const HostValue) anyerror!HostValue {
+    fn call(context: ?*anyopaque, story: *Story, _: []const HostValue) anyerror!HostValue {
         const probe: *Probe = @ptrCast(@alignCast(context.?));
-        assert(arguments.len == 0);
         assert(story.callback_depth > 0);
         probe.calls += 1;
         if (probe.reenter) {
@@ -316,10 +324,10 @@ test "evaluate_function nests from an external up to evaluate_depth_max" {
     var program = try external_program(gpa);
     defer program.deinit(gpa);
     var story: Story = undefined;
-    try story.init(gpa, &program, .{ .evaluate_depth_max = 3 });
+    try story.init(gpa, &program, .{ .limits = .{ .evaluate_depth_max = 3 } });
     defer story.deinit(gpa);
     var probe: Probe = .{};
-    try story.bind_external_function("ext", Probe.call, &probe, true);
+    try story.bind_external_function("ext", .{}, &probe, Probe.call);
     try std.testing.expectError(error.ExternalFunctionFailed, story.cont());
     // The root's call and one per nested evaluation; the fourth evaluation is refused.
     try std.testing.expectEqual(@as(u32, 4), probe.calls);
@@ -336,7 +344,7 @@ test "other mutating calls from a callback are reentrant" {
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
     var probe: Probe = .{ .reenter = true };
-    try story.bind_external_function("ext", Probe.call, &probe, true);
+    try story.bind_external_function("ext", .{}, &probe, Probe.call);
     _ = try story.cont();
     try std.testing.expect(probe.reentrant_error);
     try std.testing.expectEqual(@as(u32, 0), story.callback_depth);

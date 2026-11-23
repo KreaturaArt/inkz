@@ -7,7 +7,7 @@
 //! it came from. While the output still starts with those items and no heap string changed
 //! (the heap's generation), only the new items are cleaned; anything else (items removed or
 //! rewritten by glue, trimming, `/str`, a lookahead restore, a flow switch or a load, and
-//! heap truncation or compaction) cleans from the start. Both buffers come from the state's
+//! heap shrinking or compaction) cleans from the start. Both buffers come from the state's
 //! one allocation: `output_items_max` items and `output_bytes_max` bytes.
 
 const std = @import("std");
@@ -49,14 +49,12 @@ pub const TextCache = struct {
 
     /// Forgets the cleaned text; the next `update` cleans from the start.
     pub fn clear(cache: *TextCache) void {
-        assert(cache.count <= cache.items.len);
         cache.count = 0;
         cache.end = 0;
         cache.in_tag = false;
         cache.whitespace_start = null;
         cache.line_start = 0;
         cache.position = 0;
-        assert(cache.check() == .ok);
     }
 
     /// The output's cleaned text (ink's currentText), valid until the next `update` or
@@ -77,7 +75,6 @@ pub const TextCache = struct {
             cache.clear();
             return error.OutputLimit;
         };
-        assert(cache.count == items.len);
         return cache.text[0..cache.end];
     }
 
@@ -85,8 +82,6 @@ pub const TextCache = struct {
     /// Whether the cleaned prefix still holds: the output starts with the cached items and
     /// the heap's strings are as they were.
     fn reusable(cache: *const TextCache, items: []const Item, generation: u32) bool {
-        assert(cache.count <= cache.items.len);
-        assert(items.len <= cache.items.len);
         if (cache.generation != generation or cache.count > items.len) return false;
         const cached = std.mem.sliceAsBytes(cache.items[0..cache.count]);
         return std.mem.eql(u8, cached, std.mem.sliceAsBytes(items[0..cache.count]));
@@ -121,8 +116,6 @@ pub const TextCache = struct {
     }
 
     pub fn check(cache: *const TextCache) Fault {
-        assert(cache.items.len > 0);
-        assert(cache.text.len > 0);
         if (cache.count > cache.items.len) return .count_past_items;
         if (cache.end > cache.text.len) return .end_past_text;
         return .ok;
@@ -140,7 +133,6 @@ const TestStrings = struct {
 
     pub fn get(strings: TestStrings, reference: StringReference) []const u8 {
         assert(reference.is_heap());
-        assert(reference.heap_offset() < strings.table.len);
         return strings.table[reference.heap_offset()];
     }
 };
@@ -157,7 +149,6 @@ const Fixture = struct {
     generation: u32 = 0,
 
     fn setup(fixture: *Fixture) void {
-        assert(fixture.strings.table.len > 0);
         fixture.output = .init(&fixture.items, &fixture.marks);
         fixture.cache = .init(&fixture.cache_items, &fixture.cache_text);
         fixture.frames[0] = .{
@@ -169,12 +160,10 @@ const Fixture = struct {
             .kind = .tunnel,
             .in_expression_evaluation = false,
         };
-        assert(fixture.output.items.count == 0);
     }
 
     fn text(fixture: *Fixture, string: u32) !void {
         assert(string < fixture.strings.table.len);
-        assert(fixture.output.items.count < fixture.items.len);
         const length: u32 = @intCast(fixture.strings.table[string].len);
         try fixture.output.push_text(fixture.strings, &fixture.frames, .heap(string), 0, length);
     }
@@ -182,7 +171,6 @@ const Fixture = struct {
     /// The cache's text must equal a full clean.
     fn expect_line(fixture: *Fixture, expected: []const u8) !void {
         assert(fixture.cache.check() == .ok);
-        assert(expected.len < fixture.cache_text.len);
         const generation = fixture.generation;
         const cached = try fixture.cache.update(&fixture.output, fixture.strings, generation);
         var buffer: [256]u8 = undefined;

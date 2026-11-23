@@ -5,10 +5,12 @@
 //!
 //! Every name comes from a small pool that the generator declares (knots `k0`–`k2`, stitch
 //! `k0.s0`, functions `f0(x)`, `f1()` and the external `e0(x)` with its fallback, variables
-//! `v0`–`v2`, `c0` and the list `l0`), so most sources parse and resolve and reach the later
-//! stages. The fuzzer can still drop a declaration or splice raw bytes in, for the stages that
-//! must reject broken input. Nothing recurses: expressions are flat chains of terms, and
-//! nesting is bounded by a depth counter.
+//! `v0`–`v2`, `c0` and the list `l0`; with `hub`, the knots `hub` and `tunnel0`), so the
+//! sources parse and resolve and reach the later stages. For the stages that must reject
+//! broken input, a swarm with `drop` or `collision` (each drawn 1 in 8) leaves names out or
+//! reuses them, and the parser targets splice raw bytes in. For the play targets, `hub` and
+//! `typed` keep a played story going through choices without errors. Nothing recurses:
+//! expressions are flat chains of terms, and nesting is bounded by a depth counter.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -117,18 +119,115 @@ const words = [_][]const u8{ "Hello", "the cat", "a", "", "!", "  spaced  ", "x\
 /// - `collision`: one name ink rejects per source (a temp named like a global, a list item or
 ///   a knot, or the ambiguous bare `a`), for comparing compile errors. It is drawn with
 ///   probability 1/8 and is not in `Swarm.all`.
-pub const Resolution = enum { temp, ref, items, l1, collision };
+/// - `drop`: each declaration, knot, stitch and function left out with probability 1/16
+///   while the terms still name them, so the source fails to resolve. Drawn with probability
+///   1/8 and not in `Swarm.all`; `Swarm.classic` has it, as the first generator dropped.
+pub const Resolution = enum { temp, ref, items, l1, collision, drop };
 
-const ResolutionLine = enum {
+/// Features that keep a played story going:
+/// - `hub`: the root diverts to a knot `hub`, and the hub, each knot and the stitch end in
+///   a block of choices (most sticky, a few to END or DONE) that divert to the hub, the
+///   knots and the stitch, so play loops through choices; a knot ends otherwise with
+///   probability 1/8. Every other choice comes after a sticky fallback to the hub. Tunnels
+///   call a knot `tunnel0` that only tunnels reach and that returns with `->->`, so no knot
+///   that a divert reaches ends in a tunnel return; diverts and threads outside choices
+///   only go forward (to a later knot, the hub, and seldom END or DONE), and function
+///   bodies call no function, so nothing loops or recurses without a choice.
+/// - `typed`: each expression keeps to one kind of value, numbers (and booleans), strings
+///   or lists, with the operators ink defines on it; variables, temps, parameters and
+///   function returns keep theirs (`v1` a string, `l0` a list, the others numbers), so
+///   expressions don't stop play at a type error. Where a kind has no term here, an
+///   expression whose value isn't stored takes another kind, and a stored one the kind's
+///   empty value.
+pub const Play = enum { hub, typed };
+
+/// Constructs of ink that the first generator didn't write (P18.6), each its own feature, so
+/// `Swarm.classic` keeps its choices:
+/// - `turns`: the term `TURNS()`.
+/// - `math`: the terms `POW`, `FLOOR`, `CEILING`, `INT`, `FLOAT`, `MIN` and `MAX` of
+///   numbers, variables and constants.
+/// - `list_functions`: `LIST_VALUE` (a number) and `LIST_MIN`, `LIST_MAX`, `LIST_ALL`,
+///   `LIST_INVERT`, `LIST_RANDOM`, `LIST_RANGE` and `l0(n)` (lists) of `l0`.
+/// - `seed_random`: the line `~ SEED_RANDOM(n)`, which reseeds what `RANDOM`, shuffles and
+///   `LIST_RANDOM` draw.
+/// - `conditional_else`: the multi-line conditional of one condition and an `- else:`
+///   branch (`block` writes the one with a branch per condition).
+/// - `choice_tags`: tags in a choice's start, choice-only and output text, one of them
+///   with a value, and in the hub's choices.
+/// - `divert_variable`: `VAR d0 = -> k0`, assigned other knots and diverted to with
+///   `-> d0` (and passed to `jump1` with `parameters`); with `hub`, it always holds the hub.
+/// - `parameters`: knots with parameters, each reached by one kind of line with an
+///   argument: `-> tunnel1(n) ->` returns with `->->`, `<- thread1(n)` offers a choice, and
+///   `-> jump1(n, -> k0)` diverts to the target its second parameter holds (the hub with
+///   `hub`).
+pub const Construct = enum {
+    turns,
+    math,
+    list_functions,
+    seed_random,
+    conditional_else,
+    choice_tags,
+    divert_variable,
+    parameters,
+};
+
+/// The kinds of value a `typed` expression keeps to.
+const Kind = enum { number, string, list };
+
+/// The terms and the extra terms of each kind: `variable` names `v0` or `v2` as a
+/// number and `v1` as a string.
+const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
+    .number = .initMany(&.{
+        .integer,    .float,         .boolean, .variable, .constant,
+        .call,       .call_external, .random,  .visits,   .turns_since,
+        .list_query, .choice_count,  .negate,
+    }),
+    .string = .initMany(&.{ .string, .variable }),
+    .list = .initOne(.list),
+});
+const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(.{
+    .number = .initMany(&.{ .temp_read, .ref_call, .global_read, .turns, .math, .list_value }),
+    .string = .empty,
+    .list = .initMany(&.{ .item_full, .item_bare, .ambiguous, .list_function }),
+});
+/// Ink's operators on each kind: arithmetic, comparison and logic on numbers, joining,
+/// equality and containment on strings, and the set operations and comparisons on lists.
+const kind_operators = std.enums.EnumArray(Kind, std.EnumSet(Operator)).init(.{
+    .number = .initMany(&.{
+        .add,  .subtract, .multiply,   .divide,        .modulo, .equal, .not_equal,
+        .less, .greater,  .less_equal, .greater_equal, .@"and", .@"or",
+    }),
+    .string = .initMany(&.{ .add, .equal, .not_equal, .contains, .not_contains }),
+    .list = .initMany(&.{
+        .add,        .subtract,      .equal,    .not_equal,    .less, .greater,
+        .less_equal, .greater_equal, .contains, .not_contains, .has,
+    }),
+});
+
+const ExtraLine = enum {
     temp_declare,
     temp_assign,
     temp_increment,
     ref_call,
     global_assign,
     collision,
+    seed_random,
+    conditional_else,
+    divert_assign,
 };
 
-const ResolutionTerm = enum { temp_read, item_full, item_bare, ref_call, global_read, ambiguous };
+const ExtraTerm = enum {
+    temp_read,
+    item_full,
+    item_bare,
+    ref_call,
+    global_read,
+    ambiguous,
+    turns,
+    math,
+    list_value,
+    list_function,
+};
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
 const Item = struct { []const u8, bool };
@@ -166,6 +265,8 @@ pub const Swarm = struct {
     /// Globals `n0`... declared beyond `v0`-`v2`, read and assigned: 0 to 64 (`g` would
     /// collide with the gathers' labels).
     globals_extra: u8,
+    play: std.EnumSet(Play),
+    constructs: std.EnumSet(Construct),
 
     pub const lines_limit = 10;
     pub const terms_limit = 4;
@@ -173,9 +274,9 @@ pub const Swarm = struct {
     pub const knots_limit = 3;
     pub const globals_extra_limit = 64;
 
-    /// The first generator's full mix: every feature but the resolution ones, at the largest
-    /// bounds. It takes the same choices as that generator did, so its seeds give the same
-    /// sources.
+    /// The first generator's full mix: every feature but the resolution ones (`drop` aside,
+    /// which that generator did), at the largest bounds. It takes the same choices as that
+    /// generator did, so its seeds give the same sources.
     pub const classic: Swarm = .{
         .lines = .full,
         .terms = .full,
@@ -187,17 +288,22 @@ pub const Swarm = struct {
         .terms_max = terms_limit,
         .choice_depth_max = choice_depth_limit,
         .knots_count = knots_limit,
-        .resolution = .empty,
+        .resolution = .initOne(.drop),
         .globals_extra = 0,
+        .play = .empty,
+        .constructs = .empty,
     };
 
-    /// Every feature at the largest bounds, but `collision`, which would make each source
-    /// fail to compile.
+    /// Every feature at the largest bounds, but `collision` and `drop`, which would make
+    /// sources fail to compile.
     pub const all: Swarm = all: {
         var swarm = classic;
         swarm.resolution = .full;
         swarm.resolution.remove(.collision);
+        swarm.resolution.remove(.drop);
         swarm.globals_extra = globals_extra_limit;
+        swarm.play = .full;
+        swarm.constructs = .full;
         break :all swarm;
     };
 
@@ -215,11 +321,13 @@ pub const Swarm = struct {
         .knots_count = 0,
         .resolution = .empty,
         .globals_extra = 0,
+        .play = .empty,
+        .constructs = .empty,
     };
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
-    /// replays one: `all` with weight 1/8, else each feature on with probability ½ and each
-    /// bound uniform, then `normalize`.
+    /// replays one: `all` with weight 1/8, else each feature on with probability ½ (`hub`
+    /// ¾) and each bound uniform, then `normalize`.
     pub fn draw(choices: Choices) Swarm {
         if (choices.weighted(7, 1)) return all;
         var swarm: Swarm = .{
@@ -238,11 +346,20 @@ pub const Swarm = struct {
                 choices.range(u8, 1, globals_extra_limit)
             else
                 0,
+            .play = .empty,
+            .constructs = .empty,
         };
-        // A collision fails the compile, so it gets ¼ of the usual probability.
+        // A collision or a drop fails the compile, so each gets ¼ of the usual probability.
         if (swarm.resolution.contains(.collision) and !choices.weighted(3, 1)) {
             swarm.resolution.remove(.collision);
         }
+        if (swarm.resolution.contains(.drop) and !choices.weighted(3, 1)) {
+            swarm.resolution.remove(.drop);
+        }
+        // Drawn last, so the other features of a seed's draw stay as they were before it.
+        if (choices.weighted(1, 3)) swarm.play.insert(.hub);
+        if (choices.choose(bool)) swarm.play.insert(.typed);
+        swarm.constructs = draw_set(choices, Construct);
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -269,6 +386,7 @@ pub const Swarm = struct {
         if (!declared.contains(.l0)) {
             swarm.terms.remove(.list);
             swarm.terms.remove(.list_query);
+            swarm.constructs.remove(.list_functions);
         }
         if (!declared.contains(.l0) and !swarm.resolution.contains(.l1)) {
             swarm.resolution.remove(.items);
@@ -486,10 +604,22 @@ pub const Generator = struct {
     labels: u32 = 0,
     /// The temps `u0`-`u3` declared in the current flow, as bits.
     temps: u8 = 0,
+    /// The temps `t0` and `t1` (of assignments) declared in the current flow, as bits.
+    temps_plain: u2 = 0,
+    /// Whether the last term written was `not v2`, which ink won't let a `?`, `!?` or `has`
+    /// follow.
+    negated: bool = false,
+    /// The kind of value the expression being written keeps to, with `typed`.
+    kind: ?Kind = null,
+    /// Whether the current flow is `f0`, `f1` or `e0`.
+    in_function: bool = false,
     /// Whether the current flow is a function with the parameter `x`.
     parameter: bool = false,
     /// Whether the source has its one collision.
     collided: bool = false,
+    /// The knots and the stitch written after the current flow, which its diverts and
+    /// threads may name with `hub`: the root comes first, then `k0`, `k0.s0`, `k1`, `k2`.
+    later: std.EnumSet(Target) = knot_targets,
 
     pub const Case = struct {
         source: []const u8,
@@ -514,7 +644,9 @@ pub const Generator = struct {
         };
         generator.declarations();
         generator.weave(false);
+        if (swarm.play.contains(.hub)) generator.hub();
         for (0..swarm.knots_count) |index| generator.knot(@intCast(index));
+        if (swarm.constructs.contains(.parameters)) generator.knots_with_parameters();
         generator.functions();
         const length = generator.writer.end;
         assert(length <= buffer.len);
@@ -576,15 +708,50 @@ pub const Generator = struct {
         return generator.target(generator.swarm.targets.intersectWith(knot_targets));
     }
 
+    /// Any target; with `hub`, END or DONE (1 in 8, when on), else the hub or a knot after
+    /// this flow, so that diverts outside choices never loop and seldom end the story.
+    fn divert_target(generator: *Generator) []const u8 {
+        const swarm = generator.swarm;
+        if (!swarm.play.contains(.hub)) return generator.target(swarm.targets);
+        const ends = swarm.targets.intersectWith(.initMany(&.{ .end, .done }));
+        if (ends.count() > 0 and generator.choices.weighted(7, 1)) return generator.target(ends);
+        return generator.hub_or(swarm.targets.intersectWith(generator.later));
+    }
+
+    /// A knot; with `hub`, the hub or a knot after this flow, so that threads never nest
+    /// without end.
+    fn thread_target(generator: *Generator) []const u8 {
+        if (!generator.swarm.play.contains(.hub)) return generator.knot_target();
+        return generator.hub_or(generator.swarm.targets.intersectWith(generator.later));
+    }
+
+    /// `hub` or one of `set`, each as likely.
+    fn hub_or(generator: *Generator, set: std.EnumSet(Target)) []const u8 {
+        if (generator.choices.below(set.count() + 1) == 0) return "hub";
+        return generator.target(set);
+    }
+
+    /// A declared variable; in a `typed` expression, one of its kind when one is declared.
     fn variable(generator: *Generator) []const u8 {
-        const set = generator.swarm.declarations.intersectWith(variables);
+        var set = generator.swarm.declarations.intersectWith(variables);
+        if (generator.kind) |kind| {
+            const of_kind = set.intersectWith(switch (kind) {
+                .number => .initMany(&.{ .v0, .v2 }),
+                .string => .initOne(.v1),
+                .list => .empty,
+            });
+            if (of_kind.count() > 0) set = of_kind;
+        }
         return @tagName(generator.pick_enabled(Declaration, set));
     }
 
-    /// Mostly true: the fuzzer can still leave a declaration out.
+    /// True, but with `drop` on, where the fuzzer can still leave a declaration out.
     fn keep(generator: *Generator) bool {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        return generator.choices.weighted(1, 15);
+        if (!generator.swarm.resolution.contains(.drop)) return true;
+        if (generator.choices.weighted(1, 15)) return true;
+        generator.used.resolution.insert(.drop);
+        return false;
     }
 
     fn declarations(generator: *Generator) void {
@@ -608,6 +775,10 @@ pub const Generator = struct {
             index,
             index,
         });
+        if (generator.swarm.constructs.contains(.divert_variable) and generator.keep()) {
+            generator.used.constructs.insert(.divert_variable);
+            generator.print("VAR d0 = -> {s}\n", .{generator.divert_value()});
+        }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
@@ -620,17 +791,17 @@ pub const Generator = struct {
             generator.swarm.lines.intersectWith(function_lines)
         else
             generator.swarm.lines;
-        if (enabled.count() == 0 and generator.resolution_lines().count() == 0) return;
+        if (enabled.count() == 0 and generator.extra_lines().count() == 0) return;
         const lines_max = generator.swarm.lines_max;
         var lines: u32 = 0;
         while (lines < lines_max and !!generator.choices.more(3, 1)) : (lines += 1) {
-            // A resolution line takes a choice only when one is possible, so `classic`
+            // An extra line takes a choice only when one is possible, so `classic`
             // takes the first generator's choices.
-            const kinds = generator.resolution_lines();
+            const kinds = generator.extra_lines();
             if (kinds.count() > 0 and
                 (enabled.count() == 0 or generator.choices.weighted(2, 1)))
             {
-                generator.resolution_line(kinds);
+                generator.extra_line(kinds);
                 continue;
             }
             if (enabled.count() == 0) break;
@@ -661,12 +832,85 @@ pub const Generator = struct {
         switch (line) {
             .choice => generator.choice(),
             .gather => generator.gather(),
-            .divert => generator.print("-> {s}\n", .{generator.target(generator.swarm.targets)}),
-            .tunnel => generator.print("-> {s} ->\n", .{generator.knot_target()}),
-            .thread => generator.print("<- {s}\n", .{generator.knot_target()}),
+            .divert => generator.divert(),
+            .tunnel => if (generator.with_parameters()) {
+                generator.put("-> tunnel1(");
+                generator.expression_typed(.number);
+                generator.put(") ->\n");
+            } else if (generator.swarm.play.contains(.hub)) {
+                generator.put("-> tunnel0 ->\n");
+            } else {
+                generator.print("-> {s} ->\n", .{generator.knot_target()});
+            },
+            .thread => if (generator.with_parameters()) {
+                generator.put("<- thread1(");
+                generator.expression_typed(.number);
+                generator.put(")\n");
+            } else {
+                generator.print("<- {s}\n", .{generator.thread_target()});
+            },
             else => unreachable,
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// Whether a tunnel, thread or divert goes to a knot with parameters: half of them
+    /// with `parameters`.
+    fn with_parameters(generator: *Generator) bool {
+        if (!generator.swarm.constructs.contains(.parameters)) return false;
+        if (!generator.choices.choose(bool)) return false;
+        generator.used.constructs.insert(.parameters);
+        return true;
+    }
+
+    /// A divert: to a target, or with the constructs on, to `d0` or `jump1`.
+    fn divert(generator: *Generator) void {
+        const variable_on = generator.swarm.constructs.contains(.divert_variable);
+        if (variable_on and generator.choices.weighted(2, 1)) {
+            generator.used.constructs.insert(.divert_variable);
+            return generator.put("-> d0\n");
+        }
+        if (!generator.with_parameters()) {
+            return generator.print("-> {s}\n", .{generator.divert_target()});
+        }
+        generator.put("-> jump1(");
+        generator.expression_typed(.number);
+        if (variable_on and generator.choices.choose(bool)) {
+            generator.used.constructs.insert(.divert_variable);
+            generator.put(", d0)\n");
+        } else {
+            generator.print(", -> {s})\n", .{generator.divert_value()});
+        }
+    }
+
+    /// What `d0` and `jump1`'s target hold: a knot, or with `hub` the hub, so that a divert
+    /// to them never loops without a choice.
+    fn divert_value(generator: *Generator) []const u8 {
+        if (generator.swarm.play.contains(.hub)) return "hub";
+        return generator.knot_target();
+    }
+
+    /// The knots that tunnels, threads and diverts with arguments reach. Only tunnels reach
+    /// `tunnel1`, and only threads `thread1`, whose choice goes to any target (the hub with
+    /// `hub`).
+    fn knots_with_parameters(generator: *Generator) void {
+        assert(generator.swarm.constructs.contains(.parameters));
+        if (generator.keep()) {
+            generator.put("=== tunnel1(x) ===\nTunnel {x}\n~ x++\n->->\n");
+        }
+        if (generator.keep()) {
+            generator.put("=== thread1(x) ===\nThread {x}\n");
+            const to = if (generator.swarm.play.contains(.hub))
+                "hub"
+            else
+                generator.target(generator.swarm.targets);
+            generator.print("* [Thread {{x}}] -> {s}\n", .{to});
+            if (generator.swarm.targets.contains(.done)) {
+                generator.used.targets.insert(.done);
+                generator.put("-> DONE\n");
+            }
+        }
+        if (generator.keep()) generator.put("=== jump1(x, -> t) ===\nJump {x}\n-> t\n");
     }
 
     fn text_line(generator: *Generator) void {
@@ -677,8 +921,11 @@ pub const Generator = struct {
     }
 
     fn inline_kind(generator: *Generator) Inline {
-        const set = generator.swarm.inlines;
+        var set = generator.swarm.inlines;
         assert(set.count() > 0);
+        // With `hub`, no calls in a function body, where they could recurse without end.
+        if (generator.in_function and generator.swarm.play.contains(.hub) and
+            set.count() > 1) set.remove(.calls);
         if (!set.eql(.full)) return generator.pick_enabled(Inline, set);
         return switch (generator.choices.choose(u3)) {
             0, 1 => .value,
@@ -718,8 +965,14 @@ pub const Generator = struct {
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
+    /// A choice; with `hub`, after a sticky fallback choice to the hub, so that its choice set
+    /// never runs out once its choices are used up or their conditions are false.
     fn choice(generator: *Generator) void {
         const depth = generator.choices.range(u8, 1, generator.swarm.choice_depth_max);
+        if (generator.swarm.play.contains(.hub)) {
+            for (0..depth) |_| generator.put("+");
+            generator.put(" -> hub\n");
+        }
         const bullet = if (generator.choices.choose(bool)) "*" else "+";
         for (0..depth) |_| generator.put(bullet);
         generator.labels += 1;
@@ -729,6 +982,9 @@ pub const Generator = struct {
             generator.expression();
             generator.put("}");
         }
+        if (generator.swarm.constructs.contains(.choice_tags) and generator.choices.choose(bool)) {
+            return generator.choice_tagged();
+        }
         switch (generator.choices.choose(u2)) {
             0 => generator.put(" Start [choice] end\n"),
             1 => generator.put(" [Only choice]\n"),
@@ -736,6 +992,26 @@ pub const Generator = struct {
             3 => generator.print(" -> {s}\n", .{generator.target(generator.swarm.targets)}),
         }
         assert(depth <= generator.swarm.choice_depth_max);
+    }
+
+    /// A choice's text with tags: in each of its parts, in the choice-only part with a
+    /// value, or after its text.
+    fn choice_tagged(generator: *Generator) void {
+        generator.used.constructs.insert(.choice_tags);
+        const label = generator.labels;
+        switch (generator.choices.below(3)) {
+            0 => generator.print(" Start # ct{d}a [choice # ct{d}b] end # ct{d}c\n", .{
+                label, label, label,
+            }),
+            1 => {
+                // An operand: a `->` of `TURNS_SINCE(-> k1)` would end the choice's text.
+                generator.print(" [Only # ct{d} {{", .{label});
+                generator.operand();
+                generator.put("}]\n");
+            },
+            2 => generator.print(" Tagged # ct{d}\n", .{label}),
+            else => unreachable,
+        }
     }
 
     fn gather(generator: *Generator) void {
@@ -757,16 +1033,34 @@ pub const Generator = struct {
         if (!generator.declared(.l0)) allowed &= ~@as(u8, 1 << 4);
         if (!generator.declared(.v0) or !generator.declared(.v1)) allowed &= ~@as(u8, 1 << 5);
         const kind = generator.pick_bit(u3, allowed);
+        // With `typed`, what the target holds; a plain temp is never read.
+        var value: ?Kind = null;
         switch (kind) {
-            0, 1 => generator.print("~ {s} = ", .{generator.variable()}),
-            2 => generator.print("~ {s} += ", .{generator.variable()}),
-            3 => generator.print("~ temp t{d} = ", .{generator.choices.choose(u1)}),
+            0, 1, 2 => {
+                const name = generator.variable();
+                generator.print("~ {s} {s} ", .{ name, if (kind == 2) "+=" else "=" });
+                value = if (std.mem.eql(u8, name, "v1")) .string else .number;
+            },
+            3 => {
+                // A second `temp` of the same name in one flow is a duplicate declaration.
+                const index = generator.choices.choose(u1);
+                const bit = @as(u2, 1) << index;
+                const declare = if (generator.temps_plain & bit == 0) "temp " else "";
+                generator.temps_plain |= bit;
+                generator.print("~ {s}t{d} = ", .{ declare, index });
+            },
             4 => generator.put("~ l0 += "),
             5 => generator.put("~ v0++\n~ v1 = "),
             6 => generator.put("~ f0("),
             7 => generator.put("~ e0("),
         }
-        generator.expression();
+        switch (kind) {
+            3 => generator.expression(),
+            4 => generator.expression_typed(.list),
+            5 => generator.expression_typed(.string),
+            6, 7 => generator.expression_typed(.number),
+            else => generator.expression_typed(value.?),
+        }
         generator.put(if (kind >= 6) ")\n" else "\n");
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -793,28 +1087,105 @@ pub const Generator = struct {
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
-    /// A flat chain of terms joined by operators.
+    /// An expression of any kind: with `typed`, a number with weight ½, else a string or a
+    /// list, of the kinds with terms here (of any kind when none has).
     fn expression(generator: *Generator) void {
+        if (!generator.swarm.play.contains(.typed)) return generator.expression_of(null, false);
+        var kinds: std.EnumSet(Kind) = .empty;
+        for (std.enums.values(Kind)) |of| {
+            if (generator.kind_terms_here(of).count() > 0) kinds.insert(of);
+        }
+        if (kinds.count() == 0) return generator.expression_of(null, false);
+        const number = kinds.contains(.number) and
+            (kinds.count() == 1 or generator.choices.choose(bool));
+        kinds.remove(.number);
+        const kind = if (number) .number else generator.pick_enabled(Kind, kinds);
+        generator.expression_of(kind, false);
+    }
+
+    /// An expression that, with `typed`, keeps to `kind`, for a variable, temp, parameter
+    /// or return value of that kind; where the kind has no terms here, its empty value
+    /// (`0`, `""` or `()`) stands in.
+    fn expression_typed(generator: *Generator, kind: Kind) void {
+        if (!generator.swarm.play.contains(.typed)) return generator.expression_of(null, false);
+        if (generator.kind_terms_here(kind).count() == 0) {
+            return generator.put(switch (kind) {
+                .number => "0",
+                .string => "\"\"",
+                .list => "()",
+            });
+        }
+        generator.expression_of(kind, true);
+    }
+
+    /// A flat chain of terms joined by operators, of `kind` when it isn't null. A
+    /// comparison of strings or lists gives a boolean, which a second one would compare with
+    /// a string or a list: an unstored chain keeps to one, a `stored` one to none.
+    fn expression_of(generator: *Generator, kind: ?Kind, stored: bool) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
+        assert(generator.kind == null);
+        assert(kind != null or !stored);
+        generator.kind = kind;
+        defer generator.kind = null;
+        var term_start = generator.writer.end;
         generator.term();
         const terms_max = generator.swarm.terms_max;
         var terms: u32 = 1;
+        const set_operations: std.EnumSet(Operator) = .initMany(&.{ .add, .subtract });
+        var operators = generator.swarm.operators;
+        if (kind) |of| operators = operators.intersectWith(kind_operators.get(of));
+        const compares = kind != null and kind != .number;
+        if (compares and stored) operators = operators.intersectWith(set_operations);
         while (terms < terms_max and !!generator.choices.more(2, 1)) : (terms += 1) {
-            const operator = generator.pick_enabled(Operator, generator.swarm.operators);
+            if (operators.count() == 0) break;
+            const operator = generator.pick_enabled(Operator, operators);
+            if (compares and !set_operations.contains(operator)) {
+                operators = operators.intersectWith(set_operations);
+            }
             generator.used.operators.insert(operator);
+            const containment = operator == .contains or operator == .not_contains or
+                operator == .has;
+            if (containment and generator.negated) generator.unnegate(term_start);
             generator.put(binary_operators[@backingInt(operator)]);
+            term_start = generator.writer.end;
             generator.term();
         }
         assert(terms <= terms_max);
     }
 
+    /// Drops the `not ` of the `not v2` written at `start`: ink rejects a `not` left of `?`,
+    /// `!?` or `has` even in parentheses (its parser keeps no node for them).
+    fn unnegate(generator: *Generator, start: usize) void {
+        const end = generator.writer.end;
+        const buffer = generator.writer.buffer;
+        // A full buffer may have cut it short.
+        if (!std.mem.eql(u8, buffer[start..end], "not v2")) return;
+        std.mem.copyForwards(u8, buffer[start .. end - 4], buffer[start + 4 .. end]);
+        generator.writer.end = end - 4;
+    }
+
     fn term(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        const kinds = generator.resolution_terms();
-        if (kinds.count() > 0 and generator.choices.weighted(2, 1)) {
-            return generator.resolution_term(kinds);
+        generator.negated = false;
+        var kinds = generator.extra_terms();
+        var set = generator.swarm.terms;
+        if (generator.kind) |of| {
+            const here = generator.kind_terms_here(of);
+            if (here.count() > 0) {
+                kinds = here.extra;
+                set = here.terms;
+            }
         }
-        const set = generator.swarm.terms;
+        if (generator.in_function and generator.swarm.play.contains(.hub)) {
+            // A call in a function body could recurse without end.
+            const calls: std.EnumSet(Term) = .initMany(&.{ .call, .call_external });
+            if (set.differenceWith(calls).count() + kinds.count() > 0) {
+                set = set.differenceWith(calls);
+            }
+        }
+        if (kinds.count() > 0 and (set.count() == 0 or generator.choices.weighted(2, 1))) {
+            return generator.extra_term(kinds);
+        }
         const kind = if (set.eql(.full))
             generator.choices.choose(Term)
         else
@@ -845,6 +1216,32 @@ pub const Generator = struct {
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
+    const TermsHere = struct {
+        extra: std.EnumSet(ExtraTerm),
+        terms: std.EnumSet(Term),
+
+        fn count(here: TermsHere) usize {
+            return here.extra.count() + here.terms.count();
+        }
+    };
+
+    /// The terms of kind `of` possible here and now.
+    fn kind_terms_here(generator: *const Generator, of: Kind) TermsHere {
+        var terms = generator.swarm.terms.intersectWith(kind_terms.get(of));
+        const variables_of = switch (of) {
+            .number => generator.declared(.v0) or generator.declared(.v2),
+            .string => generator.declared(.v1),
+            .list => false,
+        };
+        if (!variables_of) terms.remove(.variable);
+        return .{
+            .extra = generator.extra_terms().intersectWith(
+                kind_extra_terms.get(of),
+            ),
+            .terms = terms,
+        };
+    }
+
     fn turns_since(generator: *Generator) void {
         const knots = generator.swarm.targets.intersectWith(knot_targets);
         // k1 when it is on, as the full mix always wrote; else the first knot target.
@@ -859,6 +1256,7 @@ pub const Generator = struct {
         const v2 = generator.declared(.v2);
         assert(v0 or v2);
         const minus = if (v0 and v2) generator.choices.choose(bool) else v0;
+        generator.negated = !minus;
         generator.put(if (minus) "-v0" else "not v2");
     }
 
@@ -868,19 +1266,84 @@ pub const Generator = struct {
         if (!generator.keep()) return;
         generator.print("=== k{d} ===\n", .{index});
         generator.flow_start(false);
+        const order = [_]Target{ .k0, .k0_s0, .k1, .k2 };
+        const position: usize = if (index == 0) 0 else index + 1;
+        generator.later = .initMany(order[position + 1 ..]);
         generator.weave(false);
         generator.knot_end();
         if (index != 0) return;
         if (generator.keep()) generator.put("= s0\n");
         generator.flow_start(false);
+        generator.later = .initMany(order[2..]);
         generator.weave(false);
         generator.knot_end();
     }
 
+    /// The root gathers and diverts to the knot `hub`, a block of choices; with tunnels on,
+    /// the knot `tunnel0` that they call follows.
+    fn hub(generator: *Generator) void {
+        assert(generator.swarm.play.contains(.hub));
+        generator.used.play.insert(.hub);
+        // The gather takes the loose ends of the root's choices to the hub.
+        generator.put("-\n-> hub\n=== hub ===\n");
+        generator.flow_start(false);
+        generator.hub_choices();
+        if (!generator.swarm.lines.contains(.tunnel)) return;
+        // Only tunnels reach it, so its `->->` always has a tunnel to return from.
+        generator.put("=== tunnel0 ===\n");
+        generator.flow_start(false);
+        generator.weave(true);
+        generator.put("->->\n");
+    }
+
+    /// A gather, which the loose ends of the weave before it reach, then 2 to 4 choices
+    /// that divert to the hub, a knot or the stitch, or (1 in 32, when on) to END or DONE.
+    /// One in 4 is once-only, but not the last when none before it is sticky, so the block
+    /// always offers a choice.
+    fn hub_choices(generator: *Generator) void {
+        assert(generator.swarm.play.contains(.hub));
+        const knots = generator.swarm.targets.intersectWith(knot_targets);
+        const ends = generator.swarm.targets.intersectWith(.initMany(&.{ .end, .done }));
+        generator.put("-\n");
+        const count = generator.choices.range(u8, 2, 4);
+        var sticky = false;
+        for (0..count) |index| {
+            const last = index + 1 == count;
+            const once = (sticky or !last) and generator.choices.weighted(3, 1);
+            sticky = sticky or !once;
+            generator.labels += 1;
+            generator.put(if (once) "*" else "+");
+            if (generator.choices.choose(bool)) {
+                if (generator.swarm.constructs.contains(.choice_tags) and
+                    generator.choices.choose(bool))
+                {
+                    generator.used.constructs.insert(.choice_tags);
+                    generator.print(" [Go {d} # ct{d}]", .{ generator.labels, generator.labels });
+                } else {
+                    generator.print(" [Go {d}]", .{generator.labels});
+                }
+            } else {
+                generator.print(" Go {d}", .{generator.labels});
+            }
+            const to = if (ends.count() > 0 and generator.choices.weighted(31, 1))
+                generator.target(ends)
+            else if (generator.choices.below(knots.count() + 1) == 0)
+                "hub"
+            else
+                generator.target(knots);
+            generator.print(" -> {s}\n", .{to});
+        }
+        assert(sticky);
+    }
+
+    /// A knot's or the stitch's end: with `hub`, a block of choices (7 in 8), else a divert
+    /// or (but with `hub`) a tunnel return.
     fn knot_end(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        // A tunnel return and a divert to a target are always possible.
-        var allowed: u8 = 0b1010;
+        const hub_on = generator.swarm.play.contains(.hub);
+        if (hub_on and generator.choices.weighted(1, 7)) return generator.hub_choices();
+        // A divert to a target is always possible, and a tunnel return without `hub`.
+        var allowed: u8 = if (hub_on) 0b1000 else 0b1010;
         if (generator.swarm.targets.contains(.end)) allowed |= 0b0001;
         if (generator.swarm.targets.contains(.done)) allowed |= 0b0100;
         switch (generator.pick_bit(u2, allowed)) {
@@ -893,7 +1356,7 @@ pub const Generator = struct {
                 generator.used.targets.insert(.done);
                 generator.put("-> DONE\n");
             },
-            3 => generator.print("-> {s}\n", .{generator.target(generator.swarm.targets)}),
+            3 => generator.print("-> {s}\n", .{generator.divert_target()}),
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -905,15 +1368,17 @@ pub const Generator = struct {
             "=== function f1() ===\n",
             "=== function e0(x) ===\n",
         };
+        generator.in_function = true;
         for (headers, [_]bool{ true, false, true }) |header, parameter| {
             if (!generator.keep()) continue;
             generator.put(header);
             generator.flow_start(parameter);
             generator.weave(true);
             generator.put("~ return ");
-            generator.expression();
+            generator.expression_typed(.number);
             generator.put("\n");
         }
+        generator.in_function = false;
         generator.flow_start(false);
         if (generator.swarm.resolution.contains(.ref)) {
             // f3 passes its own pointer on: a pointer to a pointer.
@@ -927,6 +1392,7 @@ pub const Generator = struct {
     fn flow_start(generator: *Generator, parameter: bool) void {
         assert(generator.temps < 1 << temps_count);
         generator.temps = 0;
+        generator.temps_plain = 0;
         generator.parameter = parameter;
     }
 
@@ -935,10 +1401,10 @@ pub const Generator = struct {
         return @popCount(generator.temps);
     }
 
-    /// The resolution lines possible here and now.
-    fn resolution_lines(generator: *const Generator) std.EnumSet(ResolutionLine) {
+    /// The extra lines (beyond `Line`) possible here and now.
+    fn extra_lines(generator: *const Generator) std.EnumSet(ExtraLine) {
         const on = generator.swarm.resolution;
-        var kinds: std.EnumSet(ResolutionLine) = .empty;
+        var kinds: std.EnumSet(ExtraLine) = .empty;
         if (on.contains(.temp)) {
             if (generator.temps_declared() < temps_count) kinds.insert(.temp_declare);
             if (generator.temps_declared() > 0) {
@@ -949,20 +1415,24 @@ pub const Generator = struct {
         if (on.contains(.ref) and generator.ref_targets_count() > 0) kinds.insert(.ref_call);
         if (generator.swarm.globals_extra > 0) kinds.insert(.global_assign);
         if (on.contains(.collision) and !generator.collided) kinds.insert(.collision);
-        assert(kinds.count() <= std.enums.values(ResolutionLine).len);
+        const constructs = generator.swarm.constructs;
+        if (constructs.contains(.seed_random)) kinds.insert(.seed_random);
+        if (constructs.contains(.conditional_else)) kinds.insert(.conditional_else);
+        if (constructs.contains(.divert_variable)) kinds.insert(.divert_assign);
+        assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
 
-    fn resolution_line(generator: *Generator, kinds: std.EnumSet(ResolutionLine)) void {
+    fn extra_line(generator: *Generator, kinds: std.EnumSet(ExtraLine)) void {
         assert(kinds.count() > 0);
-        switch (generator.pick_enabled(ResolutionLine, kinds)) {
+        switch (generator.pick_enabled(ExtraLine, kinds)) {
             .temp_declare => {
                 generator.used.resolution.insert(.temp);
                 var free = ~generator.temps & ((1 << temps_count) - 1);
                 for (0..generator.choices.below(@popCount(free))) |_| free &= free - 1;
                 const index = @ctz(free);
                 generator.print("~ temp u{d} = ", .{index});
-                generator.expression();
+                generator.expression_typed(.number);
                 generator.put("\n");
                 // Declared after its expression, which can't read it yet.
                 generator.temps |= @as(u8, 1) << @intCast(index);
@@ -970,7 +1440,7 @@ pub const Generator = struct {
             .temp_assign => {
                 generator.used.resolution.insert(.temp);
                 generator.print("~ u{d} = ", .{generator.declared_temp()});
-                generator.expression();
+                generator.expression_typed(.number);
                 generator.put("\n");
             },
             .temp_increment => {
@@ -985,10 +1455,30 @@ pub const Generator = struct {
             .global_assign => {
                 const global = generator.choices.below(generator.swarm.globals_extra);
                 generator.print("~ n{d} = ", .{global});
-                generator.expression();
+                generator.expression_typed(.number);
                 generator.put("\n");
             },
             .collision => generator.collision(),
+            .seed_random => {
+                generator.used.constructs.insert(.seed_random);
+                generator.put("~ SEED_RANDOM(");
+                if (generator.declared(.c0) and generator.choices.choose(bool)) {
+                    generator.put("c0");
+                } else {
+                    generator.print("{d}", .{generator.choices.choose(i8)});
+                }
+                generator.put(")\n");
+            },
+            .divert_assign => {
+                generator.used.constructs.insert(.divert_variable);
+                generator.print("~ d0 = -> {s}\n", .{generator.divert_value()});
+            },
+            .conditional_else => {
+                generator.used.constructs.insert(.conditional_else);
+                generator.put("{ ");
+                generator.expression();
+                generator.put(":\nIf yes\n- else:\nIf no\n}\n");
+            },
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1003,10 +1493,10 @@ pub const Generator = struct {
         return @ctz(declared_bits);
     }
 
-    /// The resolution terms possible here and now.
-    fn resolution_terms(generator: *const Generator) std.EnumSet(ResolutionTerm) {
+    /// The extra terms (beyond `Term`) possible here and now.
+    fn extra_terms(generator: *const Generator) std.EnumSet(ExtraTerm) {
         const on = generator.swarm.resolution;
-        var kinds: std.EnumSet(ResolutionTerm) = .empty;
+        var kinds: std.EnumSet(ExtraTerm) = .empty;
         if (on.contains(.temp) and (generator.temps != 0 or generator.parameter)) {
             kinds.insert(.temp_read);
         }
@@ -1018,12 +1508,19 @@ pub const Generator = struct {
         if (generator.swarm.globals_extra > 0) kinds.insert(.global_read);
         if (on.contains(.collision) and on.contains(.l1) and generator.declared(.l0) and
             !generator.collided) kinds.insert(.ambiguous);
+        const constructs = generator.swarm.constructs;
+        if (constructs.contains(.turns)) kinds.insert(.turns);
+        if (constructs.contains(.math)) kinds.insert(.math);
+        if (constructs.contains(.list_functions) and generator.declared(.l0)) {
+            kinds.insert(.list_value);
+            kinds.insert(.list_function);
+        }
         return kinds;
     }
 
-    fn resolution_term(generator: *Generator, kinds: std.EnumSet(ResolutionTerm)) void {
+    fn extra_term(generator: *Generator, kinds: std.EnumSet(ExtraTerm)) void {
         assert(kinds.count() > 0);
-        switch (generator.pick_enabled(ResolutionTerm, kinds)) {
+        switch (generator.pick_enabled(ExtraTerm, kinds)) {
             .temp_read => {
                 generator.used.resolution.insert(.temp);
                 const count = generator.temps_declared() + @intFromBool(generator.parameter);
@@ -1040,8 +1537,74 @@ pub const Generator = struct {
                 generator.collided = true;
                 generator.put("a");
             },
+            .turns => {
+                generator.used.constructs.insert(.turns);
+                generator.put("TURNS()");
+            },
+            .math => generator.math(),
+            .list_value => {
+                generator.used.constructs.insert(.list_functions);
+                generator.put(generator.pick(&.{
+                    "LIST_VALUE(l0)", "LIST_VALUE(LIST_MIN(l0))", "LIST_VALUE(LIST_RANDOM(l0))",
+                }));
+            },
+            .list_function => generator.list_function(),
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// A function of ink's on numbers, of operands that are no expressions (nothing nests).
+    fn math(generator: *Generator) void {
+        generator.used.constructs.insert(.math);
+        const unary = [_][]const u8{ "FLOOR(", "CEILING(", "INT(", "FLOAT(" };
+        switch (generator.choices.below(unary.len + 3)) {
+            0...unary.len - 1 => |index| {
+                generator.put(unary[index]);
+                generator.operand();
+            },
+            unary.len => {
+                generator.put("POW(");
+                generator.operand();
+                generator.print(", {d}", .{generator.choices.choose(u2)});
+            },
+            else => |index| {
+                generator.put(if (index == unary.len + 1) "MIN(" else "MAX(");
+                generator.operand();
+                generator.put(", ");
+                generator.operand();
+            },
+        }
+        generator.put(")");
+    }
+
+    /// A number: an integer, a float, `v0` or `c0` (when declared).
+    fn operand(generator: *Generator) void {
+        switch (generator.choices.choose(u2)) {
+            0 => generator.print("{d}", .{generator.choices.choose(i8)}),
+            1 => generator.print("{d}.5", .{generator.choices.choose(i8)}),
+            2 => generator.put(if (generator.declared(.v0)) "v0" else "1"),
+            3 => generator.put(if (generator.declared(.c0)) "c0" else "2.5"),
+        }
+    }
+
+    /// A function of ink's on lists that returns one, of `l0`.
+    fn list_function(generator: *Generator) void {
+        generator.used.constructs.insert(.list_functions);
+        switch (generator.choices.below(8)) {
+            0 => generator.put("LIST_MIN(l0)"),
+            1 => generator.put("LIST_MAX(l0)"),
+            2 => generator.put("LIST_ALL(l0)"),
+            3 => generator.put("LIST_INVERT(l0)"),
+            4 => generator.put("LIST_RANDOM(l0)"),
+            5 => generator.print("LIST_RANGE(l0, {d}, {d})", .{
+                generator.choices.choose(u2),
+                generator.choices.choose(u2),
+            }),
+            // `l0.a` is the only full name that the `items` feature doesn't own.
+            6 => generator.put("LIST_RANGE(LIST_ALL(l0), l0.a, 2)"),
+            7 => generator.print("l0({d})", .{generator.choices.range(u8, 1, 3)}),
+            else => unreachable,
+        }
     }
 
     /// One of `items` whose list is declared; the bare `a` only when it isn't ambiguous.
@@ -1066,9 +1629,17 @@ pub const Generator = struct {
     /// What a ref parameter can point to: the declared globals, the extra globals, this
     /// flow's temps and the function's parameter.
     fn ref_targets_count(generator: *const Generator) u32 {
-        const globals = generator.swarm.declarations.intersectWith(variables).count();
+        const globals = generator.ref_globals().count();
         return @as(u32, @intCast(globals)) + @intFromBool(generator.swarm.globals_extra > 0) +
             generator.temps_declared() + @intFromBool(generator.parameter);
+    }
+
+    /// The declared globals a ref parameter can point to: with `typed`, the numbers, which
+    /// `f2` increments and returns.
+    fn ref_globals(generator: *const Generator) std.EnumSet(Declaration) {
+        const globals = generator.swarm.declarations.intersectWith(variables);
+        if (!generator.swarm.play.contains(.typed)) return globals;
+        return globals.differenceWith(.initOne(.v1));
     }
 
     /// `f2(target)` or `f3(target)`, which passes it on as a pointer to a pointer.
@@ -1078,7 +1649,7 @@ pub const Generator = struct {
         generator.used.resolution.insert(.ref);
         generator.put(if (generator.choices.choose(bool)) "f2(" else "f3(");
         var chosen: u32 = @intCast(generator.choices.below(count));
-        const declared_variables = generator.swarm.declarations.intersectWith(variables);
+        const declared_variables = generator.ref_globals();
         const globals: u32 = @intCast(declared_variables.count());
         if (chosen < globals) {
             var keys = declared_variables.iterator();
@@ -1148,6 +1719,23 @@ pub fn splice(choices: Choices, buffer: []u8, length: usize) usize {
 const compile = @import("../compiler/compile.zig");
 
 /// A source from a seeded PRNG, as the seed corpora use.
+/// A fuzz target: `check` on 32 seeded choice streams, more than `passed_min` of which must
+/// pass (return true), then under the fuzzer.
+pub fn run_target(comptime check: fn (Choices) anyerror!bool, passed_min: u32) !void {
+    var passed: u32 = 0;
+    for (0..32) |seed| {
+        var prng: std.Random.DefaultPrng = .init(seed);
+        if (try check(.{ .random = prng.random() })) passed += 1;
+    }
+    try std.testing.expect(passed > passed_min);
+    const target = struct {
+        fn entry(_: void, smith: *Smith) anyerror!void {
+            _ = try check(.{ .smith = smith });
+        }
+    };
+    try std.testing.fuzz({}, target.entry, .{ .corpus = &.{""} });
+}
+
 pub fn generate_seeded(seed: u64, buffer: []u8, options: Options) []const u8 {
     assert(buffer.len >= 1024);
     var prng: std.Random.DefaultPrng = .init(seed);
@@ -1167,7 +1755,7 @@ test "the same choices give the same source" {
 }
 
 test "most generated sources compile, and every construct appears" {
-    // The sources reach the stages after the parser: 64 seeds compiled; the
+    // The sources reach the stages after the parser: 128 seeds compiled; the
     // constructs counted across all of them.
     const gpa = std.testing.allocator;
     var buffer: [source_bytes_max]u8 = undefined;
@@ -1179,7 +1767,7 @@ test "most generated sources compile, and every construct appears" {
     };
     var seen: [markers.len]bool = @splat(false);
     var compiled: u32 = 0;
-    const seeds = 64;
+    const seeds = 128;
     for (0..seeds) |seed| {
         const source = generate_seeded(seed, &buffer, .{});
         for (markers, 0..) |marker, i| {
@@ -1235,7 +1823,23 @@ test "Swarm.classic reproduces the generator before swarms" {
 }
 
 /// Text that only the construct writes, for checking that a left-out construct is absent.
-const Marker = struct { text: []const u8, present: *const fn (Swarm) bool };
+const Marker = struct {
+    text: []const u8,
+    present: *const fn (Swarm) bool,
+    /// Text right before `text` that makes it another construct's.
+    not_after: []const u8 = "",
+
+    fn written(marker: Marker, source: []const u8) bool {
+        var at: usize = 0;
+        while (std.mem.indexOfPos(u8, source, at, marker.text)) |found| : (at = found + 1) {
+            const before = source[0..found];
+            if (marker.not_after.len == 0 or !std.mem.endsWith(u8, before, marker.not_after)) {
+                return true;
+            }
+        }
+        return false;
+    }
+};
 
 fn unique_marker(
     comptime text: []const u8,
@@ -1249,12 +1853,18 @@ fn unique_marker(
     }.present };
 }
 
+fn with_not_after(marker: Marker, comptime not_after: []const u8) Marker {
+    var with = marker;
+    with.not_after = not_after;
+    return with;
+}
+
 const markers_unique = [_]Marker{
     unique_marker("# tag", "lines", Line.tag),
     unique_marker("<>", "lines", Line.glue),
     unique_marker("<- ", "lines", Line.thread),
     unique_marker(" ->\n", "lines", Line.tunnel),
-    unique_marker("else:", "lines", Line.block),
+    unique_marker("- else: Else", "lines", Line.block),
     unique_marker("{ stopping", "lines", Line.block),
     unique_marker("{ shuffle once", "lines", Line.block),
     unique_marker("{&", "inlines", Inline.cycle),
@@ -1263,11 +1873,13 @@ const markers_unique = [_]Marker{
     unique_marker("|two|}", "inlines", Inline.stopping),
     unique_marker(": yes|no}", "inlines", Inline.conditional),
     unique_marker("{f0(2)}", "inlines", Inline.calls),
-    unique_marker("RANDOM(", "terms", Term.random),
+    // `LIST_RANDOM(` and `SEED_RANDOM(` take one argument.
+    unique_marker("RANDOM(1, 3)", "terms", Term.random),
     unique_marker("TURNS_SINCE", "terms", Term.turns_since),
     unique_marker("LIST_COUNT", "terms", Term.list_query),
     unique_marker("CHOICE_COUNT", "terms", Term.choice_count),
-    unique_marker("e0(2)", "terms", Term.call_external),
+    // The assignment `~ e0(` calls it with an expression, which may be `2`.
+    with_not_after(unique_marker("e0(2)", "terms", Term.call_external), "~ "),
     unique_marker("\"str\"", "terms", Term.string),
     unique_marker(" + ", "operators", Operator.add),
     unique_marker(" * ", "operators", Operator.multiply),
@@ -1309,7 +1921,7 @@ test "a source uses only its configuration's features" {
         if (!case.swarm.eql(.all)) subsets += 1;
         for (markers_unique) |unique| {
             if (unique.present(case.swarm)) continue;
-            if (std.mem.indexOf(u8, case.source, unique.text) != null) {
+            if (unique.written(case.source)) {
                 const written = "seed {d}: '{s}' is left out but written\n";
                 std.debug.print(written, .{ seed, unique.text });
                 return error.TestUnexpectedResult;
@@ -1372,14 +1984,17 @@ test "Swarm.format round-trips through Swarm.parse" {
         "",
         "lines=text",
         "lines=nope terms=integer operators=add inlines= targets=k0 declarations= " ++
-            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0",
+            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
+            "globals_extra=0 play= constructs=",
         // k2 names a knot that a count of 1 doesn't write.
         "lines=text terms=integer operators=add inlines= targets=k2 declarations= " ++
-            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0",
+            "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
+            "globals_extra=0 play= constructs=",
     };
     for (invalid) |bad| try std.testing.expectError(error.InvalidSwarm, Swarm.parse(bad));
     const one = "lines=text terms=integer operators=add inlines= targets=k0 declarations= " ++
-        "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0";
+        "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0 " ++
+        "play= constructs=";
     var writer: std.Io.Writer = .fixed(&text);
     try writer.print("{f}", .{try Swarm.parse(one)});
     try std.testing.expectEqualStrings(one, writer.buffered());
@@ -1419,6 +2034,43 @@ test "each resolution feature appears when on and never when off" {
     for (seen) |count| try std.testing.expect(count > 0);
 }
 
+test "each construct appears when on and never when off" {
+    // 1,000 seeded draws: every construct is written by some source that has it on, and
+    // its text is absent from every source that has it off.
+    const checks = std.enums.EnumArray(Construct, []const []const u8).init(.{
+        .turns = &.{"TURNS()"},
+        // `MIN(` and `MAX(` are also in `LIST_MIN(` and `LIST_MAX(`.
+        .math = &.{ "POW(", "FLOOR(", "CEILING(", "INT(", "FLOAT(" },
+        .seed_random = &.{"SEED_RANDOM("},
+        .conditional_else = &.{ "If yes", "If no" },
+        .choice_tags = &.{"# ct"},
+        .divert_variable = &.{ "VAR d0", "-> d0", "~ d0 =" },
+        .parameters = &.{ "tunnel1(", "thread1(", "jump1(" },
+        .list_functions = &.{
+            "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
+            "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
+        },
+    });
+    var seen: std.enums.EnumArray(Construct, u32) = .initFill(0);
+    var buffer: [source_bytes_max]u8 = undefined;
+    for (0..1000) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{});
+        try std.testing.expect(case.swarm.covers(case.used));
+        for (std.enums.values(Construct)) |construct| {
+            var written = false;
+            for (checks.get(construct)) |text| {
+                if (std.mem.indexOf(u8, case.source, text) != null) written = true;
+            }
+            if (!case.swarm.constructs.contains(construct) and written) {
+                std.debug.print("seed {d}: {t} is off but written\n", .{ seed, construct });
+                return error.TestUnexpectedResult;
+            }
+            if (written) seen.getPtr(construct).* += 1;
+        }
+    }
+    for (std.enums.values(Construct)) |construct| try std.testing.expect(seen.get(construct) > 0);
+}
+
 test "most sources with only the resolution features compile" {
     // A configuration of plain text and integers plus every resolution feature but
     // `collision`: at least 60% of 200 seeds compile, so they reach the runtime.
@@ -1442,6 +2094,42 @@ test "most sources with only the resolution features compile" {
     }
     try std.testing.expect(resolving * 2 > seeds);
     try std.testing.expect(compiled * 10 >= seeds * 6);
+}
+
+test "drawn sources compile unless an error feature is on, and with one they fail" {
+    // 500 seeded draws: fewer than 5% of the sources without `collision` and `drop` fail to
+    // compile (none did in 2,000), and `drop` still leaves names unresolved.
+    const gpa = std.testing.allocator;
+    var buffer: [source_bytes_max]u8 = undefined;
+    var clean: u32 = 0;
+    var clean_failed: u32 = 0;
+    var dropped: u32 = 0;
+    var dropped_failed: u32 = 0;
+    for (0..500) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{ .swarm = null });
+        // A collision always fails; a drop fails when it left out a name in use.
+        if (case.swarm.resolution.contains(.collision)) continue;
+        const erroneous = case.swarm.resolution.contains(.drop);
+        if (erroneous and !case.used.resolution.contains(.drop)) continue;
+        const failed = if (compile.compile_source(gpa, case.source)) |program| failed: {
+            var compiled = program;
+            compiled.deinit(gpa);
+            break :failed false;
+        } else |err| switch (err) {
+            error.CompileFailed => true,
+            else => return err,
+        };
+        if (erroneous) {
+            dropped += 1;
+            dropped_failed += @intFromBool(failed);
+        } else {
+            clean += 1;
+            clean_failed += @intFromBool(failed);
+        }
+    }
+    try std.testing.expect(clean > 300);
+    try std.testing.expect(clean_failed * 20 < clean);
+    try std.testing.expect(dropped > 0 and dropped_failed > 0);
 }
 
 test "64 extra globals stay below the source bound" {

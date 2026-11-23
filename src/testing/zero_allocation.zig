@@ -10,6 +10,7 @@ const CountingAllocator = @import("../core/counting_allocator.zig").CountingAllo
 const Story = @import("../runtime/story.zig").Story;
 const state_module = @import("../runtime/state.zig");
 const flows = @import("../runtime/flows.zig");
+const ops = @import("../runtime/ops.zig");
 const evaluate = @import("../runtime/evaluate.zig");
 const save = @import("../runtime/save.zig");
 const load = @import("../runtime/load.zig");
@@ -46,11 +47,12 @@ fn exercise(story: *Story) !void {
         for (story.program.globals, 0..) |global, slot| {
             const value = story.state.globals[slot];
             if (value == .null or value == .variable_pointer) continue;
-            try story.set_variable(story.program.strings.get(global.name), value);
+            const name = story.program.strings.get(global.name);
+            try story.set_variable(name, ops.host_value(story, value));
         }
         try flows.switch_flow(&story.state, "gate");
         try flows.switch_flow(&story.state, flows.default_name);
-        if (story.visible_choices_count() == 0) break;
+        if (story.current_choices_count() == 0) break;
         try story.choose_choice_index(0);
     }
 }
@@ -63,16 +65,11 @@ test "the runtime allocates nothing after init, on every ground-truth case" {
     const arena = arena_state.allocator();
     const io = std.testing.io;
     var checked: u32 = 0;
-    for (try cases.ids(arena, io)) |id| {
-        const path = try std.fmt.allocPrint(arena, "{s}/{s}.ink.json", .{
-            cases.cases_directory,
-            id,
-        });
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
-        var program = ink_json.load(arena, json) catch continue;
+    var programs: cases.Programs = try .init(arena, arena, io);
+    while (try programs.next()) |case| {
         var counting = CountingAllocator.init(std.testing.allocator);
         var story: Story = undefined;
-        story.init(counting.allocator(), &program, .{}) catch continue;
+        story.init(counting.allocator(), &case.program, .{}) catch continue;
         defer story.deinit(counting.allocator());
         const before = counting.growths();
         exercise(&story) catch |err| switch (err) {
@@ -80,7 +77,7 @@ test "the runtime allocates nothing after init, on every ground-truth case" {
             else => return err,
         };
         std.testing.expectEqual(before, counting.growths()) catch |err| {
-            std.debug.print("case {s} allocated\n", .{id});
+            std.debug.print("case {s} allocated\n", .{case.id});
             return err;
         };
         checked += 1;
@@ -168,11 +165,11 @@ test "Story.init makes one allocation, bindings included, and binding allocates 
     try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
     try std.testing.expectEqual(limits.bytes_total(shape), counting.bytes_live);
     story.on_error = support.ignore_message;
-    try story.bind_external_function("e", twice, null, true);
-    try story.bind_external_function("f", twice, null, true);
+    try story.bind_external_function("e", .{}, null, twice);
+    try story.bind_external_function("f", .{}, null, twice);
     try story.unbind_external_function("f");
-    try story.bind_external_function("f", twice, null, true);
-    const text = try story.cont();
+    try story.bind_external_function("f", .{}, null, twice);
+    const text = (try story.cont()).get();
     try std.testing.expectEqualStrings("4 6\n", text);
     try std.testing.expectEqual(@as(u64, 1), counting.allocations_count);
     story.deinit(counting.allocator());

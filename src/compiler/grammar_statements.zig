@@ -16,27 +16,21 @@ const Level = grammar.Level;
 
 /// Parse: the top-level statements make the story.
 pub fn story(machine: *Machine, frame: *Frame) Error!Action {
-    switch (frame.phase) {
-        0 => {
-            return grammar.call(machine, frame, 1, .statements, @backingInt(Level.top));
-        },
-        else => {
-            assert(machine.outcome != .none);
-            const marker = frame.checkpoint.scratch;
-            if (machine.outcome == .succeeded) assert(machine.scratch_count > marker);
-            // An empty story still has a (empty) statement list.
-            if (machine.outcome == .failed) try machine.wrap(.statements, marker);
-            try machine.wrap(.story, marker);
-            return .succeed;
-        },
-    }
+    const top = @backingInt(Level.top);
+    if (frame.phase == 0) return grammar.call(machine, frame, 1, .statements, top);
+    const marker = frame.checkpoint.scratch;
+    if (machine.outcome == .succeeded) assert(machine.scratch_count > marker);
+    // An empty story still has a (empty) statement list.
+    if (machine.outcome == .failed) try machine.wrap(.statements, marker);
+    try machine.wrap(.story, marker);
+    return .succeed;
 }
 
 /// StatementsAtLevel: Interleave(Optional(MultilineWhitespace), StatementAtLevel,
 /// untilTerminator: StatementsBreakForLevel).
 pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
-    const level: Level = @fromBackingInt(@intCast(frame.locals[0]));
-    switch (frame.phase) {
+    // locals: the level and the marker.
+    phase: switch (frame.phase) {
         0 => {
             assert(machine.argument <= @backingInt(Level.top));
             frame.locals[0] = machine.argument;
@@ -46,33 +40,28 @@ pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_message(machine, .gather_in_inner_block);
             }
             _ = grammar.multiline_whitespace(machine);
-            frame.phase = 1;
-            return .again;
+            continue :phase 1;
         },
+        // The loop's head, reached from phases 0 and 3 within their step.
         1 => {
             frame.phase = 2;
-            machine.argument = @backingInt(level);
+            machine.argument = frame.locals[0];
             return .{ .peek = .statements_break };
         },
         2 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return finish_statements(machine, frame);
-            return grammar.call(machine, frame, 3, .statement, @backingInt(level));
+            return grammar.call(machine, frame, 3, .statement, frame.locals[0]);
         },
         else => {
-            assert(frame.phase == 3);
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) return finish_statements(machine, frame);
             _ = grammar.multiline_whitespace(machine);
             if (grammar.at_end(machine)) return finish_statements(machine, frame);
-            frame.phase = 1;
-            return .again;
+            continue :phase 1;
         },
     }
 }
 
 fn finish_statements(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .statements);
     assert(machine.scratch_count >= frame.locals[1]);
     if (machine.scratch_count == frame.locals[1]) return .fail;
     try machine.wrap(.statements, frame.locals[1]);
@@ -131,7 +120,6 @@ pub fn statement(machine: *Machine, frame: *Frame) Error!Action {
         frame.locals[1] = 0;
         frame.phase = 1;
     } else {
-        assert(machine.outcome != .none);
         assert(frame.locals[1] < count);
         const tried: Alternative = @fromBackingInt(@intCast(frame.locals[1]));
         if (machine.outcome == .succeeded) {
@@ -168,15 +156,12 @@ pub fn statements_break(machine: *Machine, frame: *Frame) Error!Action {
             return .{ .call = .knot_declaration };
         },
         1 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return .succeed;
             frame.phase = 2;
             if (frame.locals[0] > @backingInt(Level.stitch)) return break_inner(machine, frame);
             return .{ .call = .stitch_declaration };
         },
         else => {
-            assert(frame.phase == 2);
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return .succeed;
             return break_inner(machine, frame);
         },
@@ -184,8 +169,6 @@ pub fn statements_break(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn break_inner(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .statements_break);
-    assert(frame.phase == 1 or frame.phase == 2);
     if (frame.locals[0] != @backingInt(Level.inner_block)) return .fail;
     if (weave.dash_not_arrow(machine)) return .succeed;
     if (grammar.parse_string(machine, "}")) return .succeed;
@@ -205,13 +188,10 @@ pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
 fn flow_definition(machine: *Machine, frame: *Frame, comptime level: Level) Error!Action {
     comptime assert(level == .knot or level == .stitch);
     const knot = level == .knot;
+    const declaration_rule: grammar.Rule = if (knot) .knot_declaration else .stitch_declaration;
     switch (frame.phase) {
-        0 => {
-            frame.phase = 1;
-            return .{ .call = if (knot) .knot_declaration else .stitch_declaration };
-        },
+        0 => return grammar.call_then(frame, 1, declaration_rule),
         1 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) return .fail;
             // The declaration's result: whether the flow is a function.
             assert(machine.result <= 1);
@@ -220,8 +200,6 @@ fn flow_definition(machine: *Machine, frame: *Frame, comptime level: Level) Erro
             return grammar.call(machine, frame, 2, .statements, @backingInt(level));
         },
         else => {
-            assert(frame.phase == 2);
-            assert(machine.outcome != .none);
             if (machine.outcome == .failed) {
                 try recover_flow_content(machine, if (knot) .knot_content else .stitch_content);
             }
@@ -244,7 +222,6 @@ fn recover_flow_content(machine: *Machine, expectation: grammar.Expectation) Err
         if (grammar.rest(machine)[0] == '=' and knot_title_equals_ahead(machine)) break;
         machine.at += 1;
     }
-    assert(grammar.at_end(machine) or grammar.rest(machine)[0] == '=');
     const marker = machine.scratch_count;
     const token = try machine.add_token(grammar.at(machine), grammar.at(machine));
     try machine.push_node(.error_text, token.to_int());
@@ -259,8 +236,7 @@ fn knot_title_equals_ahead(machine: *const Machine) bool {
 
 /// KnotDeclaration: `==`, an optional `function`, the name and parameters; `result` is 1 for
 /// a function.
-pub fn knot_declaration(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase == 0);
+pub fn knot_declaration(machine: *Machine, _: *Frame) Error!Action {
     _ = grammar.whitespace(machine);
     if (knot_title_equals(machine) == 0) return .fail;
     _ = grammar.whitespace(machine);
@@ -302,8 +278,7 @@ fn knot_title_equals(machine: *Machine) u32 {
 }
 
 /// StitchDeclaration: a single `=`, an optional `function`, the name and parameters.
-pub fn stitch_declaration(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase == 0);
+pub fn stitch_declaration(machine: *Machine, _: *Frame) Error!Action {
     _ = grammar.whitespace(machine);
     if (!grammar.parse_string(machine, "=")) return .fail;
     if (grammar.parse_string(machine, "=")) return .fail;
@@ -364,7 +339,6 @@ pub fn declaration_line(machine: *Machine, frame: *Frame) Error!Action {
     // Only the value declarations call a rule, and resume once.
     assert(frame.phase <= 1);
     if (frame.phase == 0) {
-        assert(machine.argument < @typeInfo(Alternative).@"enum".field_names.len);
         frame.locals[0] = machine.argument;
         frame.locals[1] = machine.scratch_count;
     }
@@ -509,33 +483,25 @@ fn list_item(machine: *Machine) Error!bool {
 /// VariableDeclaration and ConstDeclaration: `VAR name = expression`, `CONST ...`.
 fn value_declaration(machine: *Machine, frame: *Frame, kind: Alternative) Error!Action {
     const is_variable = kind == .variable_declaration;
-    switch (frame.phase) {
-        0 => {
-            _ = grammar.whitespace(machine);
-            if (!try grammar.keyword(machine, if (is_variable) "VAR" else "CONST")) return .fail;
-            _ = grammar.whitespace(machine);
-            try grammar.expect_identifier(machine, .variable_name);
-            _ = grammar.whitespace(machine);
-            grammar.expect_string(machine, "=", .equals);
-            _ = grammar.whitespace(machine);
-            return grammar.call(machine, frame, 1, .expression, 0);
-        },
-        else => {
-            assert(frame.phase == 1);
-            assert(machine.outcome != .none);
-            if (machine.outcome == .failed) {
-                grammar.report_expected(machine, .expression);
-                // ink's declaration returns null without a value.
-                return .fail;
-            }
-            check_initial_value(machine, is_variable);
-            try machine.wrap(
-                if (is_variable) .variable_declaration else .const_declaration,
-                frame.locals[1],
-            );
-            return .succeed;
-        },
+    if (frame.phase == 0) {
+        _ = grammar.whitespace(machine);
+        if (!try grammar.keyword(machine, if (is_variable) "VAR" else "CONST")) return .fail;
+        _ = grammar.whitespace(machine);
+        try grammar.expect_identifier(machine, .variable_name);
+        _ = grammar.whitespace(machine);
+        grammar.expect_string(machine, "=", .equals);
+        _ = grammar.whitespace(machine);
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
+    if (machine.outcome == .failed) {
+        grammar.report_expected(machine, .expression);
+        // ink's declaration returns null without a value.
+        return .fail;
+    }
+    check_initial_value(machine, is_variable);
+    const tag: ast.Tag = if (is_variable) .variable_declaration else .const_declaration;
+    try machine.wrap(tag, frame.locals[1]);
+    return .succeed;
 }
 
 /// The initial value checks of VariableDeclaration and ConstDeclaration.
@@ -581,23 +547,17 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
             if (!grammar.parse_string(machine, "~")) return .fail;
             _ = grammar.whitespace(machine);
             machine.flags &= ~grammar.saw_function_call;
-            frame.phase = 1;
-            return .{ .call = .return_statement };
+            return grammar.call_then(frame, 1, .return_statement);
         },
         1 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
-            frame.phase = 2;
-            return .{ .call = .temp_declaration_or_assignment };
+            return grammar.call_then(frame, 2, .temp_declaration_or_assignment);
         },
         2 => {
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
             return grammar.call(machine, frame, 3, .expression, 0);
         },
         else => {
-            assert(frame.phase == 3);
-            assert(machine.outcome != .none);
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
             grammar.report_expected(machine, .expression);
             grammar.skip_to_next_line(machine);
@@ -608,8 +568,6 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn finish_logic_line(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .logic_line);
-    assert(machine.outcome == .succeeded);
     const marker = frame.checkpoint.scratch;
     const result = grammar.top_tag(machine, marker).?;
     const is_statement = switch (result) {
@@ -629,59 +587,47 @@ fn finish_logic_line(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ReturnStatement: `return` and an optional expression.
 pub fn return_statement(machine: *Machine, frame: *Frame) Error!Action {
-    switch (frame.phase) {
-        0 => {
-            _ = grammar.whitespace(machine);
-            if (!try grammar.keyword(machine, "return")) return .fail;
-            _ = grammar.whitespace(machine);
-            return grammar.call(machine, frame, 1, .expression, 0);
-        },
-        else => {
-            assert(frame.phase == 1);
-            assert(machine.outcome != .none);
-            // A return without a value has no token: its `none` holds where the rule started,
-            // for the return's position in messages.
-            if (machine.outcome == .failed) try machine.push_node(.none, frame.checkpoint.at);
-            try machine.wrap(.@"return", frame.checkpoint.scratch);
-            return .succeed;
-        },
+    if (frame.phase == 0) {
+        _ = grammar.whitespace(machine);
+        if (!try grammar.keyword(machine, "return")) return .fail;
+        _ = grammar.whitespace(machine);
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
+    // A return without a value has no token: its `none` holds where the rule started,
+    // for the return's position in messages.
+    if (machine.outcome == .failed) try machine.push_node(.none, frame.checkpoint.at);
+    try machine.wrap(.@"return", frame.checkpoint.scratch);
+    return .succeed;
 }
 
 /// TempDeclarationOrAssignment: `temp name = e`, `name = e`, `name += e`, `name -= e`.
 pub fn temp_declaration_or_assignment(machine: *Machine, frame: *Frame) Error!Action {
-    switch (frame.phase) {
-        0 => {
-            _ = grammar.whitespace(machine);
-            const is_new = try grammar.keyword(machine, "temp");
-            _ = grammar.whitespace(machine);
-            if (!try grammar.push_identifier(machine)) {
-                if (is_new) grammar.report_expected(machine, .variable_name);
-                return .fail;
-            }
-            _ = grammar.whitespace(machine);
-            const increment = grammar.parse_string(machine, "+");
-            const decrement = grammar.parse_string(machine, "-");
-            if (increment and decrement) grammar.report_message(machine, .plus_minus);
-            if (!grammar.parse_string(machine, "=")) {
-                if (is_new) grammar.report_message(machine, .expected_equals);
-                return .fail;
-            }
-            frame.locals[1] = if (increment) 1 else if (decrement) 2 else if (is_new) 3 else 0;
-            return grammar.call(machine, frame, 1, .expression, 0);
-        },
-        else => {
-            assert(machine.outcome != .none);
-            if (machine.outcome == .failed) {
-                grammar.report_expected(machine, .expression);
-                try grammar.push_missing(machine);
-            }
-            const tags = [_]ast.Tag{
-                .assignment, .add_assignment, .subtract_assignment, .temp_declaration,
-            };
-            assert(frame.locals[1] < tags.len);
-            try machine.wrap(tags[frame.locals[1]], frame.checkpoint.scratch);
-            return .succeed;
-        },
+    if (frame.phase == 0) {
+        _ = grammar.whitespace(machine);
+        const is_new = try grammar.keyword(machine, "temp");
+        _ = grammar.whitespace(machine);
+        if (!try grammar.push_identifier(machine)) {
+            if (is_new) grammar.report_expected(machine, .variable_name);
+            return .fail;
+        }
+        _ = grammar.whitespace(machine);
+        const increment = grammar.parse_string(machine, "+");
+        const decrement = grammar.parse_string(machine, "-");
+        if (increment and decrement) grammar.report_message(machine, .plus_minus);
+        if (!grammar.parse_string(machine, "=")) {
+            if (is_new) grammar.report_message(machine, .expected_equals);
+            return .fail;
+        }
+        frame.locals[1] = if (increment) 1 else if (decrement) 2 else if (is_new) 3 else 0;
+        return grammar.call(machine, frame, 1, .expression, 0);
     }
+    if (machine.outcome == .failed) {
+        grammar.report_expected(machine, .expression);
+        try grammar.push_missing(machine);
+    }
+    const tags = [_]ast.Tag{
+        .assignment, .add_assignment, .subtract_assignment, .temp_declaration,
+    };
+    try machine.wrap(tags[frame.locals[1]], frame.checkpoint.scratch);
+    return .succeed;
 }

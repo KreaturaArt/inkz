@@ -3,14 +3,13 @@
 //! (a few of what a story needs, heap bytes down to a few hundred). Every call returns a
 //! result or an error, the state checks after each one, and a story that failed in the
 //! middle of a step stays failed (`error.StoryFailed`) until `reset_state` or `load_json`.
-//! With `compact_always` drawn, the heap compacts before every allocation.
+//! With `compact_always` drawn, the heap compacts at every reservation of room.
 //!
 //! The budget property: a run's peak usage, fitted with no margin (`Limits.fitted(usage,
 //! 1)`), is enough to replay the same run without a limit error.
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
 const host = @import("host.zig");
@@ -19,14 +18,18 @@ const Limits = limits_module.Limits;
 
 const calls_max = 48;
 
-/// A tight value for a limit: a byte count of a few hundred to a few thousand, or a count
-/// of 1 to 16 (4 to 64 for the counts a story needs many of to start at all).
+/// A tight value for a limit: a byte count of a few hundred to a few thousand (the save
+/// scratch 1 to 64 KiB), or a count of 1 to 16 (4 to 64 for the counts a story needs many
+/// of to start at all).
 fn tight(choices: fuzz_ink.Choices, comptime name: []const u8) u32 {
+    if (comptime std.mem.eql(u8, name, "load_bytes_max")) {
+        return std.mem.alignForward(u32, choices.range(u32, 1024, 64 * 1024), 8);
+    }
     if (comptime std.mem.endsWith(u8, name, "bytes_max")) {
         return std.mem.alignForward(u32, choices.range(u32, 256, 4096), 4);
     }
     const roomy = comptime std.mem.eql(u8, name, "steps_per_continue_max") or
-        std.mem.eql(u8, name, "load_nodes_max") or std.mem.eql(u8, name, "container_depth_max") or
+        std.mem.eql(u8, name, "container_depth_max") or
         std.mem.eql(u8, name, "path_components_max");
     if (roomy) return choices.range(u32, 64, 4096);
     return choices.range(u32, 1, 16);
@@ -96,27 +99,27 @@ fn session(choices: fuzz_ink.Choices, limits: Limits, compact_always: bool) !?Se
             else => return null,
         };
     defer story.deinit(gpa);
-    story.core.state.compact_always = compact_always;
+    story.state.compact_always = compact_always;
     const calls = host.draw_calls(choices);
     var kept: ?play.Value = null;
     var result: Session = .{};
     var count: u32 = 0;
     while (count < calls_max and choices.more(7, 1)) : (count += 1) {
-        _ = host.call(&story, choices, &kept, calls) catch |err| {
+        _ = host.call(gpa, &story, choices, &kept, calls) catch |err| {
             result.errors.add(err);
             // A story that failed in the middle of a step stays failed.
-            if (story.core.failed) assert(story.cont() == error.StoryFailed);
+            if (story.failed) assert(story.cont() == error.StoryFailed);
         };
-        assert(story.core.state.check() == .ok);
+        assert(story.state.check() == .ok);
     }
-    result.usage = story.core.usage();
+    result.usage = story.usage();
     return result;
 }
 
-fn limits_swarm(_: void, smith: *Smith) anyerror!void {
-    const choices: fuzz_ink.Choices = .{ .smith = smith };
+/// A session on drawn limits; whether it played.
+fn limits_swarm(choices: fuzz_ink.Choices) !bool {
     const limits = draw_limits(choices);
-    _ = try session(choices, limits, choices.choose(bool));
+    return try session(choices, limits, choices.choose(bool)) != null;
 }
 
 /// The budget property for the run seeded with `seed`: replayed under its fitted limits, it
@@ -146,15 +149,7 @@ fn check_budget(seed: u64) !bool {
 test "fuzz: limits drawn tight or default fail cleanly" {
     // Seeded sessions first: the limits are drawn per field, and some sessions have
     // tight limits and still play.
-    var played: u32 = 0;
-    for (0..32) |seed| {
-        var prng: std.Random.DefaultPrng = .init(seed);
-        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
-        const limits = draw_limits(choices);
-        if (try session(choices, limits, choices.choose(bool)) != null) played += 1;
-    }
-    try std.testing.expect(played > 8);
-    try std.testing.fuzz({}, limits_swarm, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(limits_swarm, 8);
 }
 
 test "fuzz: a run's fitted usage replays it without a limit error" {

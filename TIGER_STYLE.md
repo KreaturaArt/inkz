@@ -109,9 +109,9 @@ Code](https://spinroot.com/gerard/pdf/P10.pdf) will change the way you code fore
   - **Assert all function arguments and return values, pre/postconditions and invariants.** A
     function must not operate blindly on data it has not checked. The purpose of a function is to
     increase the probability that a program is correct. Assertions within a function are part of how
-    functions serve this purpose. In inkz, library code (src/core, src/runtime, src/compiler)
-    averages at least one assertion per function; tests, harnesses, benchmarks and tools have no
-    density rule. An assertion states something the code relies on and that could be false: a
+    functions serve this purpose. In inkz, density is per module: each library file (src/core,
+    src/runtime, src/compiler) has at least one assertion for every three functions; tests,
+    harnesses, benchmarks and tools have no density rule. An assertion states something the code relies on and that could be false: a
     precondition on an argument, a postcondition on a result, an invariant between fields. It never
     restates the type, a value assigned on the line before, or the same fact in every function of a
     file. Write no assertion only to meet the count.

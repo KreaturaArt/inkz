@@ -2,7 +2,7 @@
 //! grammar rules the way ink's StringParser does, without recursion.
 //!
 //! A rule is a step function with phases. A step returns an `Action`: call another rule,
-//! succeed, fail, or go on with its next phase. A call pushes a frame holding a checkpoint
+//! succeed or fail. A call pushes a frame holding a checkpoint
 //! (the input position and the token, node and scratch counts); a failed rule restores its
 //! checkpoint, which gives StringParser's BeginRule/FailRule/SucceedRule and so OneOf,
 //! Optional and Interleave. The caller reads the callee's outcome in its next phase.
@@ -47,8 +47,6 @@ pub const Diagnostic = struct {
 pub const token_bytes = @sizeOf(u32) + @sizeOf(u32);
 
 comptime {
-    assert(@typeInfo(@FieldType(Workspace, "token_starts")).pointer.child == u32);
-    assert(@typeInfo(@FieldType(Workspace, "token_ends")).pointer.child == u32);
     assert(token_bytes == 8);
 }
 
@@ -74,9 +72,8 @@ pub const Workspace = struct {
     /// used. `scale` doubles on each retry.
     pub fn init(gpa: Allocator, source_length: u32, diagnostics_max: u32, scale: u32) !Workspace {
         assert(scale >= 1);
-        const length: usize = source_length;
-        const nodes: usize = (length / 2 + 256) * scale;
-        const tokens: usize = (length / 6 + 256) * scale;
+        const nodes = nodes_for(source_length, scale);
+        const tokens: usize = (@as(usize, source_length) / 6 + 256) * scale;
         var workspace: Workspace = undefined;
         workspace.node_tags = try gpa.alloc(ast.Tag, nodes);
         errdefer gpa.free(workspace.node_tags);
@@ -91,8 +88,36 @@ pub const Workspace = struct {
         workspace.token_ends = try gpa.alloc(u32, tokens);
         errdefer gpa.free(workspace.token_ends);
         workspace.diagnostics = try gpa.alloc(Diagnostic, diagnostics_max);
-        assert(workspace.node_tags.len == nodes);
         return workspace;
+    }
+
+    fn nodes_for(source_length: u32, scale: u32) usize {
+        return (@as(usize, source_length) / 2 + 256) * scale;
+    }
+
+    /// Makes room for `source_length` bytes at `scale` (a new file added, or a retry),
+    /// keeping the first `nodes`, `tokens` and `diagnostics`; the scratch stack is empty
+    /// between files. All or nothing: on failure the workspace is as it was.
+    pub fn reserve(
+        workspace: *Workspace,
+        gpa: Allocator,
+        source_length: u32,
+        scale: u32,
+        used: struct { nodes: u32, tokens: u32, diagnostics: u32 },
+    ) !void {
+        assert(used.nodes <= workspace.node_tags.len);
+        assert(used.diagnostics <= workspace.diagnostics.len);
+        if (nodes_for(source_length, scale) <= workspace.node_tags.len) return;
+        const diagnostics_max: u32 = @intCast(workspace.diagnostics.len);
+        var bigger = try Workspace.init(gpa, source_length, diagnostics_max, scale);
+        @memcpy(bigger.node_tags[0..used.nodes], workspace.node_tags[0..used.nodes]);
+        @memcpy(bigger.node_data[0..used.nodes], workspace.node_data[0..used.nodes]);
+        @memcpy(bigger.token_starts[0..used.tokens], workspace.token_starts[0..used.tokens]);
+        @memcpy(bigger.token_ends[0..used.tokens], workspace.token_ends[0..used.tokens]);
+        const diagnostics = used.diagnostics;
+        @memcpy(bigger.diagnostics[0..diagnostics], workspace.diagnostics[0..diagnostics]);
+        workspace.deinit(gpa);
+        workspace.* = bigger;
     }
 
     /// After a parse: drops the scratch stack (only the parse uses it)
@@ -121,7 +146,6 @@ pub const Workspace = struct {
 
     /// release_syntax without its checks, for a settle that failed halfway.
     fn free_syntax(workspace: *Workspace, gpa: Allocator) void {
-        assert(workspace.diagnostics.len > 0);
         gpa.free(workspace.node_tags);
         gpa.free(workspace.node_data);
         gpa.free(workspace.token_starts);
@@ -133,7 +157,6 @@ pub const Workspace = struct {
     }
 
     pub fn deinit(workspace: *Workspace, gpa: Allocator) void {
-        assert(workspace.diagnostics.len > 0);
         assert(workspace.node_tags.len == workspace.node_data.len);
         gpa.free(workspace.node_tags);
         gpa.free(workspace.node_data);
@@ -148,7 +171,6 @@ pub const Workspace = struct {
 
 /// What a rule step does next.
 pub fn Action(comptime Rule: type) type {
-    comptime assert(@typeInfo(Rule) == .@"enum");
     comptime assert(@sizeOf(Rule) <= 4);
     return union(enum) {
         /// Run `rule`, then come back to this frame's next phase.
@@ -160,8 +182,6 @@ pub fn Action(comptime Rule: type) type {
         succeed,
         /// This rule didn't match: everything since its call is undone.
         fail,
-        /// Run this frame again (its phase changed).
-        again,
     };
 }
 
@@ -241,7 +261,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         pub fn checkpoint(machine: *const Self) Checkpoint {
-            assert(machine.nodes_count <= machine.workspace.node_tags.len);
             return .{
                 .at = machine.at,
                 .tokens = machine.tokens_count,
@@ -278,6 +297,9 @@ pub fn Machine(comptime Grammar: type) type {
                 assert(machine.at <= machine.source.len);
                 assert(machine.scratch_count <= machine.workspace.scratch_tags.len);
                 assert(machine.nodes_count <= machine.workspace.node_tags.len);
+                // A frame past its entry phase resumes after its callee returned and reads
+                // the callee's outcome; only a frame just entered sees none.
+                assert((machine.outcome == .none) == (frame.phase == 0));
                 const action = if (machine.abandoned) Action(Rule).fail else Grammar.step(
                     machine,
                     frame,
@@ -289,7 +311,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         fn apply(machine: *Self, action: Action(Rule)) Error!void {
-            assert(machine.frames_count > 0);
             switch (action) {
                 .call => |rule| {
                     machine.outcome = .none;
@@ -312,7 +333,6 @@ pub fn Machine(comptime Grammar: type) type {
                     machine.frames_count -= 1;
                     machine.outcome = .failed;
                 },
-                .again => {},
             }
         }
 
@@ -359,7 +379,6 @@ pub fn Machine(comptime Grammar: type) type {
 
         /// Pushes a finished node value on the scratch stack.
         pub fn push_node(machine: *Self, tag: ast.Tag, data: u32) Error!void {
-            assert(@backingInt(tag) < 256);
             const workspace = machine.workspace;
             if (machine.scratch_count == workspace.scratch_tags.len) return error.WorkspaceFull;
             workspace.scratch_tags[machine.scratch_count] = tag;
@@ -450,13 +469,18 @@ const Toy = struct {
     }
 
     pub fn step(machine: *M, frame: *M.Frame) Action(Rule) {
-        assert(machine.frames_count > 0);
         return switch (frame.rule) {
             .expression => expression(machine, frame),
             .term => term(machine, frame),
-            // A broken rule that never makes progress.
-            .stall => .again,
+            // A broken rule that never makes progress: it peeks at a term forever.
+            .stall => stall(frame),
         } catch return .fail;
+    }
+
+    fn stall(frame: *M.Frame) Action(Rule) {
+        assert(frame.rule == .stall);
+        frame.phase = 1;
+        return .{ .peek = .term };
     }
 
     fn accept(machine: *M, text: []const u8) bool {
@@ -466,25 +490,15 @@ const Toy = struct {
     }
 
     fn expression(machine: *M, frame: *M.Frame) Error!Action(Rule) {
-        switch (frame.phase) {
-            0 => {
-                frame.locals[0] = machine.scratch_count;
-                frame.phase = 1;
-                return .{ .call = .term };
-            },
-            1 => {
-                if (machine.outcome == .failed) return .fail;
-                if (!accept(machine, " + ")) {
-                    frame.phase = 2;
-                    return .again;
-                }
-                return .{ .call = .term };
-            },
-            else => {
-                try machine.wrap(.path, frame.locals[0]);
-                return .succeed;
-            },
+        if (frame.phase == 0) {
+            frame.locals[0] = machine.scratch_count;
+            frame.phase = 1;
+            return .{ .call = .term };
         }
+        if (machine.outcome == .failed) return .fail;
+        if (accept(machine, " + ")) return .{ .call = .term };
+        try machine.wrap(.path, frame.locals[0]);
+        return .succeed;
     }
 
     fn term(machine: *M, frame: *M.Frame) Error!Action(Rule) {
@@ -521,8 +535,6 @@ const ToyResult = struct {
 };
 
 fn parse_toy(source: []const u8, depth_max: u32, start: Toy.Rule) !ToyResult {
-    assert(source.len > 0);
-    assert(depth_max > 0);
     const gpa = std.testing.allocator;
     var workspace = try Workspace.init(gpa, @intCast(source.len), 16, 1);
     defer workspace.deinit(gpa);

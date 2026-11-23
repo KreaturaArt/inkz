@@ -36,25 +36,29 @@ allocates exactly the byte budget, once") and, with externals, in
 `src/testing/zero_allocation.zig`. Until P16.10 the external bindings were a second
 allocation; they are now carved from the same block. Nothing allocates after that. The total has three parts:
 
-- **Live flow**: the evaluation stack, call stack (frames, threads, temps), output items and
-  `str` marks, and the choices with their tags and thread snapshots.
-- **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6),
-  plus the undo log (`patch_entries_max` × 16 bytes) and its bitset of logged slots (one bit
-  per global, visit count and turn index).
+- **Flows**: each of the `flows_max` flows owns its call stack (frames, threads, temps),
+  output items and `str` marks, and its choices with their tags and thread snapshots, plus a
+  100-byte directory entry; the evaluation stack is one, shared by all flows.
+- **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6)
+  and of the globals (12 bytes each), visit counts and turn indices (8 bytes per counted
+  container), which it copies out 64 slots at a time before their first write, plus its
+  bitset of copied chunks.
 - **Shared**: globals and their defaults (24 bytes each), visit counts and turn indices
   (8 bytes per counted container), the external bindings (24 bytes per EXTERNAL), the line buffer (`output_bytes_max`), the tag scratch
   (`tag_bytes_max`), the cleaned-text
   cache (`output_items_max` × 12 bytes plus `output_bytes_max`, P10.1), the string heap, the
-  list slab, the flow directory (64 bytes per flow), the flow parking region, observers, the
+  list slab, the output stash `evaluate_function` sets the current output aside in
+  (`output_stash_bytes_max`), observers, the
   observer queue, errors and warnings, the ancestor scratch for visit counting, and the
-  scratch `load_json` tokenizes a save into (16 bytes per token, `load_nodes_max`).
+  scratch `load_json` parses a save into with std.json (`load_bytes_max`, 1 MiB; a save
+  takes about 8 to 16 times its size there, P17.12).
 
-Flows don't multiply the budget: all flows of a story share one state, and only the current
-flow uses the live buffers. A switched-out flow is packed into the parking region, taking
-44 bytes of header plus what it actually uses: 24 bytes per frame, 20 per thread, 16 per
-temp, 12 per output item, 40 per choice, 24 per choice snapshot, 4 per tag or mark. A flow
-waiting at a choice, three frames deep, with 10 temps, 20 output items and 4 choices with
-their snapshots, parks in about 1 KiB, so the default 256 KiB parking region holds hundreds.
+Flows multiply their own buffers: each flow has a full set (`Limits.flow_bytes`, 164.5 KiB at
+the defaults), so switching only points the live stacks at the target flow's set and copies
+nothing (18 ns, against 163 ns when switched-out flows were packed into a 256 KiB parking
+region, P17.14). With the default `flows_max = 8` that is 1.29 MiB, about 0.9 MiB more than
+the parking region and one live set took. A story that never switches flows can set
+`flows_max = 1`; `fitted_limits` sizes it from the flows a story used.
 
 ### Example: one main story and four side stories
 
@@ -65,18 +69,19 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
   companion flows), 3000 counted containers, 200 globals.
 - **Side stories** (barks, a shop, a codex): `small_story_limits` in `src/core/limits.zig`,
   each with 300 counted containers and 30 globals and up to four flows. These limits cut the
-  heap to 64 KiB, the call stack to 128 frames and choices to 16.
+  heap to 64 KiB, the load scratch to 256 KiB, the call stack to 128 frames and choices to
+  16.
 
 | Part | Main story | Side story |
 |---|---:|---:|
-| Live flow | 180,736 | 27,776 |
-| Lookahead (copy + undo log) | 197,896 | 31,952 |
-| Shared | 1,857,152 | 196,208 |
-| **Total per story** | **2,235,784** (2.13 MiB) | **255,936** (250 KiB) |
+| Flows (four) | 686,480 | 102,288 |
+| Lookahead (copies) | 207,144 | 30,540 |
+| Shared | 2,461,824 | 371,760 |
+| **Total per story** | **3,355,448** (3.20 MiB) | **504,588** (493 KiB) |
 
-The whole game, one main story and four side stories, needs 2,235,784 + 4 × 255,936 =
-3,259,528 bytes (3.11 MiB), fixed at load time. In the main story the 1 MiB string heap is
-about half of the total.
+The whole game, one main story and four side stories, needs 3,355,448 + 4 × 504,588 =
+5,373,800 bytes (5.12 MiB), fixed at load time. In the main story the 1 MiB string heap and
+the 1 MiB load scratch are about a third of the total each.
 
 ### Fitted limits (P10.2)
 
@@ -314,11 +319,13 @@ old-runtime load (440 µs and 9,049 µs in ReleaseSafe), an image with fitted li
 
 ## Load and store (TASK-152)
 
-`zig build bench-io` times loading and storing a `Program` in both formats, on crime_scene
-and on the generated 1000-knot story, in ReleaseSafe and then ReleaseFast:
+`zig build bench-io` (`bench io` of `src/bench.zig`, the program that runs every benchmark
+over one table of workloads) times loading and storing a `Program` in both formats, on
+crime_scene and on the generated 1000-knot story, in ReleaseSafe and then ReleaseFast:
 
 - ink's JSON: `ink_json.load` and `ink_json.serialize`;
-- the binary program image: `program_image.load` and `program_image.write`.
+- the binary program image: `program_image.load` and `program_image.write`, and
+  `program_image.load_trusted` (format `image_trusted`).
 
 Before timing, it checks that both formats round-trip. Each measurement times one operation
 per sample: 3 warm-up runs, then samples until at least 10 have been taken and either 1 s has
@@ -337,7 +344,7 @@ sends `zig build bench-profile`'s records to `bench/profile.jsonl`.
 | `commit`, `dirty` | `git rev-parse --short=12 HEAD`; whether tracked files had changes |
 | `zig`, `mode`, `target`, `cpu` | compiler version, `safe` or `fast`, arch-os, CPU model |
 | `story` | `crime_scene` or `generated_1000_knots` |
-| `format`, `operation` | `json` or `image`; `load` or `store` |
+| `format`, `operation` | `json`, `image` or `image_trusted`; `load` or `store` |
 | `bytes` | the input of a load (inklecate's JSON, or the image); the output of a store |
 | `samples`, `min_ns`, `median_ns`, `mean_ns`, `max_ns` | the timings |
 | `megabytes_per_second` | `bytes` over the median time |
@@ -355,7 +362,7 @@ globals), and every temp read first scanned the globals, then hashed the name to
 list item, before it reached the temps. Now globals are read and written through their
 resolved slot (F2), and `Program.name_classes` (4 bytes per string, rebuilt on image load)
 answers "global, list item or temp" with one read (F1). The VM looks no name up by its text
-while it plays (tests count `FrozenStringPool.find` calls).
+while it plays (tests count `StringPool.find` calls).
 
 `zig build bench`, turns/s, Apple M3 (the bench stories have few globals, so this is the
 floor of the gain; a story with hundreds of globals and temps gains more):
@@ -393,6 +400,11 @@ The program grows by 4 bytes per string (crime_scene: 1,788 bytes).
   globals, the visit counts, the heap, the lists and the parked flows, and only the live
   flow has a second (lookahead) copy to stage into. A failed load must leave the story as it
   was (D15), so the validating pass stays.
+- **F18 revisited (P17.12): one pass.** For less code, a failed load now leaves the story as
+  `reset_state` leaves it instead of unchanged. The save is parsed with std.json into the
+  load scratch and read once: a load of crime_scene's save went from 9.8 to 8.2 µs and the
+  generated story's from 95.2 to 64.7 µs (`zig build bench-profile`, ReleaseFast, Apple M3),
+  with `load_parse` now 57% and 31% of it.
 
 ## Resolve keys, measured and decided (P16.16, F13)
 
@@ -421,6 +433,8 @@ per read. On Apple silicon it ticks at 24 MHz, so a single zone is resolved to a
 totals over many calls average this out.
 
 Each workload runs once with the zones off and once with them on, for 1 s each (ReleaseFast).
+A load's time leaves out freeing the program, as in `bench-io` (before P17.2 the profile's
+loads included it).
 The workloads, on crime_scene and on the generated 1000-knot story, are:
 
 - compile;
@@ -494,7 +508,82 @@ story. The compiler is 70–80% of it, and the JSON load most of the rest.
    the outside time is allocating and freeing the 2.2 MB default budget. Lead: fitted limits
    (P10.2), or a way to re-initialise a story in place.
 8. **Two smaller safety costs on untrusted input.** `program_check` is 20–23% of an image
-   load. A save is read twice, once to validate and once to commit (`load_validate` and
-   `load_commit`, about 45% each). Lead: a trusted-input entry point for images made at
+   load. A save was read twice, once to validate and once to commit (`load_validate` and
+   `load_commit`, about 45% each; read once since P17.12). Lead: a trusted-input entry point for images made at
    build time. This trades safety for speed, so the default keeps the checks.
 
+
+## Phase 17: code-bloat reduction against main (P17.24)
+
+Measured on 2026-11-23 on one Apple M3, ReleaseFast: main (873eb9b) against the end of
+Phase 17 (1ff6dad), each tree's own `bench runtime`, `bench io` and `bench profile`
+binaries, run alternately, four rounds each. The figures are the medians of the four; the
+spread of a row within one tree was mostly ±2% and at most ±5%. Play turns/s and compile
+come from `bench runtime`, load and store from `bench io`, init and saves from `bench
+profile` (time without zones). The generated sections above were left as they were.
+
+| Measurement | main | Phase 17 | Change |
+|---|---:|---:|---:|
+| Play, crime_scene (turns/s, default limits) | 353,400 | 335,000 | −5.2% |
+| Play, crime_scene (turns/s, fitted limits) | 357,100 | 337,300 | −5.5% |
+| Play, generated (turns/s, default limits) | 1,606,700 | 1,522,200 | −5.3% |
+| Play, generated (turns/s, fitted limits) | 1,609,300 | 1,538,500 | −4.4% |
+| Play, crime_scene (`profile play`, µs) | 56.2 | 57.5 | +2.3% |
+| Play, generated (`profile play`, µs) | 127.1 | 130.4 | +2.6% |
+| JSON load, crime_scene (µs) | 184.3 | 177.1 | −3.9% |
+| JSON load, generated (µs) | 3,120.6 | 2,875.5 | −7.9% |
+| JSON store, crime_scene (µs) | 69.0 | 72.4 | +5.0% |
+| JSON store, generated (µs) | 1,129.4 | 1,224.4 | +8.4% |
+| Image load, crime_scene (µs) | 10.1 | 10.1 | 0% |
+| Image load, generated (µs) | 177.4 | 176.2 | −0.6% |
+| Image store, generated (µs) | 7.6 | 7.6 | 0% |
+| Story init, crime_scene (µs) | 6.2 | 7.0 | +14% |
+| Story init, generated (µs) | 7.2 | 8.3 | +15% |
+| Save, generated (µs) | 12.8 | 12.7 | −1% |
+| Save load, crime_scene (µs) | 9.3 | 7.3 | −22% |
+| Save load, generated (µs) | 91.1 | 57.2 | −37% |
+| Compile, crime_scene (ms) | 0.57 | 0.49 | −14% |
+| Compile, generated (ms) | 11.33 | 9.73 | −14% |
+| Compile peak, crime_scene (bytes) | 230,257 | 244,167 | +6.0% |
+| Compile peak, generated (bytes) | 4,292,974 | 4,887,997 | +13.9% |
+
+Memory, the state's fixed budget at the default limits (`Limits.bytes_total`):
+
+| Budget | main | Phase 17 | Change |
+|---|---:|---:|---:|
+| Default limits, empty program | 2,206,464 | 3,974,432 | +80% |
+| Default limits, 3,000 counted containers and 200 globals | 2,236,040 | 4,029,640 | +80% |
+| crime_scene program + default state | 2,259,645 | 4,028,209 | +78% |
+| crime_scene program + fitted state | 88,037 | 105,889 | +20% |
+| generated program + default state | 2,940,939 | 4,724,423 | +61% |
+| generated program + fitted state | 758,891 | 789,031 | +4% |
+
+The default budget grows by the per-flow buffers (each of the 8 default flows owns a full
+set instead of sharing a 256 KiB parking region, +0.98 MB, P17.14), the save-load scratch
+(1 MiB for std.json instead of 16 K tokens of 16 bytes, +768 KiB, P17.12) and the
+diagnostic messages (256 bytes per kept error or warning, P17.16). `flows_max = 1` or fitted
+limits take most of it back.
+
+Regressions over 5%, and where they come from (bisected with the same binaries per commit):
+
+- **Play, −5% in `bench runtime`.** The step is commit 1cef226 (P17.16, diagnostics
+  formatted when raised): crime_scene 355k → 334k turns/s there, and 590c1af takes the
+  generated story another 2% down; every other Phase 17 commit is within noise. Play raises
+  no diagnostics, so the cost is code generation: `ops.fail` and `State.add_diagnostic` now
+  format the message at the call site, generic over each format, and that code lands inside
+  the VM's hot functions. Marking both `@branchHint(.cold)` (two lines, measured on a
+  scratch copy of 1ff6dad) brings play back to 331k–350k turns/s on crime_scene and
+  1.56–1.59M on the generated story, within noise of main. `bench profile`'s play, which
+  measures a shorter run, shows only +2–3%. Both hints are now in the tree; a run after
+  them gave 340k / 347k turns/s on crime_scene (default / fitted) and 1.571M on the
+  generated story.
+- **JSON store, +5–8%.** Commit 618fabb (P17.10): the writer builds each container's path
+  from its stored dotted path instead of carrying it down the walk (generated story 333 →
+  313 MB/s at that commit).
+- **Story init, +1 µs (+14%).** `Story.init` carves and initialises an 80% larger default
+  budget. With fitted limits the budget is smaller than main's default.
+
+Speed-ups: save load is 22–37% faster (P17.12 reads a save once instead of validating it
+first), compiling is 14% faster and JSON load 4–8% faster (not bisected; Phase 17 changed
+the builder's inputs, the reader's key handling and the compiler's IR, and dropped about
+930 assertions, P17.23).

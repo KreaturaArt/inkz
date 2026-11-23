@@ -27,7 +27,6 @@ pub const Error = native.Error;
 
 /// Lists are short, so membership is a linear scan.
 fn contains(comptime T: type, items: []const T, item: T) bool {
-    assert(items.len < 1 << 20);
     return std.mem.indexOfScalar(T, items, item) != null;
 }
 
@@ -49,9 +48,7 @@ pub const ListSlab = struct {
     pub const unmarked = std.math.maxInt(u32);
 
     pub fn init(words: []u32) ListSlab {
-        const slab: ListSlab = .{ .words = words };
-        assert(slab.used == 0);
-        return slab;
+        return .{ .words = words };
     }
 
     /// Stores a list and returns its reference; `error.ListLimit` when the slab is full.
@@ -82,13 +79,6 @@ pub const ListSlab = struct {
         slab.peak = @max(slab.peak, slab.used +| words);
     }
 
-    /// Drops every list from `top` on; `top` must be an object boundary.
-    pub fn truncate(slab: *ListSlab, top: u32) void {
-        assert(top <= slab.used);
-        if (std.debug.runtime_safety) @memset(slab.words[top..slab.used], unmarked);
-        slab.used = top;
-    }
-
     /// Whether `list` can be a list's start: its header fits, counts fit the used words.
     /// Not proof that it is one; a full walk would be (heap.zig's compaction does that).
     pub fn check_reference(slab: *const ListSlab, list: ListReference) bool {
@@ -97,24 +87,20 @@ pub const ListSlab = struct {
         const index_at: u32 = @intCast(at);
         if (slab.words[index_at] != unmarked) return false;
         const total = header_words + @as(u64, slab.words[index_at + 1]) + slab.words[index_at + 2];
-        assert(total >= header_words);
         return at + total <= slab.used;
     }
 
     /// The words the list at `at` takes, header included.
     pub fn object_words(slab: *const ListSlab, at: u32) u32 {
         assert(at + header_words <= slab.used);
-        const count = header_words + slab.words[at + 1] + slab.words[at + 2];
-        assert(at + count <= slab.used);
-        return count;
+        return header_words + slab.words[at + 1] + slab.words[at + 2];
     }
 
     pub fn view(slab: *const ListSlab, list: ListReference) View {
         const at = @backingInt(list);
-        const total = slab.object_words(at);
+        assert(at + slab.object_words(at) <= slab.used);
         const items_count = slab.words[at + 1];
         const origins_count = slab.words[at + 2];
-        assert(total == header_words + items_count + origins_count);
         const items_words = slab.words[at + header_words ..][0..items_count];
         const origins_words = slab.words[at + header_words + items_count ..][0..origins_count];
         return .{ .items = @ptrCast(items_words), .origins = @ptrCast(origins_words) };
@@ -126,18 +112,17 @@ pub const ListSlab = struct {
 pub const list_items_max = 1024;
 
 /// Builds a list in a bounded scratch buffer before storing it.
-const Builder = struct {
+pub const Builder = struct {
     items: [items_max]ListItemIndex = undefined,
     items_count: u32 = 0,
     origins: [origins_max]ListOriginIndex = undefined,
     origins_count: u32 = 0,
 
     const items_max = list_items_max;
-    const origins_max = 64;
+    pub const origins_max = 64;
 
     fn add(builder: *Builder, item: ListItemIndex) error{ListLimit}!void {
         assert(builder.items_count <= items_max);
-        assert(!item.is_none());
         if (contains(ListItemIndex, builder.items[0..builder.items_count], item)) return;
         if (builder.items_count == items_max) return error.ListLimit;
         builder.items[builder.items_count] = item;
@@ -146,7 +131,6 @@ const Builder = struct {
 
     fn add_origin(builder: *Builder, origin: ListOriginIndex) error{ListLimit}!void {
         assert(builder.origins_count <= origins_max);
-        assert(!origin.is_none());
         const known = builder.origins[0..builder.origins_count];
         if (contains(ListOriginIndex, known, origin)) return;
         if (builder.origins_count == origins_max) return error.ListLimit;
@@ -155,8 +139,6 @@ const Builder = struct {
     }
 
     fn finish(builder: *const Builder, slab: *ListSlab) error{ListLimit}!Value {
-        assert(builder.origins_count <= origins_max);
-        assert(builder.items_count <= items_max);
         const list = try slab.store(
             builder.items[0..builder.items_count],
             builder.origins[0..builder.origins_count],
@@ -171,14 +153,10 @@ pub const Lists = struct {
     slab: *ListSlab,
 
     fn item_value(lists: Lists, item: ListItemIndex) i32 {
-        assert(!item.is_none());
-        assert(item.to_int() < lists.program.list_items.len);
         return lists.program.list_items[item.to_int()].value;
     }
 
     fn item_origin(lists: Lists, item: ListItemIndex) ListOriginIndex {
-        assert(!item.is_none());
-        assert(item.to_int() < lists.program.list_items.len);
         return lists.program.list_items[item.to_int()].origin;
     }
 
@@ -254,7 +232,6 @@ pub const Lists = struct {
             const value = lists.item_value(item);
             if (value >= low and value <= high) try builder.add(item);
         }
-        assert(builder.items_count <= view.items.len);
         return builder.finish(lists.slab);
     }
 
@@ -287,18 +264,22 @@ pub const Lists = struct {
         return builder.finish(lists.slab);
     }
 
-    /// An empty list declared with `old`'s origins (ink's RetainListOriginsForAssignment).
-    pub fn empty_with_origins_of(lists: Lists, old: ListReference) Error!Value {
+    /// The origins an empty list assigned over `old` keeps (ink's
+    /// RetainListOriginsForAssignment), copied into `out`.
+    pub fn retained_origins(
+        lists: Lists,
+        old: ListReference,
+        out: *[Builder.origins_max]ListOriginIndex,
+    ) Error![]const ListOriginIndex {
         var builder: Builder = .{};
         try lists.origin_names(lists.slab.view(old), &builder);
         assert(builder.items_count == 0);
-        return builder.finish(lists.slab);
+        @memcpy(out[0..builder.origins_count], builder.origins[0..builder.origins_count]);
+        return out[0..builder.origins_count];
     }
 
     pub fn count(lists: Lists, list: ListReference) u32 {
-        const items_count: u32 = @intCast(lists.slab.view(list).items.len);
-        assert(items_count <= lists.program.list_items.len);
-        return items_count;
+        return @intCast(lists.slab.view(list).items.len);
     }
 
     /// `list + int` and `list - int`: each item moves to the item of its origin with the new
@@ -317,13 +298,11 @@ pub const Lists = struct {
     }
 
     pub fn item_with_value(lists: Lists, origin: ListOriginIndex, value: i32) ?ListItemIndex {
-        assert(origin.to_int() < lists.program.list_origins.len);
         const info = lists.program.list_origins[origin.to_int()];
         const first = info.items_first.to_int();
         for (lists.program.list_items[first..][0..info.items_count], first..) |item, position| {
             if (item.value == value) return .from_int(@intCast(position));
         }
-        assert(info.items_count <= lists.program.list_items.len);
         return null;
     }
 
@@ -341,7 +320,6 @@ pub const Lists = struct {
     }
 
     fn list_binary(lists: Lists, opcode: Opcode, a: View, b: View) Error!Value {
-        assert(a.items.len <= lists.program.list_items.len);
         return switch (opcode) {
             .add => lists.@"union"(a, b),
             .subtract => lists.without(a, b),
@@ -364,7 +342,6 @@ pub const Lists = struct {
         try lists.origin_names(a, &builder);
         for (a.items) |item| try builder.add(item);
         for (b.items) |item| try builder.add(item);
-        assert(builder.items_count >= a.items.len);
         return builder.finish(lists.slab);
     }
 
@@ -374,7 +351,6 @@ pub const Lists = struct {
         for (a.items) |item| {
             if (!contains(ListItemIndex, b.items, item)) try builder.add(item);
         }
-        assert(builder.items_count <= a.items.len);
         return builder.finish(lists.slab);
     }
 
@@ -384,13 +360,11 @@ pub const Lists = struct {
         for (a.items) |item| {
             if (contains(ListItemIndex, b.items, item)) try builder.add(item);
         }
-        assert(builder.items_count <= @min(a.items.len, b.items.len));
         return builder.finish(lists.slab);
     }
 
     /// ink's `Contains`: false if either list is empty.
-    fn contains_all(lists: Lists, a: View, b: View) bool {
-        assert(a.items.len <= lists.program.list_items.len);
+    fn contains_all(_: Lists, a: View, b: View) bool {
         if (a.items.len == 0 or b.items.len == 0) return false;
         for (b.items) |item| {
             if (!contains(ListItemIndex, a.items, item)) return false;
@@ -398,8 +372,7 @@ pub const Lists = struct {
         return true;
     }
 
-    fn equal(lists: Lists, a: View, b: View) bool {
-        assert(b.items.len <= lists.program.list_items.len);
+    fn equal(_: Lists, a: View, b: View) bool {
         if (a.items.len != b.items.len) return false;
         for (a.items) |item| {
             if (!contains(ListItemIndex, b.items, item)) return false;
@@ -421,7 +394,6 @@ pub const Lists = struct {
                 (a.items.len == 0 or (a_max <= b_max and a_min <= b_min)),
             else => unreachable,
         };
-        assert(opcode != .greater or a.items.len > 0 or !result);
         return result;
     }
 
@@ -444,8 +416,6 @@ pub const Lists = struct {
     fn single(lists: Lists, item: ?ListItemIndex) Error!Value {
         const items: []const ListItemIndex = if (item) |found| &.{found} else &.{};
         const reference = try lists.slab.store(items, &.{});
-        assert(lists.slab.view(reference).items.len == items.len);
-        assert(@backingInt(reference) < lists.slab.used);
         return .{ .list = reference };
     }
 
@@ -464,7 +434,6 @@ pub const Lists = struct {
                 try builder.add(item);
             }
         }
-        assert(builder.items_count <= lists.program.list_items.len);
         return builder.finish(lists.slab);
     }
 
@@ -486,12 +455,9 @@ pub const Lists = struct {
             const name = lists.program.list_items[item.to_int()].name;
             try writer.writeAll(lists.program.strings.get(name));
         }
-        assert(items.len <= list_items_max);
     }
 
     fn display_less_than(lists: Lists, a: ListItemIndex, b: ListItemIndex) bool {
-        assert(!a.is_none());
-        assert(!b.is_none());
         const value_a = lists.item_value(a);
         const value_b = lists.item_value(b);
         if (value_a != value_b) return value_a < value_b;
@@ -534,8 +500,6 @@ const large: ListItemIndex = .from_int(4);
 const colours: ListOriginIndex = .from_int(0);
 
 fn expect_items(lists: Lists, value: Value, expected: []const ListItemIndex) !void {
-    assert(value == .list);
-    assert(expected.len < 64);
     try std.testing.expectEqualSlices(ListItemIndex, expected, lists.slab.view(value.list).items);
 }
 
@@ -634,7 +598,7 @@ test "printing a list longer than the sort buffer returns ListLimit" {
     var writer: std.Io.Writer = .fixed(&buffer);
     try std.testing.expectError(error.ListLimit, lists.write(too_long, &writer));
     try std.testing.expectEqual(@as(usize, 0), writer.end);
-    slab.truncate(0);
+    slab.used = 0;
     const fits = try slab.store(many[0..list_items_max], &.{});
     var discarding: std.Io.Writer.Discarding = .init(&.{});
     try lists.write(fits, &discarding.writer);

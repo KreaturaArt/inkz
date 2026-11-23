@@ -4,7 +4,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const api = @import("api.zig");
+const api = @import("story.zig");
 const ink_json = @import("../core/ink_json.zig");
 const Program = @import("../core/program.zig").Program;
 const Story = api.Story;
@@ -32,7 +32,7 @@ const Recorder = struct {
 
     fn greet(
         context: ?*anyopaque,
-        story: *@import("story.zig").Story,
+        story: *api.Story,
         arguments: []const Value,
     ) anyerror!Value {
         assert(context != null);
@@ -172,7 +172,7 @@ test "the public API, method by method" {
 }
 
 fn exercise_flows_and_saves(story: *Story, recorder: *Recorder, gpa: std.mem.Allocator) !void {
-    assert(story.core.state.memory.len > 0);
+    assert(story.state.memory.len > 0);
     assert(story.can_continue() == false);
     try story.switch_flow("side");
     try std.testing.expectEqualStrings("side", story.current_flow_name().get());
@@ -302,8 +302,8 @@ fn drop(gpa: std.mem.Allocator, story: *Story) void {
 }
 
 fn play_until_error(story: *Story) !void {
-    assert(story.core.state.memory.len > 0);
-    assert(story.core.program.containers.len > 0);
+    assert(story.state.memory.len > 0);
+    assert(story.program.containers.len > 0);
     var lines: u32 = 0;
     while (story.can_continue()) : (lines += 1) {
         if (lines == 1000) return error.NoLimitHit;
@@ -373,11 +373,6 @@ test "every limit error of cont" {
             .expected = error.ListLimit,
         },
         .{
-            .knot = "globals_after_newline",
-            .limits = .{ .patch_entries_max = 1 },
-            .expected = error.LookaheadLogLimit,
-        },
-        .{
             .knot = "two_globals",
             .limits = .{ .observer_events_max = 1 },
             .expected = error.ObserverQueueLimit,
@@ -407,7 +402,7 @@ test "every limit error of cont" {
 }
 
 test "the other limit errors" {
-    // Observers, flows, text length, evaluate depth and save size: the
+    // Observers, flows, text length, the output stash and save size: the
     // call that runs into each.
     const gpa = std.testing.allocator;
     var arena_state: std.heap.ArenaAllocator = .init(gpa);
@@ -419,7 +414,7 @@ test "the other limit errors" {
     try story.init_from_json(
         gpa,
         json,
-        .{ .limits = .{ .observers_max = 1, .flows_max = 2, .load_nodes_max = 16 } },
+        .{ .limits = .{ .observers_max = 1, .flows_max = 2, .load_bytes_max = 256 } },
     );
     defer story.deinit(gpa);
     try story.observe_variable("score", &recorder, Recorder.observe);
@@ -437,10 +432,17 @@ test "the other limit errors" {
     try story.to_json(&saved.writer);
     try std.testing.expectError(error.SaveTooLarge, story.load_json(saved.written()));
     var tight: Story = undefined;
-    try tight.init_from_json(gpa, json, .{ .limits = .{ .flow_parking_bytes_max = 32 } });
+    try tight.init_from_json(gpa, json, .{ .limits = .{ .output_stash_bytes_max = 4 } });
     defer tight.deinit(gpa);
-    try std.testing.expectError(error.FlowParkingLimit, tight.switch_flow("parked"));
     try tight.bind_external_function("greet", .{}, &recorder, Recorder.greet);
+    // The line's one output item (12 bytes) can't be set aside for the evaluation.
+    try tight.choose_path_string("knot", .{});
+    _ = try tight.cont();
+    var discarding: std.Io.Writer.Discarding = .init(&.{});
+    try std.testing.expectError(
+        error.OutputStashLimit,
+        tight.evaluate_function("double", &.{.{ .integer = 1 }}, &discarding.writer),
+    );
     const long_name = try arena.alloc(u8, 70_000);
     @memset(long_name, 'n');
     try tight.set_variable("name", .{ .string = long_name });

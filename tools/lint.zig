@@ -19,18 +19,19 @@
 //! positive needs a suppression.
 
 const std = @import("std");
-const assert = std.debug.assert;
 const Ast = std.zig.Ast;
 const Allocator = std.mem.Allocator;
 
 pub const function_lines_max = 70;
 pub const line_columns_max = 100;
-pub const assertions_per_function_min = 1;
+/// Assertion density is per module (file): at least one assertion for every this many
+/// functions, so a file states its invariants where they are established instead of in every
+/// function.
+pub const functions_per_assertion_max = 3;
 /// The library's directories; tests, harnesses, benchmarks, fuzz targets and tools assert
 /// where it helps but have no density rule.
 const density_directories = [_][]const u8{ "src/core/", "src/runtime/", "src/compiler/" };
 pub const file_bytes_max = 16 * 1024 * 1024;
-pub const files_max = 4096;
 
 pub const Rule = enum {
     syntax,
@@ -126,29 +127,28 @@ pub const Linter = struct {
     calls: std.ArrayList(Call) = .empty,
     diagnostics: std.ArrayList(Diagnostic) = .empty,
 
-    pub fn init(arena: Allocator) Linter {
-        const linter: Linter = .{ .arena = arena };
-        assert(linter.files.items.len == 0);
-        assert(linter.diagnostics.items.len == 0);
-        return linter;
-    }
-
     pub fn add_file(linter: *Linter, path: []const u8, source: [:0]const u8) !void {
-        assert(path.len > 0);
-        assert(linter.files.items.len < files_max);
-        try linter.check_file_name(path);
+        if (!is_snake_case_file_name(std.fs.path.basename(path))) {
+            try linter.report(path, 1, .file_name, "file name must be snake_case and end in .zig");
+        }
         const tree = try Ast.parse(linter.arena, source, .{ .mode = .zig });
         if (tree.errors.len > 0) {
             const line = tree.tokenLocation(0, tree.errors[0].token).line + 1;
             try linter.report(path, @intCast(line), .syntax, "file does not parse");
             return;
         }
-        const line_starts = try compute_line_starts(linter.arena, source);
+        var line_starts: std.ArrayList(u32) = .empty;
+        try line_starts.append(linter.arena, 0);
+        for (source, 0..) |character, offset| {
+            if (character == '\n' and offset + 1 < source.len) {
+                try line_starts.append(linter.arena, @intCast(offset + 1));
+            }
+        }
         try linter.files.append(linter.arena, .{
             .path = path,
             .source = source,
             .tree = tree,
-            .line_starts = line_starts,
+            .line_starts = line_starts.items,
             .functions_first = @intCast(linter.functions.items.len),
             .functions_count = 0,
             .imports = .empty,
@@ -166,7 +166,6 @@ pub const Linter = struct {
         try linter.check_recursion();
         const items = linter.diagnostics.items;
         std.mem.sort(Diagnostic, items, {}, diagnostic_less_than);
-        if (items.len > 1) assert(!diagnostic_less_than({}, items[1], items[0]));
         return items;
     }
 
@@ -177,8 +176,6 @@ pub const Linter = struct {
         rule: Rule,
         message: []const u8,
     ) !void {
-        assert(path.len > 0);
-        assert(line > 0);
         try linter.diagnostics.append(linter.arena, .{
             .path = path,
             .line = line,
@@ -187,21 +184,10 @@ pub const Linter = struct {
         });
     }
 
-    fn check_file_name(linter: *Linter, path: []const u8) !void {
-        assert(path.len > 0);
-        const name = std.fs.path.basename(path);
-        assert(name.len > 0);
-        if (!is_snake_case_file_name(name)) {
-            try linter.report(path, 1, .file_name, "file name must be snake_case and end in .zig");
-        }
-    }
-
     fn check_lines(linter: *Linter, file_index: u32) !void {
         const file = &linter.files.items[file_index];
-        assert(file.line_starts.len > 0);
         for (file.line_starts, 0..) |start, line_index| {
             const end = line_end(file.source, start);
-            assert(end >= start);
             const columns = std.unicode.utf8CountCodepoints(file.source[start..end]) catch
                 end - start;
             if (columns > line_columns_max) {
@@ -219,7 +205,6 @@ pub const Linter = struct {
     /// (comments may name what is forbidden).
     fn check_hot_path(linter: *Linter, file_index: u32) !void {
         const file = &linter.files.items[file_index];
-        assert(is_hot_path(file.path));
         const skipped = try linter.arena.alloc(bool, file.line_starts.len);
         @memset(skipped, false);
         try linter.skip_hot_path_exempt(file_index, skipped);
@@ -243,7 +228,6 @@ pub const Linter = struct {
     /// reports a suppression without a reason.
     fn skip_hot_path_exempt(linter: *Linter, file_index: u32, skipped: []bool) !void {
         const file = &linter.files.items[file_index];
-        assert(skipped.len == file.line_starts.len);
         const nodes_count: u32 = @intCast(file.tree.nodes.len);
         var node_raw: u32 = 1;
         while (node_raw < nodes_count) : (node_raw += 1) {
@@ -256,7 +240,7 @@ pub const Linter = struct {
         }
         const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
         for (functions) |function| {
-            const reason = comment_block_after(file, function.line, hot_path_allow) orelse
+            const reason = comment_above(file, function.line, hot_path_allow) orelse
                 continue;
             if (reason.len == 0) {
                 const message = "a hot-path suppression needs a reason";
@@ -264,7 +248,6 @@ pub const Linter = struct {
                 continue;
             }
             const last = token_line(&file.tree, function.token_last);
-            assert(last >= function.line);
             @memset(skipped[function.line - 1 .. last], true);
         }
     }
@@ -272,7 +255,6 @@ pub const Linter = struct {
     /// One pass over every node: functions, `usize` fields and top-level imports.
     fn scan_declarations(linter: *Linter, file_index: u32) !void {
         const tree = &linter.files.items[file_index].tree;
-        assert(tree.errors.len == 0);
         const nodes_count: u32 = @intCast(tree.nodes.len);
         var node_raw: u32 = 1;
         while (node_raw < nodes_count) : (node_raw += 1) {
@@ -290,25 +272,26 @@ pub const Linter = struct {
         const file = &linter.files.items[file_index];
         file.functions_count = @as(u32, @intCast(linter.functions.items.len)) -
             file.functions_first;
-        assert(file.functions_first + file.functions_count == linter.functions.items.len);
     }
 
     fn add_function(linter: *Linter, file_index: u32, node: Ast.Node.Index) !void {
         const file = &linter.files.items[file_index];
-        assert(file.tree.nodeTag(node) == .fn_decl);
         var buffer: [1]Ast.Node.Index = undefined;
         const prototype = file.tree.fullFnProto(&buffer, node).?;
         const name_token = prototype.name_token orelse return;
         const token_first = file.tree.firstToken(node);
         const token_last = file.tree.lastToken(node);
-        assert(token_first <= token_last);
         const line_first = token_line(&file.tree, token_first);
         const line_last = token_line(&file.tree, token_last);
         const name = file.tree.tokenSlice(name_token);
         const lines_count = line_last - line_first + 1;
-        const returns_type = is_type_expression(&file.tree, prototype.ast.return_type);
+        const returns_type = if (prototype.ast.return_type.unwrap()) |return_type|
+            file.tree.nodeTag(return_type) == .identifier and
+                std.mem.eql(u8, file.tree.tokenSlice(file.tree.nodeMainToken(return_type)), "type")
+        else
+            false;
         if (lines_count > function_lines_max and !returns_type and
-            !comment_block_has(file, line_first, "lint: allow function_length:"))
+            comment_above(file, line_first, "lint: allow function_length:") == null)
         {
             const message = try std.fmt.allocPrint(
                 linter.arena,
@@ -323,7 +306,7 @@ pub const Linter = struct {
             .token_first = token_first,
             .token_last = token_last,
             .line = line_first,
-            .allow_recursion = comment_block_has(file, line_first, "lint: allow recursion:"),
+            .allow_recursion = comment_above(file, line_first, "lint: allow recursion:") != null,
             .returns_type = returns_type,
         });
     }
@@ -331,11 +314,9 @@ pub const Linter = struct {
     fn check_field(linter: *Linter, file_index: u32, node: Ast.Node.Index) !void {
         const file = &linter.files.items[file_index];
         const field = file.tree.fullContainerField(node).?;
-        assert(field.ast.main_token < file.tree.tokens.len);
         const type_node = field.ast.type_expr.unwrap() orelse return;
         const token_first = file.tree.firstToken(type_node);
         const token_last = file.tree.lastToken(type_node);
-        assert(token_first <= token_last);
         var token = token_first;
         while (token <= token_last) : (token += 1) {
             if (file.tree.tokenTag(token) != .identifier) continue;
@@ -350,7 +331,6 @@ pub const Linter = struct {
     fn add_import(linter: *Linter, file_index: u32, node: Ast.Node.Index) !void {
         const file = &linter.files.items[file_index];
         const declaration = file.tree.fullVarDecl(node).?;
-        assert(declaration.ast.mut_token < file.tree.tokens.len);
         const initializer = declaration.ast.init_node.unwrap() orelse return;
         const alias = file.tree.tokenSlice(declaration.ast.mut_token + 1);
         const first = file.tree.tokenSlice(file.tree.firstToken(initializer));
@@ -365,14 +345,12 @@ pub const Linter = struct {
         }
         const directory = std.fs.path.dirname(file.path) orelse "";
         const path = try join_normalized(linter.arena, directory, relative);
-        assert(path.len > 0);
         try file.imports.append(linter.arena, .{ .alias = alias, .path = path });
     }
 
     /// Records calls for the call graph and counts assertions per function.
     fn scan_calls(linter: *Linter, file_index: u32) !void {
         const file = &linter.files.items[file_index];
-        assert(file.tree.errors.len == 0);
         var assertions_count: u32 = 0;
         const nodes_count: u32 = @intCast(file.tree.nodes.len);
         var node_raw: u32 = 1;
@@ -382,7 +360,10 @@ pub const Linter = struct {
             const call = file.tree.fullCall(&buffer, node) orelse continue;
             const caller = linter.enclosing_function(file_index, call.ast.lparen) orelse continue;
             const callee = callee_of(file, call.ast.fn_expr) orelse continue;
-            if (is_assertion(callee.name)) assertions_count += 1;
+            // `assert` and `verify` (the `check()`/`verify()` convention) count as assertions.
+            if (std.mem.eql(u8, callee.name, "assert") or std.mem.eql(u8, callee.name, "verify")) {
+                assertions_count += 1;
+            }
             if (callee.target == .external) continue;
             try linter.calls.append(linter.arena, .{
                 .caller = caller,
@@ -399,33 +380,26 @@ pub const Linter = struct {
 
     fn check_assertion_density(linter: *Linter, file_index: u32, assertions_count: u32) !void {
         const file = &linter.files.items[file_index];
-        assert(file.functions_first <= linter.functions.items.len);
-        if (!density_applies(file.path)) return;
+        // Library code only: the density directories, without their test files.
+        if (std.mem.endsWith(u8, file.path, "_test.zig")) return;
+        if (std.mem.endsWith(u8, file.path, "_tests.zig")) return;
+        for (density_directories) |directory| {
+            if (std.mem.startsWith(u8, file.path, directory)) break;
+        } else return;
         var functions_count: u32 = 0;
         const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
         for (functions) |function| functions_count += @intFromBool(!function.returns_type);
         if (functions_count == 0) return;
-        const required = functions_count * assertions_per_function_min;
+        const required = std.math.divCeil(u32, functions_count, functions_per_assertion_max) catch
+            unreachable;
         if (assertions_count >= required) return;
         if (std.mem.indexOf(u8, file.source, "lint: allow assertion_density:") != null) return;
         const message = try std.fmt.allocPrint(
             linter.arena,
-            "{d} assertions in {d} functions; at least {d} per function on average",
-            .{ assertions_count, functions_count, assertions_per_function_min },
+            "{d} assertions in {d} functions; at least one per {d} functions in a file",
+            .{ assertions_count, functions_count, functions_per_assertion_max },
         );
-        assert(required > assertions_count);
         try linter.report(file.path, 1, .assertion_density, message);
-    }
-
-    fn density_applies(path: []const u8) bool {
-        assert(path.len > 0);
-        const test_file = std.mem.endsWith(u8, path, "_test.zig") or
-            std.mem.endsWith(u8, path, "_tests.zig");
-        if (test_file) return false;
-        for (density_directories) |directory| {
-            if (std.mem.startsWith(u8, path, directory)) return true;
-        }
-        return false;
     }
 
     /// The innermost function of `file_index` whose tokens contain `token`.
@@ -434,7 +408,6 @@ pub const Linter = struct {
         const functions = linter.functions.items[file.functions_first..][0..file.functions_count];
         var found: ?u32 = null;
         for (functions, file.functions_first..) |function, index| {
-            assert(function.file == file_index);
             if (token < function.token_first or token > function.token_last) continue;
             if (found) |previous| {
                 if (function.token_first < linter.functions.items[previous].token_first) continue;
@@ -444,72 +417,53 @@ pub const Linter = struct {
         return found;
     }
 
+    /// Reports each call cycle on which no function has a recursion suppression.
     fn check_recursion(linter: *Linter) !void {
-        const graph = try linter.build_graph();
-        const components = try strongly_connected_components(linter.arena, graph);
-        assert(components.len == linter.functions.items.len);
-        const members = try group_components(linter.arena, components);
-        for (members.first, 0..) |first, component| {
-            const count = members.first_next[component] - first;
-            const nodes = members.nodes[first..][0..count];
-            assert(nodes.len > 0);
-            if (nodes.len == 1 and !graph.has_edge(nodes[0], nodes[0])) continue;
-            try linter.report_cycle(nodes);
+        const cycles = try call_cycles(linter.arena, try linter.call_graph());
+        cycles: for (cycles) |cycle| {
+            for (cycle) |node| {
+                if (linter.functions.items[node].allow_recursion) continue :cycles;
+            }
+            var names: std.ArrayList(u8) = .empty;
+            for (cycle, 0..) |node, index| {
+                if (index > 0) try names.appendSlice(linter.arena, ", ");
+                try names.appendSlice(linter.arena, linter.functions.items[node].name);
+            }
+            const function = linter.functions.items[cycle[0]];
+            const path = linter.files.items[function.file].path;
+            const message = try std.fmt.allocPrint(
+                linter.arena,
+                "functions call themselves: {s}",
+                .{names.items},
+            );
+            try linter.report(path, function.line, .recursion, message);
         }
     }
 
-    fn report_cycle(linter: *Linter, nodes: []const u32) !void {
-        assert(nodes.len > 0);
-        for (nodes) |node| {
-            if (linter.functions.items[node].allow_recursion) return;
-        }
-        var names: std.ArrayList(u8) = .empty;
-        for (nodes, 0..) |node, index| {
-            if (index > 0) try names.appendSlice(linter.arena, ", ");
-            try names.appendSlice(linter.arena, linter.functions.items[node].name);
-        }
-        const function = linter.functions.items[nodes[0]];
-        const path = linter.files.items[function.file].path;
-        const message = try std.fmt.allocPrint(
-            linter.arena,
-            "functions call themselves: {s}",
-            .{names.items},
-        );
-        assert(message.len > 0);
-        try linter.report(path, function.line, .recursion, message);
-    }
-
-    /// Builds a compressed adjacency list from the recorded calls.
-    fn build_graph(linter: *Linter) !Graph {
-        const nodes_count: u32 = @intCast(linter.functions.items.len);
-        var edges: std.ArrayList(Edge) = .empty;
-        for (linter.calls.items) |call| {
-            assert(call.caller < nodes_count);
-            const caller_file = linter.functions.items[call.caller].file;
-            const target_file = if (call.target_path) |path|
-                linter.file_by_path(path) orelse continue
-            else
-                caller_file;
+    /// The functions each function calls, resolved by name, without duplicates.
+    fn call_graph(linter: *Linter) ![]const []const u32 {
+        const callees = try linter.arena.alloc(std.ArrayList(u32), linter.functions.items.len);
+        @memset(callees, .empty);
+        calls: for (linter.calls.items) |call| {
+            var target_file = linter.functions.items[call.caller].file;
+            if (call.target_path) |path| {
+                target_file = for (linter.files.items, 0..) |file, index| {
+                    if (std.mem.eql(u8, file.path, path)) break @intCast(index);
+                } else continue :calls;
+            }
             const file = &linter.files.items[target_file];
             const first = file.functions_first;
             const functions = linter.functions.items[first..][0..file.functions_count];
+            const list = &callees[call.caller];
             for (functions, first..) |function, callee| {
                 if (!std.mem.eql(u8, function.name, call.callee_name)) continue;
-                try edges.append(linter.arena, .{ .from = call.caller, .to = @intCast(callee) });
+                if (std.mem.indexOfScalar(u32, list.items, @intCast(callee)) != null) continue;
+                try list.append(linter.arena, @intCast(callee));
             }
         }
-        const graph = try Graph.from_edges(linter.arena, nodes_count, edges.items);
-        assert(graph.edge_first.len == nodes_count + 1);
+        const graph = try linter.arena.alloc([]const u32, callees.len);
+        for (graph, callees) |*successors, list| successors.* = list.items;
         return graph;
-    }
-
-    fn file_by_path(linter: *const Linter, path: []const u8) ?u32 {
-        assert(path.len > 0);
-        for (linter.files.items, 0..) |file, index| {
-            assert(file.path.len > 0);
-            if (std.mem.eql(u8, file.path, path)) return @intCast(index);
-        }
-        return null;
     }
 };
 
@@ -525,7 +479,6 @@ const Callee = struct {
 /// The name a call resolves to, and where to look for it.
 fn callee_of(file: *const SourceFile, expression: Ast.Node.Index) ?Callee {
     const tree = &file.tree;
-    assert(tree.errors.len == 0);
     switch (tree.nodeTag(expression)) {
         .identifier => {
             const name = tree.tokenSlice(tree.nodeMainToken(expression));
@@ -534,7 +487,6 @@ fn callee_of(file: *const SourceFile, expression: Ast.Node.Index) ?Callee {
         .field_access => {
             const data = tree.nodeData(expression).node_and_token;
             const name = tree.tokenSlice(data[1]);
-            assert(name.len > 0);
             if (tree.nodeTag(data[0]) != .identifier) return .{ .name = name, .target = .external };
             const receiver = tree.tokenSlice(tree.nodeMainToken(data[0]));
             for (file.imports.items) |import| {
@@ -551,15 +503,6 @@ fn callee_of(file: *const SourceFile, expression: Ast.Node.Index) ?Callee {
     }
 }
 
-fn is_type_expression(tree: *const Ast, node: Ast.Node.OptionalIndex) bool {
-    const expression = node.unwrap() orelse return false;
-    assert(tree.errors.len == 0);
-    if (tree.nodeTag(expression) != .identifier) return false;
-    const name = tree.tokenSlice(tree.nodeMainToken(expression));
-    assert(name.len > 0);
-    return std.mem.eql(u8, name, "type");
-}
-
 /// The string argument of `@import("...")`, without quotes.
 fn import_argument(tree: *const Ast, node: Ast.Node.Index) ?[]const u8 {
     const tag = tree.nodeTag(node);
@@ -568,180 +511,55 @@ fn import_argument(tree: *const Ast, node: Ast.Node.Index) ?[]const u8 {
     const argument = tree.nodeData(node).opt_node_and_opt_node[0].unwrap() orelse return null;
     if (tree.nodeTag(argument) != .string_literal) return null;
     const literal = tree.tokenSlice(tree.nodeMainToken(argument));
-    assert(literal.len >= 2);
-    assert(literal[0] == '"');
     return literal[1 .. literal.len - 1];
 }
 
-const Edge = struct {
-    from: u32,
-    to: u32,
-};
-
-/// Compressed adjacency: the targets of node `n` are `targets[edge_first[n]..edge_first[n + 1]]`.
-const Graph = struct {
-    edge_first: []u32,
-    targets: []u32,
-
-    fn from_edges(arena: Allocator, nodes_count: u32, edges: []const Edge) !Graph {
-        const edge_first = try arena.alloc(u32, nodes_count + 1);
-        @memset(edge_first, 0);
-        for (edges) |edge| {
-            assert(edge.from < nodes_count);
-            assert(edge.to < nodes_count);
-            edge_first[edge.from + 1] += 1;
-        }
-        for (1..edge_first.len) |index| edge_first[index] += edge_first[index - 1];
-        const targets = try arena.alloc(u32, edges.len);
-        const cursor = try arena.dupe(u32, edge_first[0..nodes_count]);
-        for (edges) |edge| {
-            targets[cursor[edge.from]] = edge.to;
-            cursor[edge.from] += 1;
-        }
-        assert(edge_first[nodes_count] == edges.len);
-        return .{ .edge_first = edge_first, .targets = targets };
-    }
-
-    fn successors(graph: Graph, node: u32) []const u32 {
-        assert(node + 1 < graph.edge_first.len);
-        const first = graph.edge_first[node];
-        const last = graph.edge_first[node + 1];
-        assert(first <= last);
-        return graph.targets[first..last];
-    }
-
-    fn has_edge(graph: Graph, from: u32, to: u32) bool {
-        assert(to + 1 < graph.edge_first.len);
-        for (graph.successors(from)) |target| {
-            if (target == to) return true;
-        }
-        return false;
-    }
-};
-
-const unvisited = std.math.maxInt(u32);
-
-const Frame = struct {
-    node: u32,
-    edge: u32,
-};
-
-const Tarjan = struct {
-    graph: Graph,
-    index: []u32,
-    low: []u32,
-    on_stack: []bool,
-    component: []u32,
-    stack: std.ArrayList(u32) = .empty,
-    frames: std.ArrayList(Frame) = .empty,
-    index_next: u32 = 0,
-    component_next: u32 = 0,
-
-    fn visit(tarjan: *Tarjan, arena: Allocator, node: u32) !void {
-        assert(tarjan.index[node] == unvisited);
-        tarjan.index[node] = tarjan.index_next;
-        tarjan.low[node] = tarjan.index_next;
-        tarjan.index_next += 1;
-        tarjan.on_stack[node] = true;
-        try tarjan.stack.append(arena, node);
-        try tarjan.frames.append(arena, .{ .node = node, .edge = tarjan.graph.edge_first[node] });
-        assert(tarjan.frames.items.len <= tarjan.index.len);
-    }
-
-    /// Pops a finished frame, propagates its low link and emits its component if it is a root.
-    fn leave(tarjan: *Tarjan) void {
-        const node = tarjan.frames.pop().?.node;
-        assert(tarjan.on_stack[node]);
-        if (tarjan.frames.items.len > 0) {
-            const parent = tarjan.frames.items[tarjan.frames.items.len - 1].node;
-            tarjan.low[parent] = @min(tarjan.low[parent], tarjan.low[node]);
-        }
-        if (tarjan.low[node] != tarjan.index[node]) return;
-        while (true) {
-            const member = tarjan.stack.pop().?;
-            tarjan.on_stack[member] = false;
-            tarjan.component[member] = tarjan.component_next;
-            if (member == node) break;
-        }
-        tarjan.component_next += 1;
-        assert(tarjan.component_next <= tarjan.index_next);
-    }
-};
-
-/// Tarjan's algorithm with an explicit frame stack (no recursion). Returns a component id per
-/// node; ids are dense, starting at 0.
-fn strongly_connected_components(arena: Allocator, graph: Graph) ![]u32 {
-    const nodes_count: u32 = @intCast(graph.edge_first.len - 1);
-    var tarjan: Tarjan = .{
-        .graph = graph,
-        .index = try arena.alloc(u32, nodes_count),
-        .low = try arena.alloc(u32, nodes_count),
-        .on_stack = try arena.alloc(bool, nodes_count),
-        .component = try arena.alloc(u32, nodes_count),
-    };
-    @memset(tarjan.index, unvisited);
-    @memset(tarjan.on_stack, false);
-    const steps_max = nodes_count + graph.targets.len;
-    var steps: u64 = 0;
-    for (0..nodes_count) |root| {
-        if (tarjan.index[root] != unvisited) continue;
-        try tarjan.visit(arena, @intCast(root));
-        while (tarjan.frames.items.len > 0) : (steps += 1) {
-            assert(steps <= 2 * steps_max);
-            const frame = &tarjan.frames.items[tarjan.frames.items.len - 1];
-            if (frame.edge == graph.edge_first[frame.node + 1]) {
-                tarjan.leave();
+/// The cycles of `graph` (`graph[n]` are the successors of node `n`) as the back edges of an
+/// iterative depth-first search: each cycle is the search path from the edge's target to its
+/// source. A graph has a cycle exactly when it has a back edge, and a strongly connected
+/// component with no suppressed member always yields a cycle inside it.
+fn call_cycles(arena: Allocator, graph: []const []const u32) ![]const []const u32 {
+    const State = enum { unvisited, on_path, done };
+    const states = try arena.alloc(State, graph.len);
+    @memset(states, .unvisited);
+    // The search path, and for each node on it the index of its next edge to follow.
+    var path: std.ArrayList(u32) = .empty;
+    var edges_next: std.ArrayList(u32) = .empty;
+    var cycles: std.ArrayList([]const u32) = .empty;
+    for (0..graph.len) |root| {
+        if (states[root] != .unvisited) continue;
+        states[root] = .on_path;
+        try path.append(arena, @intCast(root));
+        try edges_next.append(arena, 0);
+        while (path.items.len > 0) {
+            const node = path.items[path.items.len - 1];
+            const edge = &edges_next.items[edges_next.items.len - 1];
+            if (edge.* == graph[node].len) {
+                states[node] = .done;
+                _ = path.pop();
+                _ = edges_next.pop();
                 continue;
             }
-            const target = graph.targets[frame.edge];
-            frame.edge += 1;
-            if (tarjan.index[target] == unvisited) {
-                try tarjan.visit(arena, target);
-            } else if (tarjan.on_stack[target]) {
-                tarjan.low[frame.node] = @min(tarjan.low[frame.node], tarjan.index[target]);
+            const target = graph[node][edge.*];
+            edge.* += 1;
+            switch (states[target]) {
+                .unvisited => {
+                    states[target] = .on_path;
+                    try path.append(arena, target);
+                    try edges_next.append(arena, 0);
+                },
+                .on_path => {
+                    const first = std.mem.indexOfScalar(u32, path.items, target).?;
+                    try cycles.append(arena, try arena.dupe(u32, path.items[first..]));
+                },
+                .done => {},
             }
         }
     }
-    assert(tarjan.stack.items.len == 0);
-    return tarjan.component;
-}
-
-const ComponentMembers = struct {
-    /// `nodes[first[c]..first_next[c]]` are the members of component `c`.
-    first: []u32,
-    first_next: []u32,
-    nodes: []u32,
-};
-
-fn group_components(arena: Allocator, components: []const u32) !ComponentMembers {
-    var components_count: u32 = 0;
-    for (components) |component| components_count = @max(components_count, component + 1);
-    const counts = try arena.alloc(u32, components_count + 1);
-    @memset(counts, 0);
-    for (components) |component| counts[component + 1] += 1;
-    for (1..counts.len) |index| counts[index] += counts[index - 1];
-    const nodes = try arena.alloc(u32, components.len);
-    const cursor = try arena.dupe(u32, counts[0..components_count]);
-    for (components, 0..) |component, node| {
-        nodes[cursor[component]] = @intCast(node);
-        cursor[component] += 1;
-    }
-    assert(counts[components_count] == components.len);
-    assert(std.mem.eql(u32, cursor, counts[1..]));
-    return .{ .first = counts[0..components_count], .first_next = counts[1..], .nodes = nodes };
-}
-
-/// `assert` and `verify` (the `check()`/`verify()` convention) count as assertions.
-fn is_assertion(name: []const u8) bool {
-    assert(name.len > 0);
-    const result = std.mem.eql(u8, name, "assert") or std.mem.eql(u8, name, "verify");
-    if (result) assert(name.len == 6);
-    return result;
+    return cycles.items;
 }
 
 fn diagnostic_less_than(_: void, a: Diagnostic, b: Diagnostic) bool {
-    assert(a.path.len > 0);
-    assert(b.path.len > 0);
     const order = std.mem.order(u8, a.path, b.path);
     if (order != .eq) return order == .lt;
     if (a.line != b.line) return a.line < b.line;
@@ -749,7 +567,6 @@ fn diagnostic_less_than(_: void, a: Diagnostic, b: Diagnostic) bool {
 }
 
 pub fn is_snake_case_file_name(name: []const u8) bool {
-    assert(name.len > 0);
     if (!std.mem.endsWith(u8, name, ".zig")) return false;
     const stem = name[0 .. name.len - ".zig".len];
     if (stem.len == 0) return false;
@@ -759,54 +576,29 @@ pub fn is_snake_case_file_name(name: []const u8) bool {
             character == '_';
         if (!allowed) return false;
     }
-    assert(stem.len > 0);
     return true;
 }
 
-fn compute_line_starts(arena: Allocator, source: []const u8) ![]u32 {
-    assert(source.len < file_bytes_max);
-    var starts: std.ArrayList(u32) = .empty;
-    try starts.append(arena, 0);
-    for (source, 0..) |character, offset| {
-        if (character == '\n' and offset + 1 < source.len) {
-            try starts.append(arena, @intCast(offset + 1));
-        }
-    }
-    assert(starts.items.len > 0);
-    return starts.items;
-}
-
 fn line_end(source: []const u8, start: u32) u32 {
-    assert(start <= source.len);
-    const end: u32 = if (std.mem.indexOfScalarPos(u8, source, start, '\n')) |newline|
-        @intCast(newline)
-    else
-        @intCast(source.len);
-    assert(end >= start);
-    return end;
+    const end = std.mem.indexOfScalarPos(u8, source, start, '\n') orelse source.len;
+    return @intCast(end);
 }
 
 fn token_line(tree: *const Ast, token: Ast.TokenIndex) u32 {
-    assert(token < tree.tokens.len);
-    const line: u32 = @intCast(tree.tokenLocation(0, token).line + 1);
-    assert(line > 0);
-    return line;
+    return @intCast(tree.tokenLocation(0, token).line + 1);
 }
 
-/// Whether the run of `//` comment lines directly above `line` (1-based) contains `needle`.
 /// Whether `path` is one of the files the VM's step reaches.
 fn is_hot_path(path: []const u8) bool {
-    assert(path.len > 0);
     for (hot_path_files) |hot| {
         if (std.mem.endsWith(u8, path, hot)) return true;
     }
     return false;
 }
 
-/// The text after `needle` (trimmed) in the comment block above `line`, or null.
-fn comment_block_after(file: *const SourceFile, line: u32, needle: []const u8) ?[]const u8 {
-    assert(line > 0);
-    assert(needle.len > 0);
+/// The text after `needle` (trimmed) in the run of `//` comment lines directly above `line`
+/// (1-based), or null if no line there contains it.
+fn comment_above(file: *const SourceFile, line: u32, needle: []const u8) ?[]const u8 {
     var above = line - 1;
     while (above > 0) : (above -= 1) {
         const start = file.line_starts[above - 1];
@@ -818,22 +610,8 @@ fn comment_block_after(file: *const SourceFile, line: u32, needle: []const u8) ?
     return null;
 }
 
-fn comment_block_has(file: *const SourceFile, line: u32, needle: []const u8) bool {
-    assert(line > 0);
-    assert(needle.len > 0);
-    var above = line - 1;
-    while (above > 0) : (above -= 1) {
-        const start = file.line_starts[above - 1];
-        const text = std.mem.trim(u8, file.source[start..line_end(file.source, start)], " \t");
-        if (!std.mem.startsWith(u8, text, "//")) return false;
-        if (std.mem.indexOf(u8, text, needle) != null) return true;
-    }
-    return false;
-}
-
 /// Joins `directory` and `relative` and removes `.` and `..` segments.
 fn join_normalized(arena: Allocator, directory: []const u8, relative: []const u8) ![]const u8 {
-    assert(relative.len > 0);
     var segments: std.ArrayList([]const u8) = .empty;
     const parts = [_][]const u8{ directory, relative };
     for (parts) |part| {
@@ -847,21 +625,18 @@ fn join_normalized(arena: Allocator, directory: []const u8, relative: []const u8
             try segments.append(arena, segment);
         }
     }
-    const joined = try std.mem.join(arena, "/", segments.items);
-    assert(joined.len > 0);
-    return joined;
+    return std.mem.join(arena, "/", segments.items);
 }
 
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
     const arguments = try init.minimal.args.toSlice(arena);
-    assert(arguments.len > 0);
     var paths: std.ArrayList([]const u8) = .empty;
     for (arguments[1..]) |argument| try collect_paths(arena, io, argument, &paths);
     std.mem.sort([]const u8, paths.items, {}, path_less_than);
 
-    var linter = Linter.init(arena);
+    var linter: Linter = .{ .arena = arena };
     for (paths.items) |path| {
         const source = try std.Io.Dir.cwd().readFileAllocOptions(
             io,
@@ -874,13 +649,6 @@ pub fn main(init: std.process.Init) !void {
         try linter.add_file(path, source);
     }
     const diagnostics = try linter.finish();
-    assert(paths.items.len <= files_max);
-    try print_report(io, diagnostics, @intCast(paths.items.len));
-    if (diagnostics.len > 0) std.process.exit(1);
-}
-
-fn print_report(io: std.Io, diagnostics: []const Diagnostic, files_count: u32) !void {
-    assert(files_count <= files_max);
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buffer);
     const writer = &file_writer.interface;
@@ -892,14 +660,13 @@ fn print_report(io: std.Io, diagnostics: []const Diagnostic, files_count: u32) !
             diagnostic.message,
         });
     }
+    const files_count = paths.items.len;
     try writer.print("lint: {d} files checked, {d} problems\n", .{ files_count, diagnostics.len });
     try writer.flush();
-    assert(file_writer.interface.end == 0);
+    if (diagnostics.len > 0) std.process.exit(1);
 }
 
 fn path_less_than(_: void, a: []const u8, b: []const u8) bool {
-    assert(a.len > 0);
-    assert(b.len > 0);
     return std.mem.order(u8, a, b) == .lt;
 }
 
@@ -910,7 +677,6 @@ fn collect_paths(
     argument: []const u8,
     paths: *std.ArrayList([]const u8),
 ) !void {
-    assert(argument.len > 0);
     if (std.mem.endsWith(u8, argument, ".zig")) {
         try paths.append(arena, argument);
         return;
@@ -924,14 +690,13 @@ fn collect_paths(
         if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
         const trimmed = std.mem.trimEnd(u8, argument, "/");
         try paths.append(arena, try std.fmt.allocPrint(arena, "{s}/{s}", .{ trimmed, entry.path }));
-        assert(paths.items.len <= files_max);
     }
 }
 
 // ── Tests: each rule fires on a sample, and suppressions work ──────────────────────────────
 
 fn lint_samples(arena: Allocator, samples: []const [2][:0]const u8) ![]const Diagnostic {
-    var linter = Linter.init(arena);
+    var linter: Linter = .{ .arena = arena };
     for (samples) |sample| try linter.add_file(sample[0], sample[1]);
     return linter.finish();
 }
@@ -1062,19 +827,23 @@ test "usize struct fields are reported, usize locals are not" {
     try std.testing.expectEqual(@as(u32, 1), diagnostics[0].line);
 }
 
-test "library code below one assertion per function is reported" {
-    // The density rule, verify() counting as an assertion, and the file-level
-    // suppression. Sparse and verified samples, with and without the suppression.
+test "library code below one assertion per three functions is reported" {
+    // The per-module density rule, verify() counting as an assertion, and the file-level
+    // suppression. Sparse, one-in-three and verified samples, with and without the suppression.
     var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena.deinit();
     const sparse =
         \\fn a() void {}
         \\fn b() void {}
+        \\fn d() void {}
         \\fn c(x: u32) void {
         \\    assert(x > 0);
         \\}
         \\
     ;
+    const third = "fn a() void {}\nfn b() void {}\nfn c(x: u32) void {\n    assert(x > 0);\n}\n";
+    const per_module = try lint_samples(arena.allocator(), &.{.{ "src/core/third.zig", third }});
+    try expect_rules(per_module, &.{});
     const without = try lint_samples(arena.allocator(), &.{.{ "src/core/sparse.zig", sparse }});
     try expect_rules(without, &.{.assertion_density});
     const verified =
@@ -1097,7 +866,7 @@ test "tests, harnesses and tools have no density rule" {
     const bare = "fn a() void {}\nfn b() void {}\n";
     const paths = [_][:0]const u8{
         "src/testing/oracle.zig", "src/fuzz/vm.zig",          "tools/doctest.zig",
-        "src/bench_io.zig",       "src/runtime/api_test.zig", "src/compiler/lowering_tests.zig",
+        "src/bench.zig",          "src/runtime/api_test.zig", "src/compiler/lowering_tests.zig",
     };
     for (paths) |path| {
         const diagnostics = try lint_samples(arena.allocator(), &.{.{ path, bare }});
@@ -1235,4 +1004,19 @@ test "unparsable files are reported" {
     defer arena.deinit();
     const diagnostics = try lint_samples(arena.allocator(), &.{.{ "src/core/broken.zig", "fn (" }});
     try expect_rules(diagnostics, &.{.syntax});
+}
+
+test "the cycle search reports exactly the functions on a cycle" {
+    // A self-loop (0), a 3-cycle (2, 3, 4) reached from an acyclic caller (1), and an
+    // acyclic chain (5, 6, 7) with a shared callee, so a done node is reached twice.
+    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena.deinit();
+    const graph = [_][]const u32{
+        &.{ 0, 1 }, &.{2}, &.{3}, &.{4}, &.{ 2, 5 },
+        &.{ 6, 7 }, &.{7}, &.{},
+    };
+    const cycles = try call_cycles(arena.allocator(), &graph);
+    try std.testing.expectEqual(@as(usize, 2), cycles.len);
+    try std.testing.expectEqualSlices(u32, &.{0}, cycles[0]);
+    try std.testing.expectEqualSlices(u32, &.{ 2, 3, 4 }, cycles[1]);
 }

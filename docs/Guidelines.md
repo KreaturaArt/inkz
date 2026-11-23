@@ -15,7 +15,7 @@ The ```zig blocks in this file are compiled, and their tests run, in `zig build 
 | A limit on everything | Every buffer and every loop has a bound. Runtime bounds are in `Limits` (`src/core/limits.zig`), overridable through `Story.Options.limits`; compiler bounds are in `CompilerLimits`. Exceeding one returns a named error (`error.FrameLimit`, `error.HeapLimit`, `error.StepLimit`, ...). | Tests per limit |
 | A total memory budget | `Limits.bytes_total(shape)` is the exact size of the one allocation `Story.init` makes. | A test pins the default budget; the init allocation equals it. |
 | Explicitly sized types | `u32` for indices and counts. `usize` appears only at slice-indexing boundaries, through `@as(usize, index)` or `@intCast`. | Lint: a `usize` struct field is an error. |
-| Real assertions | Preconditions on arguments, postconditions on results, invariants: facts the code relies on that could be false. Not the type restated, a value just assigned, or the same check in every function. Split compound assertions; use `if (a) assert(b)` for implications; assert the positive and the negative space. | Lint: library code (src/core, src/runtime, src/compiler) averages at least one per function per file (`// lint: allow assertion_density: <reason>` to suppress); tests and tools are exempt. |
+| Real assertions | Preconditions on arguments, postconditions on results, invariants: facts the code relies on that could be false. Not the type restated, a value just assigned, or the same check in every function. Split compound assertions; use `if (a) assert(b)` for implications; assert the positive and the negative space. | Lint, per module: each library file (src/core, src/runtime, src/compiler) has at least one assertion for every three functions (`// lint: allow assertion_density: <reason>` to suppress); tests and tools are exempt. An invariant is asserted once, where it is established or relied on, not in every function that passes it along. |
 | Pair assertions | A structure with invariants has `check() Fault` (a named enum, `.ok` when valid) and `verify()`, which panics unless `check()` is `.ok`, in every build mode. Tests corrupt a structure and inspect `check()`; code calls `verify()` at boundaries. | Tests; death tests (`zig build test-death`) for real panics |
 | Compile-time relationship asserts | `@sizeOf(Value) == 12`, an opcode fits a byte, limits fit their index types. | Compile time |
 | Static allocation | The runtime allocates only in `Story.init` (and `init_from_json`), never afterwards, including in `load_json`. The compiler allocates in its compile phase, sized from the source length, with a bounded retry. | The zero-allocation gate (below) |
@@ -33,11 +33,11 @@ by typed `u32` index, never by pointer. `inkz.core.index.Index(name)` makes a di
 so a container index can't be passed where a string id is expected. `.none` means "no
 index" and is never a valid position; `to_int` asserts on it.
 
-Without pointers, a structure can be copied with `@memcpy` (lookahead snapshots, parked
-flows), relocated (heap compaction), saved and checked by `check()`.
+Without pointers, a structure can be copied with `@memcpy` (lookahead snapshots),
+relocated (heap compaction), saved and checked by `check()`.
 
-The rule is strict for data that is copied, parked, saved or snapshotted by value: every
-flow buffer's element, the lookahead's `PatchEntry`, `Value`, diagnostics and flow records.
+The rule is strict for data that is copied, saved or snapshotted by value: every
+flow buffer's element, `Value`, diagnostics and flow records.
 `state.zig` checks them at compile time with `pointer_free.has_no_pointers(T)`
 (`src/core/pointer_free.zig`), which rejects any pointer, slice or function pointer
 anywhere in a type. Control structures that are never copied by value (a `Story`'s
@@ -61,8 +61,8 @@ test "index newtypes are distinct one-word types" {
 
 ### Strings go through `string_pool`
 
-Strings in a program are interned once into a `StringPool` while it is built, then frozen
-into an exact-size `FrozenStringPool`. Code holds `StringId`s and compares them as integers;
+Strings in a program are interned once into a `StringPool` while it is built; the built
+`Program` holds the pool const, so it only looks strings up. Code holds `StringId`s and compares them as integers;
 id 0 is the empty string. Runtime strings live in the state's fixed heap, referenced by
 `StringReference`, whose high bit selects the program pool or the heap.
 
@@ -73,14 +73,14 @@ const inkz = @import("inkz");
 test "interning gives one id per distinct string" {
     const gpa = std.testing.allocator;
     var pool = try inkz.core.string_pool.StringPool.init(gpa);
+    defer pool.deinit(gpa);
     const knot = try pool.intern(gpa, "knot");
     try std.testing.expectEqual(knot, try pool.intern(gpa, "knot"));
 
-    var frozen = try pool.freeze(gpa); // `pool` is invalid from here on.
-    defer frozen.deinit(gpa);
-    try std.testing.expectEqualStrings("knot", frozen.get(knot));
-    try std.testing.expectEqual(knot, frozen.find("knot").?);
-    try std.testing.expect(frozen.find("stitch") == null);
+    const program_strings: *const inkz.core.string_pool.StringPool = &pool;
+    try std.testing.expectEqualStrings("knot", program_strings.get(knot));
+    try std.testing.expectEqual(knot, program_strings.find("knot").?);
+    try std.testing.expect(program_strings.find("stitch") == null);
 }
 ```
 
@@ -161,7 +161,8 @@ if (story.can_continue()) _ = try story.cont(); // `line` and `text` are stale f
   The data plane (`vm.run`) uses `std.debug.assert`, which stays on in ReleaseSafe, the
   shipped mode, and runs whole-structure checks at batch boundaries, not per instruction.
 - The unit of work is one `cont()`: text is assembled and observers are notified once per
-  call. The heap is compacted only when an allocation fails.
+  call. The heap is compacted only when room an instruction reserves (before it
+  pops its operands) isn't free; an allocation never compacts.
 - The VM's hot path never resolves a path, hashes or compares strings, or finds a name
   (lint: `hot_path`). The hot path is every runtime file the step reaches
   (`hot_path_files` in `tools/lint.zig`): `vm`, `ops`, `native`, `call_stack`, `lists`,

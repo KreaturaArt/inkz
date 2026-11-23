@@ -7,11 +7,11 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const evaluate = @import("../runtime/evaluate.zig");
-const RuntimeStory = @import("../runtime/story.zig").Story;
-const Program = @import("../core/program.zig").Program;
+
 const Value = api.Value;
+const support = @import("support.zig");
 
 const strings_source =
     \\VAR a = "x"
@@ -40,22 +40,11 @@ const strings_source =
 /// A string argument longer than the 256-byte heaps below.
 const long_text: [256]u8 = @splat('l');
 
-/// A story on `program` with `limits`, owned by the caller.
-fn start(gpa: std.mem.Allocator, program: *const Program, limits: api.Limits) !*api.Story {
-    assert(program.containers.len > 0);
-    const story = try gpa.create(api.Story);
-    errdefer gpa.destroy(story);
-    try story.init(gpa, program, .{ .limits = limits });
-    return story;
-}
-
-fn stop(gpa: std.mem.Allocator, story: *api.Story) void {
-    story.deinit(gpa);
-    gpa.destroy(story);
-}
+const start = support.start;
+const stop = support.stop;
 
 fn heap_offset(story: *api.Story, name: []const u8) u32 {
-    const value = story.core.get_variable(name).?;
+    const value = story.state.globals[story.program.global_by_name(name).?.to_int()];
     assert(value == .string);
     return value.string.heap_offset();
 }
@@ -88,7 +77,7 @@ test "evaluate_function and choose_path_string keep every heap string argument" 
     defer program.deinit(gpa);
     const story = try start(gpa, &program, .{ .heap_bytes_max = 256 });
     defer stop(gpa, story);
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     try story.set_variable("b", .{ .string = "garbage text" });
     try story.set_variable("a", .{ .string = "first string" });
     try story.set_variable("b", .{ .string = "other string" });
@@ -133,7 +122,7 @@ test "a list argument after a string argument survives the string's compaction" 
     try story.init(gpa, &program, .{});
     defer story.deinit(gpa);
     _ = try story.cont();
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     const arguments = [_]Value{
         .{ .string = "a fairly long string argument" },
         story.get_variable("y").?.get(),
@@ -145,7 +134,7 @@ test "a list argument after a string argument survives the string's compaction" 
     try story.set_variable("x", result);
     var written: std.Io.Writer.Allocating = .init(gpa);
     defer written.deinit();
-    try story.core.write_list(story.get_variable("x").?.get().list, &written.writer);
+    try api.write_list(&story, story.get_variable("x").?.get().list, &written.writer);
     try std.testing.expectEqualStrings("a, c", written.written());
 }
 
@@ -191,7 +180,7 @@ test "on_complete_evaluate_function gets its arguments after the run compacts th
         },
     });
     defer story.deinit(gpa);
-    story.core.state.compact_always = true;
+    story.state.compact_always = true;
     try story.set_variable("a", .{ .string = "first string" });
     try story.set_variable("b", .{ .string = "other string" });
     const arguments = [_]Value{
@@ -206,8 +195,8 @@ test "on_complete_evaluate_function gets its arguments after the run compacts th
     const lengths = completion.lengths;
     try std.testing.expectEqualStrings("first string", completion.texts[0][0..lengths[0]]);
     try std.testing.expectEqualStrings("other string", completion.texts[1][0..lengths[1]]);
-    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
-    try std.testing.expectEqual(@as(u32, 0), story.core.state.evaluation.count);
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 0), story.state.evaluation.count);
 }
 
 test "evaluate_function fails closed and refuses to run while errors are kept" {
@@ -236,7 +225,7 @@ test "evaluate_function fails closed and refuses to run while errors are kept" {
     );
     var full: std.Io.Writer = .fixed(&.{});
     try std.testing.expectError(error.OutputLimit, story.evaluate_function("shout", &.{}, &full));
-    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
     try std.testing.expectEqualStrings("Hello\n", (try story.cont()).get());
     // A story error ends the flow, as in cont (ink's ForceEnd): nothing of the function
     // runs later.
@@ -253,7 +242,7 @@ test "evaluate_function fails closed and refuses to run while errors are kept" {
     try std.testing.expect(!story.can_continue());
     const doubled = try story.evaluate_function("double", &.{.{ .integer = 2 }}, &text.writer);
     try std.testing.expectEqual(@as(i32, 4), doubled.get().integer);
-    try std.testing.expectEqual(@as(u32, 1), story.core.state.call_stack.depth());
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
     try std.testing.expect(!story.can_continue());
     try std.testing.expectEqual(@as(usize, 0), text.written().len);
 }
@@ -297,7 +286,7 @@ const Nester = struct {
     text: [64]u8 = undefined,
     length: u32 = 0,
 
-    fn call(context: ?*anyopaque, story: *RuntimeStory, arguments: []const Value) anyerror!Value {
+    fn call(context: ?*anyopaque, story: *api.Story, arguments: []const Value) anyerror!Value {
         assert(arguments.len == 0);
         const nester: *Nester = @ptrCast(@alignCast(context.?));
         nester.calls += 1;
@@ -430,4 +419,98 @@ test "host misuse returns errors" {
     try std.testing.expectEqualStrings("Picked\n", (try story.cont()).get());
     try std.testing.expect(!story.can_continue());
     try std.testing.expectError(error.CannotContinue, story.cont());
+}
+
+test "evaluate_function of a knot with more parameters than arguments fails closed" {
+    // A story error leaves its expression's values on the evaluation stack, as in ink; a
+    // knot evaluated with too few arguments popped them as its parameters, below its own
+    // frame. ink returns null with the values gone; inkz asserted, and now reports a story
+    // error at the pop and leaves the values alone (found by the swarm's host target with
+    // P18.6's knots with parameters).
+    const gpa = std.testing.allocator;
+    const source =
+        \\VAR a = 0
+        \\Hello
+        \\~ a = 1 + divide(1)
+        \\-> DONE
+        \\== knot(x) ==
+        \\Knot {x}
+        \\-> DONE
+        \\== function divide(n) ==
+        \\~ return n / 0
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    try std.testing.expectEqualStrings("Hello\n", (try story.cont()).get());
+    try std.testing.expectError(error.StoryError, story.cont());
+    const left = story.state.evaluation.count;
+    try std.testing.expect(left > 0);
+    try story.reset_errors();
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    defer text.deinit();
+    try std.testing.expectError(
+        error.StoryError,
+        story.evaluate_function("knot", &.{}, &text.writer),
+    );
+    try std.testing.expect(!story.failed);
+    try std.testing.expect(!story.can_continue());
+    try std.testing.expectEqual(@as(u32, 1), story.state.call_stack.depth());
+    try std.testing.expectEqual(left, story.state.evaluation.count);
+}
+
+const Popper = struct {
+    result: ?anyerror = null,
+
+    fn call(context: ?*anyopaque, story: *api.Story, arguments: []const Value) anyerror!Value {
+        assert(arguments.len == 2);
+        const popper: *Popper = @ptrCast(@alignCast(context.?));
+        var buffer: [64]u8 = undefined;
+        var writer: std.Io.Writer = .fixed(&buffer);
+        _ = evaluate.evaluate_function(story, "knot", &.{}, &writer) catch |err| {
+            popper.result = err;
+            return .null;
+        };
+        return .null;
+    }
+};
+
+test "evaluate_function from an external can't pop the external's arguments" {
+    // P17 review: inside a bound external its arguments sit just below the evaluation's
+    // frame. A knot with more parameters than arguments popped them, the story error
+    // returned without the stack's height back, the external swallowed it and call_bound
+    // asserted on fewer values than it pushed (in ReleaseFast it raised the count over
+    // stale slots). Now the pop below the frame is the story error.
+    const gpa = std.testing.allocator;
+    const source =
+        \\EXTERNAL ext(a, b)
+        \\Hello
+        \\~ ext(5, 6)
+        \\World
+        \\-> DONE
+        \\== knot(x, y, z) ==
+        \\Knot {x}
+        \\-> DONE
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const story = try start(gpa, &program, .{});
+    defer stop(gpa, story);
+    var popper: Popper = .{};
+    try story.bind_external_function("ext", .{ .lookahead_safe = true }, &popper, Popper.call);
+    // The newline lookahead runs the external, so the first line already fails.
+    try std.testing.expectError(error.StoryError, story.cont());
+    try std.testing.expectEqual(@as(?anyerror, error.StoryError), popper.result);
+    try std.testing.expect(!story.failed);
+    try std.testing.expectEqual(@as(u32, 0), story.evaluation_floor);
+    // The flow ended at the pop, so the outer line runs out of content too.
+    try std.testing.expectEqual(@as(u32, 2), story.error_count());
+    var message: [128]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&message);
+    try story.write_error(0, &writer);
+    const expected = "trying to pop too many objects";
+    try std.testing.expect(std.mem.endsWith(u8, writer.buffered(), expected));
 }

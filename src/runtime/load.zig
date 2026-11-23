@@ -1,9 +1,10 @@
 //! Loading: ink's StoryState.LoadJson for save format versions 8 to 10.
 //!
-//! The save is tokenized into the state's fixed scratch (`json_tree.zig`), then read twice
-//! by the same code: first to validate it (every path, name and value, and that everything
-//! fits the limits) without touching the state, then to commit it into a reset state. A save
-//! that fails validation leaves the story unchanged. Nothing allocates.
+//! The save is parsed with std.json into the state's fixed load scratch
+//! (`Limits.load_bytes_max`; std.json's parser keeps its nesting on an explicit stack there,
+//! so the scratch bounds the depth too) and read once, into a reset state. A save that fails
+//! to load leaves the story as `reset_state` leaves it (C# ink leaves it partly loaded).
+//! Nothing allocates.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -11,28 +12,27 @@ const profile = @import("../core/profile.zig");
 const index = @import("../core/index.zig");
 const path_module = @import("../core/path.zig");
 const container_module = @import("../core/container.zig");
-const json_tree = @import("json_tree.zig");
 const value_module = @import("value.zig");
 const output_module = @import("output.zig");
 const call_stack_module = @import("call_stack.zig");
-const choices_module = @import("choices.zig");
 const state_module = @import("state.zig");
 const flows = @import("flows.zig");
-const heap = @import("heap.zig");
 const lists_module = @import("lists.zig");
 const lookahead = @import("lookahead.zig");
 const story_module = @import("story.zig");
 const Story = story_module.Story;
-const Tree = json_tree.Tree;
 const Value = value_module.Value;
 const Pointer = call_stack_module.Pointer;
-const Frame = call_stack_module.Frame;
-const Temp = call_stack_module.Temp;
 const Item = output_module.Item;
 const ContainerIndex = index.ContainerIndex;
+const Json = std.json.Value;
+const Object = std.json.ObjectMap;
+const FixedBufferAllocator = std.heap.FixedBufferAllocator;
+const Alignment = std.mem.Alignment;
 
 pub const Error = error{
-    /// Not a save ink can load: malformed JSON, a missing key, a value of the wrong type.
+    /// Not a save ink can load: malformed JSON, a repeated or missing key, a value of the
+    /// wrong type.
     InvalidSave,
     /// inkSaveVersion below 8, as ink refuses.
     SaveVersionTooOld,
@@ -45,82 +45,112 @@ pub const Error = error{
 
 pub const save_version_min = 8;
 
-/// Loads `json` into the story; on any error the story is unchanged.
+/// Loads `json` into the story; on any error but `Reentrant` the story is reset.
 pub fn load_json(story: *Story, json: []const u8) Error!void {
-    story.invalidate_views();
-    if (story.callback_depth > 0) return error.Reentrant;
+    try story_module.begin_mutation(story);
     assert(!lookahead.active(&story.state));
+    // reset_state ran at init under the same limits, so it runs again.
+    errdefer story.reset_state() catch unreachable;
     const parse_zone = profile.begin(.load_parse);
-    const tree = Tree.parse(json, story.state.load_nodes) catch |err| {
-        parse_zone.end();
-        return switch (err) {
-            error.JsonTooLarge, error.JsonTooDeep => error.SaveTooLarge,
-            error.InvalidJson => error.InvalidSave,
-        };
-    };
+    var scratch: Scratch = .{ .buffer = .init(story.state.load_scratch) };
+    // Numbers stay text, so floats parse as f32 and integers as i32, as they were saved.
+    const options: std.json.ParseOptions = .{ .parse_numbers = false };
+    const parsed = std.json.parseFromSliceLeaky(Json, scratch.allocator(), json, options);
     parse_zone.end();
-    const nodes: u32 = @intCast(tree.nodes.len);
-    story.state.peaks.load_nodes = @max(story.state.peaks.load_nodes, nodes);
-    if (tree.nodes[0].kind != .object) return error.InvalidSave;
-    var checking: Loader = .{ .story = story, .tree = tree, .commit = false };
-    {
-        const validate_zone = profile.begin(.load_validate);
-        defer validate_zone.end();
-        try checking.document();
-        try checking.check_heap();
-    }
+    assert(scratch.peak <= story.state.load_scratch.len);
+    story.state.peaks.load_bytes = @max(story.state.peaks.load_bytes, scratch.peak);
+    const document = parsed catch |err| return switch (err) {
+        error.OutOfMemory => error.SaveTooLarge,
+        else => error.InvalidSave,
+    };
     const commit_zone = profile.begin(.load_commit);
     defer commit_zone.end();
-    var committing: Loader = .{ .story = story, .tree = tree, .commit = true };
-    committing.prepare();
-    // Validation proved every step of the commit succeeds.
-    committing.document() catch unreachable;
+    var loader: Loader = .{ .story = story };
+    loader.prepare();
+    try loader.document(try as(document, .object));
     story.failed = false;
     story.state.verify();
 }
 
+/// The parse's allocator: the scratch's bump allocator, which also keeps its high-water mark
+/// (shrinking the last allocation lowers the bump). Frees keep their bytes.
+const Scratch = struct {
+    buffer: FixedBufferAllocator,
+    peak: u32 = 0,
+
+    fn allocator(scratch: *Scratch) std.mem.Allocator {
+        assert(scratch.buffer.end_index == 0);
+        return .{ .ptr = scratch, .vtable = &.{
+            .alloc = alloc,
+            .resize = resize,
+            .remap = remap,
+            .free = std.mem.Allocator.noFree,
+        } };
+    }
+
+    fn alloc(context: *anyopaque, length: usize, alignment: Alignment, caller: usize) ?[*]u8 {
+        const scratch: *Scratch = @ptrCast(@alignCast(context));
+        defer scratch.peak = @max(scratch.peak, @as(u32, @intCast(scratch.buffer.end_index)));
+        return FixedBufferAllocator.alloc(&scratch.buffer, length, alignment, caller);
+    }
+
+    fn resize(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: Alignment,
+        length: usize,
+        caller: usize,
+    ) bool {
+        const scratch: *Scratch = @ptrCast(@alignCast(context));
+        defer scratch.peak = @max(scratch.peak, @as(u32, @intCast(scratch.buffer.end_index)));
+        return FixedBufferAllocator.resize(&scratch.buffer, memory, alignment, length, caller);
+    }
+
+    fn remap(
+        context: *anyopaque,
+        memory: []u8,
+        alignment: Alignment,
+        length: usize,
+        caller: usize,
+    ) ?[*]u8 {
+        return if (resize(context, memory, alignment, length, caller)) memory.ptr else null;
+    }
+};
+
+/// `json`'s payload of kind `kind`; any other kind is not a save.
+fn as(json: Json, comptime kind: std.meta.Tag(Json)) Error!@FieldType(Json, @tagName(kind)) {
+    if (json != kind) return error.InvalidSave;
+    return @field(json, @tagName(kind));
+}
+
+fn member(object: Object, key: []const u8) Error!Json {
+    return object.get(key) orelse error.InvalidSave;
+}
+
+/// ink writes whole floats with `.0`; a number read where an int is expected must be an int.
+fn integer(json: Json) Error!i32 {
+    const text = try as(json, .number_string);
+    return std.fmt.parseInt(i32, text, 10) catch error.InvalidSave;
+}
+
 const Loader = struct {
     story: *Story,
-    tree: Tree,
-    commit: bool,
-    /// What the save needs, counted while validating.
-    string_bytes: u64 = 0,
-    list_words: u64 = 0,
-    parking_words: u64 = 0,
 
     fn state(loader: *Loader) *state_module.State {
-        assert(loader.story.state.memory.len > 0);
         return &loader.story.state;
     }
 
-    fn member(loader: *Loader, object: u32, key: []const u8) Error!u32 {
-        assert(object < loader.tree.nodes.len);
-        assert(key.len > 0);
-        if (loader.tree.nodes[object].kind != .object) return error.InvalidSave;
-        return loader.tree.get(object, key) orelse error.InvalidSave;
-    }
-
-    fn integer(loader: *Loader, node: u32) Error!i32 {
-        return loader.tree.integer(node) catch error.InvalidSave;
-    }
-
-    fn kind_is(loader: *Loader, node: u32, kind: json_tree.Kind) Error!void {
-        assert(@backingInt(kind) <= @backingInt(json_tree.Kind.null));
-        if (loader.tree.nodes[node].kind != kind) return error.InvalidSave;
-    }
-
-    /// Resets the state for the commit: the defaults, no flows, empty counts, and the heap
-    /// compacted to what survives (the defaults and the diagnostics).
+    /// Resets the state for the load: the defaults, no flows, empty counts, and the heap
+    /// compacted to what survives (the defaults).
     fn prepare(loader: *Loader) void {
         assert(!lookahead.active(&loader.story.state));
         assert(loader.story.callback_depth == 0);
-        assert(loader.commit);
         const s = loader.state();
+        flows.reset(s);
         s.evaluation.clear();
         s.call_stack.fresh(.start_of(loader.story.program.root_container()));
         s.output.clear();
         s.choices.clear();
-        flows.reset(s);
         @memcpy(s.globals, s.global_defaults);
         @memset(s.visit_counts, 0);
         @memset(s.turn_indices, state_module.never_visited);
@@ -128,55 +158,31 @@ const Loader = struct {
         s.output_stashes_count = 0;
         s.did_safe_exit = false;
         loader.story.diverted_pointer = .null;
-        s.compact(&.{});
+        s.compact();
     }
 
-    /// Validation's check that the save's strings and lists fit next to what survives.
-    fn check_heap(loader: *Loader) Error!void {
-        assert(loader.state().strings.bytes.len > 0);
-        assert(loader.state().lists.words.len > 0);
-        assert(!loader.commit);
-        const s = loader.state();
-        var retained: Retained = .{ .strings = &s.strings, .lists = &s.lists };
-        for (s.global_defaults) |*item| retained.add_value(item);
-        for (s.errors.slice()) |*diagnostic| {
-            retained.string(&diagnostic.argument);
-            retained.string(&diagnostic.detail);
-        }
-        for (s.warnings.slice()) |*diagnostic| {
-            retained.string(&diagnostic.argument);
-            retained.string(&diagnostic.detail);
-        }
-        if (loader.string_bytes + retained.bytes > s.strings.bytes.len) return error.SaveTooLarge;
-        if (loader.list_words + retained.words > s.lists.words.len) return error.SaveTooLarge;
-        if (loader.parking_words > s.parking.len) return error.SaveTooLarge;
-    }
-
-    fn document(loader: *Loader) Error!void {
-        assert(loader.tree.nodes[0].kind == .object);
-        const tree = loader.tree;
-        const version = try loader.integer(try loader.member(0, "inkSaveVersion"));
+    fn document(loader: *Loader, top: Object) Error!void {
+        const version = try integer(try member(top, "inkSaveVersion"));
         if (version < save_version_min) return error.SaveVersionTooOld;
-        if (tree.get(0, "flows")) |all| {
-            try loader.flows_of(all);
+        if (top.get("flows")) |all| {
+            try loader.flows_of(top, try as(all, .object));
         } else {
             // Before multi-flow, the one flow's keys are at the top level.
-            try loader.flow(0, flows.default_name, true);
+            try loader.flow(top, flows.default_name);
         }
-        try loader.variables(try loader.member(0, "variablesState"));
-        try loader.evaluation(try loader.member(0, "evalStack"));
-        if (tree.get(0, "currentDivertTarget")) |target| {
+        try loader.variables(try as(try member(top, "variablesState"), .object));
+        try loader.evaluation((try as(try member(top, "evalStack"), .array)).items);
+        if (top.get("currentDivertTarget")) |target| {
             var pointer = try loader.pointer_at(target);
             if (pointer.index == Pointer.container_self) pointer.index = 0;
-            if (loader.commit) loader.story.diverted_pointer = pointer;
+            loader.story.diverted_pointer = pointer;
         }
-        try loader.counts(try loader.member(0, "visitCounts"), .visits);
-        try loader.counts(try loader.member(0, "turnIndices"), .turns);
-        const turn = try loader.integer(try loader.member(0, "turnIdx"));
-        const seed = try loader.integer(try loader.member(0, "storySeed"));
+        try loader.counts(try as(try member(top, "visitCounts"), .object), .visits);
+        try loader.counts(try as(try member(top, "turnIndices"), .object), .turns);
+        const turn = try integer(try member(top, "turnIdx"));
+        const seed = try integer(try member(top, "storySeed"));
         // Missing in inkjs saves; ink reads it as 0.
-        const previous = if (tree.get(0, "previousRandom")) |node| try loader.integer(node) else 0;
-        if (!loader.commit) return;
+        const previous = if (top.get("previousRandom")) |number| try integer(number) else 0;
         const s = loader.state();
         s.turn_index = turn;
         s.story_seed = seed;
@@ -189,202 +195,112 @@ const Loader = struct {
     /// writes one flow only while it has no named flows, and that one is the default. A lone
     /// flow with another name (ink would load it as its current flow and treat it as the
     /// default on the next switch) is refused, since here the default flow is always record
-    /// 0 by its own name. Each flow name appears once.
-    fn flows_of(loader: *Loader, all: u32) Error!void {
-        assert(all < loader.tree.nodes.len);
-        assert(loader.state().flows.len > 0);
-        try loader.kind_is(all, .object);
-        const tree = loader.tree;
-        const count = tree.count(all);
+    /// 0 by its own name. Each flow name appears once (the parser refuses a repeated key).
+    fn flows_of(loader: *Loader, top: Object, all: Object) Error!void {
+        const count = all.count();
         if (count == 0) return error.InvalidSave;
         if (count > loader.state().flows.len) return error.SaveTooLarge;
-        var current_node: ?u32 = null;
-        if (count > 1) current_node = try loader.member(0, "currentFlowName");
-        var name_buffer: [state_module.flow_name_bytes_max]u8 = undefined;
-        const current = if (current_node) |node| try loader.flow_name(node, &name_buffer) else null;
-        var found_current = current == null;
-        var has_default = false;
+        const current_name = if (count > 1) try member(top, "currentFlowName") else null;
+        const current = if (current_name) |name| try as(name, .string) else null;
+        if (!all.contains(flows.default_name)) return error.InvalidSave;
+        if (current != null and !all.contains(current.?)) return error.InvalidSave;
         for ([_]bool{ false, true }) |want_current| {
-            var members = tree.children(all);
-            while (members.next()) |name_node| {
-                var buffer: [state_module.flow_name_bytes_max]u8 = undefined;
-                const name = try loader.flow_name(name_node, &buffer);
-                if (!want_current and !loader.commit) {
-                    if (try loader.flow_name_repeated(all, name_node, name)) {
-                        return error.InvalidSave;
-                    }
-                }
+            for (all.keys(), all.values()) |name, flow_json| {
                 const is_current = current == null or std.mem.eql(u8, name, current.?);
-                if (std.mem.eql(u8, name, flows.default_name)) has_default = true;
                 if (is_current == want_current) {
-                    if (is_current) found_current = true;
-                    try loader.flow(name_node + 1, name, is_current);
+                    try loader.flow(try as(flow_json, .object), name);
                 }
-                members.skip_value(name_node + 1);
             }
         }
-        if (!found_current or !has_default) return error.InvalidSave;
     }
 
-    /// Whether a flow before `name_node` in the flows object `all` is also named `name`.
-    fn flow_name_repeated(loader: *Loader, all: u32, name_node: u32, name: []const u8) Error!bool {
-        assert(name.len > 0);
-        assert(name_node > all);
-        var members = loader.tree.children(all);
-        while (members.next()) |earlier| {
-            if (earlier == name_node) return false;
-            var buffer: [state_module.flow_name_bytes_max]u8 = undefined;
-            if (std.mem.eql(u8, try loader.flow_name(earlier, &buffer), name)) return true;
-            members.skip_value(earlier + 1);
-        }
-        unreachable; // `name_node` is a member of `all`.
-    }
-
-    fn flow_name(
-        loader: *Loader,
-        node: u32,
-        buffer: *[state_module.flow_name_bytes_max]u8,
-    ) Error![]const u8 {
-        assert(buffer.len == state_module.flow_name_bytes_max);
-        try loader.kind_is(node, .string);
-        var writer: std.Io.Writer = .fixed(buffer);
-        loader.tree.decode(node, &writer) catch return error.SaveTooLarge;
-        if (writer.end == 0) return error.InvalidSave;
-        return writer.buffered();
-    }
-
-    /// One flow (ink's Flow constructor): loaded into the live buffers, then parked unless
-    /// it is the current flow.
-    fn flow(loader: *Loader, node: u32, name: []const u8, is_current: bool) Error!void {
-        assert(name.len > 0);
-        try loader.kind_is(node, .object);
+    /// One flow (ink's Flow constructor): loaded into its own buffers, selected as the live
+    /// ones. The current flow comes last, so it stays selected.
+    fn flow(loader: *Loader, object: Object, name: []const u8) Error!void {
+        if (name.len == 0) return error.InvalidSave;
+        if (name.len > state_module.flow_name_bytes_max) return error.SaveTooLarge;
         const s = loader.state();
-        if (loader.commit) {
-            s.call_stack.frames.clear();
-            s.call_stack.threads.clear();
-            s.call_stack.temps.clear();
-            s.output.clear();
-            s.choices.clear();
-        }
-        var tally: Tally = .{};
-        const callstack = loader.tree.get(node, "callstack") orelse
-            try loader.member(node, "callstackThreads");
-        try loader.call_stack(callstack, &tally);
-        try loader.output_stream(try loader.member(node, "outputStream"), &tally);
-        const threads = loader.tree.get(node, "choiceThreads");
-        try loader.choices(try loader.member(node, "currentChoices"), threads, &tally);
-        try loader.check_tally(tally, is_current);
-        if (!loader.commit) return;
-        const record = flows.record_for(s, name) catch unreachable;
-        if (is_current) {
-            s.current_flow = record;
-        } else {
-            flows.park_live_into(s, record) catch unreachable;
-        }
+        const record = flows.record_for(s, name) catch return error.SaveTooLarge;
+        if (record != s.current_flow) flows.select(s, record);
+        s.call_stack.frames.clear();
+        s.call_stack.threads.clear();
+        s.call_stack.temps.clear();
+        s.output.clear();
+        s.choices.clear();
+        const callstack = object.get("callstack") orelse try member(object, "callstackThreads");
+        try loader.call_stack(try as(callstack, .object));
+        try loader.output_stream((try as(try member(object, "outputStream"), .array)).items);
+        const threads = if (object.get("choiceThreads")) |saved| try as(saved, .object) else null;
+        try loader.choices((try as(try member(object, "currentChoices"), .array)).items, threads);
+        assert(s.current_flow == record);
     }
 
-    /// A flow's sizes must fit the live buffers (a parked flow is unparked into them).
-    fn check_tally(loader: *Loader, tally: Tally, is_current: bool) Error!void {
-        assert(tally.frames >= tally.threads or tally.threads == 0);
-        assert(loader.state().parking.len > 0 or is_current);
-        if (loader.commit) return;
-        if (tally.threads == 0) return error.InvalidSave;
-        const flow_counts = tally.counts();
-        inline for (state_module.parked_buffers, flow_counts) |buffer, count| {
-            if (count > loader.state().flow_stack(buffer).capacity()) return error.SaveTooLarge;
-        }
-        if (!is_current) loader.parking_words += flows.parked_size(flow_counts);
-    }
-
-    fn call_stack(loader: *Loader, node: u32, tally: *Tally) Error!void {
-        const threads = try loader.member(node, "threads");
-        try loader.kind_is(threads, .array);
-        const counter = try loader.integer(try loader.member(node, "threadCounter"));
+    fn call_stack(loader: *Loader, object: Object) Error!void {
+        const threads = (try as(try member(object, "threads"), .array)).items;
+        const counter = try integer(try member(object, "threadCounter"));
         if (counter < 0) return error.InvalidSave;
-        var walker = loader.tree.children(threads);
-        while (walker.next()) |thread_node| {
-            const first = tally.frames;
-            const temps_first = tally.temps;
-            const thread = try loader.load_thread(thread_node, tally, .live);
-            tally.threads += 1;
-            if (!loader.commit) {
-                if (tally.live_count == tally.live.len) return error.SaveTooLarge;
-                tally.live[tally.live_count] = .{
-                    .counter = thread.counter,
-                    .frames = tally.frames - first,
-                    .temps = tally.temps - temps_first,
-                };
-                tally.live_count += 1;
-                continue;
-            }
-            const s = loader.state();
+        const s = loader.state();
+        for (threads) |thread_json| {
+            const first = s.call_stack.frames.count;
+            const thread = try loader.load_thread(try as(thread_json, .object), .live);
             s.call_stack.threads.push(.{
                 .frame_first = first,
-                .frame_count = tally.frames - first,
+                .frame_count = s.call_stack.frames.count - first,
                 .counter = thread.counter,
                 .previous_pointer = thread.previous,
-            }) catch unreachable;
-            assert(s.call_stack.temps.count == tally.temps or temps_first <= tally.temps);
+            }) catch return error.SaveTooLarge;
         }
-        if (loader.commit) loader.state().call_stack.thread_counter = @intCast(counter);
+        if (s.call_stack.threads.count == 0) return error.InvalidSave;
+        s.call_stack.thread_counter = @intCast(counter);
     }
 
     const Destination = enum { live, snapshot };
     const LoadedThread = struct { counter: u32, previous: Pointer };
 
     /// ink's Thread constructor: frames, their temps, the thread index, the previous pointer.
-    fn load_thread(
-        loader: *Loader,
-        node: u32,
-        tally: *Tally,
-        destination: Destination,
-    ) Error!LoadedThread {
-        assert(@backingInt(destination) <= 1);
-        try loader.kind_is(node, .object);
-        const counter = try loader.integer(try loader.member(node, "threadIndex"));
+    fn load_thread(loader: *Loader, object: Object, destination: Destination) Error!LoadedThread {
+        const counter = try integer(try member(object, "threadIndex"));
         if (counter < 0) return error.InvalidSave;
-        const frames = try loader.member(node, "callstack");
-        try loader.kind_is(frames, .array);
-        var walker = loader.tree.children(frames);
-        var count: u32 = 0;
-        while (walker.next()) |frame_node| : (count += 1) {
-            try loader.frame(frame_node, tally, destination);
-        }
-        if (count == 0) return error.InvalidSave;
+        const frames = (try as(try member(object, "callstack"), .array)).items;
+        if (frames.len == 0) return error.InvalidSave;
+        for (frames) |frame_json| try loader.frame(try as(frame_json, .object), destination);
         var previous: Pointer = .null;
-        if (loader.tree.get(node, "previousContentObject")) |path| previous = try loader.pointer_at(
-            path,
-        );
+        if (object.get("previousContentObject")) |path| previous = try loader.pointer_at(path);
         return .{ .counter = @intCast(counter), .previous = previous };
     }
 
-    fn frame(loader: *Loader, node: u32, tally: *Tally, destination: Destination) Error!void {
-        try loader.kind_is(node, .object);
-        const kind_number = try loader.integer(try loader.member(node, "type"));
+    fn frame(loader: *Loader, object: Object, destination: Destination) Error!void {
+        const kind_number = try integer(try member(object, "type"));
         if (kind_number < 0 or kind_number > 2) return error.InvalidSave;
         var pointer: Pointer = .null;
-        if (loader.tree.get(node, "cPath")) |path| {
+        if (object.get("cPath")) |path| {
             const container = try loader.container_at(path);
-            const position = try loader.integer(try loader.member(node, "idx"));
+            const position = try integer(try member(object, "idx"));
             if (position < 0) return error.InvalidSave;
             pointer = .{ .container = container, .index = @intCast(position) };
         }
-        const in_expression = loader.tree.boolean(try loader.member(node, "exp")) catch
-            return error.InvalidSave;
-        const temps_first = tally.temps_of(destination);
-        var temps_count: u32 = 0;
-        if (loader.tree.get(node, "temp")) |temps| {
-            try loader.kind_is(temps, .object);
-            var members = loader.tree.children(temps);
-            while (members.next()) |name_node| : (temps_count += 1) {
-                try loader.temp(name_node, destination);
-                members.skip_value(name_node + 1);
+        const in_expression = switch (try member(object, "exp")) {
+            .bool => |flag| flag,
+            else => return error.InvalidSave,
+        };
+        const s = loader.state();
+        const frames = if (destination == .live) &s.call_stack.frames else &s.choices.frames;
+        const temps = if (destination == .live) &s.call_stack.temps else &s.choices.temps;
+        const temps_first = temps.count;
+        if (object.get("temp")) |saved| {
+            const named = try as(saved, .object);
+            for (named.keys(), named.values()) |name_text, value_json| {
+                // Temp names are program strings; a name the story doesn't have means it
+                // changed.
+                const name = loader.story.program.strings.find(name_text) orelse
+                    return error.SaveDoesNotMatchStory;
+                const value = try loader.load_value(value_json);
+                temps.push(.{ .name = name, .value = value }) catch return error.SaveTooLarge;
             }
         }
-        if (temps_count > loader.state().limits.temps_per_frame_max) return error.SaveTooLarge;
-        tally.add_frame(destination, temps_count);
-        if (!loader.commit) return;
-        const loaded: Frame = .{
+        const temps_count = temps.count - temps_first;
+        if (temps_count > s.limits.temps_per_frame_max) return error.SaveTooLarge;
+        frames.push(.{
             .pointer = pointer,
             .temps_first = temps_first,
             .evaluation_height = 0,
@@ -392,162 +308,104 @@ const Loader = struct {
             .temps_count = @intCast(temps_count),
             .kind = @fromBackingInt(@intCast(@as(u8, @intCast(kind_number)))),
             .in_expression_evaluation = in_expression,
-        };
-        const s = loader.state();
-        const stack = if (destination == .live) &s.call_stack.frames else &s.choices.frames;
-        stack.push(loaded) catch unreachable;
+        }) catch return error.SaveTooLarge;
     }
 
-    fn temp(loader: *Loader, name_node: u32, destination: Destination) Error!void {
-        assert(name_node + 1 < loader.tree.nodes.len);
-        assert(@backingInt(destination) <= 1);
-        var buffer: [256]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buffer);
-        loader.tree.decode(name_node, &writer) catch return error.InvalidSave;
-        // Temp names are program strings; a name the story doesn't have means it changed.
-        const name = loader.story.program.strings.find(writer.buffered()) orelse
-            return error.SaveDoesNotMatchStory;
-        const value = try loader.load_value(name_node + 1);
-        if (!loader.commit) return;
-        const s = loader.state();
-        const temps = if (destination == .live) &s.call_stack.temps else &s.choices.temps;
-        temps.push(.{ .name = name, .value = value }) catch unreachable;
-    }
-
-    fn output_stream(loader: *Loader, node: u32, tally: *Tally) Error!void {
-        try loader.kind_is(node, .array);
-        var walker = loader.tree.children(node);
-        while (walker.next()) |item_node| {
-            const item = try loader.output_item(item_node);
-            tally.items += 1;
-            if (item.kind == .begin_string) tally.marks += 1;
-            if (!loader.commit) continue;
-            const output = &loader.state().output;
+    fn output_stream(loader: *Loader, items: []const Json) Error!void {
+        const output = &loader.state().output;
+        for (items) |item_json| {
+            const item = try loader.output_item(item_json);
             if (item.kind == .begin_string) output.string_marks.push(output.items.count) catch
-                unreachable;
-            output.items.push(item) catch unreachable;
+                return error.SaveTooLarge;
+            output.items.push(item) catch return error.SaveTooLarge;
         }
     }
 
-    fn output_item(loader: *Loader, node: u32) Error!Item {
-        const tree = loader.tree;
-        if (tree.nodes[node].kind == .object) {
-            const text = try loader.member(node, "#");
-            const reference = try loader.string(text, 0);
-            const length = try loader.decoded_length(text);
-            return text_item(reference, length, .tag, .non_whitespace);
+    fn output_item(loader: *Loader, json: Json) Error!Item {
+        if (json == .object) {
+            const text = try as(try member(json.object, "#"), .string);
+            return text_item(try loader.string(text), text, .tag, .non_whitespace);
         }
-        try loader.kind_is(node, .string);
-        const raw = tree.raw(node);
-        const command: ?output_module.Kind = if (std.mem.eql(u8, raw, "<>"))
+        const text = try as(json, .string);
+        const command: ?output_module.Kind = if (std.mem.eql(u8, text, "<>"))
             .glue
-        else if (std.mem.eql(u8, raw, "str"))
+        else if (std.mem.eql(u8, text, "str"))
             .begin_string
-        else if (std.mem.eql(u8, raw, "#"))
+        else if (std.mem.eql(u8, text, "#"))
             .begin_tag
-        else if (std.mem.eql(u8, raw, "/#"))
+        else if (std.mem.eql(u8, text, "/#"))
             .end_tag
         else
             null;
         if (command) |kind| return Item.command(kind);
-        if (std.mem.eql(u8, raw, "\\n")) {
-            return text_item(loader.story.program_newline(), 1, .text, .newline);
+        if (std.mem.eql(u8, text, "\n")) {
+            return text_item(story_module.program_newline(loader.story), text, .text, .newline);
         }
-        if (raw.len == 0 or raw[0] != '^') return error.InvalidSave;
-        const reference = try loader.string(node, 1);
-        const length = try loader.decoded_length(node) - 1;
-        const class: output_module.Class = if (loader.commit)
-            .of(loader.story.text_of(reference))
-        else
-            .non_whitespace;
-        return text_item(reference, length, .text, class);
+        if (text.len == 0 or text[0] != '^') return error.InvalidSave;
+        const reference = try loader.string(text[1..]);
+        return text_item(reference, text[1..], .text, .of(text[1..]));
     }
 
     fn text_item(
         reference: value_module.StringReference,
-        length: u16,
+        text: []const u8,
         kind: output_module.Kind,
         class: output_module.Class,
     ) Item {
         assert(kind == .text or kind == .tag);
-        const item: Item = .{
+        // `string` refused longer text.
+        assert(text.len <= std.math.maxInt(u16));
+        return .{
             .string = reference,
             .start = 0,
             .kind = kind,
             .class = class,
-            .length = length,
+            .length = @intCast(text.len),
         };
-        assert(item.length == length);
-        return item;
     }
 
-    fn decoded_length(loader: *Loader, node: u32) Error!u16 {
-        const length = loader.tree.string_length(node) catch return error.InvalidSave;
-        if (length > std.math.maxInt(u16)) return error.SaveTooLarge;
-        return @intCast(length);
-    }
-
-    /// The decoded text of string `node` from byte `skip` on, as a new heap string. While
-    /// validating, only its size is counted.
-    fn string(loader: *Loader, node: u32, skip: u32) Error!value_module.StringReference {
-        try loader.kind_is(node, .string);
-        const length = loader.tree.string_length(node) catch return error.InvalidSave;
-        if (length < skip) return error.InvalidSave;
-        const size = length - skip;
-        if (!loader.commit) {
-            loader.string_bytes += std.mem.alignForward(u64, 8 + size, 4);
-            return .none;
-        }
+    /// `text` as a new heap string.
+    fn string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
+        if (text.len > std.math.maxInt(u16)) return error.SaveTooLarge;
         const s = loader.state();
-        const reference = s.strings.try_allocate(size) orelse unreachable;
-        var writer: std.Io.Writer = .fixed(s.strings.get(reference));
-        loader.tree.decode_from(node, skip, &writer) catch unreachable;
-        assert(writer.end == size);
+        const reference = s.strings.try_allocate(@intCast(text.len)) orelse
+            return error.SaveTooLarge;
+        @memcpy(s.strings.get(reference), text);
         return reference;
     }
 
-    fn choices(loader: *Loader, node: u32, threads: ?u32, tally: *Tally) Error!void {
-        assert(tally.choices == 0);
-        try loader.kind_is(node, .array);
-        if (threads) |object| try loader.kind_is(object, .object);
-        var walker = loader.tree.children(node);
+    fn choices(loader: *Loader, saved: []const Json, threads: ?Object) Error!void {
         // ink keeps each choice's saved index; this runtime keeps whether the choices had
         // been indexed (some index isn't 0) and recomputes the indices.
         var indexed = false;
-        while (walker.next()) |choice_node| {
-            try loader.choice(choice_node, threads, tally);
-            const saved_index = try loader.integer(try loader.member(choice_node, "index"));
-            if (saved_index != 0) indexed = true;
+        for (saved) |choice_json| {
+            const object = try as(choice_json, .object);
+            try loader.choice(object, threads);
+            if (try integer(try member(object, "index")) != 0) indexed = true;
         }
-        if (!loader.commit) return;
         const records = &loader.state().choices;
+        assert(records.count() == saved.len);
         records.indexed_count = if (indexed) records.count() else 0;
     }
 
     /// ink's JObjectToChoice and LoadFlowChoiceThreads.
-    fn choice(loader: *Loader, node: u32, threads: ?u32, tally: *Tally) Error!void {
-        assert(threads == null or threads.? < loader.tree.nodes.len);
-        try loader.kind_is(node, .object);
-        const text = try loader.string(try loader.member(node, "text"), 0);
-        const source = try loader.pointer_at(try loader.member(node, "originalChoicePath"));
-        const counter = try loader.integer(try loader.member(node, "originalThreadIndex"));
+    fn choice(loader: *Loader, object: Object, threads: ?Object) Error!void {
+        const text = try loader.string(try as(try member(object, "text"), .string));
+        const source = try loader.pointer_at(try member(object, "originalChoicePath"));
+        const counter = try integer(try member(object, "originalThreadIndex"));
         if (counter < 0) return error.InvalidSave;
-        var target = try loader.pointer_at(try loader.member(node, "targetPath"));
+        var target = try loader.pointer_at(try member(object, "targetPath"));
         if (target.index == Pointer.container_self) target.index = 0;
-        const tags_first = tally.tags;
-        if (loader.tree.get(node, "tags")) |tags| {
-            try loader.kind_is(tags, .array);
-            var walker = loader.tree.children(tags);
-            while (walker.next()) |tag| {
-                const reference = try loader.string(tag, 0);
-                tally.tags += 1;
-                if (loader.commit) loader.state().choices.tags.push(reference) catch unreachable;
+        const records = &loader.state().choices;
+        const tags_first = records.tags.count;
+        if (object.get("tags")) |tags| {
+            for ((try as(tags, .array)).items) |tag| {
+                const reference = try loader.string(try as(tag, .string));
+                records.tags.push(reference) catch return error.SaveTooLarge;
             }
         }
-        const snapshot = try loader.choice_thread(@intCast(counter), threads, tally);
-        tally.choices += 1;
-        if (!loader.commit) return;
-        loader.state().choices.records.push(.{
+        const snapshot = try loader.choice_thread(@intCast(counter), threads);
+        records.records.push(.{
             .text = text,
             .target = target,
             .source = source,
@@ -555,89 +413,71 @@ const Loader = struct {
             .thread_counter = @intCast(counter),
             .tags_first = tags_first,
             .snapshot = snapshot,
-            .tags_count = @intCast(tally.tags - tags_first),
+            .tags_count = @intCast(records.tags.count - tags_first),
             .invisible_default = false,
-        }) catch unreachable;
+        }) catch return error.SaveTooLarge;
     }
 
     /// The choice's stored thread: a copy of the live thread with its index, or the saved
     /// one in choiceThreads.
-    fn choice_thread(loader: *Loader, counter: u32, threads: ?u32, tally: *Tally) Error!u32 {
-        assert(threads == null or threads.? < loader.tree.nodes.len);
+    fn choice_thread(loader: *Loader, counter: u32, threads: ?Object) Error!u32 {
         const s = loader.state();
-        const snapshot_index = tally.snapshots;
-        const frames_first = tally.snapshot_frames;
-        const temps_first = tally.snapshot_temps;
+        const snapshot_index = s.choices.snapshots.count;
+        const frames_first = s.choices.frames.count;
+        const temps_first = s.choices.temps.count;
         var previous: Pointer = .null;
-        const copied = if (loader.commit) live_thread(s, counter) else null;
-        if (copied) |thread| {
+        if (live_thread(s, counter)) |thread| {
             previous = thread.previous_pointer;
             const frames = s.call_stack.frames.slice()[thread.frame_first..][0..thread.frame_count];
             for (frames) |live| {
                 var copy = live;
                 copy.temps_first = s.choices.temps.count;
                 const temps = s.call_stack.temps.slice()[live.temps_first..][0..live.temps_count];
-                s.choices.temps.push_slice(temps) catch unreachable;
-                s.choices.frames.push(copy) catch unreachable;
-                tally.add_frame(.snapshot, live.temps_count);
+                s.choices.temps.push_slice(temps) catch return error.SaveTooLarge;
+                s.choices.frames.push(copy) catch return error.SaveTooLarge;
             }
-        } else if (!loader.commit and tally.has_live_thread(counter)) {
-            // Validation: the live thread's sizes were counted as it loaded.
-            tally.copy_live_thread(counter);
         } else {
             var name_buffer: [16]u8 = undefined;
             const key = std.fmt.bufPrint(&name_buffer, "{d}", .{counter}) catch unreachable;
             const object = threads orelse return error.InvalidSave;
-            const saved = loader.tree.get(object, key) orelse return error.InvalidSave;
-            previous = (try loader.load_thread(saved, tally, .snapshot)).previous;
+            const saved = object.get(key) orelse return error.InvalidSave;
+            previous = (try loader.load_thread(try as(saved, .object), .snapshot)).previous;
         }
-        tally.snapshots += 1;
-        if (!loader.commit) return snapshot_index;
         s.choices.snapshots.push(.{
             .frames_first = frames_first,
-            .frames_count = tally.snapshot_frames - frames_first,
+            .frames_count = s.choices.frames.count - frames_first,
             .temps_first = temps_first,
-            .temps_count = tally.snapshot_temps - temps_first,
+            .temps_count = s.choices.temps.count - temps_first,
             .previous_pointer = previous,
-        }) catch unreachable;
+        }) catch return error.SaveTooLarge;
         return snapshot_index;
     }
 
-    fn variables(loader: *Loader, node: u32) Error!void {
-        assert(loader.state().globals.len == loader.story.program.globals.len);
-        try loader.kind_is(node, .object);
+    fn variables(loader: *Loader, saved: Object) Error!void {
         const program = loader.story.program;
         for (program.globals, 0..) |global, slot| {
-            const saved = loader.tree.get(node, program.strings.get(global.name)) orelse continue;
-            const value = try loader.load_value(saved);
-            if (loader.commit) loader.state().globals[slot] = value;
+            const value = saved.get(program.strings.get(global.name)) orelse continue;
+            loader.state().globals[slot] = try loader.load_value(value);
         }
     }
 
-    fn evaluation(loader: *Loader, node: u32) Error!void {
-        try loader.kind_is(node, .array);
-        const capacity = loader.state().evaluation.capacity();
-        if (loader.tree.count(node) > capacity) return error.SaveTooLarge;
-        var walker = loader.tree.children(node);
-        while (walker.next()) |value_node| {
-            const value = try loader.load_value(value_node);
-            if (loader.commit) loader.state().evaluation.push(value) catch unreachable;
+    fn evaluation(loader: *Loader, saved: []const Json) Error!void {
+        assert(loader.state().evaluation.count == 0);
+        for (saved) |value_json| {
+            const value = try loader.load_value(value_json);
+            loader.state().evaluation.push(value) catch return error.SaveTooLarge;
         }
     }
 
     const Counts = enum { visits, turns };
 
-    fn counts(loader: *Loader, node: u32, which: Counts) Error!void {
-        assert(@backingInt(which) <= 1);
-        try loader.kind_is(node, .object);
-        var members = loader.tree.children(node);
-        while (members.next()) |name| {
-            const number = try loader.integer(name + 1);
-            members.skip_value(name + 1);
+    fn counts(loader: *Loader, saved: Object, which: Counts) Error!void {
+        for (saved.keys(), saved.values()) |path, number_json| {
+            const number = try integer(number_json);
             // ink keeps counts by path; a path the story doesn't count is kept but unused.
-            const container = loader.container_at(name) catch continue;
-            const slot = loader.story.program.table().get(container).count_slot;
-            if (slot == container_module.no_count_slot or !loader.commit) continue;
+            const container = loader.container_at(.{ .string = path }) catch continue;
+            const slot = loader.story.program.container_info(container).count_slot;
+            if (slot == container_module.no_count_slot) continue;
             const s = loader.state();
             switch (which) {
                 .visits => s.visit_counts[slot] = @bitCast(number),
@@ -647,138 +487,96 @@ const Loader = struct {
     }
 
     /// ink's JTokenToRuntimeObject for a value.
-    fn load_value(loader: *Loader, node: u32) Error!Value {
-        const tree = loader.tree;
-        switch (tree.nodes[node].kind) {
-            .number => {
-                if (tree.is_float(node)) {
-                    return .{ .float = tree.float(node) catch return error.InvalidSave };
+    fn load_value(loader: *Loader, json: Json) Error!Value {
+        switch (json) {
+            .number_string => |text| {
+                if (std.mem.indexOfAny(u8, text, ".eE") == null) {
+                    return .{ .integer = try integer(json) };
                 }
-                return .{ .integer = try loader.integer(node) };
+                return .{ .float = std.fmt.parseFloat(f32, text) catch return error.InvalidSave };
             },
-            .true, .false => return .{ .bool = tree.nodes[node].kind == .true },
-            .string => {
-                const raw = tree.raw(node);
-                if (std.mem.eql(u8, raw, "void")) return .null;
-                const newline = loader.story.program_newline();
-                if (std.mem.eql(u8, raw, "\\n")) return .{ .string = newline };
-                if (raw.len == 0 or raw[0] != '^') return error.InvalidSave;
-                return .{ .string = try loader.string(node, 1) };
+            .bool => |flag| return .{ .bool = flag },
+            .string => |text| {
+                if (std.mem.eql(u8, text, "void")) return .null;
+                const newline = story_module.program_newline(loader.story);
+                if (std.mem.eql(u8, text, "\n")) return .{ .string = newline };
+                if (text.len == 0 or text[0] != '^') return error.InvalidSave;
+                return .{ .string = try loader.string(text[1..]) };
             },
-            .object => return loader.object_value(node),
-            .array, .null => return error.InvalidSave,
+            .object => |object| return loader.object_value(object),
+            .array, .null, .integer, .float => return error.InvalidSave,
         }
     }
 
-    fn object_value(loader: *Loader, node: u32) Error!Value {
-        assert(loader.tree.nodes[node].kind == .object);
-        const tree = loader.tree;
-        if (tree.get(node, "^->")) |path| {
-            return .{ .divert_target = try loader.container_at(path) };
-        }
-        if (tree.get(node, "^var")) |name_node| {
-            var buffer: [256]u8 = undefined;
-            var writer: std.Io.Writer = .fixed(&buffer);
-            tree.decode(name_node, &writer) catch return error.InvalidSave;
-            const name = loader.story.program.strings.find(writer.buffered()) orelse
+    fn object_value(loader: *Loader, object: Object) Error!Value {
+        if (object.get("^->")) |path| return .{ .divert_target = try loader.container_at(path) };
+        if (object.get("^var")) |name_json| {
+            const name = loader.story.program.strings.find(try as(name_json, .string)) orelse
                 return error.SaveDoesNotMatchStory;
-            const context = try loader.integer(try loader.member(node, "ci"));
+            const context = try integer(try member(object, "ci"));
             // -1 unknown, 0 global, n > 0 a call-stack frame; a frame deeper than the stack
             // is checked where the pointer is followed.
             if (context < -1) return error.InvalidSave;
             return .{ .variable_pointer = .{ .name = name, .context = context } };
         }
-        if (tree.get(node, "#")) |text| return .{ .tag = try loader.string(text, 0) };
-        if (tree.get(node, "list")) |items| return loader.list(items, tree.get(node, "origins"));
-        return error.InvalidSave;
+        if (object.get("#")) |text| return .{ .tag = try loader.string(try as(text, .string)) };
+        const items = object.get("list") orelse return error.InvalidSave;
+        return loader.list(try as(items, .object), object.get("origins"));
     }
 
-    fn list(loader: *Loader, items_node: u32, origins_node: ?u32) Error!Value {
-        assert(items_node < loader.tree.nodes.len);
-        assert(origins_node == null or origins_node.? < loader.tree.nodes.len);
-        try loader.kind_is(items_node, .object);
-        const program = loader.story.program;
+    fn list(loader: *Loader, named: Object, origins_json: ?Json) Error!Value {
         var items: [lists_module.list_items_max]index.ListItemIndex = undefined;
         var origins: [64]index.ListOriginIndex = undefined;
-        var items_count: u32 = 0;
-        var origins_count: u32 = 0;
-        var members = loader.tree.children(items_node);
-        while (members.next()) |name| {
-            members.skip_value(name + 1);
-            if (items_count == items.len) return error.SaveTooLarge;
-            items[items_count] = try loader.list_item(name);
-            items_count += 1;
+        const names = named.keys();
+        if (names.len > items.len) return error.SaveTooLarge;
+        assert(names.len <= lists_module.list_items_max);
+        for (names, items[0..names.len]) |name, *item| item.* = try loader.list_item(name);
+        const saved_origins = if (origins_json) |json| (try as(json, .array)).items else &.{};
+        if (saved_origins.len > origins.len) return error.SaveTooLarge;
+        for (saved_origins, origins[0..saved_origins.len]) |name, *origin| {
+            origin.* = try loader.list_origin(try as(name, .string));
         }
-        if (origins_node) |node| {
-            try loader.kind_is(node, .array);
-            var walker = loader.tree.children(node);
-            while (walker.next()) |origin| {
-                if (origins_count == origins.len) return error.SaveTooLarge;
-                origins[origins_count] = try loader.list_origin(origin);
-                origins_count += 1;
-            }
-        }
-        if (!loader.commit) {
-            loader.list_words += 3 + items_count + origins_count;
-            return .{ .list = @fromBackingInt(0) };
-        }
-        _ = program;
         const slab = &loader.state().lists;
-        const reference = slab.store(items[0..items_count], origins[0..origins_count]) catch
-            unreachable;
+        const reference = slab.store(items[0..names.len], origins[0..saved_origins.len]) catch
+            return error.SaveTooLarge;
         return .{ .list = reference };
     }
 
-    fn list_item(loader: *Loader, name: u32) Error!index.ListItemIndex {
-        assert(name < loader.tree.nodes.len);
-        var buffer: [256]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buffer);
-        loader.tree.decode(name, &writer) catch return error.InvalidSave;
+    fn list_item(loader: *Loader, name: []const u8) Error!index.ListItemIndex {
         const program = loader.story.program;
-        const id = program.strings.find(writer.buffered()) orelse
-            return error.SaveDoesNotMatchStory;
+        const id = program.strings.find(name) orelse return error.SaveDoesNotMatchStory;
         for (program.list_items, 0..) |item, position| {
             if (item.full_name == id) return .from_int(@intCast(position));
         }
         return error.SaveDoesNotMatchStory;
     }
 
-    fn list_origin(loader: *Loader, name: u32) Error!index.ListOriginIndex {
-        assert(name < loader.tree.nodes.len);
-        try loader.kind_is(name, .string);
-        var buffer: [256]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buffer);
-        loader.tree.decode(name, &writer) catch return error.InvalidSave;
+    fn list_origin(loader: *Loader, name: []const u8) Error!index.ListOriginIndex {
         const program = loader.story.program;
-        const id = program.strings.find(writer.buffered()) orelse
-            return error.SaveDoesNotMatchStory;
+        const id = program.strings.find(name) orelse return error.SaveDoesNotMatchStory;
         for (program.list_origins, 0..) |origin, position| {
             if (origin.name == id) return .from_int(@intCast(position));
         }
         return error.SaveDoesNotMatchStory;
     }
 
-    /// The container at the path in string `node` (ink's ContentAtPath(...).container).
-    fn container_at(loader: *Loader, node: u32) Error!ContainerIndex {
-        const target = try loader.resolve(node);
+    /// The container at path `json` (ink's ContentAtPath(...).container).
+    fn container_at(loader: *Loader, json: Json) Error!ContainerIndex {
+        const target = try loader.resolve(json);
         if (target.content_index != null) return error.SaveDoesNotMatchStory;
         return target.container;
     }
 
     /// ink's PointerAtPath: an index at the end points at that item; a container path points
     /// at the container itself.
-    fn pointer_at(loader: *Loader, node: u32) Error!Pointer {
-        const target = try loader.resolve(node);
+    fn pointer_at(loader: *Loader, json: Json) Error!Pointer {
+        const target = try loader.resolve(json);
         const position = target.content_index orelse Pointer.container_self;
         return .{ .container = target.container, .index = position };
     }
 
-    fn resolve(loader: *Loader, node: u32) Error!path_module.Target {
-        try loader.kind_is(node, .string);
-        var buffer: [1024]u8 = undefined;
-        var writer: std.Io.Writer = .fixed(&buffer);
-        loader.tree.decode(node, &writer) catch return error.SaveTooLarge;
-        const text = writer.buffered();
+    fn resolve(loader: *Loader, json: Json) Error!path_module.Target {
+        const text = try as(json, .string);
         const program = loader.story.program;
         // The root's path is empty (ink's Path("") is the root).
         if (text.len == 0) {
@@ -796,98 +594,8 @@ const Loader = struct {
 };
 
 fn live_thread(s: *state_module.State, counter: u32) ?call_stack_module.Thread {
-    assert(s.call_stack.threads.count > 0);
     for (s.call_stack.threads.slice()) |thread| {
         if (thread.counter == counter) return thread;
     }
     return null;
 }
-
-/// What one flow holds, counted while loading it: a field per parked flow buffer.
-const Tally = struct {
-    frames: u32 = 0,
-    threads: u32 = 0,
-    temps: u32 = 0,
-    items: u32 = 0,
-    marks: u32 = 0,
-    choices: u32 = 0,
-    tags: u32 = 0,
-    snapshots: u32 = 0,
-    snapshot_frames: u32 = 0,
-    snapshot_temps: u32 = 0,
-    /// While validating: each live thread's counter and sizes, for choices that copy it.
-    live: [64]struct { counter: u32, frames: u32, temps: u32 } = undefined,
-    live_count: u32 = 0,
-
-    fn temps_of(tally: *const Tally, destination: Loader.Destination) u32 {
-        assert(tally.temps >= 0 and tally.snapshot_temps >= 0);
-        assert(@backingInt(destination) <= 1);
-        return if (destination == .live) tally.temps else tally.snapshot_temps;
-    }
-
-    fn add_frame(tally: *Tally, destination: Loader.Destination, temps: u32) void {
-        assert(temps <= std.math.maxInt(u16));
-        assert(@backingInt(destination) <= 1);
-        switch (destination) {
-            .live => {
-                tally.frames += 1;
-                tally.temps += temps;
-            },
-            .snapshot => {
-                tally.snapshot_frames += 1;
-                tally.snapshot_temps += temps;
-            },
-        }
-    }
-
-    fn has_live_thread(tally: *const Tally, counter: u32) bool {
-        assert(tally.live_count <= tally.live.len);
-        for (tally.live[0..tally.live_count]) |thread| {
-            if (thread.counter == counter) return true;
-        }
-        return false;
-    }
-
-    fn copy_live_thread(tally: *Tally, counter: u32) void {
-        assert(tally.live_count <= tally.live.len);
-        assert(tally.has_live_thread(counter));
-        for (tally.live[0..tally.live_count]) |thread| {
-            if (thread.counter != counter) continue;
-            tally.snapshot_frames += thread.frames;
-            tally.snapshot_temps += thread.temps;
-            return;
-        }
-        unreachable;
-    }
-
-    /// The counts in `parked_buffers` order.
-    fn counts(tally: *const Tally) [state_module.parked_buffers.len]u32 {
-        assert(tally.snapshots <= tally.choices);
-        var result: [state_module.parked_buffers.len]u32 = undefined;
-        inline for (state_module.parked_buffers, &result) |buffer, *count| {
-            count.* = @field(tally, @tagName(buffer));
-        }
-        return result;
-    }
-};
-
-/// Heap space the defaults and diagnostics keep through a load.
-const Retained = struct {
-    strings: *const heap.StringHeap,
-    lists: *const @import("lists.zig").ListSlab,
-    bytes: u64 = 0,
-    words: u64 = 0,
-
-    fn add_value(retained: *Retained, item: *const Value) void {
-        switch (item.*) {
-            .string, .tag => |reference| retained.string(&reference),
-            .list => |list| retained.words += retained.lists.object_words(@backingInt(list)),
-            else => {},
-        }
-    }
-
-    fn string(retained: *Retained, reference: *const value_module.StringReference) void {
-        if (reference.* == value_module.StringReference.none or !reference.is_heap()) return;
-        retained.bytes += std.mem.alignForward(u64, 8 + retained.strings.get(reference.*).len, 4);
-    }
-};

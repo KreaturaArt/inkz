@@ -6,30 +6,21 @@ const assert = std.debug.assert;
 const ink_json = @import("../core/ink_json.zig");
 const limits_module = @import("../core/limits.zig");
 const Program = @import("../core/program.zig").Program;
-const Story = @import("../runtime/story.zig").Story;
+const api = @import("../runtime/story.zig");
 const State = @import("../runtime/state.zig").State;
-const DotnetRandom = @import("../core/dotnet_random.zig").DotnetRandom;
 const cases = @import("cases.zig");
 const support = @import("support.zig");
 
-/// Plays seeds 1..`seeds` with random choices and returns all text.
-fn play(gpa: std.mem.Allocator, story: *Story, seeds: u32) ![]u8 {
+/// Plays seeds 1..`seeds` with seeded choices and returns all text.
+fn play(gpa: std.mem.Allocator, story: *api.Story, seeds: u32) ![]u8 {
     assert(seeds > 0);
-    story.on_error = support.ignore_message;
-    var text: std.ArrayList(u8) = .empty;
-    errdefer text.deinit(gpa);
+    var text: std.Io.Writer.Allocating = .init(gpa);
+    errdefer text.deinit();
     for (1..seeds + 1) |seed| {
         try story.reset_state();
-        var random = DotnetRandom.init(@intCast(seed));
-        for (0..100) |_| {
-            while (story.can_continue()) try text.appendSlice(gpa, try story.cont());
-            const count = story.visible_choices_count();
-            if (count == 0) break;
-            const index = @mod(random.next(), @as(i32, @intCast(count)));
-            try story.choose_choice_index(@intCast(index));
-        }
+        _ = try support.play(story, .{ .seeded = @intCast(seed) }, &text.writer);
     }
-    return text.toOwnedSlice(gpa);
+    return text.toOwnedSlice();
 }
 
 test "fitted limits play crime_scene the same in under 64 KiB" {
@@ -41,8 +32,8 @@ test "fitted limits play crime_scene the same in under 64 KiB" {
     defer gpa.free(json);
     var program = try ink_json.load(gpa, json);
     defer program.deinit(gpa);
-    var measured: Story = undefined;
-    try measured.init(gpa, &program, .{});
+    var measured: api.Story = undefined;
+    try measured.init(gpa, &program, .{ .on_error = support.ignore_message });
     defer measured.deinit(gpa);
     const expected = try play(gpa, &measured, 50);
     defer gpa.free(expected);
@@ -51,8 +42,8 @@ test "fitted limits play crime_scene the same in under 64 KiB" {
     try std.testing.expect(usage.frames <= measured.state.limits.frames_max);
     const limits = limits_module.fitted(usage, 2);
     try std.testing.expect(limits.bytes_total(State.shape_of(&program)) < 64 * 1024);
-    var fitted: Story = undefined;
-    try fitted.init(gpa, &program, limits);
+    var fitted: api.Story = undefined;
+    try fitted.init(gpa, &program, .{ .limits = limits, .on_error = support.ignore_message });
     defer fitted.deinit(gpa);
     const actual = try play(gpa, &fitted, 50);
     defer gpa.free(actual);

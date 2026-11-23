@@ -36,8 +36,6 @@ pub const DotnetRandom = struct {
             mj = random.seeds[ii];
         }
         for (1..5) |_| random.mix();
-        assert(random.next_index == 0);
-        assert(random.next_index_far == 21);
         return random;
     }
 
@@ -48,7 +46,6 @@ pub const DotnetRandom = struct {
             if (n >= 55) n -= 55;
             random.seeds[i] -%= random.seeds[1 + n];
             if (random.seeds[i] < 0) random.seeds[i] +%= modulus;
-            assert(random.seeds[i] >= 0);
         }
         assert(random.seeds[0] == 0);
     }
@@ -65,7 +62,6 @@ pub const DotnetRandom = struct {
         random.seeds[index] = result;
         random.next_index = index;
         random.next_index_far = index_far;
-        assert(result >= 0);
         assert(result < modulus);
         return result;
     }

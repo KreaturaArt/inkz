@@ -6,7 +6,7 @@
 //! indices are given out when a container begins, so parents come before their children.
 //!
 //! Paths in operands are fixups: they are resolved in `finish`, once every container exists,
-//! with ink's own rules (`path.zig`). A path that doesn't resolve is a diagnostic.
+//! with ink's own rules (`path.zig`). A path that doesn't resolve fails `finish`.
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -45,25 +45,8 @@ pub const Error = error{
 } || Allocator.Error;
 
 fn OperandOf(comptime opcode: Opcode) type {
-    comptime assert(@sizeOf(Opcode) == 1);
-    comptime assert(@typeInfo(Opcode).@"enum".field_names.len > 0);
     return instruction_module.Operand(instruction_module.operand_kind(opcode));
 }
-
-const plain_divert: instruction_module.DivertFlags = .{
-    .kind = .plain,
-    .conditional = false,
-    .variable = false,
-};
-
-pub const Diagnostic = struct {
-    kind: enum { unresolved_path, divert_target_not_a_container },
-    /// The path text: `diagnostic_bytes[path_first..][0..path_count]`.
-    path_first: u32,
-    path_count: u32,
-    /// The container holding the instruction with the path.
-    container: ContainerIndex,
-};
 
 const Fixup = struct {
     kind: enum { divert, choice_point, container_operand },
@@ -174,54 +157,30 @@ pub const ProgramBuilder = struct {
     list_origins: std.ArrayList(program_module.ListOrigin) = .empty,
     list_items: std.ArrayList(program_module.ListItem) = .empty,
     externals: std.ArrayList(program_module.ExternalInfo) = .empty,
-    diagnostics: std.ArrayList(Diagnostic) = .empty,
-    /// The path texts of `diagnostics`, which outlive the strings of a failed `finish`.
-    diagnostic_bytes: std.ArrayList(u8) = .empty,
     ink_version: u32 = 21,
 
     pub fn init(gpa: Allocator) Allocator.Error!ProgramBuilder {
         const strings = try string_pool.StringPool.init(gpa);
-        const builder: ProgramBuilder = .{ .gpa = gpa, .strings = strings };
-        assert(builder.containers.len == 0);
-        assert(builder.frames.items.len == 0);
-        return builder;
+        return .{ .gpa = gpa, .strings = strings };
     }
 
     pub fn deinit(builder: *ProgramBuilder) void {
-        assert(builder.frames.items.len < 1 << 16);
         const gpa = builder.gpa;
-        // After `finish` the containers have moved into the program.
-        assert(builder.diagnostics.items.len <= builder.fixups.items.len);
-        builder.strings.deinit(gpa);
-        builder.extra.deinit(gpa);
-        builder.containers.deinit(gpa);
-        builder.staged.deinit(gpa);
-        builder.finished.deinit(gpa);
-        builder.scratch.deinit(gpa);
-        builder.named_finished.deinit(gpa);
-        builder.named_scratch.deinit(gpa);
-        builder.frames.deinit(gpa);
-        builder.fixups.deinit(gpa);
-        builder.path_bytes.deinit(gpa);
-        builder.keys.deinit(gpa);
-        builder.variable_fixups.deinit(gpa);
-        builder.list_fixups.deinit(gpa);
-        builder.list_names.deinit(gpa);
-        builder.diagnostics.deinit(gpa);
-        builder.diagnostic_bytes.deinit(gpa);
-        builder.globals.deinit(gpa);
-        builder.list_origins.deinit(gpa);
-        builder.list_items.deinit(gpa);
-        builder.externals.deinit(gpa);
+        // After `finish` the containers have moved into the program. Every field with a
+        // `deinit` (the lists, the strings, the extra words) owns memory.
+        inline for (@typeInfo(ProgramBuilder).@"struct".field_names) |name| {
+            const Field = @FieldType(ProgramBuilder, name);
+            if (@typeInfo(Field) == .@"struct" and @hasDecl(Field, "deinit")) {
+                @field(builder, name).deinit(gpa);
+            }
+        }
         builder.* = undefined;
     }
 
     /// The container whose content is being built.
     pub fn current(builder: *const ProgramBuilder) ContainerIndex {
         assert(builder.frames.items.len > 0);
-        const container = builder.frames.items[builder.frames.items.len - 1].container;
-        assert(container.to_int() < builder.containers.len);
-        return container;
+        return builder.frames.items[builder.frames.items.len - 1].container;
     }
 
     /// Content items added so far to the current container.
@@ -268,7 +227,6 @@ pub const ProgramBuilder = struct {
             .scratch_first = @intCast(builder.scratch.len),
             .named_first = @intCast(builder.named_scratch.items.len),
         });
-        assert(builder.current() == container);
         return container;
     }
 
@@ -283,7 +241,6 @@ pub const ProgramBuilder = struct {
 
     /// An instruction without an operand, given at run time (`add` takes it at comptime).
     pub fn add_bare(builder: *ProgramBuilder, opcode: Opcode) !void {
-        assert(builder.frames.items.len > 0);
         assert(instruction_module.operand_kind(opcode) == .none);
         try builder.scratch.append(builder.gpa, .{ .opcode = opcode, .operand = 0 });
     }
@@ -293,12 +250,10 @@ pub const ProgramBuilder = struct {
         assert(name.len > 0);
         const container = builder.current();
         builder.containers.items(.name)[container.to_int()] = try builder.intern(name);
-        assert(!builder.containers.items(.name)[container.to_int()].is_none());
     }
 
     /// Sets the current container's counting flags (`#f` in ink's JSON).
     pub fn set_flags(builder: *ProgramBuilder, flags: ContainerFlags) void {
-        assert(builder.frames.items.len > 0);
         const container = builder.current();
         assert(flags.padding == 0);
         builder.containers.items(.flags)[container.to_int()] = flags;
@@ -322,7 +277,6 @@ pub const ProgramBuilder = struct {
             })
         else
             try std.fmt.bufPrint(&buffer, "{s}{s}{d}", .{ parent_path, separator, position });
-        assert(text.len > 0);
         return builder.strings.intern(builder.gpa, text);
     }
 
@@ -365,16 +319,11 @@ pub const ProgramBuilder = struct {
         comptime opcode: Opcode,
         operand: OperandOf(opcode),
     ) !void {
-        assert(builder.frames.items.len > 0);
-        const count_before = builder.scratch.len;
         try builder.scratch.append(builder.gpa, .init(opcode, operand));
-        assert(builder.scratch.len == count_before + 1);
     }
 
     pub fn intern(builder: *ProgramBuilder, text: []const u8) !StringId {
-        const id = try builder.strings.intern(builder.gpa, text);
-        assert(std.mem.eql(u8, builder.strings.get(id), text));
-        return id;
+        return try builder.strings.intern(builder.gpa, text);
     }
 
     /// The slot of global `name`, declared once however often it is asked for.
@@ -393,7 +342,6 @@ pub const ProgramBuilder = struct {
         name: []const u8,
         kind: @FieldType(VariableFixup, "kind"),
     ) !void {
-        assert(name.len > 0);
         const id = try builder.intern(name);
         try builder.variable_fixups.append(builder.gpa, .{
             .container = builder.current(),
@@ -442,7 +390,6 @@ pub const ProgramBuilder = struct {
         name: []const u8,
         items: []const ListItemDeclaration,
     ) !ListOriginIndex {
-        assert(name.len > 0);
         const gpa = builder.gpa;
         const origin: ListOriginIndex = .from_int(@intCast(builder.list_origins.items.len));
         const first: index.ListItemIndex = .from_int(@intCast(builder.list_items.items.len));
@@ -461,7 +408,6 @@ pub const ProgramBuilder = struct {
             .items_first = first,
             .items_count = @intCast(items.len),
         });
-        assert(builder.list_items.items.len == first.to_int() + items.len);
         return origin;
     }
 
@@ -474,18 +420,33 @@ pub const ProgramBuilder = struct {
         return .from_int(@intCast(builder.externals.items.len - 1));
     }
 
+    /// A pointer to variable `name` (ink's `{"^var": name, "ci": context}`).
+    pub fn add_variable_pointer(builder: *ProgramBuilder, name: []const u8, context: i32) !void {
+        assert(context >= -1);
+        const at = try builder.extra.add(builder.gpa, instruction_module.VariablePointer{
+            .name = try builder.intern(name),
+            .context = context,
+        });
+        try builder.add(.variable_pointer, @fromBackingInt(@intCast(at)));
+    }
+
+    /// What kind of divert, and whether it is taken only if the popped value is true.
+    pub const DivertOptions = struct {
+        kind: instruction_module.DivertKind = .plain,
+        conditional: bool = false,
+    };
+
     /// A divert to `target`, a path (`[]const u8`) or a `KeyTarget`, resolved in `finish`.
-    pub fn add_divert(
-        builder: *ProgramBuilder,
-        target: anytype,
-        flags: instruction_module.DivertFlags,
-    ) !void {
-        assert(!flags.variable);
+    pub fn add_divert(builder: *ProgramBuilder, target: anytype, options: DivertOptions) !void {
         const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
             .target_container = .none,
             .target_index = 0,
             .name = .none,
-            .flags = flags,
+            .flags = .{
+                .kind = options.kind,
+                .conditional = options.conditional,
+                .variable = false,
+            },
         });
         try builder.add_fixup(.divert, target_of(target), at);
         try builder.add(.divert, @fromBackingInt(@intCast(at)));
@@ -495,16 +456,34 @@ pub const ProgramBuilder = struct {
     pub fn add_divert_variable(
         builder: *ProgramBuilder,
         name: []const u8,
-        flags: instruction_module.DivertFlags,
+        options: DivertOptions,
     ) !void {
-        assert(flags.variable);
         const at = try builder.extra.add(builder.gpa, instruction_module.Divert{
             .target_container = .none,
             .target_index = 0,
             .name = try builder.intern(name),
-            .flags = flags,
+            .flags = .{
+                .kind = options.kind,
+                .conditional = options.conditional,
+                .variable = true,
+            },
         });
         try builder.add(.divert, @fromBackingInt(@intCast(at)));
+    }
+
+    /// A call of external function `name` with `arguments_count` arguments.
+    pub fn add_external_call(
+        builder: *ProgramBuilder,
+        name: []const u8,
+        arguments_count: u32,
+        conditional: bool,
+    ) !void {
+        const at = try builder.extra.add(builder.gpa, instruction_module.ExternalCall{
+            .external = try builder.external(name),
+            .arguments_count = arguments_count,
+            .flags = .{ .conditional = conditional },
+        });
+        try builder.add(.call_external, @fromBackingInt(@intCast(at)));
     }
 
     /// A choice point to `target`, a path or a `KeyTarget`.
@@ -557,8 +536,9 @@ pub const ProgramBuilder = struct {
         try builder.fixups.append(builder.gpa, fixup);
     }
 
-    /// Lays out every container, resolves the fixups and checks the result. On
-    /// `error.UnresolvedPaths`, `diagnostics` says which paths failed.
+    /// Lays out every container, resolves the fixups and checks the result. A target that
+    /// doesn't resolve, or a container operand's target that is not a container, is
+    /// `error.UnresolvedPaths`.
     pub fn finish(builder: *ProgramBuilder) !Program {
         assert(builder.frames.items.len == 0);
         assert(builder.staged.items.len == builder.containers.len);
@@ -575,7 +555,6 @@ pub const ProgramBuilder = struct {
         const fixups_zone = profile.begin(.builder_fixups);
         try builder.resolve_fixups(&program);
         fixups_zone.end();
-        if (builder.diagnostics.items.len > 0) return error.UnresolvedPaths;
         resolve_root_names(&program);
         program.verify();
         return program;
@@ -583,7 +562,6 @@ pub const ProgramBuilder = struct {
 
     /// Copies instructions and named entries into their final, container-ordered arrays.
     fn layout(builder: *ProgramBuilder) !Program {
-        assert(builder.staged.items.len == builder.containers.len);
         const gpa = builder.gpa;
         var instructions: std.MultiArrayList(Instruction) = .empty;
         errdefer instructions.deinit(gpa);
@@ -623,7 +601,6 @@ pub const ProgramBuilder = struct {
         named: *std.ArrayList(NamedEntry),
         count_slots: u32,
     ) !Program {
-        assert(instructions.len == builder.finished.len);
         const gpa = builder.gpa;
         // The VM's newline output items point at this string.
         const newline = try builder.intern("\n");
@@ -650,7 +627,10 @@ pub const ProgramBuilder = struct {
             list_items,
         );
         errdefer gpa.free(name_classes);
-        const strings = try builder.strings.freeze(gpa);
+        // Exact size, as the program never interns again; a failure leaves the lists whole.
+        builder.strings.bytes = .fromOwnedSlice(try builder.strings.bytes.toOwnedSlice(gpa));
+        builder.strings.ends = .fromOwnedSlice(try builder.strings.ends.toOwnedSlice(gpa));
+        const strings = builder.strings;
         builder.strings = fresh_strings;
         var containers = builder.containers;
         builder.containers = .empty;
@@ -670,15 +650,7 @@ pub const ProgramBuilder = struct {
             .ink_version = builder.ink_version,
             .newline = newline,
         };
-        assert(program.containers.len == builder.staged.items.len);
         return program;
-    }
-
-    pub fn diagnostic_path(builder: *const ProgramBuilder, diagnostic: Diagnostic) []const u8 {
-        const end = diagnostic.path_first + diagnostic.path_count;
-        assert(end <= builder.diagnostic_bytes.items.len);
-        assert(diagnostic.path_count > 0);
-        return builder.diagnostic_bytes.items[diagnostic.path_first..end];
     }
 
     /// A list item by its full name (`origin.item`) or bare name.
@@ -728,7 +700,6 @@ pub const ProgramBuilder = struct {
                 operands[at] = record;
             }
         }
-        assert(opcodes.len == builder.finished.len);
     }
 
     /// Writes the item and origin indices of every list literal.
@@ -768,18 +739,20 @@ pub const ProgramBuilder = struct {
     }
 
     fn resolve_fixups(builder: *ProgramBuilder, program: *Program) !void {
-        assert(program.containers.len == builder.staged.items.len);
         const extra: []u32 = @constCast(program.extra);
         for (builder.fixups.items) |fixup| {
             const resolved = if (fixup.key != no_key)
                 builder.resolve_key(program, fixup)
             else
                 builder.resolve_path(program, fixup);
-            if (resolved) |target| {
-                try builder.apply(program, extra, fixup, target);
-            } else try builder.report(.unresolved_path, fixup, builder.fixup_text(fixup));
+            const target = resolved orelse {
+                if (fixup.key == no_key) std.log.debug("unresolved path: {s}", .{
+                    builder.fixup_text(fixup),
+                });
+                return error.UnresolvedPaths;
+            };
+            try apply(program, extra, fixup, target);
         }
-        assert(builder.diagnostics.items.len <= builder.fixups.items.len);
     }
 
     /// A path target, resolved with ink's rules; an approximate target doesn't resolve.
@@ -788,7 +761,6 @@ pub const ProgramBuilder = struct {
         program: *const Program,
         fixup: Fixup,
     ) ?path_module.Target {
-        assert(fixup.key == no_key);
         const text = builder.fixup_text(fixup);
         const parsed = path_module.Path.parse(text, path_components_max) catch return null;
         const origin: path_module.Origin = .{ .container = fixup.container, .from_content = true };
@@ -819,21 +791,19 @@ pub const ProgramBuilder = struct {
         return target;
     }
 
-    /// A fixup's path, or a placeholder for a keyed one (for diagnostics).
+    /// A path fixup's path.
     fn fixup_text(builder: *const ProgramBuilder, fixup: Fixup) []const u8 {
         assert(fixup.path_first + fixup.path_length <= builder.path_bytes.items.len);
-        if (fixup.key != no_key) return "(keyed target)";
+        assert(fixup.key == no_key);
         return builder.path_bytes.items[fixup.path_first..][0..fixup.path_length];
     }
 
     fn apply(
-        builder: *ProgramBuilder,
         program: *Program,
         extra: []u32,
         fixup: Fixup,
         target: path_module.Target,
     ) !void {
-        assert(target.container.to_int() < program.containers.len);
         const position = target.content_index orelse 0;
         switch (fixup.kind) {
             // The first two record words of both records are the target container and index.
@@ -842,35 +812,12 @@ pub const ProgramBuilder = struct {
                 extra[fixup.at + 1] = position;
             },
             .container_operand => {
-                if (target.content_index != null) {
-                    const text = builder.fixup_text(fixup);
-                    try builder.report(.divert_target_not_a_container, fixup, text);
-                    return;
-                }
-                const info = program.table().get(fixup.container);
+                if (target.content_index != null) return error.UnresolvedPaths;
+                const info = program.container_info(fixup.container);
                 const at = info.instruction_first.to_int() + fixup.at;
                 program.instructions.items(.operand)[at] = @backingInt(target.container);
             },
         }
-        assert(!target.container.is_none());
-    }
-
-    fn report(
-        builder: *ProgramBuilder,
-        kind: @FieldType(Diagnostic, "kind"),
-        fixup: Fixup,
-        text: []const u8,
-    ) !void {
-        assert(text.len > 0);
-        const first: u32 = @intCast(builder.diagnostic_bytes.items.len);
-        try builder.diagnostic_bytes.appendSlice(builder.gpa, text);
-        try builder.diagnostics.append(builder.gpa, .{
-            .kind = kind,
-            .path_first = first,
-            .path_count = @intCast(text.len),
-            .container = fixup.container,
-        });
-        assert(builder.diagnostics.items.len > 0);
     }
 };
 
@@ -885,7 +832,6 @@ comptime {
 /// root: [text "A", nested c (1): [text "B", newline], text "C"], named knot (2) with named
 /// stitch (3); the root diverts to knot.stitch and the stitch back to its knot.
 fn build_sample(builder: *ProgramBuilder) !void {
-    assert(builder.containers.len == 0);
     _ = try builder.begin_container(.{});
     try builder.add(.text, try builder.intern("A"));
     _ = try builder.begin_container(.{ .name = "c-0" });
@@ -893,12 +839,12 @@ fn build_sample(builder: *ProgramBuilder) !void {
     try builder.add(.newline, {});
     try builder.end_container();
     try builder.add(.text, try builder.intern("C"));
-    try builder.add_divert("knot.stitch", plain_divert);
+    try builder.add_divert("knot.stitch", .{});
     const counted: ContainerFlags = .{ .visits_counted = true };
     _ = try builder.begin_container(.{ .name = "knot", .named_only = true, .flags = counted });
     try builder.add_container_operand(.read_count, ".^.stitch");
     _ = try builder.begin_container(.{ .name = "stitch", .named_only = true });
-    try builder.add_divert(".^.^", plain_divert);
+    try builder.add_divert(".^.^", .{});
     try builder.add_container_operand(.divert_target, "knot");
     try builder.end_container();
     try builder.end_container();
@@ -919,11 +865,7 @@ test "finish frees everything and leaves the builder whole when an allocation fa
     // pool init after it left `builder.strings` undefined for `deinit`. Fail every
     // allocation of building and finishing the sample in turn; the testing allocator
     // reports any leak and `deinit` any broken builder.
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        build_and_finish_sample,
-        .{},
-    );
+    try @import("allocation_failures.zig").check(build_and_finish_sample, .{});
 }
 
 test "nested containers come out contiguous with ink paths" {
@@ -956,29 +898,84 @@ test "path fixups resolve to containers and positions" {
     var program = try builder.finish();
     defer program.deinit(std.testing.allocator);
     const divert_at = @backingInt(program.instruction_at(Program.root, 3).get(.divert));
-    const divert = extra_module.get(instruction_module.Divert, program.extra, divert_at).data;
+    const divert = extra_module.get(instruction_module.Divert, program.extra, divert_at);
     try std.testing.expectEqual(ContainerIndex.from_int(3), divert.target_container);
     const knot: ContainerIndex = .from_int(2);
     const stitch: ContainerIndex = .from_int(3);
     try std.testing.expectEqual(stitch, program.instruction_at(knot, 0).get(.read_count));
     const back_at = @backingInt(program.instruction_at(stitch, 0).get(.divert));
-    const back = extra_module.get(instruction_module.Divert, program.extra, back_at).data;
+    const back = extra_module.get(instruction_module.Divert, program.extra, back_at);
     // From the stitch's content, `.^` leaves the content item and `.^` again goes to the knot.
     try std.testing.expectEqual(knot, back.target_container);
     try std.testing.expectEqual(knot, program.instruction_at(stitch, 1).get(.divert_target));
 }
 
-test "an unresolved path is a diagnostic" {
+test "each divert kind, a variable divert and an external call become their records" {
+    // The JSON loader and the compiler pass kinds, not JSON keys: emit one of each and
+    // read the instructions back.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add_divert("k", .{});
+    try builder.add_divert("k", .{ .kind = .function });
+    try builder.add_divert("k", .{ .kind = .tunnel, .conditional = true });
+    try builder.add_divert_variable("x", .{ .kind = .tunnel });
+    try builder.add_external_call("f", 2, true);
+    try builder.add_variable_pointer("x", 0);
+    _ = try builder.begin_container(.{ .name = "k", .named_only = true });
+    try builder.add(.done, {});
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    const knot: ContainerIndex = .from_int(1);
+    const expected = [_]instruction_module.DivertFlags{
+        .{ .kind = .plain, .conditional = false, .variable = false },
+        .{ .kind = .function, .conditional = false, .variable = false },
+        .{ .kind = .tunnel, .conditional = true, .variable = false },
+        .{ .kind = .tunnel, .conditional = false, .variable = true },
+    };
+    for (expected, 0..) |flags, position| {
+        const instruction = program.instruction_at(Program.root, @intCast(position));
+        const at = @backingInt(instruction.get(.divert));
+        const divert = extra_module.get(instruction_module.Divert, program.extra, at);
+        try std.testing.expectEqual(flags, divert.flags);
+        if (flags.variable) {
+            try std.testing.expectEqualStrings("x", program.strings.get(divert.name));
+        } else try std.testing.expectEqual(knot, divert.target_container);
+    }
+    const call_at = @backingInt(program.instruction_at(Program.root, 4).get(.call_external));
+    const call = extra_module.get(instruction_module.ExternalCall, program.extra, call_at);
+    try std.testing.expectEqual(@as(u32, 2), call.arguments_count);
+    try std.testing.expect(call.flags.conditional);
+    const external = program.externals[call.external.to_int()];
+    try std.testing.expectEqualStrings("f", program.strings.get(external.name));
+    const pointer_at = @backingInt(program.instruction_at(Program.root, 5).get(.variable_pointer));
+    const pointer = extra_module.get(instruction_module.VariablePointer, program.extra, pointer_at);
+    try std.testing.expectEqualStrings("x", program.strings.get(pointer.name));
+    try std.testing.expectEqual(@as(i32, 0), pointer.context);
+}
+
+test "an unresolved path fails finish" {
     // Negative space: divert to a knot that doesn't exist.
     var builder = try ProgramBuilder.init(std.testing.allocator);
     defer builder.deinit();
     _ = try builder.begin_container(.{});
-    try builder.add_divert("nowhere.at_all", plain_divert);
+    try builder.add_divert("nowhere.at_all", .{});
     try builder.end_container();
     try std.testing.expectError(error.UnresolvedPaths, builder.finish());
-    try std.testing.expectEqual(@as(usize, 1), builder.diagnostics.items.len);
-    const diagnostic = builder.diagnostics.items[0];
-    try std.testing.expectEqualStrings("nowhere.at_all", builder.diagnostic_path(diagnostic));
+}
+
+test "a divert target at content that is not a container fails finish" {
+    // Negative space: `^->` to the root's first content item, a text.
+    var builder = try ProgramBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.text, try builder.intern("A"));
+    try builder.add_container_operand(.divert_target, ".^.0");
+    try builder.end_container();
+    try std.testing.expectError(error.UnresolvedPaths, builder.finish());
 }
 
 test "check catches a corrupted program" {
@@ -1003,6 +1000,65 @@ test "check catches a corrupted program" {
     try std.testing.expectEqual(Program.Fault.ok, program.check());
 }
 
+test "named lookup goes by container" {
+    // Names resolve within one container only: `knot` at the root, `stitch` inside it,
+    // and no `stitch` at the root.
+    var builder = try ProgramBuilder.init(std.testing.allocator);
+    defer builder.deinit();
+    try build_sample(&builder);
+    var program = try builder.finish();
+    defer program.deinit(std.testing.allocator);
+    const knot = program.named_child(Program.root, "knot").?;
+    try std.testing.expectEqual(ContainerIndex.from_int(2), knot);
+    const stitch = program.named_child(knot, "stitch").?;
+    try std.testing.expectEqual(ContainerIndex.from_int(3), stitch);
+    try std.testing.expect(program.named_child(Program.root, "stitch") == null);
+    try std.testing.expectEqual(Program.root, program.parent(knot));
+    try std.testing.expectEqual(@as(u16, 2), program.container_info(stitch).depth);
+}
+
+test "check catches a broken container tree" {
+    // Negative space: corrupt one container field at a time, expect the named fault, and
+    // restore it. Depths are untrusted in images, so one at the u16 maximum must be a
+    // fault, not an overflow; so must an instruction or named range past its array.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    try build_sample(&builder);
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    const Fault = Program.Fault;
+    const depths = program.containers.items(.depth);
+    depths[1] = 2;
+    try std.testing.expectEqual(Fault.depth_not_parent_plus_one, program.check());
+    depths[1] = 1;
+    depths[2] = std.math.maxInt(u16);
+    depths[3] = 0;
+    try std.testing.expectEqual(Fault.depth_not_parent_plus_one, program.check());
+    depths[2] = 1;
+    depths[3] = 2;
+    const parents = program.containers.items(.parent);
+    parents[1] = .from_int(3);
+    try std.testing.expectEqual(Fault.parent_after_child, program.check());
+    parents[1] = Program.root;
+    const named: []NamedEntry = @constCast(program.named);
+    const knot_entry = &named[program.containers.items(.named_first)[0]];
+    knot_entry.child = .from_int(3);
+    try std.testing.expectEqual(Fault.named_child_has_other_parent, program.check());
+    knot_entry.child = .from_int(2);
+    const named_counts = program.containers.items(.named_count);
+    const root_named = named_counts[0];
+    named_counts[0] = std.math.maxInt(u32);
+    try std.testing.expectEqual(Fault.named_range_out_of_bounds, program.check());
+    named_counts[0] = root_named;
+    const instruction_counts = program.containers.items(.instruction_count);
+    const stitch_count = instruction_counts[3];
+    instruction_counts[3] = std.math.maxInt(u32);
+    try std.testing.expectEqual(Fault.instructions_not_partitioned, program.check());
+    instruction_counts[3] = stitch_count;
+    try std.testing.expectEqual(Fault.ok, program.check());
+}
+
 test "globals, lists, externals and the global declaration" {
     // A story shaped like ink's JSON for
     //   VAR mood = 1  LIST colours = red, (green), blue = 5  EXTERNAL roll()  and a fallback
@@ -1017,7 +1073,7 @@ test "globals, lists, externals and the global declaration" {
     const call = try builder.extra.add(gpa, instruction_module.ExternalCall{
         .external = roll,
         .arguments_count = 0,
-        .conditional = false,
+        .flags = .{ .conditional = false },
     });
     try builder.add(.call_external, @fromBackingInt(@intCast(call)));
     _ = try builder.list_origin("colours", &.{
@@ -1092,8 +1148,9 @@ test "VAR? reads resolve to globals, list items or temps" {
     try std.testing.expectEqualSlices(Opcode, &.{ .global_get, .list, .temp_get, .list }, opcodes);
     const literal_at = program.instructions.items(.operand)[3];
     const literal = extra_module.get(instruction_module.ListLiteral, program.extra, literal_at);
-    try std.testing.expectEqual(@as(u32, 2), literal.data.items_count);
-    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 0 }, program.extra[literal.end..][0..3]);
+    try std.testing.expectEqual(@as(u32, 2), literal.items_count);
+    const tail_at = literal_at + extra_module.words(instruction_module.ListLiteral);
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 0 }, program.extra[tail_at..][0..3]);
 }
 
 test "names and flags can arrive at a container's end" {

@@ -1,24 +1,23 @@
-//! Shared by the runtime's fuzz targets: a generated story compiled into
-//! a program, a story on it whose errors go to a handler, and play with fuzzer-picked
-//! choices.
+//! Shared by the runtime's fuzz targets and the swarm's play (`zig build swarm`): a
+//! generated story compiled into a program, a story on it whose errors go to a handler, and
+//! play with fuzzer-picked choices.
 
 const std = @import("std");
 const assert = std.debug.assert;
 const compile = @import("../compiler/compile.zig");
 const Program = @import("../core/program.zig").Program;
-const api = @import("../runtime/api.zig");
+const api = @import("../runtime/story.zig");
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const support = @import("../testing/support.zig");
 
 pub const Story = api.Story;
 pub const Value = api.Value;
-const CoreStory = @import("../runtime/story.zig").Story;
 const Allocator = std.mem.Allocator;
 const Limits = @import("../core/limits.zig").Limits;
 
 /// Steps (lines and choices) one play may take: generated stories loop.
 pub const steps_max = 256;
-const steps_per_continue_max = 10_000;
+pub const steps_per_continue_max = 10_000;
 
 /// The program of a generated story, or null when it doesn't compile.
 pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?Program {
@@ -32,9 +31,25 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
 }
 
 /// The external `e0(x)`: returns its argument.
-fn echo(context: ?*anyopaque, _: *CoreStory, arguments: []const Value) anyerror!Value {
+fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Value {
     assert(context == null);
     return if (arguments.len > 0) arguments[0] else .null;
+}
+
+/// What `evaluating_echo` evaluates: knots with parameters among them, so an evaluation
+/// with fewer arguments than parameters runs with the external's own just below its frame.
+const evaluated = [_][]const u8{ "tunnel1", "thread1", "jump1", "k0", "f0", "f1" };
+
+/// `e0(x)` as a host that calls back in: evaluates one of `evaluated` with no arguments
+/// (picked by an integer `x`), ignores how that went, and returns its argument.
+fn evaluating_echo(context: ?*anyopaque, story: *Story, arguments: []const Value) anyerror!Value {
+    assert(context == null);
+    const echoed: Value = if (arguments.len > 0) arguments[0] else .null;
+    const at: u32 = if (echoed == .integer) @truncate(@abs(echoed.integer)) else 0;
+    var text: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&text);
+    _ = story.evaluate_function(evaluated[at % evaluated.len], &.{}, &writer) catch {};
+    return echoed;
 }
 
 /// How a story is set up; a save doesn't hold it, so a story loading one needs the same.
@@ -42,6 +57,8 @@ pub const Setup = struct {
     random_seed: i32,
     fallbacks: bool,
     bind_external: bool,
+    /// `e0`, when bound, is `evaluating_echo` (the swarm's host target).
+    evaluate_in_external: bool = false,
 
     /// The fuzzer picks the seed, the fallback rule and whether `e0` is bound.
     pub fn pick(choices: fuzz_ink.Choices) Setup {
@@ -78,8 +95,11 @@ pub fn init_story_with(
         // and run out of content.
         .on_error = support.ignore_message,
     });
-    if (setup.bind_external) try story.bind_external_function("e0", .{}, null, echo);
-    assert(story.core.state.check() == .ok);
+    if (setup.bind_external) {
+        const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
+        try story.bind_external_function("e0", .{}, null, function);
+    }
+    assert(story.state.check() == .ok);
 }
 
 /// Continues and chooses until the story ends, `steps` run out, or a call fails; the state
@@ -96,7 +116,7 @@ pub fn play(story: *Story, choices: fuzz_ink.Choices, steps: u32) bool {
             if (count == 0) return true;
             story.choose_choice_index(@intCast(choices.below(count))) catch return false;
         }
-        assert(story.core.state.check() == .ok);
+        assert(story.state.check() == .ok);
     }
     assert(taken == steps);
     return true;

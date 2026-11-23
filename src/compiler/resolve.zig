@@ -41,6 +41,22 @@ pub const Reference = enum(u8) {
     read_count,
 };
 
+/// What a divert resolved to; lowering generates it from this.
+pub const DivertKind = enum(u8) {
+    /// Not a divert, or `->` alone (an empty divert).
+    none,
+    /// Content found by its path (`targets` holds it; none if not found).
+    target,
+    /// A variable or parameter holds the target (ink's variableDivertName).
+    variable,
+    /// A call to an EXTERNAL function (ink's isExternal).
+    external,
+    end,
+    done,
+    /// A built-in call's or a list constructor's proxy: ink never generates or resolves it.
+    skipped,
+};
+
 pub const Code = enum(u8) {
     target_not_found,
     unresolved_variable,
@@ -170,15 +186,12 @@ pub const Code = enum(u8) {
     duplicate_list_literal_item,
 
     pub fn is_warning(code: Code) bool {
-        assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
-        assert(@sizeOf(Code) == 1);
         return code == .loose_end or code == .duplicate_list_literal_item;
     }
 
     /// Whether ink reports it through Story.Error, which keeps no one-error-per-object rule:
     /// it neither checks nor marks the object.
     pub fn reported_by_story(code: Code) bool {
-        assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
         return switch (code) {
             .constant_redefined, .ambiguous_list_item, .duplicate_external => true,
             else => false,
@@ -210,10 +223,14 @@ pub const Resolution = struct {
     /// declaration, a list item reference's element, a list constructor's definition.
     targets: []ObjectIndex,
     references: []Reference,
-    /// Diverts whose target is a variable (ink's variableDivertName).
-    variable_diverts: std.DynamicBitSetUnmanaged,
+    /// Each divert's kind, by object.
+    diverts: []DivertKind,
     /// A list item's value (ink's seriesValue), by object; 0 for other objects.
     item_values: []i32,
+    /// Each list literal's items, in order and without repeats: its run in `literal_items`
+    /// starts at `literal_starts[literal]` and ends at a `.none`.
+    literal_items: []ObjectIndex,
+    literal_starts: []u32,
     /// The list definitions in declaration order (ink's _listDefs).
     lists: []ObjectIndex,
     /// The EXTERNAL declarations, by name (at the root scope).
@@ -228,15 +245,21 @@ pub const Resolution = struct {
         return false;
     }
 
+    /// The list items a list literal names.
+    pub fn list_literal_items(resolution: *const Resolution, literal: ObjectIndex) []ObjectIndex {
+        const run = resolution.literal_items[resolution.literal_starts[literal.to_int()]..];
+        return run[0..std.mem.indexOfScalar(ObjectIndex, run, .none).?];
+    }
+
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
-        assert(resolution.targets.len == resolution.references.len);
-        assert(resolution.variable_diverts.bit_length == resolution.targets.len);
         resolution.externals.deinit(gpa);
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
         gpa.free(resolution.item_values);
+        gpa.free(resolution.literal_items);
+        gpa.free(resolution.literal_starts);
         gpa.free(resolution.lists);
-        resolution.variable_diverts.deinit(gpa);
+        gpa.free(resolution.diverts);
         gpa.free(resolution.diagnostics);
         resolution.* = undefined;
     }
@@ -255,7 +278,6 @@ const KeyContext = struct {
     }
 
     pub fn eql(_: KeyContext, a: Key, b: Key) bool {
-        assert(!a.scope.is_none() and !b.scope.is_none());
         return a.scope == b.scope and std.mem.eql(u8, a.name, b.name);
     }
 };
@@ -269,13 +291,10 @@ pub const Path = struct {
 
     pub fn first(path: *const Path) []const u8 {
         assert(path.count > 0);
-        assert(path.count <= path_components_max);
         return path.components[0];
     }
 
     pub fn is_single(path: *const Path, name: []const u8) bool {
-        assert(path.count <= path_components_max);
-        assert(name.len > 0);
         return path.count == 1 and std.mem.eql(u8, path.components[0], name);
     }
 };
@@ -299,9 +318,9 @@ pub const Context = struct {
     targets: []ObjectIndex = &.{},
     references: []Reference = &.{},
     item_values: []i32 = &.{},
-    variable_diverts: std.DynamicBitSetUnmanaged = .{},
-    /// Proxy diverts of built-in calls: ink never generates or resolves them.
-    skipped: std.DynamicBitSetUnmanaged = .{},
+    literal_items: std.ArrayList(ObjectIndex) = .empty,
+    literal_starts: []u32 = &.{},
+    diverts: []DivertKind = &.{},
     /// Objects that already have an error or a warning (ink's _alreadyHadError and
     /// _alreadyHadWarning).
     had_error: std.DynamicBitSetUnmanaged = .{},
@@ -326,15 +345,15 @@ pub const Context = struct {
         gpa.free(context.targets);
         gpa.free(context.references);
         gpa.free(context.item_values);
-        context.variable_diverts.deinit(gpa);
-        context.skipped.deinit(gpa);
+        context.literal_items.deinit(gpa);
+        gpa.free(context.literal_starts);
+        gpa.free(context.diverts);
         context.had_error.deinit(gpa);
         context.had_warning.deinit(gpa);
         context.diagnostics.deinit(gpa);
     }
 
     pub fn ast(context: *const Context) *const ast_module.Ast {
-        assert(context.parsed.tree.tags.len > 0);
         return &context.parsed.tree;
     }
 
@@ -371,7 +390,6 @@ pub const Context = struct {
         object: ObjectIndex,
         details: Details,
     ) !void {
-        assert(object.to_int() < context.tree.count());
         // A global VAR's duplicate goes through Story.Error too (its scope is the story).
         const by_story = code.reported_by_story() or (code == .duplicate_declaration and
             context.tree.has(object, sema.Flags.global));
@@ -454,7 +472,6 @@ pub const Context = struct {
         name: []const u8,
     ) ?ObjectIndex {
         assert(scope.to_int() < context.tree.count());
-        assert(table.count() <= context.tree.count());
         return table.get(.{ .scope = scope, .name = name });
     }
 };
@@ -474,8 +491,10 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     const resolution: Resolution = .{
         .targets = context.targets,
         .references = context.references,
-        .variable_diverts = context.variable_diverts,
+        .diverts = context.diverts,
         .item_values = context.item_values,
+        .literal_items = try context.literal_items.toOwnedSlice(gpa),
+        .literal_starts = context.literal_starts,
         .lists = try context.list_order.toOwnedSlice(gpa),
         .externals = context.externals,
         .diagnostics = try context.diagnostics.toOwnedSlice(gpa),
@@ -484,7 +503,8 @@ pub fn resolve(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree)
     context.targets = &.{};
     context.references = &.{};
     context.item_values = &.{};
-    context.variable_diverts = .{};
+    context.literal_starts = &.{};
+    context.diverts = &.{};
     assert(resolution.targets.len == tree.count());
     return resolution;
 }
@@ -508,8 +528,6 @@ const Fixture = struct {
     }
 
     fn deinit(fixture: *Fixture) void {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         const gpa = std.testing.allocator;
         fixture.resolution.deinit(gpa);
         fixture.tree.deinit(gpa);
@@ -518,8 +536,6 @@ const Fixture = struct {
 
     /// The `nth` object of `kind` in tree order (pre-order).
     fn nth(fixture: *const Fixture, kind: sema.Kind, nth_wanted: u32) ObjectIndex {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         var objects = fixture.tree.walk(std.testing.allocator, Tree.root, .pre);
         defer objects.deinit();
         var seen: u32 = 0;
@@ -532,20 +548,14 @@ const Fixture = struct {
     }
 
     fn target(fixture: *const Fixture, object: ObjectIndex) ObjectIndex {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         return fixture.resolution.targets[object.to_int()];
     }
 
     fn reference(fixture: *const Fixture, object: ObjectIndex) Reference {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         return fixture.resolution.references[object.to_int()];
     }
 
     fn codes(fixture: *const Fixture) []const Diagnostic {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         return fixture.resolution.diagnostics;
     }
 };
@@ -679,11 +689,8 @@ test "parameters, divert parameters, constants, list items and functions" {
         );
     }
     // `-> next` is a variable divert (a divert parameter).
-    const diverts = fixture.resolution.variable_diverts;
     var variable_count: u32 = 0;
-    for (0..fixture.tree.count()) |position| {
-        variable_count += @intFromBool(diverts.isSet(position));
-    }
+    for (fixture.resolution.diverts) |kind| variable_count += @intFromBool(kind == .variable);
     try std.testing.expectEqual(@as(u32, 1), variable_count);
     // The call targets the function.
     const function = fixture.nth(.knot, 2);
@@ -692,7 +699,6 @@ test "parameters, divert parameters, constants, list items and functions" {
 }
 
 fn expect_fixture_resolves(comptime path: []const u8) !void {
-    assert(path.len > 0);
     comptime assert(std.mem.endsWith(u8, path, ".ink"));
     const gpa = std.testing.allocator;
     const limit: std.Io.Limit = .limited(4 * 1024 * 1024);

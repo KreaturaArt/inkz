@@ -5,10 +5,9 @@
 const std = @import("std");
 const assert = std.debug.assert;
 const support = @import("support.zig");
-const vm = @import("../runtime/api.zig");
+const vm = @import("../runtime/story.zig");
 const Program = @import("../core/program.zig").Program;
 const Value = vm.Value;
-const VmStory = @import("../runtime/story.zig").Story;
 
 const fixtures = "test/fixture/original/";
 
@@ -128,7 +127,7 @@ test "player/flow.ink" {
 
 /// The old tests' external functions.
 const Externals = struct {
-    fn count(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
+    fn count(_: ?*anyopaque, _: *vm.Story, arguments: []const Value) anyerror!Value {
         if (arguments.len == 0) return .{ .integer = 3 };
         return switch (arguments[0]) {
             .integer => |value| .{ .integer = value + 3 },
@@ -136,11 +135,11 @@ const Externals = struct {
         };
     }
 
-    fn nothing(_: ?*anyopaque, _: *VmStory, _: []const Value) anyerror!Value {
+    fn nothing(_: ?*anyopaque, _: *vm.Story, _: []const Value) anyerror!Value {
         return .null;
     }
 
-    fn multiply(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
+    fn multiply(_: ?*anyopaque, _: *vm.Story, arguments: []const Value) anyerror!Value {
         assert(arguments.len == 2);
         return .{ .float = as_float(arguments[0]) * as_float(arguments[1]) };
     }
@@ -153,11 +152,11 @@ const Externals = struct {
         };
     }
 
-    fn times(_: ?*anyopaque, _: *VmStory, _: []const Value) anyerror!Value {
+    fn times(_: ?*anyopaque, _: *vm.Story, _: []const Value) anyerror!Value {
         return .{ .string = "knock knock knock " };
     }
 
-    fn increment(_: ?*anyopaque, _: *VmStory, arguments: []const Value) anyerror!Value {
+    fn increment(_: ?*anyopaque, _: *vm.Story, arguments: []const Value) anyerror!Value {
         assert(arguments.len == 1);
         const value: i32 = if (arguments[0] == .integer) arguments[0].integer else 0;
         return .{ .integer = value + 1 };
@@ -269,31 +268,11 @@ test "runtime/bindings/variable_observer.ink" {
     try std.testing.expectEqual(@as(i32, 25), observed.last);
 }
 
-/// Plays up to `turns` turns, taking the first or the last choice.
-fn play(fixture: *Fixture, turns: u32, last: bool) ![]u8 {
-    const gpa = std.testing.allocator;
-    var output: std.ArrayList(u8) = .empty;
-    errdefer output.deinit(gpa);
-    for (0..turns) |_| {
-        const story = &fixture.story;
-        if (story.can_continue()) {
-            const line = try story.cont_alloc(gpa);
-            defer gpa.free(line);
-            try output.appendSlice(gpa, line);
-        } else if (story.current_choices_count() > 0) {
-            const count = story.current_choices_count();
-            try story.choose_choice_index(if (last) count - 1 else 0);
-        } else break;
-    }
-    return output.toOwnedSlice(gpa);
-}
-
 test "simple_taster_tutorial.ink: always the first choice" {
     var fixture: Fixture = undefined;
     try fixture.init("test/fixture/simple_taster_tutorial.ink");
     defer fixture.deinit();
-    // The old test played 20 turns of whole-turn cont(); lines are finer, so allow more.
-    const text = try play(&fixture, 400, false);
+    const text = try support.play_alloc(std.testing.allocator, &fixture.story, .first);
     defer std.testing.allocator.free(text);
     try expect_contains(text, "we passed the day in silence");
 }
@@ -302,7 +281,7 @@ test "crime_scene.ink: always the last choice" {
     var fixture: Fixture = undefined;
     try fixture.init("test/fixture/crime_scene.ink");
     defer fixture.deinit();
-    const text = try play(&fixture, 1200, true);
+    const text = try support.play_alloc(std.testing.allocator, &fixture.story, .last);
     defer std.testing.allocator.free(text);
     try expect_contains(text, "bedroom");
 }

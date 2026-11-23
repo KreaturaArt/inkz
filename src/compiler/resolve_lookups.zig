@@ -31,10 +31,12 @@ pub fn prepare(context: *Context) !void {
     @memset(context.references, .none);
     context.item_values = try gpa.alloc(i32, count);
     @memset(context.item_values, 0);
+    context.literal_starts = try gpa.alloc(u32, count);
+    @memset(context.literal_starts, 0);
     context.root_weaves = try gpa.alloc(ObjectIndex, count);
     @memset(context.root_weaves, .none);
-    context.variable_diverts = try .initEmpty(gpa, count);
-    context.skipped = try .initEmpty(gpa, count);
+    context.diverts = try gpa.alloc(resolve.DivertKind, count);
+    @memset(context.diverts, .none);
     context.had_error = try .initEmpty(gpa, count);
     context.had_warning = try .initEmpty(gpa, count);
     // ink's FindAll order: pre-order (objects are numbered in creation order).
@@ -75,7 +77,6 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
         },
         else => {},
     }
-    assert(object.to_int() < tree.count());
 }
 
 /// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
@@ -98,7 +99,6 @@ fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
 }
 
 fn constant_literal(context: *const Context, constant: ObjectIndex) values.Error!?values.Literal {
-    assert(context.tree.kind(constant) == .constant_declaration);
     const children = context.tree.children_of(constant);
     if (children.len == 0) return null;
     return values.literal(context.parsed, context.tree, children[0]);
@@ -203,7 +203,6 @@ fn push_sub_flows(context: *Context, stack: *std.ArrayList(ObjectIndex), flow: O
         const child = children[position];
         if (context.tree.is_flow(child)) try stack.append(context.gpa, child);
     }
-    assert(context.tree.is_flow(flow));
 }
 
 /// Path.TryGetChildFromContext.
@@ -270,22 +269,6 @@ pub fn resolve_variable(context: *const Context, name: []const u8, from: ObjectI
     return null;
 }
 
-/// The item `list.item` or `item` names, without reporting an ambiguity: the first list's.
-pub fn find_list_item(
-    context: *const Context,
-    list_name: ?[]const u8,
-    item: []const u8,
-) ?ObjectIndex {
-    if (list_name) |name| {
-        const definition = context.lookup(&context.lists, Tree.root, name) orelse return null;
-        return list_item_named(context, definition, item);
-    }
-    for (context.list_order.items) |definition| {
-        if (list_item_named(context, definition, item)) |element| return element;
-    }
-    return null;
-}
-
 /// Story.ResolveListItem: `list.item`, or an item of any list (ambiguity is an error).
 pub fn resolve_list_item(
     context: *Context,
@@ -310,7 +293,6 @@ pub fn resolve_list_item(
             } else found = element;
         }
     }
-    if (found) |element| assert(context.tree.kind(element) == .list_element);
     return found;
 }
 

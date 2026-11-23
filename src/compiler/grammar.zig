@@ -84,7 +84,7 @@ pub const Grammar = struct {
         // to it would run the rule again from the start.
         switch (result) {
             .call, .peek => assert(frame.phase > 0),
-            .succeed, .fail, .again => {},
+            .succeed, .fail => {},
         }
         return result;
     }
@@ -103,7 +103,6 @@ pub const Grammar = struct {
 
     /// Whether a diagnostic is one of ink's warnings (it doesn't stop compilation).
     pub fn is_warning(diagnostic: core.Diagnostic) bool {
-        assert(@backingInt(diagnostic.code) < 8);
         if (diagnostic.code != .message) return false;
         const message: Message = @fromBackingInt(@intCast(diagnostic.extra));
         return message == .return_without_tilde or message == .choice_empty or
@@ -194,11 +193,17 @@ pub const Message = enum(u32) {
     integer_out_of_range,
 };
 
+/// Calls `rule`; the frame goes on with `phase` (a later one: phase 0 is the entry).
+pub fn call_then(frame: *Frame, phase: u8, rule: Rule) Action {
+    assert(phase > 0);
+    frame.phase = phase;
+    return .{ .call = rule };
+}
+
 /// Calls `rule` with `argument` (ink's rule parameter); the frame goes on with `phase`.
 pub fn call(machine: *Machine, frame: *Frame, phase: u8, rule: Rule, argument: u32) Action {
-    frame.phase = phase;
     machine.argument = argument;
-    return .{ .call = rule };
+    return call_then(frame, phase, rule);
 }
 
 pub fn report_expected(machine: *Machine, expectation: Expectation) void {
@@ -252,7 +257,6 @@ pub fn parse_newline(machine: *Machine) bool {
     const start = at(machine);
     _ = parse_string(machine, "\r");
     if (parse_string(machine, "\n")) {
-        assert(at(machine) > start);
         return true;
     }
     machine.at = start;
@@ -284,16 +288,13 @@ pub fn end_of_file(machine: *Machine) bool {
 
 /// EndOfLine: OneOf(Newline, EndOfFile).
 pub fn end_of_line(machine: *Machine) bool {
-    const found = newline(machine) or end_of_file(machine);
-    if (found) assert(at_end(machine) or machine.source[machine.at - 1] == '\n');
-    return found;
+    return newline(machine) or end_of_file(machine);
 }
 
 /// MultilineWhitespace: one or more newlines.
 pub fn multiline_whitespace(machine: *Machine) bool {
     var count: u32 = 0;
     while (newline(machine)) count += 1;
-    if (count > 0) assert(machine.source[machine.at - 1] == '\n');
     return count > 0;
 }
 
@@ -309,7 +310,6 @@ pub fn until_line_end(machine: *Machine) struct { start: u32, end: u32 } {
     const start = at(machine);
     const end = std.mem.indexOfAnyPos(u8, machine.source, start, "\n\r") orelse machine.source.len;
     machine.at = @intCast(end);
-    assert(end >= start);
     assert(end == machine.source.len or machine.source[end] == '\n' or
         machine.source[end] == '\r');
     return .{ .start = start, .end = @intCast(end) };
@@ -335,7 +335,6 @@ pub fn expect_end_of_line(machine: *Machine) void {
 pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
     const start = at(machine);
     const length = lexical.identifier_length(rest(machine)) orelse return null;
-    assert(length > 0);
     const text = rest(machine)[0..length];
     for (text) |character| {
         if (!std.ascii.isDigit(character)) break;
@@ -349,17 +348,14 @@ pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
     const workspace = machine.workspace;
     assert(token.to_int() < machine.tokens_count);
     const start = workspace.token_starts[token.to_int()];
-    assert(start <= workspace.token_ends[token.to_int()]);
     return machine.source[start..workspace.token_ends[token.to_int()]];
 }
 
 /// Parse(Identifier) == word: consumes the identifier only if it is `word`.
 pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
-    assert(word.len > 0);
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
     const token = try identifier(machine) orelse return false;
-    assert(token.to_int() == saved_tokens);
     if (std.mem.eql(u8, token_text(machine, token), word)) return true;
     machine.at = start;
     machine.tokens_count = saved_tokens;
@@ -398,7 +394,6 @@ pub fn top_tag(machine: *const Machine, marker: u32) ?ast.Tag {
 
 /// Reserved words that can't be variable names (ink's Story.IsReservedKeyword).
 pub fn is_reserved_keyword(name: []const u8) bool {
-    assert(name.len > 0);
     const words = [_][]const u8{
         "true", "false", "not", "return", "else", "VAR", "CONST", "temp", "LIST", "function",
     };
@@ -453,14 +448,18 @@ pub const Parsed = struct {
     /// Set when an error came after the diagnostics were full: the story still fails.
     errors_dropped: bool = false,
     buffer: []u8,
-    /// With parse_space: each region's story root (the first is `tree.root`).
-    roots: []const ast.NodeIndex = &.{},
-    /// How many times the source was parsed: more than 1 when the workspace was too small.
-    attempts: u32 = 1,
+    /// Each file's story root (the first is `tree.root`).
+    roots: []const ast.NodeIndex,
+    /// How many times a file was parsed: once each, more when the workspace was too small.
+    parses: u32,
+
+    /// The parses beyond one per file: the retries a full workspace took.
+    pub fn retries(parsed: *const Parsed) u32 {
+        assert(parsed.parses >= parsed.roots.len);
+        return parsed.parses - @as(u32, @intCast(parsed.roots.len));
+    }
 
     pub fn diagnostics(parsed: *const Parsed) []const core.Diagnostic {
-        assert(parsed.buffer.len >= parsed.source.len);
-        assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
         return parsed.workspace.diagnostics[0..parsed.diagnostics_count];
     }
 
@@ -470,7 +469,6 @@ pub const Parsed = struct {
         if (tag == .none or tag == .missing) return "";
         assert(ast.shape(tag) == .leaf);
         const token = parsed.tree.data[leaf.to_int()];
-        assert(token < parsed.tokens_count);
         const workspace = &parsed.workspace;
         return parsed.source[workspace.token_starts[token]..workspace.token_ends[token]];
     }
@@ -481,14 +479,12 @@ pub const Parsed = struct {
         node: ast.NodeIndex,
         comptime which: ast.Slot,
     ) []const u8 {
-        assert(!node.is_none());
         return parsed.leaf_text(parsed.tree.slot(node, which));
     }
 
     /// Frees the syntax tree and the tokens once the IR is lowered, keeping the
     /// source (the IR's names are slices of it) and the diagnostics.
     pub fn release_syntax(parsed: *Parsed, gpa: std.mem.Allocator) void {
-        assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
         assert(parsed.tree.tags.ptr == parsed.workspace.node_tags.ptr);
         parsed.workspace.release_syntax(gpa);
         parsed.tree.tags = &.{};
@@ -497,11 +493,9 @@ pub const Parsed = struct {
     }
 
     pub fn deinit(parsed: *Parsed, gpa: std.mem.Allocator) void {
-        assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
-        assert(parsed.buffer.len >= parsed.source.len);
         parsed.workspace.deinit(gpa);
         gpa.free(parsed.buffer);
-        if (parsed.roots.len > 0) gpa.free(parsed.roots);
+        gpa.free(parsed.roots);
         parsed.* = undefined;
     }
 };
@@ -516,101 +510,129 @@ pub const ParseError = error{
     WorkspaceFull,
 } || std.mem.Allocator.Error;
 
-/// Parses one ink file (ink's InkParser.Parse): comments are removed first, then the file is
-/// one region of `parse_space`.
+/// Parses one ink file (ink's InkParser.Parse): a space of one file.
 pub fn parse(
     gpa: std.mem.Allocator,
     source: []const u8,
     bounds: limits.CompilerLimits,
 ) ParseError!Parsed {
-    assert(bounds.source_bytes_max > 0);
-    if (source.len > bounds.source_bytes_max) return error.SourceTooLarge;
-    const buffer = try gpa.alloc(u8, source.len);
-    const comments_zone = profile.begin(.compile_comments);
-    const length: u32 = @intCast(lexical.eliminate_comments(source, buffer).len);
-    comments_zone.end();
-    assert(length <= source.len);
-    const clean = gpa.realloc(buffer, length) catch |err| {
-        gpa.free(buffer);
-        return err;
-    };
-    return parse_space(gpa, clean, &.{.{ .start = 0, .end = length }}, bounds);
+    var space = try SpaceParser.init(gpa, bounds);
+    errdefer space.deinit(gpa);
+    _ = try space.add(gpa, source);
+    return space.finish(gpa);
 }
 
-/// A file's range in a shared source space.
-pub const Region = struct { start: u32, end: u32 };
-
-/// Parses each region of `buffer` (comment-free files laid end to end) into one
-/// tree, so token and node indices are global. Takes ownership of `buffer`.
-pub fn parse_space(
-    gpa: std.mem.Allocator,
-    buffer: []u8,
-    regions: []const Region,
+/// Parses files one after another into one tree, so token and node indices are global:
+/// each file's comments are removed and its text appended to the space, then it is parsed
+/// as a region of its own. A file's INCLUDEs can be read from its region before the next
+/// file is added.
+pub const SpaceParser = struct {
     bounds: limits.CompilerLimits,
-) ParseError!Parsed {
-    assert(regions.len > 0);
-    errdefer gpa.free(buffer);
-    if (buffer.len > bounds.source_bytes_max) return error.SourceTooLarge;
-    const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
-    defer gpa.free(frames);
-    const roots = try gpa.alloc(ast.NodeIndex, regions.len);
-    errdefer gpa.free(roots);
-    var scale: u32 = 1;
-    for (0..bounds.compile_retries_max + 1, 1..) |_, attempt| {
-        const length: u32 = @intCast(buffer.len);
-        var workspace = try core.Workspace.init(gpa, length, bounds.diagnostics_max, scale);
-        var machine: Machine = .init(buffer, &workspace, frames);
-        if (!parse_regions(&machine, buffer, regions, roots)) {
-            // Freed here, before the errdefer below is armed, so it is freed once.
-            workspace.deinit(gpa);
+    /// The comment-free files, end to end.
+    buffer: std.ArrayList(u8) = .empty,
+    roots: std.ArrayList(ast.NodeIndex) = .empty,
+    frames: []Frame,
+    workspace: core.Workspace,
+    /// Its workspace pointer is set on each use: the parser may move between calls.
+    machine: Machine,
+    /// Doubles each time a region finds the workspace full.
+    scale: u32 = 1,
+    parses: u32 = 0,
+
+    pub fn init(gpa: std.mem.Allocator, bounds: limits.CompilerLimits) !SpaceParser {
+        const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
+        errdefer gpa.free(frames);
+        return .{
+            .bounds = bounds,
+            .frames = frames,
+            .workspace = try core.Workspace.init(gpa, 0, bounds.diagnostics_max, 1),
+            .machine = .init("", undefined, frames),
+        };
+    }
+
+    /// Frees a parser that wasn't finished (or whose finish failed).
+    pub fn deinit(space: *SpaceParser, gpa: std.mem.Allocator) void {
+        space.workspace.deinit(gpa);
+        space.buffer.deinit(gpa);
+        space.roots.deinit(gpa);
+        gpa.free(space.frames);
+        space.* = undefined;
+    }
+
+    /// Appends a file and parses it: its region's story root. A full workspace grows and
+    /// the region alone is parsed again, at most `compile_retries_max` times in all.
+    pub fn add(
+        space: *SpaceParser,
+        gpa: std.mem.Allocator,
+        source: []const u8,
+    ) ParseError!ast.NodeIndex {
+        const bounds = space.bounds;
+        if (source.len > bounds.source_bytes_max) return error.SourceTooLarge;
+        const start = space.buffer.items.len;
+        try space.buffer.ensureTotalCapacityPrecise(gpa, start + source.len);
+        try space.roots.ensureUnusedCapacity(gpa, 1);
+        const comments_zone = profile.begin(.compile_comments);
+        const clean = lexical.eliminate_comments(source, space.buffer.unusedCapacitySlice());
+        comments_zone.end();
+        // Each file is within the bound, but together they may not be: offsets are u32.
+        if (start + clean.len > bounds.source_bytes_max) return error.SourceTooLarge;
+        space.buffer.items.len += clean.len;
+        const machine = &space.machine;
+        machine.workspace = &space.workspace;
+        const saved = machine.*;
+        while (true) {
+            try space.workspace.reserve(gpa, @intCast(space.buffer.items.len), space.scale, .{
+                .nodes = machine.nodes_count,
+                .tokens = machine.tokens_count,
+                .diagnostics = machine.diagnostics_count,
+            });
+            space.parses += 1;
+            machine.begin_region(space.buffer.items, @intCast(start));
+            const outcome = machine.run(.story) catch |err| switch (err) {
+                error.WorkspaceFull => core.Outcome.failed,
+            };
+            if (!machine.workspace_full and outcome == .succeeded) {
+                if (machine.commit_root()) |root| {
+                    space.roots.appendAssumeCapacity(root);
+                    return root;
+                } else |_| machine.workspace_full = true;
+            }
             if (!machine.workspace_full) return error.ParseFailed;
-            scale *= 2;
-            continue;
+            const retries = space.parses - space.roots.items.len;
+            if (retries > bounds.compile_retries_max) return error.WorkspaceFull;
+            // The region again, from where it started, with twice the room.
+            machine.* = saved;
+            space.scale *= 2;
         }
-        errdefer workspace.deinit(gpa);
+    }
+
+    /// The parsed space; the parser is used up (on failure, `deinit` frees it).
+    pub fn finish(space: *SpaceParser, gpa: std.mem.Allocator) !Parsed {
+        assert(space.roots.items.len > 0);
+        const machine = &space.machine;
+        machine.workspace = &space.workspace;
+        const roots = try space.roots.toOwnedSlice(gpa);
+        errdefer gpa.free(roots);
+        const buffer = try space.buffer.toOwnedSlice(gpa);
+        errdefer gpa.free(buffer);
         var tree = machine.finish_regions(roots[0]);
-        try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
-        assert(workspace.node_tags.len == machine.nodes_count);
-        tree.tags = workspace.node_tags;
-        tree.data = workspace.node_data;
+        try space.workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
+        tree.tags = space.workspace.node_tags;
+        tree.data = space.workspace.node_data;
+        gpa.free(space.frames);
         return .{
             .source = buffer,
             .tree = tree,
-            .workspace = workspace,
+            .workspace = space.workspace,
             .tokens_count = machine.tokens_count,
             .diagnostics_count = machine.diagnostics_count,
             .errors_dropped = machine.errors_dropped,
             .buffer = buffer,
             .roots = roots,
-            .attempts = @intCast(attempt),
+            .parses = space.parses,
         };
     }
-    return error.WorkspaceFull;
-}
-
-/// Whether every region parsed (false: retry with more room if the workspace was full).
-fn parse_regions(
-    machine: *Machine,
-    buffer: []const u8,
-    regions: []const Region,
-    roots: []ast.NodeIndex,
-) bool {
-    assert(roots.len == regions.len);
-    for (regions, roots) |region, *root| {
-        assert(region.start <= region.end and region.end <= buffer.len);
-        machine.begin_region(buffer[0..region.end], region.start);
-        const outcome = machine.run(.story) catch |err| switch (err) {
-            error.WorkspaceFull => core.Outcome.failed,
-        };
-        if (machine.workspace_full or outcome != .succeeded) return false;
-        root.* = machine.commit_root() catch {
-            machine.workspace_full = true;
-            return false;
-        };
-        assert(!root.is_none());
-    }
-    return true;
-}
+};
 
 test "a dense story of short knots parses in one attempt" {
     // The bench's generated story (0.43 nodes per byte) overflowed the workspace
@@ -629,7 +651,18 @@ test "a dense story of short knots parses in one attempt" {
     }
     var parsed = try parse(gpa, source.written(), .{});
     defer parsed.deinit(gpa);
-    try std.testing.expectEqual(@as(u32, 1), parsed.attempts);
+    try std.testing.expectEqual(@as(u32, 1), parsed.parses);
     try std.testing.expectEqual(@as(u32, 0), parsed.diagnostics_count);
     try std.testing.expect(parsed.tree.tags.len > source.written().len / 4 + 256);
+}
+
+test "the parser reports an unclosed brace" {
+    // The old compile() ignored this error. The parse gets ink's diagnostics: the inner logic,
+    // then the line end.
+    const gpa = std.testing.allocator;
+    var parsed = try parse(gpa, "Hello {unclosed\n", .{});
+    defer parsed.deinit(gpa);
+    try std.testing.expect(parsed.diagnostics_count > 0);
+    const expected: u32 = @backingInt(Expectation.inner_logic);
+    try std.testing.expectEqual(expected, parsed.diagnostics()[0].extra);
 }

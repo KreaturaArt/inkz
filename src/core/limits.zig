@@ -19,18 +19,21 @@ pub const element_bytes = struct {
     pub const choice = 40; // text, target, source, threads, tags, snapshot, flags
     pub const tag = 4; // StringReference
     pub const list_word = 4;
-    pub const patch_entry = 16;
-    pub const flow = 64; // name, directory ranges into the parking region
+    pub const flow = 100; // buffer counts, thread counter, indexed count, name
     pub const observer = 24; // global slot, callback, context
     pub const observer_event = 4; // GlobalSlot
-    pub const diagnostic = 28; // argument, detail, two numbers, pointer, code, severity
+    pub const diagnostic = 8; // where its message is: start and length
+    /// Message bytes per kept error or warning, shared: most messages are shorter.
+    pub const diagnostic_text = 256;
     pub const count_slot = 8; // visit count u32 + turn index i32
     pub const global = value * 2; // current value + default value
     pub const ancestor = 4; // ContainerIndex, for the visit-counting walk
     pub const snapshot = 24; // a choice's stored thread: frame and temp ranges, previous pointer
-    pub const load_node = 16; // a token of a save being loaded (vm/json_tree.zig)
     pub const binding = 24; // an external's function, context and lookahead flag
 };
+
+/// Slots per chunk the lookahead copies out of a shared array before its first write.
+pub const lookahead_chunk_slots = 64;
 
 /// Bounds for one story instance. Every field is a maximum count unless its name says bytes.
 pub const Limits = struct {
@@ -49,10 +52,11 @@ pub const Limits = struct {
     heap_bytes_max: u32 = 1024 * 1024,
     list_words_max: u32 = 16 * 1024,
     flows_max: u32 = 8,
-    flow_parking_bytes_max: u32 = 256 * 1024,
+    /// The output set aside by `evaluate_function` (ink's outputStreamBefore), for every
+    /// evaluation in progress: 12 bytes per output item, 4 per string mark.
+    output_stash_bytes_max: u32 = 64 * 1024,
     choice_snapshot_frames_max: u32 = 256,
     choice_snapshot_temps_max: u32 = 1024,
-    patch_entries_max: u32 = 1024,
     observers_max: u32 = 64,
     observer_events_max: u32 = 256,
     errors_max: u32 = 32,
@@ -61,8 +65,9 @@ pub const Limits = struct {
     evaluate_depth_max: u32 = 4,
     container_depth_max: u32 = 256,
     path_components_max: u32 = 64,
-    /// Tokens of a save document `load_json` can hold (its fixed scratch).
-    load_nodes_max: u32 = 16 * 1024,
+    /// The scratch `load_json` parses a save into (std.json values, copies of its strings
+    /// and the parser's stack): several times the save's size. Rounded up to 8 bytes.
+    load_bytes_max: u32 = 1024 * 1024,
 
     pub const Fault = enum {
         ok,
@@ -82,13 +87,13 @@ pub const Limits = struct {
         /// The story's bindings, one per EXTERNAL, live in the same block.
         externals_count: u32 = 0,
 
-        /// The words of the lookahead's "logged" bitset: one bit per slot the undo log can
-        /// target (each global, each visit count, each turn index), so a slot is logged at
-        /// most once per snapshot.
-        pub fn patch_logged_words(shape: ProgramShape) u32 {
-            const bits = @as(u64, shape.globals_count) + 2 * @as(u64, shape.count_slots);
-            const words = (bits + 31) / 32; // rounded up
-            assert(words * 32 >= bits);
+        /// The words of the lookahead's bitset of copied chunks: one bit per
+        /// `lookahead_chunk_slots` globals, and per as many visit counts and turn indices.
+        pub fn lookahead_copied_words(shape: ProgramShape) u32 {
+            const slots = lookahead_chunk_slots;
+            const globals = (@as(u64, shape.globals_count) + slots - 1) / slots; // rounded up
+            const counts = (@as(u64, shape.count_slots) + slots - 1) / slots;
+            const words = (globals + counts + 31) / 32;
             return @intCast(words);
         }
     };
@@ -111,8 +116,6 @@ pub const Limits = struct {
         if (limits.evaluate_depth_max > limits.frames_max) return .evaluate_depth_exceeds_frames;
         const shape: ProgramShape = .{ .count_slots = 0, .globals_count = 0 };
         if (limits.bytes_total_checked(shape) == null) return .bytes_total_overflow;
-        assert(limits.frames_max >= limits.threads_max);
-        assert(limits.temps_max >= limits.temps_per_frame_max);
         return .ok;
     }
 
@@ -124,36 +127,47 @@ pub const Limits = struct {
     /// The exact number of bytes `Story.init` allocates for these limits and program.
     pub fn bytes_total(limits: *const Limits, shape: ProgramShape) u64 {
         limits.verify();
-        const total = limits.bytes_total_checked(shape).?;
-        assert(total >= limits.heap_bytes_max);
-        return total;
+        return limits.bytes_total_checked(shape).?;
     }
 
     fn bytes_total_checked(limits: *const Limits, shape: ProgramShape) ?u64 {
-        const live = limits.live_flow_bytes();
-        // The lookahead snapshot is a second copy of the live-flow buffers, plus the undo log
-        // and its bitset of logged slots.
-        const lookahead = live + @as(u64, limits.patch_entries_max) * element_bytes.patch_entry +
-            @as(u64, shape.patch_logged_words()) * 4;
+        const flows = limits.flows_bytes();
+        // The lookahead snapshot is a second copy of the live-flow buffers and of the globals,
+        // visit counts and turn indices, with its bitset of copied chunks.
+        const lookahead = limits.live_flow_bytes() +
+            @as(u64, shape.globals_count) * element_bytes.value +
+            @as(u64, shape.count_slots) * element_bytes.count_slot +
+            @as(u64, shape.lookahead_copied_words()) * 4;
         const shared = limits.shared_bytes(shape);
-        const total = std.math.add(u64, live, lookahead) catch return null;
-        const result = std.math.add(u64, total, shared) catch return null;
-        assert(result >= live);
-        assert(result >= shared);
-        return result;
+        const total = std.math.add(u64, flows, lookahead) catch return null;
+        return std.math.add(u64, total, shared) catch return null;
     }
 
-    /// Buffers that belong to the active flow: call stack, evaluation, output and choices.
+    /// The buffers of one live flow: call stack, evaluation, output and choices.
     pub fn live_flow_bytes(limits: *const Limits) u64 {
-        var total: u64 = 0;
-        for (std.enums.values(FlowBuffer)) |buffer| {
-            total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
-        }
-        assert(total > limits.evaluation_values_max);
+        const total = @as(u64, limits.evaluation_values_max) * element_bytes.value +
+            limits.flow_bytes();
         return total;
     }
 
-    /// Buffers shared by all flows: globals, counts, the heap, flows and diagnostics.
+    /// The buffers each flow owns: all of a live flow's but the evaluation stack.
+    pub fn flow_bytes(limits: *const Limits) u64 {
+        var total: u64 = 0;
+        for (std.enums.values(FlowBuffer)[1..]) |buffer| {
+            total += @as(u64, buffer.capacity(limits)) * buffer.bytes_per_element();
+        }
+        return total;
+    }
+
+    /// Every flow's buffers and directory entry, and the evaluation stack they share.
+    pub fn flows_bytes(limits: *const Limits) u64 {
+        const each = limits.flow_bytes() + element_bytes.flow;
+        const total = @as(u64, limits.flows_max) * each +
+            @as(u64, limits.evaluation_values_max) * element_bytes.value;
+        return total;
+    }
+
+    /// Buffers shared by all flows: globals, counts, the heap and diagnostics.
     pub fn shared_bytes(limits: *const Limits, shape: ProgramShape) u64 {
         const bytes = element_bytes;
         var total: u64 = 0;
@@ -166,21 +180,20 @@ pub const Limits = struct {
         total += @as(u64, limits.output_items_max) * bytes.output_item + limits.output_bytes_max;
         total += limits.heap_bytes_max;
         total += @as(u64, limits.list_words_max) * bytes.list_word;
-        total += @as(u64, limits.flows_max) * bytes.flow;
-        total += limits.flow_parking_bytes_max;
+        total += limits.output_stash_bytes_max;
         total += @as(u64, limits.observers_max) * bytes.observer;
         total += @as(u64, limits.observer_events_max) * bytes.observer_event;
-        total += @as(u64, limits.errors_max + limits.warnings_max) * bytes.diagnostic;
+        const diagnostics = @as(u64, limits.errors_max) + limits.warnings_max;
+        total += diagnostics * (bytes.diagnostic + bytes.diagnostic_text);
         total += @as(u64, limits.container_depth_max) * bytes.ancestor;
-        total += @as(u64, limits.load_nodes_max) * bytes.load_node;
-        assert(total >= limits.heap_bytes_max);
+        total += std.mem.alignForward(u64, limits.load_bytes_max, 8); // 8-byte aligned words
         return total;
     }
 };
 
-/// The buffers of one live flow, in the order they are carved and parked. The runtime's
-/// `FlowBuffers` has one field per tag; the lookahead copies all of them, and a parked flow
-/// all but the evaluation stack, which flows share.
+/// The buffers of one live flow, in the order they are carved. The runtime's `FlowBuffers`
+/// has one field per tag; the lookahead copies all of them, and each flow owns all but the
+/// evaluation stack, which flows share.
 pub const FlowBuffer = enum {
     evaluation,
     frames,
@@ -194,34 +207,31 @@ pub const FlowBuffer = enum {
     snapshot_frames,
     snapshot_temps,
 
+    /// Each buffer's capacity (a `Limits` field) and element size.
+    const Row = struct { limit: std.meta.FieldEnum(Limits), bytes: u32 };
+    const bytes = element_bytes;
+    const rows: std.enums.EnumArray(FlowBuffer, Row) = .init(.{
+        .evaluation = .{ .limit = .evaluation_values_max, .bytes = bytes.value },
+        .frames = .{ .limit = .frames_max, .bytes = bytes.frame },
+        .threads = .{ .limit = .threads_max, .bytes = bytes.thread },
+        .temps = .{ .limit = .temps_max, .bytes = bytes.temp },
+        .items = .{ .limit = .output_items_max, .bytes = bytes.output_item },
+        .marks = .{ .limit = .string_marks_max, .bytes = bytes.string_mark },
+        .choices = .{ .limit = .choices_max, .bytes = bytes.choice },
+        .tags = .{ .limit = .tags_max, .bytes = bytes.tag },
+        .snapshots = .{ .limit = .choices_max, .bytes = bytes.snapshot },
+        .snapshot_frames = .{ .limit = .choice_snapshot_frames_max, .bytes = bytes.frame },
+        .snapshot_temps = .{ .limit = .choice_snapshot_temps_max, .bytes = bytes.temp },
+    });
+
     pub fn capacity(buffer: FlowBuffer, limits: *const Limits) u32 {
         return switch (buffer) {
-            .evaluation => limits.evaluation_values_max,
-            .frames => limits.frames_max,
-            .threads => limits.threads_max,
-            .temps => limits.temps_max,
-            .items => limits.output_items_max,
-            .marks => limits.string_marks_max,
-            .choices, .snapshots => limits.choices_max,
-            .tags => limits.tags_max,
-            .snapshot_frames => limits.choice_snapshot_frames_max,
-            .snapshot_temps => limits.choice_snapshot_temps_max,
+            inline else => |known| @field(limits, @tagName(rows.get(known).limit)),
         };
     }
 
     pub fn bytes_per_element(buffer: FlowBuffer) u32 {
-        const bytes = element_bytes;
-        return switch (buffer) {
-            .evaluation => bytes.value,
-            .frames, .snapshot_frames => bytes.frame,
-            .threads => bytes.thread,
-            .temps, .snapshot_temps => bytes.temp,
-            .items => bytes.output_item,
-            .marks => bytes.string_mark,
-            .choices => bytes.choice,
-            .tags => bytes.tag,
-            .snapshots => bytes.snapshot,
-        };
+        return rows.get(buffer).bytes;
     }
 };
 
@@ -241,16 +251,15 @@ pub const Usage = struct {
     heap_bytes: u32 = 0,
     list_words: u32 = 0,
     flows: u32 = 0,
-    flow_parking_bytes: u32 = 0,
+    output_stash_bytes: u32 = 0,
     choice_snapshot_frames: u32 = 0,
     choice_snapshot_temps: u32 = 0,
-    patch_entries: u32 = 0,
     observers: u32 = 0,
     observer_events: u32 = 0,
     errors: u32 = 0,
     warnings: u32 = 0,
     container_depth: u32 = 0,
-    load_nodes: u32 = 0,
+    load_bytes: u32 = 0,
 };
 
 /// The smallest value `Limits.fitted` gives a buffer, so a story that never used one (no
@@ -268,7 +277,7 @@ pub fn fitted(usage: Usage, margin: u32) Limits {
         @field(limits, name ++ "_max") = @max(fitted_floor, scaled);
     }
     limits.heap_bytes_max = std.mem.alignForward(u32, limits.heap_bytes_max, 4);
-    limits.flow_parking_bytes_max = std.mem.alignForward(u32, limits.flow_parking_bytes_max, 4);
+    limits.output_stash_bytes_max = std.mem.alignForward(u32, limits.output_stash_bytes_max, 4);
     limits.output_bytes_max = @max(limits.output_bytes_max, limits.output_items_max);
     limits.frames_max = @max(limits.frames_max, limits.threads_max);
     limits.temps_per_frame_max = @min(limits.temps_per_frame_max, limits.temps_max);
@@ -300,12 +309,10 @@ pub const CompilerLimits = struct {
         }
         // Each retry doubles the workspace; more than a few means a sizing bug.
         if (limits.compile_retries_max > 8) return .retries_unbounded;
-        assert(limits.parse_depth_max > 0);
         return .ok;
     }
 
     pub fn verify(limits: *const CompilerLimits) void {
-        assert(limits.source_bytes_max > 0);
         fault.verify(limits.check());
     }
 };
@@ -352,7 +359,7 @@ test "the default byte budget is pinned" {
     // Compute the budget for the defaults and a small program shape.
     const limits: Limits = .{};
     const shape: Limits.ProgramShape = .{ .count_slots = 100, .globals_count = 20 };
-    try std.testing.expectEqual(@as(u64, 2_207_772), limits.bytes_total(shape));
+    try std.testing.expectEqual(@as(u64, 3_976_756), limits.bytes_total(shape));
 }
 
 /// The limits of docs/benchmarks.md's sizing example for small side stories.
@@ -371,16 +378,15 @@ pub const small_story_limits: Limits = .{
     .heap_bytes_max = 64 * 1024,
     .list_words_max = 1024,
     .flows_max = 4,
-    .flow_parking_bytes_max = 32 * 1024,
+    .output_stash_bytes_max = 8 * 1024,
     .choice_snapshot_frames_max = 64,
     .choice_snapshot_temps_max = 256,
-    .patch_entries_max = 256,
     .observers_max = 16,
     .observer_events_max = 64,
     .errors_max = 8,
     .warnings_max = 8,
     .container_depth_max = 64,
-    .load_nodes_max = 4096,
+    .load_bytes_max = 256 * 1024,
 };
 
 test "the sizing example in docs/benchmarks.md" {
@@ -389,14 +395,18 @@ test "the sizing example in docs/benchmarks.md" {
     var main: Limits = .{};
     main.flows_max = 4;
     const main_shape: Limits.ProgramShape = .{ .count_slots = 3000, .globals_count = 200 };
+    try std.testing.expectEqual(@as(u64, 168_448), main.flow_bytes());
+    try std.testing.expectEqual(@as(u64, 686_480), main.flows_bytes());
     try std.testing.expectEqual(@as(u64, 180_736), main.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 1_857_152), main.shared_bytes(main_shape));
-    try std.testing.expectEqual(@as(u64, 2_235_784), main.bytes_total(main_shape));
+    try std.testing.expectEqual(@as(u64, 2_461_824), main.shared_bytes(main_shape));
+    try std.testing.expectEqual(@as(u64, 3_355_448), main.bytes_total(main_shape));
     const side = small_story_limits;
     const side_shape: Limits.ProgramShape = .{ .count_slots = 300, .globals_count = 30 };
+    try std.testing.expectEqual(@as(u64, 24_704), side.flow_bytes());
+    try std.testing.expectEqual(@as(u64, 102_288), side.flows_bytes());
     try std.testing.expectEqual(@as(u64, 27_776), side.live_flow_bytes());
-    try std.testing.expectEqual(@as(u64, 196_208), side.shared_bytes(side_shape));
-    try std.testing.expectEqual(@as(u64, 255_936), side.bytes_total(side_shape));
+    try std.testing.expectEqual(@as(u64, 371_760), side.shared_bytes(side_shape));
+    try std.testing.expectEqual(@as(u64, 504_588), side.bytes_total(side_shape));
 }
 
 test "the budget grows with the program and with every buffer" {
@@ -418,7 +428,6 @@ test "the budget grows with the program and with every buffer" {
 
 /// Limits that bound work, not memory, so they don't change the byte budget.
 fn is_not_a_buffer(comptime name: []const u8) bool {
-    comptime assert(name.len > 0);
     comptime assert(@hasField(Limits, name));
     const names = [_][]const u8{
         "temps_per_frame_max",

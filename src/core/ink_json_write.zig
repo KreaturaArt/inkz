@@ -24,10 +24,19 @@ const Opcode = instruction_module.Opcode;
 
 const components_max = 64;
 
-/// A runtime path: container names (or content positions), then maybe an item position.
+/// A runtime path split at its dots: container names (or content positions), then maybe an
+/// item position.
 const Components = struct {
     texts: [components_max][]const u8 = undefined,
     count: u32 = 0,
+
+    fn split(path: []const u8) !Components {
+        var components: Components = .{};
+        if (path.len == 0) return components;
+        var parts = std.mem.splitScalar(u8, path, '.');
+        while (parts.next()) |text| try components.append(text);
+        return components;
+    }
 
     fn append(components: *Components, text: []const u8) !void {
         assert(components.count <= components_max);
@@ -44,49 +53,18 @@ const Writer = struct {
     arena: Allocator,
 
     fn string(writer: *const Writer, id: index.StringId) []const u8 {
-        assert(!id.is_none());
         return writer.program.strings.get(id);
     }
 
-    fn container_components(
-        writer: *Writer,
-        container: ContainerIndex,
-        components: *Components,
-    ) !void {
-        const program = writer.program;
-        assert(container.to_int() < program.containers.len);
-        var chain: [components_max]ContainerIndex = undefined;
-        var depth: u32 = 0;
-        var current = container;
-        while (!program.parent(current).is_none()) : (current = program.parent(current)) {
-            if (depth == chain.len) return error.PathTooDeep;
-            chain[depth] = current;
-            depth += 1;
-        }
-        while (depth > 0) {
-            depth -= 1;
-            const link = chain[depth];
-            const name = program.container_field(link, .name);
-            if (!name.is_none()) {
-                try components.append(writer.string(name));
-            } else {
-                const position = program.container_field(link, .index_in_parent);
-                try components.append(try std.fmt.allocPrint(writer.arena, "{d}", .{position}));
-            }
-        }
-    }
-
-    fn target_components(
-        writer: *Writer,
-        container: ContainerIndex,
-        position: u32,
-        components: *Components,
-    ) !void {
+    /// The absolute path of item `position` of `container`, or of the container itself at
+    /// 0: the container's stored path, then the position.
+    fn absolute(writer: *Writer, container: ContainerIndex, position: u32) ![]const u8 {
         // A target is an item of the container or its end (a rejoin point).
         assert(position <= writer.program.content_count(container));
-        try writer.container_components(container, components);
-        if (position == 0) return;
-        try components.append(try std.fmt.allocPrint(writer.arena, "{d}", .{position}));
+        const path = writer.string(writer.program.container_field(container, .path));
+        if (position == 0) return path;
+        const separator: []const u8 = if (path.len > 0) "." else "";
+        return std.fmt.allocPrint(writer.arena, "{s}{s}{d}", .{ path, separator, position });
     }
 
     /// Object.CompactPathString, from the item at (`from`, `from_position`).
@@ -98,12 +76,11 @@ const Writer = struct {
         position: u32,
     ) ![]const u8 {
         assert(from_position < writer.program.content_count(from));
-        var own: Components = .{};
-        try writer.container_components(from, &own);
+        const from_path = writer.program.container_field(from, .path);
+        var own: Components = try .split(writer.string(from_path));
         try own.append(try std.fmt.allocPrint(writer.arena, "{d}", .{from_position}));
-        var other: Components = .{};
-        try writer.target_components(target, position, &other);
-        const global = try std.mem.join(writer.arena, ".", other.texts[0..other.count]);
+        const global = try writer.absolute(target, position);
+        const other: Components = try .split(global);
         var shared: ?u32 = null;
         for (0..@min(own.count, other.count)) |at| {
             if (!std.mem.eql(u8, own.texts[at], other.texts[at])) break;
@@ -119,13 +96,6 @@ const Writer = struct {
         return if (relative.items.len < global.len) relative.items else global;
     }
 
-    fn absolute(writer: *Writer, target: ContainerIndex, position: u32) ![]const u8 {
-        assert(target.to_int() < writer.program.containers.len);
-        var components: Components = .{};
-        try writer.target_components(target, position, &components);
-        return std.mem.join(writer.arena, ".", components.texts[0..components.count]);
-    }
-
     fn json_string(writer: *Writer, text: []const u8) !void {
         try std.json.Stringify.encodeJsonString(text, .{}, writer.out);
     }
@@ -136,6 +106,12 @@ const Writer = struct {
         try writer.json_string(key);
         try writer.out.writeByte(':');
         try writer.json_string(value);
+    }
+
+    /// `{"key":"value"}`
+    fn object(writer: *Writer, key: []const u8, value: []const u8) !void {
+        try writer.property(key, value);
+        try writer.out.writeByte('}');
     }
 };
 
@@ -292,10 +268,7 @@ fn write_instruction(
         .integer => try out.print("{d}", .{instruction.get(.integer)}),
         .float => try write_float(out, instruction.get(.float)),
         .bool => try out.writeAll(if (instruction.get(.bool)) "true" else "false"),
-        .tag => {
-            try writer.property("#", writer.string(instruction.get(.tag)));
-            try out.writeByte('}');
-        },
+        .tag => try writer.object("#", writer.string(instruction.get(.tag))),
         else => try write_operand_instruction(writer, container, position, instruction),
     }
 }
@@ -309,17 +282,14 @@ fn write_operand_instruction(
     const program = writer.program;
     const out = writer.out;
     switch (instruction.opcode) {
-        .divert_target => {
-            try writer.property("^->", try writer.absolute(instruction.get(.divert_target), 0));
-            try out.writeByte('}');
-        },
-        .read_count => {
-            try writer.property(
-                "CNT?",
-                try writer.compact(container, position, instruction.get(.read_count), 0),
-            );
-            try out.writeByte('}');
-        },
+        .divert_target => try writer.object(
+            "^->",
+            try writer.absolute(instruction.get(.divert_target), 0),
+        ),
+        .read_count => try writer.object(
+            "CNT?",
+            try writer.compact(container, position, instruction.get(.read_count), 0),
+        ),
         .global_get, .global_declare, .global_assign => {
             const slot: index.GlobalSlot = @fromBackingInt(@intCast(instruction.operand));
             const key = if (instruction.opcode == .global_get) "VAR?" else "VAR=";
@@ -343,12 +313,11 @@ fn write_operand_instruction(
         .divert => try write_divert(writer, container, position, instruction),
         .call_external => {
             const call = record(instruction_module.ExternalCall, program, instruction);
-            assert(call.external.to_int() < program.externals.len);
             try writer.property(
                 "x()",
                 writer.string(program.externals[call.external.to_int()].name),
             );
-            if (call.conditional) try out.writeAll(",\"c\":true");
+            if (call.flags.conditional) try out.writeAll(",\"c\":true");
             if (call.arguments_count > 0) try out.print(",\"exArgs\":{d}", .{call.arguments_count});
             try out.writeByte('}');
         },
@@ -370,13 +339,10 @@ fn write_operand_instruction(
 
 /// An instruction's record in `extra` (its operand is the record's index).
 fn record(comptime T: type, program: *const Program, instruction: Instruction) T {
-    assert(instruction.operand < program.extra.len);
-    assert(@typeInfo(T) == .@"struct");
-    return extra.get(T, program.extra, instruction.operand).data;
+    return extra.get(T, program.extra, instruction.operand);
 }
 
 fn global_name(writer: *const Writer, slot: index.GlobalSlot) []const u8 {
-    assert(slot.to_int() < writer.program.globals.len);
     return writer.string(writer.program.globals[slot.to_int()].name);
 }
 
@@ -416,22 +382,20 @@ fn write_divert(
 fn write_list(writer: *Writer, at: u32) !void {
     const program = writer.program;
     const out = writer.out;
-    assert(at < program.extra.len);
-    const decoded = extra.get(instruction_module.ListLiteral, program.extra, at);
-    const literal = decoded.data;
+    const literal = extra.get(instruction_module.ListLiteral, program.extra, at);
+    const tail_at = at + extra.words(instruction_module.ListLiteral);
     // The record is followed by its item indices, its origin indices and (for a list item
     // read as a variable) the name.
-    assert(decoded.end + literal.items_count + literal.origins_count <= program.extra.len);
+    assert(tail_at + literal.items_count + literal.origins_count <= program.extra.len);
     if (literal.items_count == 1 and literal.origins_count == 1) {
         // A list item read as a variable: ink's `VAR?` with the name as written.
-        assert(decoded.end + 2 < program.extra.len);
-        const name: index.StringId = @fromBackingInt(@intCast(program.extra[decoded.end + 2]));
-        try writer.property("VAR?", writer.string(name));
-        return out.writeByte('}');
+        assert(tail_at + 2 < program.extra.len);
+        const name: index.StringId = @fromBackingInt(@intCast(program.extra[tail_at + 2]));
+        return writer.object("VAR?", writer.string(name));
     }
     try out.writeAll("{\"list\":{");
     for (0..literal.items_count) |position| {
-        const item = program.list_items[program.extra[decoded.end + position]];
+        const item = program.list_items[program.extra[tail_at + position]];
         if (position > 0) try out.writeByte(',');
         try writer.json_string(writer.string(item.full_name));
         try out.print(":{d}", .{item.value});
@@ -440,7 +404,7 @@ fn write_list(writer: *Writer, at: u32) !void {
     if (literal.items_count == 0 and literal.origins_count > 0) {
         try out.writeAll(",\"origins\":[");
         for (0..literal.origins_count) |position| {
-            const at_origin = decoded.end + literal.items_count + @as(u32, @intCast(position));
+            const at_origin = tail_at + literal.items_count + @as(u32, @intCast(position));
             const origin = program.list_origins[program.extra[at_origin]];
             if (position > 0) try out.writeByte(',');
             try writer.json_string(writer.string(origin.name));
@@ -452,7 +416,6 @@ fn write_list(writer: *Writer, at: u32) !void {
 
 /// SimpleJson's float: invariant shortest form, with `.0` if it would read as an integer.
 fn write_float(out: *std.Io.Writer, float: f32) !void {
-    assert(@sizeOf(@TypeOf(float)) == 4);
     assert(!std.math.isNan(float));
     var buffer: [64]u8 = undefined;
     const text = try std.fmt.bufPrint(&buffer, "{d}", .{float});
@@ -475,4 +438,42 @@ fn write_lists(writer: *Writer) !void {
         }
         try writer.out.writeByte('}');
     }
+}
+
+test "a built program with each kind of operand writes as ink's JSON" {
+    // Strings with escapes, an integer, a global, a conditional tunnel divert, a named-only
+    // child with a counting flag and a once-only choice point, each in ink's spelling.
+    const gpa = std.testing.allocator;
+    const Builder = @import("program_builder.zig").ProgramBuilder;
+    var builder = try Builder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add(.text, try builder.intern("Hello \"you\""));
+    try builder.add(.integer, -3);
+    try builder.add(.global_get, try builder.global("mood"));
+    try builder.add_divert("knot", .{ .kind = .tunnel, .conditional = true });
+    const counted: container_module.ContainerFlags = .{ .visits_counted = true };
+    _ = try builder.begin_container(.{ .name = "knot", .named_only = true, .flags = counted });
+    try builder.add_choice_point(".^", .{
+        .has_condition = false,
+        .has_start_content = true,
+        .has_choice_only_content = false,
+        .is_invisible_default = false,
+        .once_only = true,
+    });
+    try builder.add(.done, {});
+    try builder.end_container();
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    var output: std.Io.Writer.Allocating = .init(gpa);
+    defer output.deinit();
+    try serialize(gpa, &program, &output.writer);
+    try std.testing.expectEqualStrings(
+        \\{"inkVersion":21,"root":["^Hello \"you\"",-3,{"VAR?":"mood"},
+    ++
+        \\{"->t->":"knot","c":true},{"knot":[{"*":".^","flg":18},"done",{"#f":1}]}],
+    ++
+        \\"listDefs":{}}
+    , output.written());
 }

@@ -21,37 +21,27 @@ pub const StringReference = enum(u32) {
     pub fn program(id: StringId) StringReference {
         const raw = id.to_int();
         assert(raw & heap_bit == 0);
-        const reference: StringReference = @fromBackingInt(@intCast(raw));
-        assert(!reference.is_heap());
-        return reference;
+        return @fromBackingInt(@intCast(raw));
     }
 
     pub fn heap(offset: u32) StringReference {
         assert(offset & heap_bit == 0);
-        const reference: StringReference = @fromBackingInt(@intCast(offset | heap_bit));
-        assert(reference.is_heap());
-        return reference;
+        return @fromBackingInt(@intCast(offset | heap_bit));
     }
 
     pub fn is_heap(reference: StringReference) bool {
         const raw = @backingInt(reference);
-        const result = raw & heap_bit != 0;
-        assert(result or raw < heap_bit);
-        return result;
+        return raw & heap_bit != 0;
     }
 
     pub fn program_id(reference: StringReference) StringId {
         assert(!reference.is_heap());
-        const id = StringId.from_int(@backingInt(reference));
-        assert(@backingInt(id) < heap_bit);
-        return id;
+        return StringId.from_int(@backingInt(reference));
     }
 
     pub fn heap_offset(reference: StringReference) u32 {
         assert(reference.is_heap());
-        const offset = @backingInt(reference) & ~heap_bit;
-        assert(offset < heap_bit);
-        return offset;
+        return @backingInt(reference) & ~heap_bit;
     }
 };
 
@@ -91,7 +81,6 @@ pub const Value = union(enum(u8)) {
             .variable_pointer => 5,
             .null, .tag => null,
         };
-        if (result) |order| assert(order >= -1 and order <= 5);
         return result;
     }
 
@@ -99,7 +88,6 @@ pub const Value = union(enum(u8)) {
     /// `context` provides `list_count(ListReference) u32` and `string_bytes(StringReference)
     /// []const u8`.
     pub fn is_truthy(value: Value, context: anytype) error{NoTruthValue}!bool {
-        assert(@typeInfo(@TypeOf(context)) == .pointer);
         return switch (value) {
             .bool => |flag| flag,
             .integer => |number| number != 0,
@@ -107,6 +95,18 @@ pub const Value = union(enum(u8)) {
             .list => |list| context.list_count(list) > 0,
             .string => |text| context.string_bytes(text).len > 0,
             .null, .divert_target, .variable_pointer, .tag => error.NoTruthValue,
+        };
+    }
+
+    /// Same tag and same payload: strings and lists by reference, floats by their bits (0.0
+    /// and -0.0 differ, a NaN equals itself), so what is identical restores exactly. ink's
+    /// "same value object" test for observers; ink's value equality is `values_equal` in
+    /// story.zig, by text and by list items.
+    pub fn identical(a: Value, b: Value) bool {
+        if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+        return switch (a) {
+            .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
+            else => std.meta.eql(a, b),
         };
     }
 };
@@ -148,14 +148,12 @@ pub fn format_float(value: f32, buffer: *[float_text_bytes_max]u8) []const u8 {
     } else {
         write_fixed(&writer, digits, exponent) catch unreachable;
     }
-    assert(writer.end > 0);
     return writer.buffered();
 }
 
 fn copy(buffer: *[float_text_bytes_max]u8, text: []const u8) []const u8 {
     assert(text.len <= buffer.len);
     @memcpy(buffer[0..text.len], text);
-    assert(text.len > 0);
     return buffer[0..text.len];
 }
 
@@ -168,11 +166,9 @@ fn write_scientific(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !
     }
     const sign: u8 = if (exponent < 0) '-' else '+';
     try writer.print("E{c}{d:0>2}", .{ sign, @abs(exponent) });
-    assert(exponent >= 9 or exponent < -4);
 }
 
 fn write_fixed(writer: *std.Io.Writer, digits: []const u8, exponent: i32) !void {
-    assert(digits.len > 0);
     assert(exponent >= -4 and exponent < 9);
     if (exponent < 0) {
         try writer.writeAll("0.");
@@ -224,4 +220,22 @@ test "a value is 12 bytes and string references keep their source" {
     const in_heap = StringReference.heap(1234);
     try std.testing.expect(in_heap.is_heap());
     try std.testing.expectEqual(@as(u32, 1234), in_heap.heap_offset());
+}
+
+test "identical values have the same tag and payload, floats by their bits" {
+    // Observers and shared choice snapshots compare by identity: -0.0 is not 0.0, a NaN is
+    // itself, strings compare by reference and an integer is never a float.
+    const nan = std.math.nan(f32);
+    try std.testing.expect((Value{ .float = nan }).identical(.{ .float = nan }));
+    try std.testing.expect(!(Value{ .float = 0.0 }).identical(.{ .float = -0.0 }));
+    try std.testing.expect(!(Value{ .integer = 1 }).identical(.{ .float = 1.0 }));
+    const text: Value = .{ .string = .heap(4) };
+    try std.testing.expect(text.identical(.{ .string = .heap(4) }));
+    try std.testing.expect(!text.identical(.{ .string = .heap(8) }));
+    const pointer: Value = .{ .variable_pointer = .{ .name = .from_int(3), .context = 0 } };
+    try std.testing.expect(pointer.identical(pointer));
+    try std.testing.expect(!pointer.identical(.{ .variable_pointer = .{
+        .name = .from_int(3),
+        .context = 1,
+    } }));
 }

@@ -4,7 +4,6 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const grammar = @import("../compiler/grammar.zig");
 const sema = @import("../compiler/sema.zig");
 const resolve = @import("../compiler/resolve.zig");
@@ -14,12 +13,13 @@ const lower_target = @import("lower.zig");
 const Tree = sema.Tree;
 const ObjectIndex = sema.ObjectIndex;
 
-fn sema_resolve(_: void, smith: *Smith) anyerror!void {
+/// A generated source, sometimes with raw bytes spliced in, resolved and checked; whether
+/// it resolved.
+fn sema_resolve(choices: fuzz_ink.Choices) !bool {
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    const choices: fuzz_ink.Choices = .{ .smith = smith };
-    const splices = smith.boolWeighted(7, 1);
+    const splices = choices.weighted(7, 1);
     const source = fuzz_ink.Generator.generate(choices, &buffer, .{ .splices = splices });
-    _ = try check_source(source);
+    return check_source(source);
 }
 
 /// Builds and resolves `source`'s tree when it parses as the compiler needs; whether it did.
@@ -81,12 +81,5 @@ fn check_resolution(resolution: *const resolve.Resolution, tree: *const Tree) vo
 
 test "fuzz: sema and resolve build a consistent tree and resolution" {
     // Seeded sources first: most reach resolution, and their trees and resolutions check.
-    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    var resolved: u32 = 0;
-    for (0..32) |seed| {
-        const source = fuzz_ink.generate_seeded(seed, &buffer, .{});
-        if (try check_source(source)) resolved += 1;
-    }
-    try std.testing.expect(resolved > 16);
-    try std.testing.fuzz({}, sema_resolve, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(sema_resolve, 16);
 }

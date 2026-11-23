@@ -5,13 +5,8 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
-const Smith = std.testing.Smith;
 const fuzz_ink = @import("../testing/fuzz_ink.zig");
 const play = @import("play.zig");
-
-fn play_story(_: void, smith: *Smith) anyerror!void {
-    _ = try check_play(.{ .smith = smith });
-}
 
 /// Compiles a generated story and plays it; whether it compiled.
 fn check_play(choices: fuzz_ink.Choices) !bool {
@@ -23,19 +18,13 @@ fn check_play(choices: fuzz_ink.Choices) !bool {
     var story: play.Story = undefined;
     try play.init_story(&story, gpa, &program, .pick(choices));
     defer story.deinit(gpa);
-    assert(story.core.program == &program);
+    assert(story.program == &program);
     _ = play.play(&story, choices, play.steps_max);
-    assert(story.core.state.check() == .ok);
+    assert(story.state.check() == .ok);
     return true;
 }
 
 test "fuzz: playing generated stories keeps the state consistent" {
     // Seeded stories first: most compile and play.
-    var played: u32 = 0;
-    for (0..32) |seed| {
-        var prng: std.Random.DefaultPrng = .init(seed);
-        if (try check_play(.{ .random = prng.random() })) played += 1;
-    }
-    try std.testing.expect(played > 16);
-    try std.testing.fuzz({}, play_story, .{ .corpus = &.{""} });
+    try fuzz_ink.run_target(check_play, 16);
 }

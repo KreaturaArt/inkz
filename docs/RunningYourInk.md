@@ -369,7 +369,7 @@ EXTERNAL play_sound(name)
 ```
 
 and bind a Zig function to it before the first `cont()`. An external function receives its
-`context`, the runtime's story and the arguments, and returns a `Value` (`.null` for none).
+`context`, the story and the arguments, and returns a `Value` (`.null` for none).
 
 ```zig
 const Audio = struct {
@@ -377,10 +377,10 @@ const Audio = struct {
 
     fn play_sound(
         context: ?*anyopaque,
-        runtime_story: *inkz.runtime.story.Story,
+        calling_story: *inkz.Story,
         arguments: []const inkz.Value,
     ) anyerror!inkz.Value {
-        _ = runtime_story;
+        _ = calling_story;
         const audio: *@This() = @ptrCast(@alignCast(context.?));
         std.debug.print("play {s}\n", .{arguments[0].string});
         audio.played += 1;
@@ -395,10 +395,9 @@ try story.bind_external_function("play_sound", .{ .lookahead_safe = false }, &au
 - Argument strings are valid only during the call. A returned string is copied into the
   story before it continues.
 - Calling a mutating story method from inside a callback returns `error.Reentrant`; so do
-  `reset_errors` and `to_json`. The one exception is
-  `inkz.runtime.evaluate.evaluate_function(runtime_story, ...)` called directly in an
-  external function, which may nest up to `Limits.evaluate_depth_max` deep, as in ink.
-  From a variable observer, the error handler or a host event it returns
+  `reset_errors` and `to_json`. The one exception is `calling_story.evaluate_function(...)`
+  called directly in an external function, which may nest up to `Limits.evaluate_depth_max`
+  deep, as in ink. From a variable observer, the error handler or a host event it returns
   `error.Reentrant` too: those run in the middle of a call (an observer after `cont()` has
   written its line) whose result it would overwrite. Record what you need there and call
   `evaluate_function` after the call returns.
@@ -447,8 +446,10 @@ EXTERNAL multiply(x, y)
 ## Saving and loading
 
 `to_json(writer)` streams the state as ink's save format (version 10), with no allocation.
-`load_json(json)` loads a save written by inkz or by C# ink (versions 8 to 10). A save that
-doesn't load leaves the story unchanged.
+`load_json(json)` loads a save written by inkz or by C# ink (versions 8 to 10). It reads the
+save once, straight into the state, so a save that doesn't load leaves the story started
+over, as `reset_state()` leaves it (C# ink leaves it partly loaded). Keep your own save of
+the current state if a failed load must not lose it.
 
 ```zig
 var saved: std.Io.Writer.Allocating = .init(gpa);
@@ -560,8 +561,9 @@ std.debug.print("now in {s}\n", .{story.current_flow_name().get()});
 ```
 
 The default flow is named `DEFAULT_FLOW`. `alive_flow_names(sink)` calls
-`sink.name(text)` for every flow except the default one. The number of flows and the room
-to park inactive ones are limits (`flows_max`, `flow_parking_bytes_max`).
+`sink.name(text)` for every flow except the default one. The number of flows is a limit
+(`flows_max`, 8 by default); each flow owns a full set of call stack, output and choice
+buffers, so a switch copies nothing, and a story that never switches can set it to 1.
 
 ## Lists
 
@@ -575,7 +577,7 @@ that returns `LIST_COUNT(list)` or tests `list ? item`).
 Each story makes exactly one allocation, in `init`, of `Limits.bytes_total()` bytes, and
 none after that: `cont`, choosing, saving, loading and the rest run in that memory. Running
 out of a buffer returns a named error such as `error.OutputLimit`, never undefined
-behaviour. The defaults take about 2.2 MB per story and suit most stories. Play speed doesn't
+behaviour. The defaults take about 3 MB per story and suit most stories. Play speed doesn't
 depend on the limits, so a smaller budget costs nothing but headroom. A small side story can
 use less:
 
@@ -589,14 +591,6 @@ _ = options;
 
 Some limits bound more than one buffer's length:
 
-- `patch_entries_max` (default 1024) bounds the newline lookahead's undo log. Once a line's
-  text ends in a newline, the story runs on to see whether glue or more text follows, and
-  records each global variable, visit count and turn index the first time that lookahead
-  changes it, so it can put them back. A slot is recorded once however often it changes, so
-  a loop that increments one variable thousands of times before the next line costs one
-  entry. The limit is reached only by changing more than 1024 different variables and
-  counted containers between one newline and the next text; `cont` then returns
-  `error.LookaheadLogLimit`.
 - `tag_bytes_max` (default 4 KiB) is the longest text one tag of a line can have after
   cleaning; the line's tags are assembled one at a time in a scratch buffer of that size
   before each goes to the sink. A longer tag makes `cont` and `current_tags` return
@@ -623,7 +617,7 @@ defer fitted.deinit(gpa);
 `zig build simulate -- --json story.ink.json --seeds 10000 --fit on` does this over 10,000
 seeded random playthroughs, with saves, loads and flow switches along the way. It prints the
 fitted limits as Zig source with their byte budget, then replays the same seeds within them.
-crime_scene fits in 47 KB instead of 2.2 MB. A fitted budget is only as good as the play that
+crime_scene fits in 47 KB instead of 3 MB. A fitted budget is only as good as the play that
 measured it: a story that later needs more gets a named limit error, so keep the margin.
 
 `docs/benchmarks.md` has a worked sizing example and the measurements.
@@ -744,7 +738,7 @@ The runtime was rewritten (plan `docs/DODMigrationPlan.md`). Three decisions cha
 | `story.state.loadJson(json)` | `story.load_json(json)` |
 | `story.observeVariable(name, callback)` | `story.observe_variable(name, context, observer)` |
 | `story.bindExternalFunction(name, fn, options)` | `story.bind_external_function(name, options, context, function)` |
-| `fn([]const ink.Value) ?ink.Value` | `fn(?*anyopaque, *inkz.runtime.story.Story, []const inkz.Value) anyerror!inkz.Value` |
+| `fn([]const ink.Value) ?ink.Value` | `fn(?*anyopaque, *inkz.Story, []const inkz.Value) anyerror!inkz.Value` |
 | `BindOptions.lookahead_safe = false` by default | `BindOptions.lookahead_safe = true` by default, as in ink |
 | `story.evaluateFunction(name, text_out, params)` | `story.evaluate_function(name, arguments, text_writer)` |
 | `story.on_error = fn([]const u8, ink.ErrorType) void` | `Options.on_error = fn(?*anyopaque, []const u8, inkz.Severity) void` |
@@ -753,3 +747,14 @@ The runtime was rewritten (plan `docs/DODMigrationPlan.md`). Three decisions cha
 | `story.currentFlowIsDefaultFlow()` | compare `current_flow_name().get()` with `"DEFAULT_FLOW"` |
 | `ink.Value` with `.int` | `inkz.Value` with `.integer` (`i32`) and `.float` (`f32`) |
 | `ink.InkList` and its methods | none yet; lists are opaque `.list` references (see [Lists](#lists)) |
+
+Within inkz, the bloat-reduction branch (P17) changed these:
+
+| Before | Now |
+|---|---|
+| `inkz.runtime.story.Story` beside the host API's `inkz.Story` (api.zig) | one type: `inkz.Story` is the runtime's `Story`, and an external function gets that same story |
+| `Limits.patch_entries_max`, `error.LookaheadLogLimit` | gone: the lookahead copies chunks of 64 globals or counts before their first write, with no log to fill |
+| `Limits.flow_parking_bytes_max`, `error.FlowParkingLimit` | gone: each of `Limits.flows_max` flows owns its buffers, so switching flows copies nothing |
+| output set aside after the parked flows | `Limits.output_stash_bytes_max` (64 KiB) for `evaluate_function`, `error.OutputStashLimit` when full |
+| `Limits.load_nodes_max` | `Limits.load_bytes_max` (1 MiB): the scratch `load_json` parses a save into |
+| a failed `load_json` left the story as it was | a failed `load_json` leaves the story reset, as `reset_state()` does (see [Saving and loading](#saving-and-loading)) |

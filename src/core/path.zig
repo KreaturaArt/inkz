@@ -34,7 +34,6 @@ pub fn shuffle_hash(path_text: []const u8) u32 {
             hash +%= 0xDC00 + (offset & 0x3FF);
         }
     }
-    assert(path_text.len > 0 or hash == 0);
     return hash;
 }
 
@@ -77,8 +76,6 @@ pub const Path = struct {
             _ = try parse_component(part);
             path.components_count += 1;
         }
-        assert(path.components_count > 0);
-        assert(path.components_count <= components_max);
         return path;
     }
 
@@ -88,16 +85,12 @@ pub const Path = struct {
             .parts = std.mem.splitScalar(u8, path.text, '.'),
             .remaining = path.components_count,
         };
-        assert(result.remaining == path.components_count);
         return result;
     }
 
     pub fn first(path: Path) ?Component {
-        assert(path.text.len > 0 or path.components_count == 0);
         var components = path.iterator();
-        const component = components.next();
-        assert((component == null) == (path.components_count == 0));
-        return component;
+        return components.next();
     }
 };
 
@@ -110,9 +103,7 @@ pub const Iterator = struct {
         const part = iterator.parts.next().?;
         iterator.remaining -= 1;
         // `Path.parse` validated every component, so this can't fail.
-        const component = parse_component(part) catch unreachable;
-        assert(part.len > 0);
-        return component;
+        return parse_component(part) catch unreachable;
     }
 };
 
@@ -127,8 +118,6 @@ fn parse_component(part: []const u8) Error!Component {
     if (negative) return error.NegativeIndex;
     // Ink uses int.TryParse, so an index too large for an int is a name; it never matches.
     const value = std.fmt.parseInt(i32, digits, 10) catch return .{ .name = part };
-    assert(value >= 0);
-    assert(part.len > 0);
     return .{ .index = @intCast(value) };
 }
 
@@ -185,7 +174,6 @@ pub fn resolve(table: anytype, origin: Origin, path: Path) Error!Target {
 
 /// One step from `container` through `component`, or null if nothing matches.
 fn resolve_component(table: anytype, container: ContainerIndex, component: Component) ?Target {
-    assert(!container.is_none());
     // An index into an empty container finds nothing (a corrupt or changed path).
     if (component == .index and table.content_count(container) == 0) return null;
     const result: ?Target = switch (component) {
@@ -204,7 +192,6 @@ fn resolve_component(table: anytype, container: ContainerIndex, component: Compo
             break :indexed found(child, null);
         },
     };
-    if (result) |step| assert(!step.container.is_none());
     return result;
 }
 
@@ -215,7 +202,6 @@ fn found(container: ContainerIndex, content_index: ?u32) Target {
         .content_index = content_index,
         .approximate = false,
     };
-    assert(!result.approximate);
     return result;
 }
 
@@ -241,21 +227,16 @@ const TestTable = struct {
     };
 
     fn root_container(_: TestTable) ContainerIndex {
-        assert(nodes.len > 0);
-        assert(nodes[0].parent == none);
         return .from_int(0);
     }
 
     fn parent(_: TestTable, container: ContainerIndex) ContainerIndex {
         const node = nodes[container.to_int()];
-        assert(node.parent == none or node.parent < nodes.len);
         return if (node.parent == none) .none else .from_int(node.parent);
     }
 
     fn named_child(_: TestTable, container: ContainerIndex, name: []const u8) ?ContainerIndex {
-        assert(container.to_int() < nodes.len);
         for (named) |entry| {
-            assert(entry.child < nodes.len);
             if (entry.container != container.to_int()) continue;
             if (std.mem.eql(u8, entry.name, name)) return .from_int(entry.child);
         }
@@ -263,24 +244,18 @@ const TestTable = struct {
     }
 
     fn content_count(_: TestTable, container: ContainerIndex) u32 {
-        const count = nodes[container.to_int()].content_count;
-        assert(count > 0);
-        assert(count < 16);
-        return count;
+        return nodes[container.to_int()].content_count;
     }
 
     fn container_at(_: TestTable, container: ContainerIndex, index: u32) ?ContainerIndex {
         const node = nodes[container.to_int()];
         assert(index < node.content_count);
         const entry = node.container_at orelse return null;
-        assert(entry[1] < nodes.len);
         return if (entry[0] == index) .from_int(entry[1]) else null;
     }
 };
 
 fn expect_target(text: []const u8, origin: Origin, expected: Target) !void {
-    assert(text.len < 64);
-    assert(!origin.container.is_none());
     const path = try Path.parse(text, 8);
     const resolved = try resolve(TestTable{}, origin, path);
     try std.testing.expectEqual(expected, resolved);

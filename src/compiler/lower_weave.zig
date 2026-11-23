@@ -32,13 +32,10 @@ pub const States = struct {
     kept: std.ArrayList(Kept) = .empty,
 
     pub fn init(gpa: Allocator) States {
-        assert(@sizeOf(Generation) > 0);
-        assert(@sizeOf(Passed) > 0);
         return .{ .gpa = gpa };
     }
 
     pub fn deinit(states: *States) void {
-        assert(states.passed.capacity >= states.passed.items.len);
         states.passed.deinit(states.gpa);
         states.kept.deinit(states.gpa);
     }
@@ -58,7 +55,6 @@ const Generation = struct {
 
 /// Weave.GenerateRuntimeObject.
 pub fn generate_weave(lowering: *Lowering, weave: ObjectIndex) !Result {
-    assert(lowering.tree.kind(weave) == .weave);
     const ir = &lowering.ir;
     const root = try ir.new_container();
     var generation: Generation = .{ .root = root, .current = root };
@@ -270,7 +266,6 @@ fn pass_to_ancestors(lowering: *Lowering, generation: *Generation, weave: Object
 
 /// Gather.GenerateRuntimeObject: named by its label (or later `g-N`), counted from its start.
 pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
-    assert(lowering.tree.kind(gather) == .gather);
     assert(lowering.runtime_containers[gather.to_int()].is_none());
     const ir = &lowering.ir;
     const container = try ir.new_container();
@@ -303,7 +298,7 @@ pub fn generate_choice(lowering: *Lowering, choice: ObjectIndex) !Result {
     lowering.runtime_containers[choice.to_int()] = inner;
     var flags: u8 = 0;
     const evaluates = parts.start != null or parts.choice_only != null or parts.condition != null;
-    if (evaluates) _ = try ir.add_command(outer, .eval_start);
+    if (evaluates) _ = try ir.add_opcode(outer, .eval_start);
     var start_container: ContainerId = .none;
     if (parts.start) |start| {
         start_container = lowering.result(start).container;
@@ -311,16 +306,16 @@ pub fn generate_choice(lowering: *Lowering, choice: ObjectIndex) !Result {
         flags |= has_start_content;
     }
     if (parts.choice_only) |choice_only| {
-        _ = try ir.add_command(outer, .begin_string);
+        _ = try ir.add_opcode(outer, .string_start);
         try ir.add_contents_of(outer, lowering.result(choice_only).container);
-        _ = try ir.add_command(outer, .end_string);
+        _ = try ir.add_opcode(outer, .string_end);
         flags |= has_choice_only_content;
     }
     if (parts.condition) |condition| {
         try expressions.emit(lowering, outer, condition);
         flags |= has_condition;
     }
-    if (evaluates) _ = try ir.add_command(outer, .eval_end);
+    if (evaluates) _ = try ir.add_opcode(outer, .eval_end);
     const header_leaf = lowering.ast().slot(lowering.tree.node(choice), .header);
     const header = lowering.ast().data[header_leaf.to_int()];
     if (header & (1 << 17) != 0) flags |= invisible_default;
@@ -379,13 +374,13 @@ fn add_start_content(lowering: *Lowering, outer: ContainerId, start: ContainerId
     ir.container(r1).name = "$r1";
     _ = try ir.add(outer, .{ .divert_target = .{ .container = r1 } });
     _ = try ir.add(outer, .{ .assignment = .{ .name = "$r", .global = false, .new = true } });
-    _ = try ir.add_command(outer, .begin_string);
+    _ = try ir.add_opcode(outer, .string_start);
     _ = try ir.add(outer, .{ .divert = .{ .target = .{ .container = start } } });
     ir.container(start).name = "s";
-    _ = try ir.add(start, .{ .divert = .{ .variable = "$r" } });
+    _ = try ir.add(start, .{ .divert = .{ .name = "$r" } });
     try ir.add_named(outer, start);
     _ = try ir.add_container(outer, r1);
-    _ = try ir.add_command(outer, .end_string);
+    _ = try ir.add_opcode(outer, .string_end);
 }
 
 /// The inner content's start: `$r` set to `$r2`, then the start content again.
@@ -395,9 +390,9 @@ fn add_return_to_start(lowering: *Lowering, inner: ContainerId, start: Container
     assert(ir.container(start).name != null);
     const r2 = try ir.new_container();
     ir.container(r2).name = "$r2";
-    _ = try ir.add_command(inner, .eval_start);
+    _ = try ir.add_opcode(inner, .eval_start);
     _ = try ir.add(inner, .{ .divert_target = .{ .container = r2 } });
-    _ = try ir.add_command(inner, .eval_end);
+    _ = try ir.add_opcode(inner, .eval_end);
     _ = try ir.add(inner, .{ .assignment = .{ .name = "$r", .global = false, .new = true } });
     _ = try ir.add(inner, .{ .divert = .{ .target = .{ .container = start } } });
     _ = try ir.add_container(inner, r2);

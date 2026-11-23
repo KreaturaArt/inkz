@@ -32,9 +32,7 @@ pub fn pointer_at_path(story: *const Story, text: []const u8) PathError!Pointer 
     const target = path_module.resolve(story.program, origin, path) catch return error.PathNotFound;
     if (target.approximate) return error.PathNotFound;
     const position = target.content_index orelse 0;
-    const pointer: Pointer = .{ .container = target.container, .index = position };
-    assert(pointer.container.to_int() < story.program.containers.len);
-    return pointer;
+    return .{ .container = target.container, .index = position };
 }
 
 /// ink's ChoosePathString (without arguments): with `reset_callstack`, the flow is ended
@@ -46,8 +44,7 @@ pub fn choose_path_string(
     arguments: []const story_module.HostValue,
 ) (PathError || story_module.Error)!void {
     assert(text.len > 0);
-    story.invalidate_views();
-    if (story.callback_depth > 0) return error.Reentrant;
+    try story_module.begin_mutation(story);
     if (story.failed) return error.StoryFailed;
     if (story.events.on_choose_path_string) |event| {
         story.callback_depth += 1;
@@ -67,7 +64,7 @@ pub fn choose_path_string(
     if (arguments.len > evaluation.capacity() - evaluation.count) return error.EvaluationLimit;
     if (reset_callstack) ops.force_end(story);
     evaluation.push_slice(values[0..arguments.len]) catch unreachable;
-    story.choose_pointer(target, true) catch |err| {
+    story_module.choose_pointer(story, target, true) catch |err| {
         story.failed = true;
         return err;
     };
@@ -79,22 +76,20 @@ pub fn choose_path_string(
 pub fn visit_count_at_path_string(story: *const Story, text: []const u8) u32 {
     assert(text.len > 0);
     const id = story.program.strings.find(text) orelse return 0;
-    const table = story.program.table();
+    const containers = story.program.containers;
     var position: u32 = 0;
-    while (position < table.count()) : (position += 1) {
-        const info = table.get(.from_int(position));
+    while (position < containers.len) : (position += 1) {
+        const info = containers.get(position);
         if (info.path != id) continue;
         if (info.count_slot == container_module.no_count_slot) return 0;
         return story.state.visit_counts[info.count_slot];
     }
-    assert(position == table.count());
     return 0;
 }
 
 /// ink's TagsAtStartOfFlowContainerWithPathString: the plain-text tags at the start of the
 /// container at `text`, each passed to `sink.tag(text)`.
 pub fn tags_at_path(story: *const Story, text: []const u8, sink: anytype) !void {
-    assert(@typeInfo(@TypeOf(sink)) == .pointer);
     assert(text.len > 0);
     const pointer = try pointer_at_path(story, text);
     try tags_at_start(story, pointer.container, sink);
@@ -102,8 +97,6 @@ pub fn tags_at_path(story: *const Story, text: []const u8, sink: anytype) !void 
 
 /// ink's globalTags: the tags at the start of the story.
 pub fn global_tags(story: *const Story, sink: anytype) !void {
-    assert(@typeInfo(@TypeOf(sink)) == .pointer);
-    assert(story.program.containers.len > 0);
     try tags_at_start(story, story.program.root_container(), sink);
 }
 
@@ -131,5 +124,4 @@ fn tags_at_start(story: *const Story, start: ContainerIndex, sink: anytype) !voi
             else => if (in_tag) return error.TagNotText else return,
         }
     }
-    assert(position == count);
 }

@@ -36,7 +36,7 @@ test "index newtypes are one word" {
     const types = [_]type{
         index.ContainerIndex, index.InstructionIndex, index.StringId,      index.NodeIndex,
         index.TokenIndex,     index.GlobalSlot,       index.ListItemIndex, index.ListOriginIndex,
-        index.ExternalIndex,  index.FlowIndex,        index.FileIndex,
+        index.ExternalIndex,
     };
     inline for (types) |T| try std.testing.expectEqual(4, @sizeOf(T));
 }

@@ -28,7 +28,6 @@ pub const Class = enum(u8) {
     non_whitespace,
 
     pub fn of(text: []const u8) Class {
-        assert(text.len < 1 << 20);
         if (text.len == 1 and text[0] == '\n') return .newline;
         for (text) |character| {
             if (character != ' ' and character != '\t') return .non_whitespace;
@@ -62,7 +61,6 @@ pub const Item = struct {
             .class = .non_whitespace,
             .length = 0,
         };
-        assert(item.length == 0);
         return item;
     }
 };
@@ -89,14 +87,11 @@ pub const Output = struct {
     }
 
     pub fn clear(output: *Output) void {
-        assert(output.items.buffer.len > 0);
         output.items.clear();
         output.string_marks.clear();
-        assert(output.items.is_empty());
     }
 
     pub fn in_string_evaluation(output: *const Output) bool {
-        assert(output.string_marks.count <= output.string_marks.buffer.len);
         const result = output.string_marks.count > 0;
         assert(!result or output.items.count > 0);
         return result;
@@ -120,7 +115,6 @@ pub const Output = struct {
         for (pieces[0..count]) |piece| {
             try output.push_text_piece(strings, frames, string, start + piece.start, piece.length);
         }
-        assert(count <= pieces.len);
     }
 
     fn push_text_piece(
@@ -131,7 +125,6 @@ pub const Output = struct {
         start: u32,
         length: u32,
     ) Error!void {
-        assert(frames.len > 0);
         if (length > std.math.maxInt(u16)) return error.TextTooLong;
         const text = strings.get(string)[start..][0..length];
         const item: Item = .{
@@ -143,12 +136,10 @@ pub const Output = struct {
         };
         if (!output.should_include_text(frames, item)) return;
         output.items.push(item) catch return error.OutputLimit;
-        assert(output.items.count > 0);
     }
 
     /// ink's PushToOutputStreamIndividual for text: glue and function starts can swallow it.
     fn should_include_text(output: *Output, frames: []Frame, item: Item) bool {
-        assert(frames.len > 0);
         assert(item.kind == .text);
         var function_trim: ?u32 = null;
         const current = frames[frames.len - 1];
@@ -183,13 +174,11 @@ pub const Output = struct {
         if (item.class == .newline) {
             if (output.ends_in_newline() or !output.contains_content()) return false;
         }
-        assert(item.kind == .text);
         return true;
     }
 
     /// Once real text is printed, enclosing functions no longer trim leading whitespace.
     fn clear_function_starts(frames: []Frame) void {
-        assert(frames.len > 0);
         var position = frames.len;
         while (position > 0) {
             position -= 1;
@@ -204,7 +193,6 @@ pub const Output = struct {
     pub fn push_glue(output: *Output) Error!void {
         output.trim_newlines();
         output.items.push(.command(.glue)) catch return error.OutputLimit;
-        assert(output.items.peek().?.kind == .glue);
     }
 
     /// `str`, `#` and `/#` markers.
@@ -214,7 +202,6 @@ pub const Output = struct {
             output.string_marks.push(output.items.count) catch return error.OutputLimit;
         }
         output.items.push(.command(kind)) catch return error.OutputLimit;
-        assert(output.items.count > 0);
     }
 
     /// A finished tag value (a v20 tag literal, or a tag rescued from string evaluation).
@@ -227,7 +214,6 @@ pub const Output = struct {
             .class = .non_whitespace,
             .length = @intCast(length),
         }) catch return error.OutputLimit;
-        assert(output.items.peek().?.kind == .tag);
     }
 
     /// ink's TrimNewlinesFromOutputStream.
@@ -251,7 +237,6 @@ pub const Output = struct {
             kept += 1;
         }
         output.items.truncate(kept);
-        assert(output.items.count >= from);
     }
 
     /// ink's RemoveExistingGlue: glue after the last command goes.
@@ -270,7 +255,6 @@ pub const Output = struct {
             kept += 1;
         }
         output.items.truncate(kept);
-        assert(kept <= items.len);
     }
 
     /// ink's outputStreamEndsInNewline.
@@ -299,34 +283,19 @@ pub const Output = struct {
         return false;
     }
 
-    /// ink's TrimWhitespaceFromFunctionEnd, when a function returns.
+    /// ink's TrimWhitespaceFromFunctionEnd, when a function returns: drops the whitespace
+    /// text after the function's last non-whitespace text.
     pub fn trim_function_end(output: *Output, function_start: u32) void {
         const start: usize = if (function_start == no_function_start) 0 else function_start;
-        const items = output.items.slice();
-        var position = items.len;
-        while (position > start) {
-            position -= 1;
-            const item = items[position];
-            if (item.kind != .text) continue;
-            if (item.class == .non_whitespace) break;
-            // Removing keeps the order of everything after it.
-            std.mem.copyForwards(Item, items[position .. items.len - 1], items[position + 1 ..]);
-            output.items.count -= 1;
-            return output.trim_function_end_from(start, position);
-        }
-        assert(position >= start);
-    }
-
-    fn trim_function_end_from(output: *Output, start: usize, below: usize) void {
-        assert(start <= below);
-        assert(below <= output.items.count + 1);
-        var position = below;
+        assert(start <= output.items.count);
+        var position: usize = output.items.count;
         while (position > start) {
             position -= 1;
             const items = output.items.slice();
             const item = items[position];
             if (item.kind != .text) continue;
             if (item.class == .non_whitespace) return;
+            // Removing keeps the order of everything after it.
             std.mem.copyForwards(Item, items[position .. items.len - 1], items[position + 1 ..]);
             output.items.count -= 1;
         }
@@ -350,7 +319,6 @@ pub const Output = struct {
             }
         }
         output.items.truncate(mark + tags_kept);
-        assert(output.items.count == mark + tags_kept);
         return written;
     }
 
@@ -398,7 +366,6 @@ pub const Output = struct {
             }
         }
         try pending.flush(sink);
-        assert(pending.raw_bytes == 0);
         return pending.longest;
     }
 
@@ -413,7 +380,6 @@ pub const Output = struct {
             if (pending.raw_bytes == 0) pending.cleaner = .{ .writer = &pending.cleaned };
             pending.raw_bytes += text.len;
             pending.cleaner.write(text) catch return error.TagBytesLimit;
-            assert(pending.cleaned.end <= pending.cleaned.buffer.len);
         }
 
         /// Passes the tag to the sink if any text was written since the last flush (a tag of
@@ -445,7 +411,6 @@ pub const Output = struct {
     }
 
     pub fn verify(output: *const Output) void {
-        assert(output.items.buffer.len > 0);
         fault.verify(output.check());
     }
 };
@@ -477,14 +442,12 @@ pub const Cleaner = struct {
             try cleaner.write_character(text[at]);
             at += 1;
         }
-        assert(cleaner.line_start <= cleaner.position);
     }
 
     /// Copies into the writer's buffer directly when it has room (the callers' writers are
     /// fixed buffers), else writes through it.
     fn put(cleaner: *Cleaner, bytes: []const u8) !void {
         const writer = cleaner.writer;
-        assert(writer.end <= writer.buffer.len);
         assert(bytes.len > 0);
         if (writer.buffer.len - writer.end >= bytes.len) {
             @memcpy(writer.buffer[writer.end..][0..bytes.len], bytes);
@@ -511,7 +474,6 @@ pub const Cleaner = struct {
         }
         if (character == '\n') cleaner.line_start = cleaner.position + 1;
         cleaner.position += 1;
-        assert(cleaner.line_start <= cleaner.position);
     }
 };
 
@@ -520,7 +482,6 @@ const Piece = struct { start: u32, length: u32 };
 /// ink's TrySplittingHeadTailWhitespace. Returns 0 when there is nothing to split (no newline
 /// in the leading or trailing whitespace); otherwise the pieces, in order.
 fn split_head_tail_whitespace(text: []const u8, pieces: *[5]Piece) u32 {
-    assert(text.len < 1 << 20);
     var head_first: ?u32 = null;
     var head_last: ?u32 = null;
     for (text, 0..) |character, position| {
@@ -580,7 +541,6 @@ const TestStrings = struct {
     pub fn get(strings: TestStrings, reference: StringReference) []const u8 {
         assert(reference.is_heap());
         const position = reference.heap_offset();
-        assert(position < strings.table.len);
         return strings.table[position];
     }
 };
@@ -593,7 +553,6 @@ const TestOutput = struct {
     output: Output = undefined,
 
     fn setup(test_output: *TestOutput) void {
-        assert(test_output.strings.table.len > 0);
         test_output.output = Output.init(&test_output.items, &test_output.marks);
         test_output.frames[0] = .{
             .pointer = .null,
@@ -604,20 +563,16 @@ const TestOutput = struct {
             .kind = .tunnel,
             .in_expression_evaluation = false,
         };
-        assert(test_output.output.items.count == 0);
     }
 
     fn text(test_output: *TestOutput, string: u32) !void {
         assert(string < test_output.strings.table.len);
-        assert(test_output.output.items.count < test_output.items.len);
         const frames = test_output.frames[0..1];
         const length: u32 = @intCast(test_output.strings.table[string].len);
         try test_output.output.push_text(test_output.strings, frames, .heap(string), 0, length);
     }
 
     fn line(test_output: *TestOutput, buffer: []u8) ![]const u8 {
-        assert(buffer.len > 0);
-        assert(test_output.output.items.count <= test_output.items.len);
         var writer: std.Io.Writer = .fixed(buffer);
         try test_output.output.write_text(test_output.strings, &writer);
         return writer.buffered();

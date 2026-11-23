@@ -54,7 +54,7 @@ fn check_file(
     var parsed = try grammar.parse(std.testing.allocator, source, .{});
     defer parsed.deinit(std.testing.allocator);
     var rendered: std.Io.Writer.Allocating = .init(arena);
-    try dump.write(&parsed, &rendered.writer);
+    try dump.write(arena, &parsed, &rendered.writer);
     try dump.write_diagnostics(&parsed, &rendered.writer);
     const actual = rendered.written();
     const update = snapshot.update_requested(arena, std.testing.environ, build_options.snap_update);

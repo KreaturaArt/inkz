@@ -14,13 +14,10 @@ pub const lookahead = @import("lookahead.zig");
 pub const vm = @import("vm.zig");
 pub const ops = @import("ops.zig");
 pub const story = @import("story.zig");
-pub const messages = @import("messages.zig");
 pub const story_paths = @import("story_paths.zig");
 pub const evaluate = @import("evaluate.zig");
 pub const save = @import("save.zig");
-pub const json_tree = @import("json_tree.zig");
 pub const load = @import("load.zig");
-pub const api = @import("api.zig");
 const api_test = @import("api_test.zig");
 const state_test = @import("state_test.zig");
 
@@ -39,13 +36,10 @@ test {
     _ = vm;
     _ = ops;
     _ = story;
-    _ = messages;
     _ = story_paths;
     _ = evaluate;
     _ = save;
-    _ = json_tree;
     _ = load;
-    _ = api;
     _ = api_test;
     _ = state_test;
 }

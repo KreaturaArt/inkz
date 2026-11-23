@@ -47,9 +47,9 @@ const Corruption = enum {
     dangling_list,
     temps_outside_frame,
     snapshot_range,
-    parking_directory,
-    parking_shape,
-    lookahead_log,
+    flow_counts,
+    flow_threads,
+    lookahead_count,
 };
 
 fn corrupt(state: *State, corruption: Corruption) !State.Fault {
@@ -72,23 +72,25 @@ fn corrupt(state: *State, corruption: Corruption) !State.Fault {
         .dangling_list => try state.evaluation.push(.{ .list = @fromBackingInt(40) }),
         .temps_outside_frame => state.call_stack.frames.buffer[0].temps_count = 3,
         .snapshot_range => try state.choices.records.push(choice),
-        .parking_directory => {
+        .flow_counts => {
             try flows.switch_flow(state, "other");
-            state.flows[0].parked_words += 1;
+            state.flows[0].counts[0] = state.call_stack.frames.capacity() + 1; // its frames
         },
-        .parking_shape => {
+        .flow_threads => {
             try flows.switch_flow(state, "other");
-            state.parking[0] = 1000; // the parked frame count
+            state.flows[0].counts[1] = 0; // its threads
         },
-        .lookahead_log => state.snapshot.patch_count = 1,
+        .lookahead_count => {
+            state.snapshot = .{ .active = true, .errors = state.errors.capacity() + 1 };
+        },
     }
     return switch (corruption) {
         .frame_range, .temps_outside_frame => .call_stack,
         .dangling_string => .string_reference,
         .dangling_list => .list_reference,
         .snapshot_range => .choices,
-        .parking_directory, .parking_shape => .flows,
-        .lookahead_log => .lookahead,
+        .flow_counts, .flow_threads => .flows,
+        .lookahead_count => .lookahead,
     };
 }
 
@@ -158,21 +160,15 @@ test "compaction keeps every root kind" {
     // Park it, then fill the new flow and the shared roots, and take a lookahead.
     try flows.switch_flow(state, "other");
     state.global_defaults[0] = .{ .string = live_after_garbage(state, "default") };
-    try lookahead.set_global(state, .from_int(0), .{ .string = live_after_garbage(state, "old") });
+    lookahead.set_global(state, .from_int(0), .{ .string = live_after_garbage(state, "old") });
     const live_line = live_after_garbage(state, "live line");
     try state.output.push_text(&state.strings, state.call_stack.current_frames(), live_line, 0, 9);
     try state.observer_events.push(.from_int(0));
-    state.add_diagnostic(.{
-        .argument = live_after_garbage(state, "argument"),
-        .detail = live_after_garbage(state, "detail"),
-        .code = .divert_variable_not_target,
-        .severity = .@"error",
-    });
     lookahead.take(state);
     try state.evaluation.push(.{ .string = live_after_garbage(state, "evaluation") });
-    try lookahead.set_global(state, .from_int(0), .{ .string = live_after_garbage(state, "new") });
+    lookahead.set_global(state, .from_int(0), .{ .string = live_after_garbage(state, "new") });
     const used_before = state.strings.used;
-    state.compact(&.{});
+    state.compact();
     try std.testing.expect(state.strings.used < used_before);
     state.verify();
     try expect_text(state, state.evaluation.peek().?.string, "evaluation");
@@ -181,9 +177,7 @@ test "compaction keeps every root kind" {
     try expect_text(state, state.output.items.slice()[0].string, "live line");
     try expect_text(state, state.lookahead.items[0].string, "live line");
     try std.testing.expectEqual(@as(u32, 1), state.observer_events.count);
-    try expect_text(state, state.errors.slice()[0].argument, "argument");
-    try expect_text(state, state.errors.slice()[0].detail, "detail");
-    lookahead.restore(state); // the undo log's "old" was a root too
+    lookahead.restore(state); // the snapshot's copy of "old" was a root too
     try expect_text(state, state.globals[0].string, "old");
     try flows.switch_flow(state, flows.default_name);
     try expect_text(state, state.call_stack.temp_get(temp_name, -1).?.string, "temp");

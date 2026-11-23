@@ -6,7 +6,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const resolve = @import("resolve.zig");
 const lookups = @import("resolve_lookups.zig");
-const passes = @import("resolve_passes.zig");
+const ir = @import("lower_ir.zig");
 const sema = @import("sema.zig");
 const grammar = @import("grammar.zig");
 const Context = resolve.Context;
@@ -30,20 +30,18 @@ pub const Symbol = enum(u8) {
 /// already has it, and whether the name is a parameter's (ink's "argument" type override,
 /// `numbers[0]` 1).
 fn conflict(name: []const u8, existing: ObjectIndex, symbol: Symbol) resolve.Details {
-    assert(name.len > 0);
     const as_argument: u32 = @intFromBool(symbol == .argument);
     return .{ .other = existing, .name = name, .numbers = .{ as_argument, 0 } };
 }
 
 /// Story.CheckForNamingCollisions for `name` on `object`.
 pub fn check(context: *Context, object: ObjectIndex, name: []const u8, symbol: Symbol) !void {
-    assert(object.to_int() < context.tree.count());
     if (name.len == 0) return;
     const as_type = conflict(name, .none, symbol);
     if (grammar.is_reserved_keyword(name)) {
         return context.report_details(.reserved_name, object, as_type);
     }
-    if (passes.is_builtin(name)) return context.report_details(.builtin_name, object, as_type);
+    if (ir.builtin(name) != null) return context.report_details(.builtin_name, object, as_type);
     const found = try lookups.content_with_name_at_level(context, Tree.root, name, .knot, false);
     if (found) |knot| {
         if (knot != object or symbol == .argument) {
@@ -83,7 +81,6 @@ pub fn check(context: *Context, object: ObjectIndex, name: []const u8, symbol: S
 /// The list part: a list's name, and (except for list items) the names of every item.
 fn check_lists(context: *Context, object: ObjectIndex, name: []const u8, symbol: Symbol) !void {
     const tree = context.tree;
-    assert(name.len > 0);
     for (context.list_order.items) |definition| {
         const declaration = tree.parent(definition);
         // The list's name is in its LIST declaration's syntax, child 0.

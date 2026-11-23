@@ -10,9 +10,6 @@ const Alignment = std.mem.Alignment;
 pub const CountingAllocator = struct {
     child: Allocator,
     allocations_count: u64 = 0,
-    /// In-place resizes that succeeded, both growing and shrinking.
-    resizes_count: u64 = 0,
-    remaps_count: u64 = 0,
     frees_count: u64 = 0,
     /// Resizes and remaps that made a block bigger.
     grows_count: u64 = 0,
@@ -20,25 +17,16 @@ pub const CountingAllocator = struct {
     bytes_peak: u64 = 0,
 
     pub fn init(child: Allocator) CountingAllocator {
-        const counting: CountingAllocator = .{ .child = child };
-        assert(counting.bytes_live == 0);
-        assert(counting.allocations_count == 0);
-        return counting;
+        return .{ .child = child };
     }
 
     pub fn allocator(counting: *CountingAllocator) Allocator {
-        assert(counting.bytes_live <= counting.bytes_peak);
-        const result: Allocator = .{ .ptr = counting, .vtable = &vtable };
-        assert(result.ptr == @as(*anyopaque, counting));
-        return result;
+        return .{ .ptr = counting, .vtable = &vtable };
     }
 
     /// Every event that could take new memory: allocations and grows.
     pub fn growths(counting: *const CountingAllocator) u64 {
-        assert(counting.grows_count <= counting.resizes_count + counting.remaps_count);
-        const result = counting.allocations_count + counting.grows_count;
-        assert(result >= counting.allocations_count);
-        return result;
+        return counting.allocations_count + counting.grows_count;
     }
 
     const vtable: Allocator.VTable = .{
@@ -60,8 +48,6 @@ pub const CountingAllocator = struct {
         const memory = counting.child.rawAlloc(len, alignment, return_address) orelse return null;
         counting.allocations_count += 1;
         counting.add_live(len);
-        assert(counting.bytes_live >= len);
-        assert(counting.allocations_count > counting.frees_count);
         return memory;
     }
 
@@ -75,9 +61,7 @@ pub const CountingAllocator = struct {
         const counting = from(context);
         assert(counting.bytes_live >= memory.len);
         if (!counting.child.rawResize(memory, alignment, new_len, return_address)) return false;
-        counting.resizes_count += 1;
         counting.change_live(memory.len, new_len);
-        assert(counting.bytes_live >= new_len);
         return true;
     }
 
@@ -92,9 +76,7 @@ pub const CountingAllocator = struct {
         assert(counting.bytes_live >= memory.len);
         const result = counting.child.rawRemap(memory, alignment, new_len, return_address) orelse
             return null;
-        counting.remaps_count += 1;
         counting.change_live(memory.len, new_len);
-        assert(counting.bytes_live >= new_len);
         return result;
     }
 
@@ -104,7 +86,6 @@ pub const CountingAllocator = struct {
         counting.child.rawFree(memory, alignment, return_address);
         counting.frees_count += 1;
         counting.bytes_live -= memory.len;
-        assert(counting.frees_count <= counting.allocations_count);
     }
 
     fn change_live(counting: *CountingAllocator, old_len: usize, new_len: usize) void {
@@ -115,14 +96,11 @@ pub const CountingAllocator = struct {
         } else {
             counting.bytes_live -= old_len - new_len;
         }
-        assert(counting.bytes_live <= counting.bytes_peak);
     }
 
     fn add_live(counting: *CountingAllocator, bytes: usize) void {
         counting.bytes_live += bytes;
         counting.bytes_peak = @max(counting.bytes_peak, counting.bytes_live);
-        assert(counting.bytes_live <= counting.bytes_peak);
-        assert(counting.bytes_live >= bytes);
     }
 };
 

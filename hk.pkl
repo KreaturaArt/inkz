@@ -1,0 +1,14 @@
+amends "package://github.com/jdx/hk/releases/download/v2.12.0/hk@2.12.0#/Config.pkl"
+
+// `hk install` once per clone. The pre-push hook runs a 10-second swarm (play, save and host
+// in turn, play and save checking their compiled programs as the compile target does) from a
+// fresh seed; CI runs a 5-minute one after `zig build ci` passes.
+hooks {
+    ["pre-push"] {
+        steps {
+            ["swarm"] {
+                check = "zig build swarm -Doptimize=ReleaseSafe -- --target all --seconds 10 --seed $(date +%s)"
+            }
+        }
+    }
+}

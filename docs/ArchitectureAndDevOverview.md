@@ -17,9 +17,9 @@ code are ```text blocks, because the library doesn't export those modules.
 | Directory | What it holds |
 |---|---|
 | `src/core/` | The program image both halves share: `Program`, `ProgramBuilder`, the string pool, index newtypes, limits, `BoundedStack`, ink path strings, .NET's seeded random, and ink's JSON (`ink_json.load`, `ink_json.serialize`). |
-| `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public API (`api.zig`). |
+| `src/runtime/` | The VM, the state, the Continue loop, save and load, and the public `Story` (`story.zig`). |
 | `src/compiler/` | The compiler: parser, object tree, name resolution and lowering to a `Program`. Entry points in `compile.zig`. |
-| `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle and divergence ledger, end-to-end tests, the simulator and the zero-allocation gate. |
+| `src/testing/` | The engine-neutral test layer: ground truth, transcripts, the oracle, end-to-end tests, the simulator and the zero-allocation gate. |
 | `tools/` | Lint, doctest, snapshot files, ground-truth file checks, the death-test runner, and the C# reference harness (`tools/ink_harness/`). |
 
 `src/root.zig` is the library module, imported as `inkz`. It re-exports the runtime API at
@@ -39,7 +39,9 @@ pre-resolved story image. Two producers make one, and both drive the same
 `ink_json.serialize` writes a `Program` back as inklecate's JSON. The structural gate
 (`src/testing/structure_gate.zig`) checks that the compiler's JSON equals inklecate's for
 every ground-truth story, and that `load(serialize(compile(source)))` equals
-`compile(source)` field by field.
+`compile(source)` field by field for each of them. So the ground-truth gate, which plays
+inklecate's JSON, also covers the compiler end to end, and `src/testing/e2e_tests.zig` keeps
+only the stories and paths ground truth doesn't play.
 
 A `Program` is struct-of-arrays data addressed by `u32` index newtypes, with no pointers:
 
@@ -50,27 +52,24 @@ A `Program` is struct-of-arrays data addressed by `u32` index newtypes, with no 
   instruction array, plus its parent, depth, name, path, counting flags and a range of the
   `named` table (knots, stitches, labelled gathers). A nested container appears as an
   `enter_container` instruction at its position in the parent.
-- **Strings:** one frozen `StringPool`; instructions hold `StringId`s.
+- **Strings:** one `StringPool`, held const; instructions hold `StringId`s.
 - **Globals, list origins, list items, externals:** small tables indexed by their newtypes.
 
 Every target is resolved to a container index or a `{container, index}` pair when the
 program is built, so the VM never sees a path string. `Program.verify()` runs after every
 build and load.
 
-This dump shows the layout. `inkz.core.program_dump.dump` lists any program:
+To see a program, write it back as ink's JSON with `inkz.core.ink_json.serialize`, which
+lists every container's content in order (the same JSON as `inkz.compiler.compile_to_json`):
 
 ```zig
 var program = try inkz.compiler.compile_source(gpa, "Hello, world!\n");
 defer program.deinit(gpa);
 
-var listing: std.Io.Writer.Allocating = .init(gpa);
-defer listing.deinit();
-try inkz.core.program_dump.dump(&program, &listing.writer);
-std.debug.print("{s}", .{listing.written()});
-
-const json = try inkz.compiler.compile_to_json(gpa, "Hello, world!\n");
-defer gpa.free(json);
-std.debug.print("{s}\n", .{json});
+var json: std.Io.Writer.Allocating = .init(gpa);
+defer json.deinit();
+try inkz.core.ink_json.serialize(gpa, &program, &json.writer);
+std.debug.print("{s}\n", .{json.written()});
 ```
 
 ## The compiler
@@ -80,13 +79,14 @@ The compiler is a faithful, non-recursive port of ink's `InkParser` and `ParsedH
 they follow.
 
 1. **Source space** (`source_space.zig`): every file of a compilation, with comments removed
-   (ink's `CommentEliminator`), laid end to end in one buffer. `INCLUDE`d files are appended
-   as they are found. Token and node indices are therefore global, and a file table maps
-   offsets back to `file:line:column`.
+   (ink's `CommentEliminator`), laid end to end in one buffer. Each file is parsed once, as
+   it is appended (`grammar.SpaceParser`); its `INCLUDE`s, read from its own region, append
+   the next files. Token and node indices are therefore global, and a file table maps
+   offsets back to `file:line:column`. A file that fills the parse workspace is parsed
+   again on its own with twice the room.
 2. **Parser** (`core.zig`, `grammar*.zig`): ink's backtracking rules, run on an explicit
    stack instead of the native one. A rule is a step function with numbered phases. Each
-   step returns an `Action`: `call` another rule, `peek` at one, `succeed`, `fail`, or run
-   `again`. A call pushes a frame that holds a checkpoint (input position, token, node and
+   step returns an `Action`: `call` another rule, `peek` at one, `succeed` or `fail`. A call pushes a frame that holds a checkpoint (input position, token, node and
    scratch counts); a failed rule restores it. That gives StringParser's
    `BeginRule`/`FailRule`/`SucceedRule`, and so `OneOf`, `Optional` and `Interleave`. The
    frame stack is bounded by `parse_depth_max`, and a gas counter bounds the steps by the
@@ -135,9 +135,10 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
 
 ## The runtime
 
-`Story` (`src/runtime/story.zig`) is a borrowed `*const Program`, one `State`, and ink's
-Continue loop. The public `inkz.Story` (`api.zig`) wraps it with the host calls and the
-borrowed-view checks.
+`Story` (`src/runtime/story.zig`), the public `inkz.Story`, is a borrowed
+`*const Program`, one `State`, and ink's Continue loop, with the host calls and the
+borrowed-view checks. Its `pub` methods are the host API; the runtime's own helpers are the
+functions after it in `story.zig`, which take the story first.
 
 - **State** (`state.zig`) is carved out of one allocation of exactly
   `Limits.bytes_total()` bytes, made in `init`. Nothing allocates afterwards; the
@@ -153,16 +154,18 @@ borrowed-view checks.
   instruction are in `ops.zig` (variables, strings, tags, choices, randomness) and
   `native.zig` (ink's operators).
 - **The Continue loop** (`story.zig`, `lookahead.zig`) is ink's `ContinueInternal`. When the
-  output ends in a newline it takes a snapshot of the live flow and starts an undo log of
-  shared values. If new text or tags then extend the line, it restores the snapshot and
+  output ends in a newline it takes a snapshot of the live flow, and copies out each chunk
+  of the shared values before the lookahead first writes it. If new text or tags then extend the line, it restores the snapshot and
   returns the line. That is how `cont()` returns one line and still joins glue.
 - **The heap** (`heap.zig`) holds runtime strings and lists in fixed buffers, reclaimed by
-  sliding mark-compact only when an allocation doesn't fit.
-- **Flows** (`flows.zig`) park the used part of each live buffer in a bounded region on a
-  switch, so a switch costs a copy of what is used, not of the limits.
-- **Saves** (`save.zig`, `load.zig`, `json_tree.zig`) stream ink's save format v10 with no
-  allocation, and load into fixed scratch, validating the whole save before touching the
-  state.
+  sliding mark-compact only when an instruction reserves room that isn't free, before it
+  pops its operands (`State.reserve`); an allocation never compacts.
+- **Flows** (`flows.zig`) each own a full set of call stack, output and choice buffers; a
+  switch stores the live stacks' counts and points them at the target flow's set, copying
+  nothing.
+- **Saves** (`save.zig`, `load.zig`) stream ink's save format v10 with no allocation, and
+  load by parsing with std.json into fixed scratch and reading it once into a reset state; a
+  save that fails to load leaves the story as `reset_state` leaves it.
 
 ### What changed for hosts
 
@@ -191,8 +194,12 @@ Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 | `zig build fuzz` | One fuzz target per pipeline stage, on its corpus; add `--fuzz` (and `-Doptimize=ReleaseSafe`) to fuzz. See `docs/fuzzing.md`. |
 | `zig build simulate` | Plays every ground-truth case with seeded random choices, saves, loads and flow switches. |
 | `zig build transcripts` | Regenerates `test/transcripts/`. |
-| `zig build replay` | Installs `replay_case`, which replays one case and prints its transcript. |
-| `zig build bench` | Benchmarks in ReleaseSafe and ReleaseFast; writes `docs/benchmarks.md`. |
+| `zig build replay -- <case id>` | Replays one case and prints its transcript (`--json <path> --actions <text>` for any story). |
+| `zig build swarm`, `swarm-gen`, `swarm-check`, `swarm-reduce` | Seeded and differential swarm runs (see `docs/fuzzing.md`). |
+
+`simulate`, `transcripts`, `replay` and the swarm steps are commands of one dev tool,
+`src/dev.zig`: `zig build <command> -- <arguments>` runs `dev <command> <arguments>`.
+| `zig build bench` | `src/bench.zig runtime` in ReleaseSafe and ReleaseFast (one bench program, subcommands `runtime`, `io`, `profile`); writes `docs/benchmarks.md`. |
 | `zig build bench-io` | Program load and store, ink's JSON against the binary image, in ReleaseSafe and ReleaseFast; appends to `zig-out/bench/load_store.jsonl`, or with `-Dbench-record` to the committed `bench/load_store.jsonl` (see `docs/benchmarks.md`). |
 | `zig build bench-profile` | Time per pipeline stage (profile zones, ReleaseFast): prints each workload's zones and the worst zones of one pass; appends to `zig-out/bench/profile.jsonl` (`-Dbench-record`: `bench/profile.jsonl`). `zig build test-profile` checks the zones. |
 
@@ -205,17 +212,16 @@ mise (`mise run reference:setup`, `mise run reference:expected`) and is never pa
 `zig build`, so the Zig suite doesn't need .NET.
 
 Tests describe host actions once, as `.actions` lines, and replay them on the engine
-(`src/testing/transcript.zig`). The oracle compares the result with ink's transcript; every
-known difference must be listed, with a reason, in `test/divergence_ledger.zon`, and an
-entry whose case no longer differs fails too.
+(`src/testing/transcript.zig`). The oracle compares the result with ink's transcript line
+by line and reports the first differing turn; every case must match.
 
 ### Debugging tips
 
-- `inkz.core.program_dump.dump` (above) lists a program's containers and instructions in
-  layout order.
+- `inkz.core.ink_json.serialize` (above) writes any program, also a loaded image, as
+  ink's JSON.
 - `inkz.compiler.compile_to_json` shows what the compiler made, in a form you can compare
   with inklecate's output.
-- `replay_case <case id>` replays a ground-truth case in its own process; the
+- `zig build replay -- <case id>` replays a ground-truth case in its own process; the
   simulator prints the exact command that reproduces each failure it finds.
 - `State.check()` and `Program.check()` return a named `Fault` for the first broken
   invariant. `verify()` asserts on it at the boundaries: when a program is built or loaded,

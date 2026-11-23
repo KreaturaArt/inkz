@@ -72,10 +72,9 @@ fn parse_options(arguments: []const [:0]const u8) !Options {
     return options;
 }
 
-pub fn main(init: std.process.Init) !void {
-    const arena = init.arena.allocator();
-    const io = init.io;
-    const options = try parse_options(try init.minimal.args.toSlice(arena));
+/// `arguments[0]` is the command's name (src/dev.zig).
+pub fn command(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
+    const options = try parse_options(arguments);
     const ids: []const []const u8 = if (options.json) |path|
         try arena.dupe([]const u8, &.{path})
     else if (options.case) |case|
@@ -97,11 +96,10 @@ fn simulate(
     const save_buffer = try arena.alloc(u8, 4 << 20);
     var totals: Totals = .{};
     for (ids) |id| {
-        const path = if (options.json != null)
-            id
+        const json = if (options.json != null)
+            try std.Io.Dir.cwd().readFileAlloc(io, id, arena, .limited(16 << 20))
         else
-            try std.fmt.allocPrint(arena, "test/ground_truth/{s}.ink.json", .{id});
-        const json = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(16 << 20));
+            try cases.read_json(arena, io, id);
         var program = ink_json.load(gpa, json) catch continue;
         defer program.deinit(gpa);
         const run: Run = .{ .id = id, .program = &program, .save_buffer = save_buffer };
@@ -139,7 +137,7 @@ const Run = struct {
     ) !limits_module.Usage {
         assert(options.seeds_count > 0);
         var story: Story = undefined;
-        try story.init(gpa, run.program, limits);
+        try story.init(gpa, run.program, .{ .limits = limits });
         defer story.deinit(gpa);
         simulation.prepare(&story, options.compact_always);
         for (0..options.seeds_count) |offset| {

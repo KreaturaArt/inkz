@@ -146,7 +146,7 @@ Almost every difference below follows from this table.
 | Backtracking | Yes, ink's: `Checkpoint{at, tokens, nodes, scratch, flags}`, restored on fail and after a peek | None | None (FIRST-set guards; "never fails") |
 | Recursion bound | `parse_depth_max = 512` frames gives a `too_deep` diagnostic (`limits.zig:284`) | None | None (unbounded native stack) |
 | Progress bound | Gas `64*(len+64)` gives a `no_progress` diagnostic (`core.zig:247-254`) | None | Gas only in `containerMembers`, which panics (`grammar.zig:111-181`) |
-| Recursion enforcement | Lint: call-graph SCC (Tarjan with an explicit stack), one suppression in the repo (`tools/lint.zig:565-620`) | None; recursion everywhere | None |
+| Recursion enforcement | Lint: call-graph cycle check (back edges of an iterative depth-first search), one suppression in the repo (`call_cycles` in `tools/lint.zig`) | None; recursion everywhere | None |
 | Rule dispatch | `switch (rule) { inline else => rule_function(rule)(…) }`; rules found by name at comptime across four modules (`grammar.zig:71-102`) | Direct calls | Direct calls; local labeled switches for sub-state (`grammar.zig:98-180`, `688-958`) |
 | Precedence | Precedence climbing through frames, ink's table | Precedence climbing, `binOp` switch (`post_tree/Parser.zig:392-409`) | Precedence table parsed at comptime from a multiline string, scanned linearly (`grammar.zig:589-613`, `1064-1076`) |
 
@@ -318,10 +318,10 @@ Measured densities:
 | Choice | inkz | fino | zirp |
 |---|---|---|---|
 | Stages | parse → sema object tree → resolve → IR → layout → `ProgramBuilder` | parse → (pre-pass `collectFns`) → bytecode, **no IR** | parse → AstRlAnnotate (ported); AstGen/ZIR not ported |
-| Object tree | SoA `sema.Tree`: kinds u8, flags u16 (bits shared per kind), parents, nodes, `children_first`/`count`, `children` (`sema.zig:103-112`), about 23 B/object | none | none |
+| Object tree | `sema.Tree`: a MultiArrayList of `sema.Object` (kind u8, flags u16 with bits shared per kind, parent, node, `children_first`/`count`) and `children` (`sema.zig:104-119`), 23 B/object | none | none |
 | Resolution results | Side tables indexed by `ObjectIndex`: `targets`, `references`, a bitset, `item_values`, … (`resolve.zig:141-174`) | Inline in the compiler (`locals` stack) | `AutoHashMap(Node.Index, void)` (AstRlAnnotate) |
 | Names | **Source slices** with Wyhash keys `{scope, name}` until the builder interns them | Interned `u24` from the parser on | `[]const u8` from tokens |
-| IR | AoS `Stored` tagged union ≤ 24 B with side arrays; per-container **linked list** via `next`, then flattened (`lower_ir.zig`) | n/a | n/a (upstream ZIR in the copied AstGen) |
+| IR | AoS `Item` tagged union, 40 B, stored whole (side arrays dropped in P17.18); per-container **linked list** via `next`, then flattened (`lower_ir.zig`) | n/a | n/a (upstream ZIR in the copied AstGen) |
 | Traversal | `Walk(comptime .pre/.post)`, one frame per level, 64 inline then spill (`sema.zig:244-262`) | post_tree: linear cursor + recursion per block; moar_smaller: one loop + backpatch stacks | Recursive (AstRlAnnotate, `firstToken`/`lastToken`) |
 | Freeing | AST, object tree and resolution are freed before layout and emission (`compile.zig:36-60`) | AST freed after compile | Ast owned by the caller |
 
@@ -339,8 +339,8 @@ Measured densities:
   - *Cost to inkz:* memory and code. Mitigated by freeing early and by emitting by key instead
     of path strings, which made compiles 12–15% faster (P12.4).
 - **SoA object tree vs AoS IR inside inkz.** The object tree is the read-mostly structure walked
-    many times, so it is SoA. The IR is short-lived and heterogeneous, so a ≤ 24 B tagged union
-    with side arrays was simpler. Its linked list per container avoids a buffer per container
+    many times, so it is SoA. The IR is short-lived and heterogeneous, so a 40 B tagged union
+    stored whole was simpler. Its linked list per container avoids a buffer per container
     while generating, at the cost of pointer-chasing until it is flattened. Neither reference
     has a comparable structure; zirp's upstream AstGen uses SoA `MultiArrayList(Zir.Inst)` with
     `extra`.
@@ -486,7 +486,7 @@ Measured densities:
 
 - **12 B indexed values vs 16 B pointer values.**
   - *inkz:* every payload is a 4 B index or scalar, so a `Value` is pointer-free and therefore
-    `memcpy`-safe across snapshots, flow parking, saves and heap compaction. Compaction only
+    `memcpy`-safe across snapshots, flow switches, saves and heap compaction. Compaction only
     has to rewrite references, never raw pointers. 32-bit numerics (D14) keep it at 12 B.
   - *fino:* `f64` numbers and raw heap pointers force 16 B. A pointer makes access direct, with
     no base addition, and refcounting operates on the pointee. But the objects can never move,
@@ -521,7 +521,7 @@ Measured densities:
 |---|---|---|---|
 | Strategy | Fixed string heap + list slab; **sliding mark-compact** when an allocation fails (`heap.zig:145-310`) | Per-object `gpa.create`, **refcount + copy-on-write + move on last use** | n/a |
 | Object header | String `[length\|mark bit31, forward, bytes, pad]`; list `[forward, items_count, origins_count, …]` | `rc: u32` + payload | n/a |
-| Order | Allocation order preserved, so heap marks and lookahead tops stay valid | n/a | n/a |
+| Order | Allocation order preserved, so text keeps its order in the heap | n/a | n/a |
 | Value semantics | Ink strings and lists are immutable values: every op produces new objects | Mutable value semantics: COW when `rc > 1`, in place when `rc == 1` (`Vm.zig:37-79`) | n/a |
 | Lists | Ordered item arrays, **linear membership scan** (`lists.zig:1-12`) | `ArrayList(Value)` | n/a |
 
@@ -532,11 +532,13 @@ Measured densities:
     1. RC/COW needs a general allocator or a free list, and that breaks "no allocation after
        init".
     2. RC traffic (retain on every read) sits on the hot path.
-    3. A sliding compactor preserves order, so the lookahead snapshot can record "heap top =
-       N" and restore by truncating, which is how D12 stays cheap.
+    3. A sliding compactor needs no free list: a lookahead restore (D12) leaves its objects
+       as garbage for the next compaction (P17.13; until then it truncated to a recorded,
+       relocated heap top).
     4. A fixed heap is defragmented by construction.
   - *Costs to inkz:* a GC pause when the heap fills. It is bounded by the heap size, but
-    nonzero, and stress-tested with `compact_always`. In-flight operands need `keep` roots.
+    nonzero, and stress-tested with `compact_always`. Room is reserved before an
+    instruction pops its operands, so they are on a root then.
     There is no in-place mutation, which ink doesn't need anyway since its strings and lists
     are immutable values.
   - *fino's reason:* its whole research question is mutable value semantics. COW plus
@@ -598,22 +600,23 @@ Measured densities:
 
 Neither reference has these. They are listed because they shape choices made elsewhere.
 
-- **Lookahead snapshot plus undo log (D12).**
+- **Lookahead snapshot (D12).**
   - `cont()` must return exactly one line, which requires running ahead to see whether more
     text glues on.
-  - The snapshot memcpys the *used prefix* of 11 live-flow buffers. Writes to shared arrays
-    (globals, visit counts, turn indices) are logged at most once per slot, through a
-    `patch_logged` bitset, as `PatchEntry{target u32 (2-bit kind + 30-bit slot), old Value}`
-    at 16 B each.
-  - Restore copies the buffers back, undoes newest-first, and truncates the heap.
+  - The snapshot memcpys the *used prefix* of 11 live-flow buffers. The shared arrays
+    (globals, visit counts, turn indices) are copied on write, 64 slots at a time, through a
+    bitset of copied chunks (P17.13 replaced the undo log of 16 B `PatchEntry` records).
+  - Restore copies the buffers and the written chunks back; the lookahead's heap objects
+    stay as garbage until the next compaction.
   - *It is why* values are pointer-free (§10), the compactor preserves order (§11), and the
     budget contains a second copy of the live-flow buffers (§12).
-- **Flow parking.** Only the current flow is live. Parked flows are packed as `u32` words with an
-  `extern` header into a 256 KiB region, and every flow element is asserted to be 4-byte
-  aligned and a multiple of 4 B.
+- **Per-flow buffers.** Each of `flows_max` flows owns a full set of call stack, output and
+  choice buffers in the one allocation; switching points the live stacks at the target
+  flow's set, so nothing is packed or copied (P17.14 replaced the 256 KiB parking region,
+  into which the outgoing flow used to be packed as `u32` words).
 - **Saves.** Ink v10 JSON, both ways (D15). `save` streams to a writer without allocating.
-  `load` tokenises into a fixed `json_tree.Node[]` (16 B, with a `next` subtree-end link for
-  O(1) skip), validates in one pass and commits in a second, so a failed load changes nothing.
+  `load` parses with std.json into a fixed scratch (`load_bytes_max`) and reads the values in
+  one pass into a reset state, so a failed load leaves the story reset (P17.12).
 
 ---
 
@@ -666,7 +669,7 @@ host.
 |---|---|---|---|
 | Size guards | `comptime assert(@sizeOf(T) == limits.element_bytes.x)` next to every type, plus `sizes_test.zig` with `soa_bytes(T)` | Runtime tests only; index_sea's is wrong | None (packed widths only) |
 | Structural checks | `check() → Fault` enum + `verify()` that panics **in every build mode**; death tests run in child processes (`tools/death.zig`) | `debug.assert` | `assert` in accessors, `maybe()`, comptime schema exhaustiveness |
-| Lint | `tools/lint.zig`: function ≤ 70 lines, line ≤ 100 columns, recursion SCC, no `usize` fields, snake_case files, ≥ 1 assert per function, `hot_path` text bans in `vm.zig` | None | None |
+| Lint | `tools/lint.zig`: function ≤ 70 lines, line ≤ 100 columns, call cycles, no `usize` fields, snake_case files, ≥ 1 assert per function, `hot_path` text bans in `vm.zig` | None | None |
 | Release mode | ReleaseSafe ships (D11) | ReleaseFast | ReleaseFast |
 | Comptime metaprogramming | `operand_kind` table, `rule_function` lookup, `Walk(order)`, image `record_layouts` | `@FieldType`/`@unionInit` constructors, `inline` op prongs | `TagSet`, `SyntaxTag` = `@Enum(u16, Token.Tag ++ Node.Tag)`, schema reflection, comptime precedence table |
 
@@ -950,7 +953,8 @@ change is. Each finding comes with a success criterion that a unit test can chec
 
 - **Evidence.**
   - Guidelines §"Index newtypes, no pointers in persistent data" says copying with `@memcpy`
-    (snapshots, parking) relies on there being no pointers.
+    (snapshots, then also flow parking, which P17.14 replaced with per-flow buffers) relies
+    on there being no pointers.
   - `State` holds `program: *const Program`; `Observer` holds `callback`/`context`; `Borrowed`
     stamps hold `*const u32`. These are all fine because none of them is snapshotted.
   - Nothing *checks* that the element types that are snapshotted are pointer-free. Today only
@@ -1030,6 +1034,9 @@ change is. Each finding comes with a success criterion that a unit test can chec
   target keeps covering only the validating path.
 
 ### F18: save load runs twice
+
+- **Outcome (P17.12).** Changed the other way: the load reads the save once and a failed load
+  leaves the story reset, not unchanged (`docs/benchmarks.md`, F18 revisited).
 
 - **Evidence.** `load.zig` validates in one pass and commits in a second. Benchmark lead 8 puts
   each at about 45%.

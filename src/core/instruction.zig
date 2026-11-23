@@ -115,7 +115,6 @@ pub const Opcode = enum(u8) {
 
 comptime {
     assert(@sizeOf(Opcode) == 1);
-    assert(@typeInfo(Opcode).@"enum".field_names.len < 256);
 }
 
 /// A typed index into `extra` for record `T`, so an operand can't be read as the wrong record.
@@ -127,13 +126,6 @@ pub fn ExtraIndex(comptime T: type) type {
     };
 }
 
-/// A position inside a container: a divert target or a choice target.
-pub const Target = struct {
-    container: ContainerIndex,
-    /// The content index inside `container`; 0 is its start.
-    index: u32,
-};
-
 pub const DivertKind = enum(u2) { plain, function, tunnel };
 
 pub const DivertFlags = packed struct(u32) {
@@ -144,7 +136,7 @@ pub const DivertFlags = packed struct(u32) {
     padding: u28 = 0,
 };
 
-pub const Divert = struct {
+pub const Divert = extern struct {
     target_container: ContainerIndex,
     target_index: u32,
     /// The variable holding the target, for `variable` diverts; otherwise `.none`.
@@ -152,10 +144,15 @@ pub const Divert = struct {
     flags: DivertFlags,
 };
 
-pub const ExternalCall = struct {
+pub const ExternalCallFlags = packed struct(u32) {
+    conditional: bool,
+    padding: u31 = 0,
+};
+
+pub const ExternalCall = extern struct {
     external: ExternalIndex,
     arguments_count: u32,
-    conditional: bool,
+    flags: ExternalCallFlags,
 };
 
 pub const ChoiceFlags = packed struct(u32) {
@@ -167,13 +164,13 @@ pub const ChoiceFlags = packed struct(u32) {
     padding: u27 = 0,
 };
 
-pub const ChoicePoint = struct {
+pub const ChoicePoint = extern struct {
     target_container: ContainerIndex,
     target_index: u32,
     flags: ChoiceFlags,
 };
 
-pub const VariablePointer = struct {
+pub const VariablePointer = extern struct {
     name: StringId,
     /// ink's context index: -1 unknown, 0 global, n > 0 a call-stack frame.
     context: i32,
@@ -183,7 +180,7 @@ pub const VariablePointer = struct {
 /// follow it in `extra`. A list item read as a variable (`{"VAR?": "item"}`, resolved by the
 /// builder) is one item and one origin, followed by the name it was written with; a literal
 /// with one item never has origins, as ink writes them only for empty lists.
-pub const ListLiteral = struct {
+pub const ListLiteral = extern struct {
     items_count: u32,
     origins_count: u32,
 };
@@ -203,11 +200,15 @@ pub const OperandKind = enum {
     list,
 };
 
-/// What the operand of `opcode` means. The switch has no `else`, so a new opcode can't be
-/// added without deciding its operand.
+/// What the operand of `opcode` means. The control commands and native functions have none;
+/// a new opcode without a row fails the round-trip test below, which asks for every one.
 pub fn operand_kind(opcode: Opcode) OperandKind {
-    assert(@backingInt(opcode) < @typeInfo(Opcode).@"enum".field_names.len);
-    const kind: OperandKind = switch (opcode) {
+    const commands_first = @backingInt(Opcode.eval_start);
+    const commands_last = @backingInt(Opcode.list_invert);
+    if (@backingInt(opcode) >= commands_first and @backingInt(opcode) <= commands_last) {
+        return .none;
+    }
+    return switch (opcode) {
         .text, .tag, .temp_get, .temp_declare, .temp_assign => .string,
         .temp_assign_written_global => .string,
         .divert_target, .enter_container, .read_count => .container,
@@ -221,20 +222,8 @@ pub fn operand_kind(opcode: Opcode) OperandKind {
         .variable_pointer => .variable_pointer,
         .list => .list,
         .newline, .glue, .void => .none,
-        .eval_start, .eval_output, .eval_end, .duplicate, .pop, .function_return => .none,
-        .tunnel_return, .string_start, .string_end, .nop, .choice_count, .turns => .none,
-        .turns_since, .read_count_of_target, .random, .seed_random, .visit_index => .none,
-        .sequence_shuffle_index, .start_thread, .done, .end, .list_from_int => .none,
-        .list_range, .list_random, .tag_start, .tag_end => .none,
-        .add, .subtract, .divide, .multiply, .modulo, .negate, .equal, .greater => .none,
-        .less, .greater_or_equal, .less_or_equal, .not_equal, .not, .@"and", .@"or" => .none,
-        .min, .max, .pow, .floor, .ceiling, .int, .float_cast, .has, .hasnt => .none,
-        .intersect, .list_min, .list_max, .list_all, .list_count, .list_value => .none,
-        .list_invert => .none,
+        else => unreachable,
     };
-    // Every opcode from `eval_start` on is a command, a native function or flow.
-    if (@backingInt(opcode) >= @backingInt(Opcode.eval_start)) assert(kind != .integer);
-    return kind;
 }
 
 /// The Zig type of an operand of kind `kind`.
@@ -263,8 +252,6 @@ fn word_of(comptime kind: OperandKind, operand: Operand(kind)) u32 {
         .boolean => @intFromBool(operand),
         else => @backingInt(operand),
     };
-    if (kind == .boolean) assert(word <= 1);
-    if (kind == .none) assert(word == 0);
     return word;
 }
 
@@ -279,7 +266,6 @@ pub const Instruction = struct {
         const instruction: Instruction = .{ .opcode = opcode, .operand = word };
         // Compare bits, not values: a NaN literal must round-trip too.
         assert(word_of(kind, instruction.get(opcode)) == word);
-        assert(kind != .none or word == 0);
         return instruction;
     }
 
