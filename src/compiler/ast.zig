@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const assert = std.debug.assert;
+const Allocator = std.mem.Allocator;
 const index = @import("../core/index.zig");
 
 pub const NodeIndex = index.Index("node");
@@ -340,6 +341,101 @@ pub const Ast = struct {
         assert(position < items.count);
         return .from_int(items.first.to_int() + @as(u32, @intCast(position)));
     }
+
+    /// A walk of `root`'s subtree; `deinit` it. Without `gpa`, nodes deeper than the walk's
+    /// inline frames are visited but not descended into.
+    pub fn walk(ast: *const Ast, gpa: ?Allocator, root: NodeIndex) Walk {
+        assert(root.to_int() < ast.tags.len);
+        return .{ .ast = ast, .gpa = gpa, .start = root };
+    }
+};
+
+/// A walk of a subtree without recursion: every node in pre-order (a node, then its
+/// children's subtrees in order) and, after its children, each non-leaf node again as a
+/// `leave` step. The stack holds one frame per level; the first `inline_depth` levels live in
+/// the walk itself, only deeper trees allocate.
+pub const Walk = struct {
+    ast: *const Ast,
+    gpa: ?Allocator,
+    /// The subtree's root, until the first `next`.
+    start: ?NodeIndex,
+    frames_count: u32 = 0,
+    inline_frames: [inline_depth]Frame = undefined,
+    deeper_frames: std.ArrayList(Frame) = .empty,
+
+    pub const Step = struct {
+        node: NodeIndex,
+        /// The node's parent; none for the walk's root.
+        parent: NodeIndex,
+        /// The node's depth below the walk's root.
+        depth: u32,
+        /// The visit after the node's children (non-leaf nodes only).
+        leave: bool = false,
+    };
+
+    const Frame = struct { node: NodeIndex, next_child: u32 = 0, children: u32 };
+    const inline_depth = 64;
+
+    pub fn deinit(walk: *Walk) void {
+        assert(walk.deeper_frames.items.len + inline_depth >= walk.frames_count);
+        if (walk.gpa) |gpa| walk.deeper_frames.deinit(gpa);
+    }
+
+    pub fn next(walk: *Walk) Allocator.Error!?Step {
+        if (walk.start) |root| {
+            walk.start = null;
+            try walk.enter(root);
+            return .{ .node = root, .parent = .none, .depth = 0 };
+        }
+        if (walk.frames_count == 0) return null;
+        const frame = walk.top();
+        if (frame.next_child == frame.children) {
+            const done = frame.node;
+            walk.frames_count -= 1;
+            if (walk.frames_count >= inline_depth) _ = walk.deeper_frames.pop();
+            const parent = if (walk.frames_count == 0) NodeIndex.none else walk.top().node;
+            return .{ .node = done, .parent = parent, .depth = walk.frames_count, .leave = true };
+        }
+        const child = walk.child_at(frame.node, frame.next_child);
+        frame.next_child += 1;
+        const step: Step = .{ .node = child, .parent = frame.node, .depth = walk.frames_count };
+        try walk.enter(child);
+        return step;
+    }
+
+    fn top(walk: *Walk) *Frame {
+        assert(walk.frames_count > 0);
+        const level = walk.frames_count - 1;
+        if (level < inline_depth) return &walk.inline_frames[level];
+        return &walk.deeper_frames.items[level - inline_depth];
+    }
+
+    /// Pushes a frame for a non-leaf node (if there is room).
+    fn enter(walk: *Walk, node: NodeIndex) Allocator.Error!void {
+        assert(node.to_int() < walk.ast.tags.len);
+        const children: u32 = switch (shape(walk.ast.tag(node))) {
+            .leaf => return,
+            .fixed => |count| count,
+            .list => walk.ast.list(node).count,
+        };
+        const frame: Frame = .{ .node = node, .children = children };
+        if (walk.frames_count < inline_depth) {
+            walk.inline_frames[walk.frames_count] = frame;
+        } else {
+            const gpa = walk.gpa orelse return;
+            try walk.deeper_frames.append(gpa, frame);
+        }
+        walk.frames_count += 1;
+    }
+
+    fn child_at(walk: *const Walk, node: NodeIndex, position: u32) NodeIndex {
+        assert(walk.frames_count > 0);
+        return switch (shape(walk.ast.tag(node))) {
+            .leaf => unreachable,
+            .fixed => walk.ast.child(node, position),
+            .list => walk.ast.item(node, position),
+        };
+    }
 };
 
 comptime {
@@ -368,6 +464,29 @@ test "accessors follow each tag's shape" {
     const line = ast.list(.from_int(3));
     try std.testing.expectEqual(@as(u32, 2), line.count);
     try std.testing.expectEqual(@as(u32, 1), ast.token(ast.item(.from_int(3), 1)).to_int());
+}
+
+test "a walk visits a small tree in pre-order, leaving each node after its children" {
+    // The accessors' tree, walked from the choice: its six slots, and in each of its two
+    // content lists (7 and 9) the two texts (1 and 2). A step is written as its node, its
+    // depth and its parent, with `^` for a leave.
+    const tags = [_]Tag{
+        .count,        .text,   .text, .content_list, .header, .none, .none, .content_list, .none,
+        .content_list, .choice,
+    };
+    const data = [_]u32{ 2, 0, 1, 0, 0, 0, 0, 0, 0, 0, 4 };
+    const ast: Ast = .{ .tags = &tags, .data = &data, .root = .from_int(10) };
+    var out: std.Io.Writer.Allocating = .init(std.testing.allocator);
+    defer out.deinit();
+    var walk_nodes = ast.walk(std.testing.allocator, ast.root);
+    defer walk_nodes.deinit();
+    while (try walk_nodes.next()) |step| {
+        const parent: i64 = if (step.parent.is_none()) -1 else step.parent.to_int();
+        const mark = if (step.leave) "^" else "";
+        try out.writer.print("{d}{s}:{d}/{d} ", .{ step.node.to_int(), mark, step.depth, parent });
+    }
+    try std.testing.expectEqualStrings("10:0/-1 4:1/10 5:1/10 6:1/10 7:1/10 1:2/7 2:2/7 " ++
+        "7^:1/10 8:1/10 9:1/10 1:2/9 2:2/9 9^:1/10 10^:0/-1 ", out.written());
 }
 
 /// A node asked for a child its tag doesn't have.

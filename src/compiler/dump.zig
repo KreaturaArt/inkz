@@ -7,43 +7,28 @@ const ast = @import("ast.zig");
 const grammar = @import("grammar.zig");
 const lexical = @import("lexical.zig");
 
-const stack_max = 4096;
-
-const Entry = struct {
-    node: ast.NodeIndex,
-    /// The next child to print.
-    next: u32,
-};
-
 /// Writes `parsed`'s tree to `out`; long lists have an item per line, indented.
-pub fn write(parsed: *const grammar.Parsed, out: *std.Io.Writer) !void {
+pub fn write(gpa: std.mem.Allocator, parsed: *const grammar.Parsed, out: *std.Io.Writer) !void {
     assert(parsed.tree.root.to_int() < parsed.tree.tags.len);
     const tree = &parsed.tree;
-    var stack: [stack_max]Entry = undefined;
-    var depth: u32 = 1;
-    stack[0] = .{ .node = tree.root, .next = 0 };
-    try open(parsed, tree.root, out);
-    while (depth > 0) {
-        const entry = &stack[depth - 1];
-        const children = child_count(tree, entry.node);
-        if (entry.next == children) {
+    var nodes = tree.walk(gpa, tree.root);
+    defer nodes.deinit();
+    while (try nodes.next()) |step| {
+        if (step.leave) {
             try out.writeByte(')');
-            depth -= 1;
             continue;
         }
-        const child = child_at(tree, entry.node, entry.next);
-        entry.next += 1;
-        if (one_per_line(tree.tag(entry.node))) {
-            try out.writeByte('\n');
-            try out.splatByteAll(' ', 2 * depth);
-        } else try out.writeByte(' ');
-        if (ast.shape(tree.tag(child)) == .leaf) {
-            try leaf(parsed, child, out);
+        if (step.depth > 0) {
+            if (one_per_line(tree.tag(step.parent))) {
+                try out.writeByte('\n');
+                try out.splatByteAll(' ', 2 * step.depth);
+            } else try out.writeByte(' ');
+        }
+        if (ast.shape(tree.tag(step.node)) == .leaf) {
+            try leaf(parsed, step.node, out);
         } else {
-            assert(depth < stack_max);
-            try open(parsed, child, out);
-            stack[depth] = .{ .node = child, .next = 0 };
-            depth += 1;
+            try out.writeByte('(');
+            try out.writeAll(@tagName(tree.tag(step.node)));
         }
     }
     try out.writeByte('\n');
@@ -83,33 +68,6 @@ fn one_per_line(tag: ast.Tag) bool {
     };
 }
 
-fn open(parsed: *const grammar.Parsed, node: ast.NodeIndex, out: *std.Io.Writer) !void {
-    assert(node.to_int() < parsed.tree.tags.len);
-    assert(ast.shape(parsed.tree.tag(node)) != .leaf);
-    try out.writeByte('(');
-    try out.writeAll(@tagName(parsed.tree.tag(node)));
-}
-
-fn child_count(tree: *const ast.Ast, node: ast.NodeIndex) u32 {
-    assert(tree.tags.len == tree.data.len);
-    assert(node.to_int() < tree.tags.len);
-    return switch (ast.shape(tree.tag(node))) {
-        .leaf => 0,
-        .fixed => |count| count,
-        .list => tree.list(node).count,
-    };
-}
-
-fn child_at(tree: *const ast.Ast, node: ast.NodeIndex, position: u32) ast.NodeIndex {
-    assert(node.to_int() < tree.tags.len);
-    assert(position < child_count(tree, node));
-    return switch (ast.shape(tree.tag(node))) {
-        .leaf => unreachable,
-        .fixed => tree.child(node, position),
-        .list => .from_int(tree.list(node).first.to_int() + position),
-    };
-}
-
 fn leaf(parsed: *const grammar.Parsed, node: ast.NodeIndex, out: *std.Io.Writer) !void {
     assert(node.to_int() < parsed.tree.data.len);
     const tag = parsed.tree.tag(node);
@@ -135,7 +93,7 @@ pub fn dump_alloc(gpa: std.mem.Allocator, source: []const u8, diagnostics: *u32)
     diagnostics.* = parsed.diagnostics_count;
     var writer: std.Io.Writer.Allocating = .init(gpa);
     errdefer writer.deinit();
-    try write(&parsed, &writer.writer);
+    try write(gpa, &parsed, &writer.writer);
     try write_diagnostics(&parsed, &writer.writer);
     return writer.toOwnedSlice();
 }

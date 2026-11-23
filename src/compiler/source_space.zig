@@ -405,31 +405,11 @@ fn collect_includes(
     out: *std.ArrayList(NodeIndex),
 ) !void {
     assert(tree.tags.len == tree.data.len);
-    var stack: std.ArrayList(NodeIndex) = .empty;
-    defer stack.deinit(gpa);
-    try stack.append(gpa, root);
-    while (stack.pop()) |node| {
-        const tag = tree.tag(node);
-        if (tag == .include) try out.append(gpa, node);
-        switch (ast_module.shape(tag)) {
-            .leaf => {},
-            .fixed => |count| {
-                var position: u32 = count;
-                while (position > 0) {
-                    position -= 1;
-                    try stack.append(gpa, tree.child(node, position));
-                }
-            },
-            .list => {
-                var position = tree.list(node).count;
-                while (position > 0) {
-                    position -= 1;
-                    try stack.append(gpa, tree.item(node, position));
-                }
-            },
-        }
+    var nodes = tree.walk(gpa, root);
+    defer nodes.deinit();
+    while (try nodes.next()) |step| {
+        if (!step.leave and tree.tag(step.node) == .include) try out.append(gpa, step.node);
     }
-    assert(stack.items.len == 0);
 }
 
 // Tests.

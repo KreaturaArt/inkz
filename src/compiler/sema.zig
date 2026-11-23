@@ -364,30 +364,12 @@ fn line_start(parsed: *const grammar.Parsed, tree: *const Tree, newline: ObjectI
 fn first_token(parsed: *const grammar.Parsed, root: NodeIndex) ?u32 {
     assert(!root.is_none());
     const ast = &parsed.tree;
-    assert(root.to_int() < ast.tags.len);
-    var stack: [64]NodeIndex = undefined;
-    var depth: u32 = 1;
-    stack[0] = root;
-    while (depth > 0) {
-        depth -= 1;
-        const node = stack[depth];
-        switch (ast_module.shape(ast.tag(node))) {
-            .leaf => if (has_token(ast.tag(node))) return ast.data[node.to_int()],
-            .fixed => |count| {
-                var position: u32 = count;
-                while (position > 0 and depth < stack.len) : (depth += 1) {
-                    position -= 1;
-                    stack[depth] = ast.child(node, position);
-                }
-            },
-            .list => {
-                var position = ast.list(node).count;
-                while (position > 0 and depth < stack.len) : (depth += 1) {
-                    position -= 1;
-                    stack[depth] = ast.item(node, position);
-                }
-            },
-        }
+    // Without an allocator, nodes deeper than the walk's inline frames are not searched.
+    var nodes = ast.walk(null, root);
+    defer nodes.deinit();
+    while (nodes.next() catch unreachable) |step| {
+        const tag = ast.tag(step.node);
+        if (ast_module.shape(tag) == .leaf and has_token(tag)) return ast.data[step.node.to_int()];
     }
     return null;
 }
