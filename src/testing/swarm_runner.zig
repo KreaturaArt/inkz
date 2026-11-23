@@ -60,6 +60,8 @@ pub const Target = enum {
 pub const Summary = struct {
     runs: u32 = 0,
     failures: u32 = 0,
+    /// Runs of a large configuration (`Swarm.large`).
+    large: u32 = 0,
     /// Sources that didn't compile, counted under their first error's code.
     compile_failures: u32 = 0,
     codes: Codes = .{},
@@ -97,8 +99,9 @@ pub const Summary = struct {
     mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("{d} runs, {d} failures; compile failures {d}", .{
+        try writer.print("{d} runs ({d} large), {d} failures; compile failures {d}", .{
             summary.runs,
+            summary.large,
             summary.failures,
             summary.compile_failures,
         });
@@ -264,6 +267,7 @@ pub fn run(
             break :mutated .{ .source = mutant.?.source, .swarm = .none, .used = .none };
         } else fuzz_ink.generate_case_seeded(seed, &buffer, .{});
         summary.runs += 1;
+        summary.large += @intFromBool(case.swarm.large());
         const host: Host = .{ .plan = .draw(seed, inputs.mix), .save_buffer = save_buffer };
         const failure = try check_case(gpa, target, seed, case, host, &summary);
         // A mutant has no swarm configuration to triage.

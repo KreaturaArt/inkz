@@ -273,6 +273,13 @@ pub const Swarm = struct {
     pub const choice_depth_limit = 3;
     pub const knots_limit = 3;
     pub const globals_extra_limit = 64;
+    /// The bounds of a large configuration (`draw`, 1 in 16 of the subsets): more lines per
+    /// flow, longer expressions and deeper weaves. Its weaves and expressions also go on
+    /// longer (`large_lines`, `large_terms`), as the bounds alone would add little: a flow
+    /// ends after 4 lines on average.
+    pub const large_lines_limit = 32;
+    pub const large_terms_limit = 8;
+    pub const large_choice_depth_limit = 6;
 
     /// The first generator's full mix: every feature but the resolution ones (`drop` aside,
     /// which that generator did), at the largest bounds. It takes the same choices as that
@@ -327,7 +334,8 @@ pub const Swarm = struct {
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
     /// replays one: `all` with weight 1/8, else each feature on with probability ½ (`hub`
-    /// ¾) and each bound uniform, then `normalize`.
+    /// ¾) and each bound uniform, then `normalize`; 1 in 16 of these is large, its bounds
+    /// uniform above the usual ones.
     pub fn draw(choices: Choices) Swarm {
         if (choices.weighted(7, 1)) return all;
         var swarm: Swarm = .{
@@ -360,6 +368,15 @@ pub const Swarm = struct {
         if (choices.weighted(1, 3)) swarm.play.insert(.hub);
         if (choices.choose(bool)) swarm.play.insert(.typed);
         swarm.constructs = draw_set(choices, Construct);
+        if (choices.weighted(15, 1)) {
+            swarm.lines_max = choices.range(u8, lines_limit + 1, large_lines_limit);
+            swarm.terms_max = choices.range(u8, terms_limit + 1, large_terms_limit);
+            swarm.choice_depth_max = choices.range(
+                u8,
+                choice_depth_limit + 1,
+                large_choice_depth_limit,
+            );
+        }
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -412,10 +429,26 @@ pub const Swarm = struct {
             swarm.targets.intersectWith(knot_targets).count() > 0 and
             swarm.targets.intersectWith(knots_missing).count() == 0 and
             (swarm.inlines.count() > 0 or !swarm.lines.contains(.text_inline)) and
-            swarm.lines_max >= 1 and swarm.lines_max <= lines_limit and
-            swarm.terms_max >= 1 and swarm.terms_max <= terms_limit and
-            swarm.choice_depth_max >= 1 and swarm.choice_depth_max <= choice_depth_limit and
+            swarm.lines_max >= 1 and swarm.lines_max <= large_lines_limit and
+            swarm.terms_max >= 1 and swarm.terms_max <= large_terms_limit and
+            swarm.choice_depth_max >= 1 and swarm.choice_depth_max <= large_choice_depth_limit and
             swarm.globals_extra <= globals_extra_limit;
+    }
+
+    /// Whether a bound is above the usual ones (`draw`'s large configuration).
+    pub fn large(swarm: Swarm) bool {
+        return swarm.lines_max > lines_limit or swarm.terms_max > terms_limit or
+            swarm.choice_depth_max > choice_depth_limit;
+    }
+
+    /// The weight of one more line in a weave, against 1 for its end.
+    fn large_lines(swarm: Swarm) u64 {
+        return if (swarm.lines_max > lines_limit) 12 else 3;
+    }
+
+    /// The weight of one more term in an expression, against 1 for its end.
+    fn large_terms(swarm: Swarm) u64 {
+        return if (swarm.terms_max > terms_limit) 6 else 2;
     }
 
     pub fn eql(a: Swarm, b: Swarm) bool {
@@ -794,7 +827,8 @@ pub const Generator = struct {
         if (enabled.count() == 0 and generator.extra_lines().count() == 0) return;
         const lines_max = generator.swarm.lines_max;
         var lines: u32 = 0;
-        while (lines < lines_max and !!generator.choices.more(3, 1)) : (lines += 1) {
+        const more_lines = generator.swarm.large_lines();
+        while (lines < lines_max and !!generator.choices.more(more_lines, 1)) : (lines += 1) {
             // An extra line takes a choice only when one is possible, so `classic`
             // takes the first generator's choices.
             const kinds = generator.extra_lines();
@@ -1136,7 +1170,8 @@ pub const Generator = struct {
         if (kind) |of| operators = operators.intersectWith(kind_operators.get(of));
         const compares = kind != null and kind != .number;
         if (compares and stored) operators = operators.intersectWith(set_operations);
-        while (terms < terms_max and !!generator.choices.more(2, 1)) : (terms += 1) {
+        const more_terms = generator.swarm.large_terms();
+        while (terms < terms_max and !!generator.choices.more(more_terms, 1)) : (terms += 1) {
             if (operators.count() == 0) break;
             const operator = generator.pick_enabled(Operator, operators);
             if (compares and !set_operations.contains(operator)) {
@@ -1961,10 +1996,16 @@ test "a drawn configuration is valid: no empty set, bounds in range" {
         try std.testing.expect(swarm.terms.count() > 0);
         try std.testing.expect(swarm.operators.count() > 0);
         try std.testing.expect(swarm.targets.intersectWith(knot_targets).count() > 0);
-        try std.testing.expect(swarm.lines_max >= 1 and swarm.lines_max <= Swarm.lines_limit);
-        try std.testing.expect(swarm.terms_max >= 1 and swarm.terms_max <= Swarm.terms_limit);
+        try std.testing.expect(swarm.lines_max >= 1 and
+            swarm.lines_max <= Swarm.large_lines_limit);
+        try std.testing.expect(swarm.terms_max >= 1 and
+            swarm.terms_max <= Swarm.large_terms_limit);
         try std.testing.expect(swarm.choice_depth_max >= 1 and
-            swarm.choice_depth_max <= Swarm.choice_depth_limit);
+            swarm.choice_depth_max <= Swarm.large_choice_depth_limit);
+        // A large configuration raises every bound above the usual ones.
+        if (swarm.large()) try std.testing.expect(swarm.lines_max > Swarm.lines_limit and
+            swarm.terms_max > Swarm.terms_limit and
+            swarm.choice_depth_max > Swarm.choice_depth_limit);
         try std.testing.expect(swarm.knots_count >= 1 and swarm.knots_count <= Swarm.knots_limit);
     }
 }
@@ -2130,6 +2171,35 @@ test "drawn sources compile unless an error feature is on, and with one they fai
     try std.testing.expect(clean > 300);
     try std.testing.expect(clean_failed * 20 < clean);
     try std.testing.expect(dropped > 0 and dropped_failed > 0);
+}
+
+test "a large configuration writes longer, deeper stories, within the source bound" {
+    // P19.4: about 1 in 18 of 2,000 draws is large (1 in 16 of the 7 in 8 subsets); those
+    // stories nest deeper than the usual bound of 3, run longer on average, and none fills
+    // half the buffer.
+    var buffer: [source_bytes_max]u8 = undefined;
+    var large: u32 = 0;
+    var large_bytes: usize = 0;
+    var usual: u32 = 0;
+    var usual_bytes: usize = 0;
+    var deepest: usize = 0;
+    var longest: usize = 0;
+    for (0..2000) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{});
+        longest = @max(longest, case.source.len);
+        if (case.swarm.large()) {
+            large += 1;
+            large_bytes += case.source.len;
+            deepest = @max(deepest, nesting_max(case.source));
+        } else if (!case.swarm.eql(.all)) {
+            usual += 1;
+            usual_bytes += case.source.len;
+        }
+    }
+    try std.testing.expect(large > 60 and large < 170);
+    try std.testing.expect(deepest > Swarm.choice_depth_limit);
+    try std.testing.expect(large_bytes / large > 2 * (usual_bytes / usual));
+    try std.testing.expect(longest < source_bytes_max / 2);
 }
 
 test "64 extra globals stay below the source bound" {
