@@ -10,6 +10,7 @@ const triage_module = @import("swarm_triage.zig");
 const compile = @import("../compiler/compile.zig");
 const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
+const fuzz_play = @import("../fuzz/play.zig");
 const Swarm = fuzz_ink.Swarm;
 
 pub const Target = enum {
@@ -34,6 +35,9 @@ pub const Summary = struct {
     /// Played stories that reported an error (`on_error`) or stopped at one (`cont`,
     /// `choose_choice_index`).
     runtime_errors: u32 = 0,
+    /// Played stories that stopped at their first line because `e0` was neither bound nor
+    /// allowed its fallback (or has none).
+    unbound_externals: u32 = 0,
     lines: u64 = 0,
     choices: u64 = 0,
     /// Played stories still going after `play_steps_max` calls.
@@ -49,9 +53,10 @@ pub const Summary = struct {
             summary.compile_failures,
         });
         try summary.codes.write_top(writer, 4);
-        try writer.print("; runtime errors {d}, lines {d}, choices {d}, step cap {d}, " ++
-            "ended {d}", .{
+        try writer.print("; runtime errors {d} (unbound externals {d}), lines {d}, " ++
+            "choices {d}, step cap {d}, ended {d}", .{
             summary.runtime_errors,
+            summary.unbound_externals,
             summary.lines,
             summary.choices,
             summary.step_cap,
@@ -212,6 +217,10 @@ fn note_error(context: ?*anyopaque, _: []const u8, severity: api.Severity) void 
     if (severity == .@"error") errored.* = true;
 }
 
+/// Mixed into a seed for the draws of how its story is set up, so they don't repeat the
+/// generator's draws.
+const setup_salt = 0x5e7_0b5e7;
+
 fn play(
     gpa: std.mem.Allocator,
     program: *const Program,
@@ -219,8 +228,12 @@ fn play(
     round_trip: bool,
     summary: *Summary,
 ) !?[]const u8 {
+    // Each seed binds `e0`, allows its fallback, both or neither (as the fuzz targets do),
+    // and draws the story's random seed.
+    var setup_prng: std.Random.DefaultPrng = .init(seed ^ setup_salt);
+    const setup: fuzz_play.Setup = .pick(.{ .random = setup_prng.random() });
     var story: api.Story = undefined;
-    try story.init(gpa, program, .{ .limits = .{ .steps_per_continue_max = 10_000 } });
+    try fuzz_play.init_story(&story, gpa, program, setup);
     defer story.deinit(gpa);
     var errored = false;
     story.on_error = note_error;
@@ -231,9 +244,12 @@ fn play(
     var steps: u32 = 0;
     while (steps < play_steps_max) : (steps += 1) {
         if (story.can_continue()) {
-            _ = story.cont() catch {
+            _ = story.cont() catch |err| {
                 errored = true;
-                return null;
+                // ink's ValidateExternalBindings, at the first `cont`.
+                if (err != error.MissingExternalBinding) return null;
+                summary.unbound_externals += 1;
+                return if (setup.bind_external) "e0 bound and missing" else null;
             };
             summary.lines += 1;
         } else {
@@ -255,7 +271,7 @@ fn play(
     defer first.deinit();
     try story.to_json(&first.writer);
     var loaded: api.Story = undefined;
-    try loaded.init(gpa, program, .{ .limits = .{ .steps_per_continue_max = 10_000 } });
+    try fuzz_play.init_story(&loaded, gpa, program, setup);
     defer loaded.deinit(gpa);
     loaded.load_json(first.written()) catch return "load of its own save";
     var second: std.Io.Writer.Allocating = .init(gpa);
@@ -316,8 +332,10 @@ test "the summary counts what the runs reached, and the run prints it" {
 
 test "played stories make many choices and reach the step cap, and some still end" {
     // P18.2: with `hub` and `typed`, the compiled stories of 500 seeds make 8 choices or
-    // more on average, 35% or more reach the step cap, and 10% or more end (at END or DONE,
-    // or out of content) without an error.
+    // more on average, 40% or more reach the step cap, and 10% or more end (at END or DONE,
+    // or out of content) without an error. P18.3: `e0` is bound or allowed its fallback in
+    // 3 of 4 seeds, so at most 1 in 8 stops for a missing binding (none with `e0` bound: the
+    // run fails then).
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
@@ -326,7 +344,8 @@ test "played stories make many choices and reach the step cap, and some still en
     const compiled = summary.runs - summary.compile_failures;
     try std.testing.expect(compiled > 400);
     try std.testing.expect(summary.choices >= 8 * @as(u64, compiled));
-    try std.testing.expect(summary.step_cap * 100 >= compiled * 35);
+    try std.testing.expect(summary.step_cap * 100 >= compiled * 40);
+    try std.testing.expect(summary.unbound_externals * 8 <= compiled);
     try std.testing.expect(summary.ended * 10 >= compiled);
 }
 
