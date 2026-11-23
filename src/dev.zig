@@ -6,10 +6,10 @@
 //!   (src/testing/isolated.zig), so a crash is contained in that process.
 //! - `simulate ...`: seeded random play of the ground-truth cases (src/simulate.zig).
 //! - `transcripts`: regenerates `test/transcripts/` from the runtime.
-//! - `swarm --target <compile|play|save|host|all> [--seed S] [--seeds N] [--seconds T]
-//!   [--mix <hex>]`: seeded swarm runs out of the fuzzer (src/testing/swarm_runner.zig), `all`
-//!   being play, save and host; `--mix` replays a host failure's mix. Exits with 1 when a
-//!   run failed.
+//! - `swarm --target <compile|play|save|host|mutate|all> [--seed S] [--seeds N]
+//!   [--seconds T] [--mix <hex>]`: seeded swarm runs out of the fuzzer
+//!   (src/testing/swarm_runner.zig), `all` being play, save, host and mutate; `--mix` replays
+//!   a host failure's mix. Exits with 1 when a run failed.
 //! - `swarm-gen`, `swarm-check`, `swarm-reduce`: the differential swarm run
 //!   (src/swarm_differential.zig).
 
@@ -21,6 +21,7 @@ const runner = @import("testing/swarm_runner.zig");
 const simulate = @import("simulate.zig");
 const simulation = @import("testing/simulation.zig");
 const swarm_differential = @import("swarm_differential.zig");
+const swarm_mutate = @import("testing/swarm_mutate.zig");
 const coverage = @import("testing/coverage.zig");
 const build_options = @import("build_options");
 
@@ -78,7 +79,7 @@ pub fn main(init: std.process.Init) !void {
             const directory = transcripts.transcripts_directory;
             std.debug.print("wrote {d} transcripts to {s}\n", .{ count, directory });
         },
-        .swarm => try swarm(init.gpa, io, arguments),
+        .swarm => try swarm(arena, init.gpa, io, arguments),
         .@"swarm-gen", .@"swarm-check", .@"swarm-reduce" => {
             try swarm_differential.command(arena, io, arguments);
         },
@@ -105,41 +106,66 @@ fn replay(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8)
     try file_writer.interface.flush();
 }
 
-fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
-    assert(arguments.len > 0);
-    // Null target: play, save and host in turn, sharing the time budget. Play and save check
-    // the compiled program as the compile target does, so `all` leaves that one out.
-    var target: ?runner.Target = .play;
-    var mix: ?simulation.Mix = null;
-    var seed: u64 = 1;
-    var seeds: ?u32 = null;
-    var seconds: ?u32 = null;
-    var index: usize = 1;
-    // Options come in pairs: a flag without its value is an error, not ignored.
-    if (arguments.len % 2 == 0) return error.MissingValue;
-    while (index + 1 < arguments.len) : (index += 2) {
-        const name = arguments[index];
-        const value = arguments[index + 1];
-        if (std.mem.eql(u8, name, "--target")) {
-            target = if (std.mem.eql(u8, value, "all"))
-                null
-            else
-                std.meta.stringToEnum(runner.Target, value) orelse return error.UnknownTarget;
-        } else if (std.mem.eql(u8, name, "--seed")) {
-            seed = try std.fmt.parseInt(u64, value, 10);
-        } else if (std.mem.eql(u8, name, "--seeds")) {
-            seeds = try std.fmt.parseInt(u32, value, 10);
-        } else if (std.mem.eql(u8, name, "--seconds")) {
-            seconds = try std.fmt.parseInt(u32, value, 10);
-        } else if (std.mem.eql(u8, name, "--mix")) {
-            mix = try simulation.Mix.decode(try std.fmt.parseInt(u64, value, 16));
-        } else return error.UnknownOption;
+/// `swarm`'s options.
+const SwarmOptions = struct {
+    /// Null: play, save, host and mutate in turn, sharing the time budget. Play and save
+    /// check the compiled program as the compile target does, so `all` leaves that one out.
+    target: ?runner.Target = .play,
+    mix: ?simulation.Mix = null,
+    seed: u64 = 1,
+    seeds: ?u32 = null,
+    seconds: ?u32 = null,
+
+    fn parse(arguments: []const [:0]const u8) !SwarmOptions {
+        assert(arguments.len > 0);
+        var options: SwarmOptions = .{};
+        var index: usize = 1;
+        // Options come in pairs: a flag without its value is an error, not ignored.
+        if (arguments.len % 2 == 0) return error.MissingValue;
+        while (index + 1 < arguments.len) : (index += 2) {
+            const name = arguments[index];
+            const value = arguments[index + 1];
+            if (std.mem.eql(u8, name, "--target")) {
+                options.target = if (std.mem.eql(u8, value, "all"))
+                    null
+                else
+                    std.meta.stringToEnum(runner.Target, value) orelse
+                        return error.UnknownTarget;
+            } else if (std.mem.eql(u8, name, "--seed")) {
+                options.seed = try std.fmt.parseInt(u64, value, 10);
+            } else if (std.mem.eql(u8, name, "--seeds")) {
+                options.seeds = try std.fmt.parseInt(u32, value, 10);
+            } else if (std.mem.eql(u8, name, "--seconds")) {
+                options.seconds = try std.fmt.parseInt(u32, value, 10);
+            } else if (std.mem.eql(u8, name, "--mix")) {
+                options.mix = try simulation.Mix.decode(try std.fmt.parseInt(u64, value, 16));
+            } else return error.UnknownOption;
+        }
+        return options;
     }
-    // Play gets 4 tenths of the time, save and host 3 each: play's seeds also play again
-    // under other limits, and host's spend most of theirs on the host calls.
-    const all: []const runner.Target = &.{ .play, .save, .host };
-    const all_shares: []const u64 = &.{ 4, 3, 3 };
+};
+
+fn swarm(
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    arguments: []const [:0]const u8,
+) !void {
+    const options: SwarmOptions = try .parse(arguments);
+    const target = options.target;
+    const seed = options.seed;
+    const seconds = options.seconds;
+    // Play gets 4 twelfths of the time, save and host 3 each, mutate 2: play's seeds also
+    // play again under other limits, host's spend most of theirs on the host calls, and
+    // mutate reaches its coverage in a few seconds (docs/fuzzing.md).
+    const all: []const runner.Target = &.{ .play, .save, .host, .mutate };
+    const all_shares: []const u64 = &.{ 4, 3, 3, 2 };
     const targets: []const runner.Target = if (target) |one| &.{one} else all;
+    // The ground-truth stories are read once, for the whole run.
+    var corpus: ?swarm_mutate.Corpus = null;
+    for (targets) |each| {
+        if (each == .mutate) corpus = try swarm_mutate.Corpus.load(arena, io);
+    }
     const shares: []const u64 = if (target == null) all_shares else &.{1};
     var shares_total: u64 = 0;
     for (shares) |share| shares_total += share;
@@ -151,7 +177,7 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
     assert(targets.len == shares.len);
     for (targets, shares) |each, share| {
         const seeds_default: u32 = if (seconds == null) 1000 else std.math.maxInt(u32);
-        var budget: runner.Budget = .{ .seeds = seeds orelse seeds_default };
+        var budget: runner.Budget = .{ .seeds = options.seeds orelse seeds_default };
         shares_done += share;
         if (seconds) |total| {
             // Each target ends at its share of the total and the shares before it.
@@ -161,7 +187,11 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
         }
         try file_writer.interface.print("swarm {t}: first seed {d}\n", .{ each, seed });
         try file_writer.interface.flush();
-        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, mix);
+        const inputs: runner.Inputs = .{
+            .mix = options.mix,
+            .corpus = if (each == .mutate) &corpus.? else null,
+        };
+        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, inputs);
         failures += summary.failures;
     }
     // The coverage build (`zig build swarm-coverage`) reports what the run reached.

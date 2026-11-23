@@ -7,6 +7,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const fuzz_ink = @import("fuzz_ink.zig");
 const triage_module = @import("swarm_triage.zig");
+const swarm_mutate = @import("swarm_mutate.zig");
 const compile = @import("../compiler/compile.zig");
 const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
@@ -38,6 +39,10 @@ pub const Target = enum {
     /// observers on every global, then a session of host calls (`fuzz/host.zig`); the state
     /// checks after every call. Leaves out the program checks, which play and save make.
     host,
+    /// Compiles a ground-truth story with seeded mutations (`swarm_mutate`): a mutant that
+    /// fails counts its first error's code; one that compiles gets the program checks and,
+    /// by the seed's parity, the play target's plays or the save target's.
+    mutate,
     /// Fails when glue is on and RANDOM is off: the runner's own test.
     synthetic,
     /// The host target, failing when its mix took a `set_variable`: the runner's own test of
@@ -83,6 +88,8 @@ pub const Summary = struct {
     host_calls: u32 = 0,
     observed: u64 = 0,
     host_errors: Codes = .{},
+    /// The mutate target's: the mutations its mutants had, by name.
+    mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
         try writer.print("{d} runs, {d} failures; compile failures {d}", .{
@@ -104,6 +111,19 @@ pub const Summary = struct {
             summary.step_cap,
             summary.ended,
         });
+        var mutations: u32 = 0;
+        for (summary.mutations.values) |count| mutations += count;
+        if (mutations > 0) {
+            try writer.print("; compiled {d} of {d} mutants, mutations", .{
+                summary.runs - summary.compile_failures,
+                summary.runs,
+            });
+            const values = std.enums.values(swarm_mutate.Mutation);
+            for (values, summary.mutations.values, 0..) |mutation, count, index| {
+                const separator = if (index == 0) " " else ", ";
+                try writer.print("{s}{t} {d}", .{ separator, mutation, count });
+            }
+        }
         if (summary.host_calls == 0) return;
         try writer.writeAll("; actions");
         for (std.enums.values(Mix.Action), 0..) |action, index| {
@@ -127,7 +147,7 @@ pub const Codes = struct {
     len: u8 = 0,
     other: u32 = 0,
 
-    const capacity = 16;
+    const capacity = 128;
 
     fn add(codes: *Codes, name: []const u8, count: u32) void {
         assert(codes.len <= capacity);
@@ -160,7 +180,7 @@ pub const Codes = struct {
     }
 
     /// ` (code n, code n, ...)` for the `top` most frequent codes, or nothing.
-    fn write_top(codes: *const Codes, writer: *std.Io.Writer, top: u8) !void {
+    pub fn write_top(codes: *const Codes, writer: *std.Io.Writer, top: u8) !void {
         if (codes.len == 0) return;
         var order: [capacity]u8 = undefined;
         for (order[0..codes.len], 0..) |*slot, index| slot.* = @intCast(index);
@@ -196,46 +216,74 @@ pub const Budget = struct {
 pub const Running = struct { target: Target, seed: u64 };
 pub var running: ?Running = null;
 
+/// What a run gets besides its target and seeds.
+pub const Inputs = struct {
+    /// Replaces the host targets' drawn mixes.
+    mix: ?Mix = null,
+    /// The mutate target's stories.
+    corpus: ?*const swarm_mutate.Corpus = null,
+};
+
 /// Runs seeds from `seed_first` on `target` within `budget`, writing failures and the triage.
-/// `mix`, when given, replaces the host targets' drawn mixes.
 pub fn run(
     gpa: std.mem.Allocator,
     writer: *std.Io.Writer,
     target: Target,
     seed_first: u64,
     budget: Budget,
-    mix: ?Mix,
+    inputs: Inputs,
 ) !Summary {
     assert(budget.seeds > 0);
     assert((budget.deadline == null) == (budget.io == null));
+    assert((target == .mutate) == (inputs.corpus != null));
     var summary: Summary = .{};
     var triage: triage_module.Triage = .{};
     const save_buffer = try gpa.alloc(u8, if (target.hosts()) host_save_bytes else 0);
     defer gpa.free(save_buffer);
+    const mutant_buffers = try gpa.alloc(swarm_mutate.Buffers, @intFromBool(target == .mutate));
+    defer gpa.free(mutant_buffers);
     for (0..budget.seeds) |offset| {
         if (offset > 0 and budget.exhausted()) break;
         const seed = seed_first + offset;
         running = .{ .target = target, .seed = seed };
         defer running = null;
         var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-        const case = if (target.hosts())
+        var mutant: ?swarm_mutate.Mutant = null;
+        const case: fuzz_ink.Generator.Case = if (target.hosts())
             generate_hosted(seed, &buffer)
-        else
-            fuzz_ink.generate_case_seeded(seed, &buffer, .{});
+        else if (inputs.corpus) |corpus| mutated: {
+            mutant = swarm_mutate.mutate(corpus, seed, &mutant_buffers[0]);
+            for (mutant.?.mutations()) |mutation| summary.mutations.getPtr(mutation).* += 1;
+            break :mutated .{ .source = mutant.?.source, .swarm = .none, .used = .none };
+        } else fuzz_ink.generate_case_seeded(seed, &buffer, .{});
         summary.runs += 1;
-        const host: Host = .{ .plan = .draw(seed, mix), .save_buffer = save_buffer };
+        const host: Host = .{ .plan = .draw(seed, inputs.mix), .save_buffer = save_buffer };
         const failure = try check_case(gpa, target, seed, case, host, &summary);
-        triage.add(case.swarm, failure != null);
+        // A mutant has no swarm configuration to triage.
+        if (mutant == null) triage.add(case.swarm, failure != null);
         const reason = failure orelse continue;
         summary.failures += 1;
-        try writer.print("failure ({s}): seed {d}, swarm: {f}\n", .{ reason, seed, case.swarm });
+        try writer.print("failure ({s}): seed {d}, ", .{ reason, seed });
+        if (mutant) |m| {
+            try writer.print("mutant: {f}\n", .{m});
+        } else {
+            try writer.print("swarm: {f}\n", .{case.swarm});
+        }
         try writer.print("reproduce with: zig build swarm -Doptimize=ReleaseSafe -- " ++
             "--target {t} --seed {d} --seeds 1", .{ target, seed });
         if (target.hosts()) try writer.print(" --mix {x}", .{host.plan.mix.encode()});
         try writer.writeByte('\n');
+        // Reproducing one seed shows the mutant.
+        if (mutant != null and budget.seeds == 1) {
+            try writer.print("mutant source:\n{s}\n", .{case.source});
+        }
     }
     try writer.print("swarm {t}: {f}\n", .{ target, summary });
-    try triage.report(writer);
+    if (target == .mutate) {
+        try writer.writeAll("swarm mutate: compile failures by code");
+        try summary.codes.write_top(writer, Codes.capacity);
+        try writer.writeByte('\n');
+    } else try triage.report(writer);
     return summary;
 }
 
@@ -272,6 +320,8 @@ fn check_case(
     switch (target) {
         .compile => {},
         .play, .save => return play(gpa, &program, seed, target == .save, summary),
+        // Half the mutants play as the play target does, half as the save target does.
+        .mutate => return play(gpa, &program, seed, seed % 2 == 1, summary),
         .synthetic, .host, .host_synthetic => unreachable,
     }
     return null;
@@ -873,9 +923,9 @@ test "codes keep the most frequent first, and count past their capacity as other
     var writer: std.Io.Writer = .fixed(&text);
     try codes.write_top(&writer, 4);
     try std.testing.expectEqualStrings(" (a 3, b 2)", writer.buffered());
-    const names = [_][]const u8{ "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9" } ++
-        [_][]const u8{ "d0", "d1", "d2", "d3", "d4" };
-    for (names) |name| codes.add(name, 1);
+    // Two codes and `capacity - 1` others: the last one counts as other.
+    var storage: [Codes.capacity - 1][4]u8 = undefined;
+    for (&storage, 0..) |*name, index| codes.add(try std.fmt.bufPrint(name, "c{d}", .{index}), 1);
     try std.testing.expectEqual(@as(u32, 1), codes.other);
 }
 
@@ -885,7 +935,7 @@ test "a passed deadline stops the run after its first seed" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     const budget: Budget = .{ .seeds = 1000, .deadline = .now(io, .awake), .io = io };
-    const summary = try run(gpa, &out.writer, .synthetic, 1, budget, null);
+    const summary = try run(gpa, &out.writer, .synthetic, 1, budget, .{});
     try std.testing.expectEqual(@as(u32, 1), summary.runs);
 }
 
@@ -896,7 +946,7 @@ test "the host target passes a few seeds, and reports a failing action with its 
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    const passed = try run(gpa, &out.writer, .host, 1, .{ .seeds = 6 }, null);
+    const passed = try run(gpa, &out.writer, .host, 1, .{ .seeds = 6 }, .{});
     try std.testing.expectEqual(@as(u32, 0), passed.failures);
     try std.testing.expect(passed.host_calls > 0);
     var actions: u32 = 0;
@@ -904,7 +954,7 @@ test "the host target passes a few seeds, and reports a failing action with its 
     try std.testing.expect(actions > 0);
 
     out.clearRetainingCapacity();
-    const failed = try run(gpa, &out.writer, .host_synthetic, 1, .{ .seeds = 6 }, null);
+    const failed = try run(gpa, &out.writer, .host_synthetic, 1, .{ .seeds = 6 }, .{});
     try std.testing.expect(failed.failures > 0 and failed.failures < failed.runs);
     const text = out.written();
     const prefix = "failure (synthetic set_variable): seed ";
@@ -923,10 +973,36 @@ test "the host target passes a few seeds, and reports a failing action with its 
     out.clearRetainingCapacity();
     const budget: Budget = .{ .seeds = 1 };
     const decoded = try Mix.decode(mix.encode());
-    const replayed = try run(gpa, &out.writer, .host_synthetic, seed, budget, decoded);
+    const replayed = try run(gpa, &out.writer, .host_synthetic, seed, budget, .{ .mix = decoded });
     try std.testing.expectEqual(@as(u32, 1), replayed.failures);
     var without = mix;
     without.weights.set(.set_variable, 0);
-    const passes = try run(gpa, &out.writer, .host_synthetic, seed, budget, without);
+    const passes = try run(gpa, &out.writer, .host_synthetic, seed, budget, .{ .mix = without });
     try std.testing.expectEqual(@as(u32, 0), passes.failures);
+}
+
+test "the mutate target passes a few seeds of a ground-truth story and counts its mutants" {
+    // P19.3: 24 mutants of one story (read from disk) pass the program checks and the plays;
+    // some compile and play, some fail with a counted code, and each mutation is counted.
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const id = "runtime/diverts/tunnel_vs_thread_behaviour";
+    const arena = arena_state.allocator();
+    const corpus = try swarm_mutate.Corpus.load_ids(arena, std.testing.io, &.{id});
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .mutate, 1, .{ .seeds = 24 }, .{ .corpus = &corpus });
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    try std.testing.expect(summary.compile_failures > 0);
+    try std.testing.expect(summary.compile_failures < summary.runs);
+    try std.testing.expectEqual(summary.compile_failures, summary.codes.total());
+    try std.testing.expect(summary.lines > 0);
+    var mutations: u32 = 0;
+    for (summary.mutations.values) |count| mutations += count;
+    try std.testing.expect(mutations >= summary.runs);
+    const text = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, text, "mutants, mutations delete_line") != null);
+    const codes_line = "swarm mutate: compile failures by code (";
+    try std.testing.expect(std.mem.indexOf(u8, text, codes_line) != null);
 }
