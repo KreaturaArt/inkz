@@ -152,7 +152,16 @@ pub const Play = enum { hub, typed };
 ///   `LIST_RANDOM` draw.
 /// - `conditional_else`: the multi-line conditional of one condition and an `- else:`
 ///   branch (`block` writes the one with a branch per condition).
-pub const Construct = enum { turns, math, list_functions, seed_random, conditional_else };
+/// - `choice_tags`: tags in a choice's start, choice-only and output text, one of them
+///   with a value, and in the hub's choices.
+pub const Construct = enum {
+    turns,
+    math,
+    list_functions,
+    seed_random,
+    conditional_else,
+    choice_tags,
+};
 
 /// The kinds of value a `typed` expression keeps to.
 const Kind = enum { number, string, list };
@@ -890,6 +899,9 @@ pub const Generator = struct {
             generator.expression();
             generator.put("}");
         }
+        if (generator.swarm.constructs.contains(.choice_tags) and generator.choices.choose(bool)) {
+            return generator.choice_tagged();
+        }
         switch (generator.choices.choose(u2)) {
             0 => generator.put(" Start [choice] end\n"),
             1 => generator.put(" [Only choice]\n"),
@@ -897,6 +909,26 @@ pub const Generator = struct {
             3 => generator.print(" -> {s}\n", .{generator.target(generator.swarm.targets)}),
         }
         assert(depth <= generator.swarm.choice_depth_max);
+    }
+
+    /// A choice's text with tags: in each of its parts, in the choice-only part with a
+    /// value, or after its text.
+    fn choice_tagged(generator: *Generator) void {
+        generator.used.constructs.insert(.choice_tags);
+        const label = generator.labels;
+        switch (generator.choices.below(3)) {
+            0 => generator.print(" Start # ct{d}a [choice # ct{d}b] end # ct{d}c\n", .{
+                label, label, label,
+            }),
+            1 => {
+                // An operand: a `->` of `TURNS_SINCE(-> k1)` would end the choice's text.
+                generator.print(" [Only # ct{d} {{", .{label});
+                generator.operand();
+                generator.put("}]\n");
+            },
+            2 => generator.print(" Tagged # ct{d}\n", .{label}),
+            else => unreachable,
+        }
     }
 
     fn gather(generator: *Generator) void {
@@ -1199,7 +1231,14 @@ pub const Generator = struct {
             generator.labels += 1;
             generator.put(if (once) "*" else "+");
             if (generator.choices.choose(bool)) {
-                generator.print(" [Go {d}]", .{generator.labels});
+                if (generator.swarm.constructs.contains(.choice_tags) and
+                    generator.choices.choose(bool))
+                {
+                    generator.used.constructs.insert(.choice_tags);
+                    generator.print(" [Go {d} # ct{d}]", .{ generator.labels, generator.labels });
+                } else {
+                    generator.print(" [Go {d}]", .{generator.labels});
+                }
             } else {
                 generator.print(" Go {d}", .{generator.labels});
             }
@@ -1916,6 +1955,7 @@ test "each construct appears when on and never when off" {
         .math = &.{ "POW(", "FLOOR(", "CEILING(", "INT(", "FLOAT(" },
         .seed_random = &.{"SEED_RANDOM("},
         .conditional_else = &.{ "If yes", "If no" },
+        .choice_tags = &.{"# ct"},
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
