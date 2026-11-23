@@ -8,6 +8,7 @@ const assert = std.debug.assert;
 const fuzz_ink = @import("fuzz_ink.zig");
 const triage_module = @import("swarm_triage.zig");
 const compile = @import("../compiler/compile.zig");
+const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
 const Swarm = fuzz_ink.Swarm;
 
@@ -22,7 +23,92 @@ pub const Target = enum {
     synthetic,
 };
 
-pub const Summary = struct { runs: u32 = 0, failures: u32 = 0 };
+/// What the runs reached, besides their failures: how many stories compiled, how far the
+/// compiled ones played, and why the others didn't. Counting allocates nothing.
+pub const Summary = struct {
+    runs: u32 = 0,
+    failures: u32 = 0,
+    /// Sources that didn't compile, counted under their first error's code.
+    compile_failures: u32 = 0,
+    codes: Codes = .{},
+    /// Played stories that reported an error (`on_error`) or stopped at one (`cont`,
+    /// `choose_choice_index`).
+    runtime_errors: u32 = 0,
+    lines: u64 = 0,
+    choices: u64 = 0,
+    /// Played stories still going after `play_steps_max` calls.
+    step_cap: u32 = 0,
+
+    pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        try writer.print("{d} runs, {d} failures; compile failures {d}", .{
+            summary.runs,
+            summary.failures,
+            summary.compile_failures,
+        });
+        try summary.codes.write_top(writer, 4);
+        try writer.print("; runtime errors {d}, lines {d}, choices {d}, step cap {d}", .{
+            summary.runtime_errors,
+            summary.lines,
+            summary.choices,
+            summary.step_cap,
+        });
+    }
+};
+
+/// Compile failures by diagnostic code: the codes are the compiler's static names, so the
+/// table keeps the slices; codes past its capacity count as `other`.
+pub const Codes = struct {
+    names: [capacity][]const u8 = undefined,
+    counts: [capacity]u32 = undefined,
+    len: u8 = 0,
+    other: u32 = 0,
+
+    const capacity = 16;
+
+    fn add(codes: *Codes, name: []const u8, count: u32) void {
+        assert(codes.len <= capacity);
+        for (codes.names[0..codes.len], codes.counts[0..codes.len]) |known, *known_count| {
+            if (std.mem.eql(u8, known, name)) {
+                known_count.* += count;
+                return;
+            }
+        }
+        if (codes.len == capacity) {
+            codes.other += count;
+            return;
+        }
+        codes.names[codes.len] = name;
+        codes.counts[codes.len] = count;
+        codes.len += 1;
+    }
+
+    pub fn count_of(codes: *const Codes, name: []const u8) u32 {
+        for (codes.names[0..codes.len], codes.counts[0..codes.len]) |known, count| {
+            if (std.mem.eql(u8, known, name)) return count;
+        }
+        return 0;
+    }
+
+    /// ` (code n, code n, ...)` for the `top` most frequent codes, or nothing.
+    fn write_top(codes: *const Codes, writer: *std.Io.Writer, top: u8) !void {
+        if (codes.len == 0) return;
+        var order: [capacity]u8 = undefined;
+        for (order[0..codes.len], 0..) |*slot, index| slot.* = @intCast(index);
+        const by_count = struct {
+            fn more(counts: *const [capacity]u32, a: u8, b: u8) bool {
+                return counts[a] > counts[b];
+            }
+        }.more;
+        std.sort.insertion(u8, order[0..codes.len], &codes.counts, by_count);
+        try writer.writeAll(" (");
+        for (order[0..@min(top, codes.len)], 0..) |index, position| {
+            if (position > 0) try writer.writeAll(", ");
+            try writer.print("{s} {d}", .{ codes.names[index], codes.counts[index] });
+        }
+        if (codes.len > top or codes.other > 0) try writer.writeAll(", ...");
+        try writer.writeByte(')');
+    }
+};
 
 /// How long a run goes: `seeds` seeds, or fewer when `deadline` passes first.
 pub const Budget = struct {
@@ -54,7 +140,7 @@ pub fn run(
         var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
         const case = fuzz_ink.generate_case_seeded(seed, &buffer, .{});
         summary.runs += 1;
-        const failure = try check_case(gpa, target, seed, case);
+        const failure = try check_case(gpa, target, seed, case, &summary);
         triage.add(case.swarm, failure != null);
         const reason = failure orelse continue;
         summary.failures += 1;
@@ -63,11 +149,7 @@ pub fn run(
             reason, seed, case.swarm, target, seed,
         });
     }
-    try writer.print("swarm {t}: {d} runs, {d} failures\n", .{
-        target,
-        summary.runs,
-        summary.failures,
-    });
+    try writer.print("swarm {t}: {f}\n", .{ target, summary });
     try triage.report(writer);
     return summary;
 }
@@ -78,13 +160,22 @@ fn check_case(
     target: Target,
     seed: u64,
     case: fuzz_ink.Generator.Case,
+    summary: *Summary,
 ) !?[]const u8 {
     if (target == .synthetic) {
         const fails = case.swarm.lines.contains(.glue) and !case.swarm.terms.contains(.random);
         return if (fails) "synthetic" else null;
     }
-    var program = compile.compile_source(gpa, case.source) catch |err| switch (err) {
-        error.CompileFailed => return null,
+    var first_error: ?[]const u8 = null;
+    const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
+    var program = compile.compile_source_with(gpa, case.source, .{
+        .diagnostics = sink,
+    }) catch |err| switch (err) {
+        error.CompileFailed => {
+            summary.compile_failures += 1;
+            summary.codes.add(first_error orelse "none", 1);
+            return null;
+        },
         else => return err,
     };
     defer program.deinit(gpa);
@@ -95,31 +186,64 @@ fn check_case(
             defer again.deinit(gpa);
             if (again.instructions.len != program.instructions.len) return "not deterministic";
         },
-        .play, .save => return play(gpa, &program, seed, target == .save),
+        .play, .save => return play(gpa, &program, seed, target == .save, summary),
         .synthetic => unreachable,
     }
     return null;
 }
 
+fn keep_first_error(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
+    const first: *?[]const u8 = @ptrCast(@alignCast(context.?));
+    if (diagnostic.severity == .@"error" and first.* == null) first.* = diagnostic.code;
+}
+
 const Program = @import("../core/program.zig").Program;
 
-fn play(gpa: std.mem.Allocator, program: *const Program, seed: u64, round_trip: bool) !?[]const u8 {
+/// The calls (`cont` or a choice) a played story gets.
+const play_steps_max = 64;
+
+fn note_error(context: ?*anyopaque, _: []const u8, severity: api.Severity) void {
+    const errored: *bool = @ptrCast(@alignCast(context.?));
+    if (severity == .@"error") errored.* = true;
+}
+
+fn play(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    seed: u64,
+    round_trip: bool,
+    summary: *Summary,
+) !?[]const u8 {
     var story: api.Story = undefined;
     try story.init(gpa, program, .{ .limits = .{ .steps_per_continue_max = 10_000 } });
     defer story.deinit(gpa);
-    story.on_error = @import("support.zig").ignore_message;
+    var errored = false;
+    story.on_error = note_error;
+    story.on_error_context = &errored;
+    defer summary.runtime_errors += @intFromBool(errored);
     var prng: std.Random.DefaultPrng = .init(seed);
     const random = prng.random();
-    for (0..64) |_| {
+    var steps: u32 = 0;
+    while (steps < play_steps_max) : (steps += 1) {
         if (story.can_continue()) {
-            _ = story.cont() catch return null;
+            _ = story.cont() catch {
+                errored = true;
+                return null;
+            };
+            summary.lines += 1;
         } else {
             const count = story.current_choices_count();
             if (count == 0) break;
-            story.choose_choice_index(random.uintLessThan(u32, @intCast(count))) catch return null;
+            const index = random.uintLessThan(u32, @intCast(count));
+            story.choose_choice_index(index) catch {
+                errored = true;
+                return null;
+            };
+            summary.choices += 1;
         }
         if (story.state.check() != .ok) return "State.check";
     }
+    if (steps == play_steps_max) summary.step_cap += 1;
     if (!round_trip or story.failed) return null;
     var first: std.Io.Writer.Allocating = .init(gpa);
     defer first.deinit();
@@ -166,6 +290,37 @@ test "the real targets pass a few seeds" {
         const summary = try run(gpa, &out.writer, target, 1, .{ .seeds = 8 });
         try std.testing.expectEqual(@as(u32, 0), summary.failures);
     }
+}
+
+test "the summary counts what the runs reached, and the run prints it" {
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .play, 1, .{ .seeds = 16 });
+    try std.testing.expect(summary.lines > 0);
+    try std.testing.expect(summary.compile_failures + summary.runtime_errors <= summary.runs);
+    var codes: u32 = summary.codes.other;
+    for (summary.codes.counts[0..summary.codes.len]) |count| codes += count;
+    try std.testing.expectEqual(summary.compile_failures, codes);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "swarm play: 16 runs, 0 failures; " ++
+        "compile failures ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "step cap ") != null);
+}
+
+test "codes keep the most frequent first, and count past their capacity as other" {
+    var codes: Codes = .{};
+    codes.add("b", 1);
+    codes.add("a", 3);
+    codes.add("b", 1);
+    try std.testing.expectEqual(@as(u32, 2), codes.count_of("b"));
+    var text: [256]u8 = undefined;
+    var writer: std.Io.Writer = .fixed(&text);
+    try codes.write_top(&writer, 4);
+    try std.testing.expectEqualStrings(" (a 3, b 2)", writer.buffered());
+    const names = [_][]const u8{ "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9" } ++
+        [_][]const u8{ "d0", "d1", "d2", "d3", "d4" };
+    for (names) |name| codes.add(name, 1);
+    try std.testing.expectEqual(@as(u32, 1), codes.other);
 }
 
 test "a passed deadline stops the run after its first seed" {
