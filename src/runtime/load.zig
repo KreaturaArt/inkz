@@ -331,7 +331,7 @@ const Loader = struct {
     fn output_item(loader: *Loader, json: Json) Error!Item {
         if (json == .object) {
             const text = try as(try member(json.object, "#"), .string);
-            return text_item(try loader.string(text), text, .tag, .non_whitespace);
+            return text_item(try loader.output_string(text), text, .tag, .non_whitespace);
         }
         const text = try as(json, .string);
         const command: ?output_module.Kind = if (std.mem.eql(u8, text, "<>"))
@@ -349,7 +349,7 @@ const Loader = struct {
             return text_item(story_module.program_newline(loader.story), text, .text, .newline);
         }
         if (text.len == 0 or text[0] != '^') return error.InvalidSave;
-        const reference = try loader.string(text[1..]);
+        const reference = try loader.output_string(text[1..]);
         return text_item(reference, text[1..], .text, .of(text[1..]));
     }
 
@@ -360,7 +360,7 @@ const Loader = struct {
         class: output_module.Class,
     ) Item {
         assert(kind == .text or kind == .tag);
-        // `string` refused longer text.
+        // `output_string` refused longer text.
         assert(text.len <= std.math.maxInt(u16));
         return .{
             .string = reference,
@@ -371,9 +371,15 @@ const Loader = struct {
         };
     }
 
-    /// `text` as a new heap string.
-    fn string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
+    /// `text` as a new heap string for an output item, whose length is a u16 (`Output.Item`).
+    fn output_string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
         if (text.len > std.math.maxInt(u16)) return error.SaveTooLarge;
+        return loader.string(text);
+    }
+
+    /// `text` as a new heap string. A value's string has no length bound but the heap's: a
+    /// global that grew past 64 KiB in play loads back.
+    fn string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
         const s = loader.state();
         const reference = s.strings.try_allocate(@intCast(text.len)) orelse
             return error.SaveTooLarge;
