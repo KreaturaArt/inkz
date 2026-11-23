@@ -6,6 +6,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const profile = @import("../core/profile.zig");
 const container_module = @import("../core/container.zig");
+const dotnet_float = @import("../core/dotnet_float.zig");
 const value_module = @import("value.zig");
 const output_module = @import("output.zig");
 const call_stack_module = @import("call_stack.zig");
@@ -390,7 +391,7 @@ fn write_value(story: *Story, writer: *Writer, value: Value) Writer.Error!void {
     switch (value) {
         .null => try writer.writeAll("\"void\""),
         .integer => |number| try writer.print("{d}", .{number}),
-        .float => |number| try write_float(writer, number),
+        .float => |number| try dotnet_float.write_json(writer, number),
         .bool => |flag| try writer.writeAll(if (flag) "true" else "false"),
         .string => |reference| {
             const text = text_of(story, reference);
@@ -443,18 +444,6 @@ fn write_list(story: *Story, writer: *Writer, list: value_module.ListReference) 
         try writer.writeByte(']');
     }
     try writer.writeByte('}');
-}
-
-/// SimpleJson's float: .NET's text, `.0` when it has no point or exponent, and ink's
-/// stand-ins for infinities and NaN.
-pub fn write_float(writer: *Writer, number: f32) Writer.Error!void {
-    if (std.math.isNan(number)) return writer.writeAll("0.0");
-    if (std.math.isInf(number)) return writer.writeAll(if (number > 0) "3.4E+38" else "-3.4E+38");
-    var buffer: [value_module.float_text_bytes_max]u8 = undefined;
-    const text = value_module.format_float(number, &buffer);
-    try writer.writeAll(text);
-    const has_point = std.mem.indexOfAny(u8, text, ".E") != null;
-    if (!has_point) try writer.writeAll(".0");
 }
 
 fn write_json_string(writer: *Writer, text: []const u8) Writer.Error!void {

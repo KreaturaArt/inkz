@@ -7,6 +7,7 @@ pub const string_pool = @import("string_pool.zig");
 pub const extra = @import("extra.zig");
 pub const bounded_stack = @import("bounded_stack.zig");
 pub const dotnet_random = @import("dotnet_random.zig");
+pub const dotnet_float = @import("dotnet_float.zig");
 pub const path = @import("path.zig");
 pub const counting_allocator = @import("counting_allocator.zig");
 pub const instruction = @import("instruction.zig");
@@ -26,6 +27,7 @@ test {
     _ = extra;
     _ = bounded_stack;
     _ = dotnet_random;
+    _ = dotnet_float;
     _ = path;
     _ = counting_allocator;
     _ = instruction;

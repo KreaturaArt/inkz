@@ -18,6 +18,7 @@ const instruction_module = @import("instruction.zig");
 const container_module = @import("container.zig");
 const extra = @import("extra.zig");
 const ink_json = @import("ink_json.zig");
+const dotnet_float = @import("dotnet_float.zig");
 const ContainerIndex = index.ContainerIndex;
 const Instruction = instruction_module.Instruction;
 const Opcode = instruction_module.Opcode;
@@ -266,7 +267,7 @@ fn write_instruction(
         },
         .newline => try out.writeAll("\"\\n\""),
         .integer => try out.print("{d}", .{instruction.get(.integer)}),
-        .float => try write_float(out, instruction.get(.float)),
+        .float => try dotnet_float.write_json(out, instruction.get(.float)),
         .bool => try out.writeAll(if (instruction.get(.bool)) "true" else "false"),
         .tag => try writer.object("#", writer.string(instruction.get(.tag))),
         else => try write_operand_instruction(writer, container, position, instruction),
@@ -412,15 +413,6 @@ fn write_list(writer: *Writer, at: u32) !void {
         try out.writeByte(']');
     }
     try out.writeByte('}');
-}
-
-/// SimpleJson's float: invariant shortest form, with `.0` if it would read as an integer.
-fn write_float(out: *std.Io.Writer, float: f32) !void {
-    assert(!std.math.isNan(float));
-    var buffer: [64]u8 = undefined;
-    const text = try std.fmt.bufPrint(&buffer, "{d}", .{float});
-    try out.writeAll(text);
-    if (std.mem.indexOfAny(u8, text, ".eE") == null) try out.writeAll(".0");
 }
 
 fn write_lists(writer: *Writer) !void {
