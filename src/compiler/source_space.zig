@@ -288,6 +288,9 @@ const Discovery = struct {
         root_directory: []const u8,
         chain: anytype,
     ) !u32 {
+        // An INCLUDE without a filename has its parse error already: there is nothing to
+        // follow (ink throws here).
+        if (include_found.name.len == 0) return no_file;
         const path = if (root_directory.len == 0)
             include_found.name
         else

@@ -408,6 +408,26 @@ test "files in memory compile to inklecate's JSON, and a missing one fails" {
     );
 }
 
+test "an INCLUDE without a filename is its parse error, not a crash" {
+    // The empty name was followed as the path "" (an assertion) or the root's directory.
+    const gpa = std.testing.allocator;
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    const files = [_]source_space.MemoryFile{
+        .{ .path = "main.ink", .text = "INCLUDE\n-> DONE\n" },
+        .{ .path = "story/main.ink", .text = "INCLUDE   \n-> DONE\n" },
+    };
+    for (&[_][]const u8{ "main.ink", "story/main.ink" }) |path| {
+        recorded.count = 0;
+        try std.testing.expectError(
+            error.CompileFailed,
+            compile_files_with(gpa, &files, path, .{ .diagnostics = sink }),
+        );
+        try std.testing.expectEqual(@as(u32, 1), recorded.count);
+        try std.testing.expectEqualStrings("include_filename", recorded.codes[0]);
+    }
+}
+
 /// inklecate's JSON for `~ temp x = 1`, `~ x++`, `{x}` at story level: ink resolves a
 /// story-level temp as a global, so the re-assignment is `VAR=`.
 const story_temp_json = "{\"inkVersion\":21,\"root\":[[\"ev\",1,\"/ev\",{\"temp=\":\"x\"}," ++
