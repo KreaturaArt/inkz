@@ -111,34 +111,30 @@ pub fn is_divert(tag: ast.Tag) bool {
 /// LineOfMixedTextAndLogic: a line's content, trimmed, with its "\n" (unless it is only a
 /// tag), spliced flat into the statement list.
 pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
-    switch (frame.phase) {
-        0 => {
-            _ = grammar.whitespace(machine);
-            return grammar.call_then(frame, 1, .mixed_text_and_logic);
-        },
-        else => {
-            assert(frame.phase == 1);
-            if (machine.outcome == .failed) return .fail;
-            const marker = frame.checkpoint.scratch;
-            const workspace = machine.workspace;
-            // MixedTextAndLogic succeeds only with content; its first value is read below.
-            assert(machine.scratch_count > marker);
-            if (workspace.scratch_tags[marker] == .text) {
-                const text = grammar.token_text(machine, .from_int(workspace.scratch_data[marker]));
-                if (std.mem.startsWith(u8, text, "return")) {
-                    grammar.report_message(machine, .return_without_tilde);
-                }
-            }
-            const last = grammar.top_tag(machine, marker).?;
-            if (!is_divert(last)) try trim_end_whitespace(machine, marker);
-            try grammar.end_tag_if_necessary(machine, true);
-            const pure_tag = machine.scratch_count > marker and
-                workspace.scratch_tags[marker] == .tag_start;
-            if (!pure_tag) try machine.push_node(.newline, 0);
-            grammar.expect_end_of_line(machine);
-            return .succeed;
-        },
+    if (frame.phase == 0) {
+        _ = grammar.whitespace(machine);
+        return grammar.call_then(frame, 1, .mixed_text_and_logic);
     }
+    assert(frame.phase == 1);
+    if (machine.outcome == .failed) return .fail;
+    const marker = frame.checkpoint.scratch;
+    const workspace = machine.workspace;
+    // MixedTextAndLogic succeeds only with content; its first value is read below.
+    assert(machine.scratch_count > marker);
+    if (workspace.scratch_tags[marker] == .text) {
+        const text = grammar.token_text(machine, .from_int(workspace.scratch_data[marker]));
+        if (std.mem.startsWith(u8, text, "return")) {
+            grammar.report_message(machine, .return_without_tilde);
+        }
+    }
+    const last = grammar.top_tag(machine, marker).?;
+    if (!is_divert(last)) try trim_end_whitespace(machine, marker);
+    try grammar.end_tag_if_necessary(machine, true);
+    const pure_tag = machine.scratch_count > marker and
+        workspace.scratch_tags[marker] == .tag_start;
+    if (!pure_tag) try machine.push_node(.newline, 0);
+    grammar.expect_end_of_line(machine);
+    return .succeed;
 }
 
 /// MixedTextAndLogic: text and inline logic interleaved, then (outside choices) diverts.
@@ -234,28 +230,24 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
 
 /// InlineLogic: `{` inner logic `}`, as a content list.
 pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
-    switch (frame.phase) {
-        0 => {
-            if (!grammar.parse_string(machine, "{")) return .fail;
-            frame.locals[1] = machine.flags;
-            _ = grammar.whitespace(machine);
-            return grammar.call_then(frame, 1, .inner_logic);
-        },
-        else => {
-            if (machine.outcome == .failed) {
-                grammar.report_expected(machine, .inner_logic);
-                return .fail;
-            }
-            _ = grammar.whitespace(machine);
-            grammar.expect_string(machine, "}", .closing_brace);
-            const was = frame.locals[1];
-            machine.flags &= ~grammar.parsing_string;
-            machine.flags |= was & grammar.parsing_string;
-            if (was & grammar.tag_active == 0) try grammar.end_tag_if_necessary(machine, true);
-            try machine.wrap(.content_list, frame.checkpoint.scratch);
-            return .succeed;
-        },
+    if (frame.phase == 0) {
+        if (!grammar.parse_string(machine, "{")) return .fail;
+        frame.locals[1] = machine.flags;
+        _ = grammar.whitespace(machine);
+        return grammar.call_then(frame, 1, .inner_logic);
     }
+    if (machine.outcome == .failed) {
+        grammar.report_expected(machine, .inner_logic);
+        return .fail;
+    }
+    _ = grammar.whitespace(machine);
+    grammar.expect_string(machine, "}", .closing_brace);
+    const was = frame.locals[1];
+    machine.flags &= ~grammar.parsing_string;
+    machine.flags |= was & grammar.parsing_string;
+    if (was & grammar.tag_active == 0) try grammar.end_tag_if_necessary(machine, true);
+    try machine.wrap(.content_list, frame.checkpoint.scratch);
+    return .succeed;
 }
 
 /// InnerLogic: an annotated sequence, a conditional with a query, or else the first of a
