@@ -9,7 +9,8 @@
 //! - `swarm --target <compile|play|save|host|mutate|all> [--seed S] [--seeds N]
 //!   [--seconds T] [--mix <hex>]`: seeded swarm runs out of the fuzzer
 //!   (src/testing/swarm_runner.zig), `all` being play, save, host and mutate; `--mix` replays
-//!   a host failure's mix. Exits with 1 when a run failed.
+//!   a host failure's mix. Writes each failing case's story to zig-out/swarm/regressions
+//!   and prints its entry for test/swarm_regressions.zon. Exits with 1 when a run failed.
 //! - `swarm-gen`, `swarm-check`, `swarm-reduce`: the differential swarm run
 //!   (src/swarm_differential.zig).
 
@@ -190,6 +191,7 @@ fn swarm(
         const inputs: runner.Inputs = .{
             .mix = options.mix,
             .corpus = if (each == .mutate) &corpus.? else null,
+            .io = io,
         };
         const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, inputs);
         failures += summary.failures;

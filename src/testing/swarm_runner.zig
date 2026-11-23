@@ -242,7 +242,61 @@ pub const Inputs = struct {
     mix: ?Mix = null,
     /// The mutate target's stories.
     corpus: ?*const swarm_mutate.Corpus = null,
+    /// A run of one seed writes its story to `regressions_out`, named as its regression's
+    /// story (`Regression.story_path`).
+    io: ?std.Io = null,
 };
+
+/// Where a run of one seed with `Inputs.io` writes its story.
+pub const regressions_out = "zig-out/swarm/regressions";
+
+/// A seed that once failed (`test/swarm_regressions.zon`), replayed on the story it failed
+/// on (`story_path`), so that a change to the generator doesn't lose it: `replay`.
+pub const Regression = struct {
+    target: Target,
+    seed: u64,
+    /// The host targets' mix, as `--mix` takes it.
+    mix: ?u64 = null,
+    /// What the seed found and the commit that fixed it.
+    bug: []const u8 = "",
+
+    pub const list_path = "test/swarm_regressions.zon";
+    const story_directory = "test/swarm_regressions";
+    const story_path_max = story_directory.len + "/host_synthetic-.ink".len + 20;
+
+    /// `test/swarm_regressions/<target>-<seed>.ink`.
+    pub fn story_path(regression: Regression, buffer: *[story_path_max]u8) []const u8 {
+        return std.fmt.bufPrint(buffer, "{s}/{t}-{d}.ink", .{
+            story_directory,
+            regression.target,
+            regression.seed,
+        }) catch unreachable;
+    }
+
+    /// The entry as the list writes it, `bug` left empty for the one who adds it.
+    pub fn format(regression: Regression, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        const target = regression.target;
+        try writer.print(".{{ .target = .{t}, .seed = {d}", .{ target, regression.seed });
+        if (regression.mix) |mix| try writer.print(", .mix = 0x{x}", .{mix});
+        try writer.writeAll(", .bug = \"\" },");
+    }
+};
+
+/// Null when `regression`'s seed passes its target on `source`; otherwise what failed. The
+/// seed draws the plans, splits and host plans as in `run`; the story is `source`.
+pub fn replay(gpa: std.mem.Allocator, regression: Regression, source: []const u8) !?[]const u8 {
+    assert(regression.target != .synthetic);
+    assert((regression.mix != null) == regression.target.hosts());
+    running = .{ .target = regression.target, .seed = regression.seed };
+    defer running = null;
+    const save_buffer = try gpa.alloc(u8, if (regression.target.hosts()) host_save_bytes else 0);
+    defer gpa.free(save_buffer);
+    const mix: ?Mix = if (regression.mix) |encoded| try Mix.decode(encoded) else null;
+    const host: Host = .{ .plan = .draw(regression.seed, mix), .save_buffer = save_buffer };
+    const case: fuzz_ink.Generator.Case = .{ .source = source, .swarm = .none, .used = .none };
+    var summary: Summary = .{};
+    return check_case(gpa, regression.target, regression.seed, case, host, &summary);
+}
 
 /// Runs seeds from `seed_first` on `target` within `budget`, writing failures and the triage.
 pub fn run(
@@ -279,25 +333,19 @@ pub fn run(
         summary.runs += 1;
         summary.large += @intFromBool(case.swarm.large());
         const host: Host = .{ .plan = .draw(seed, inputs.mix), .save_buffer = save_buffer };
+        const regression: Regression = .{
+            .target = target,
+            .seed = seed,
+            .mix = if (target.hosts()) host.plan.mix.encode() else null,
+        };
+        // A run of one seed writes its story and its entry before the check, which may panic.
+        if (inputs.io) |io| if (budget.seeds == 1) try write_story(io, writer, regression, case);
         const failure = try check_case(gpa, target, seed, case, host, &summary);
         // A mutant has no swarm configuration to triage.
         if (mutant == null) triage.add(case.swarm, failure != null);
         const reason = failure orelse continue;
         summary.failures += 1;
-        try writer.print("failure ({s}): seed {d}, ", .{ reason, seed });
-        if (mutant) |m| {
-            try writer.print("mutant: {f}\n", .{m});
-        } else {
-            try writer.print("swarm: {f}\n", .{case.swarm});
-        }
-        try writer.print("reproduce with: zig build swarm -Doptimize=ReleaseSafe -- " ++
-            "--target {t} --seed {d} --seeds 1", .{ target, seed });
-        if (target.hosts()) try writer.print(" --mix {x}", .{host.plan.mix.encode()});
-        try writer.writeByte('\n');
-        // Reproducing one seed shows the mutant.
-        if (mutant != null and budget.seeds == 1) {
-            try writer.print("mutant source:\n{s}\n", .{case.source});
-        }
+        try write_failure(writer, reason, regression, case, mutant, budget.seeds == 1);
     }
     try writer.print("swarm {t}: {f}\n", .{ target, summary });
     if (target == .mutate) {
@@ -306,6 +354,57 @@ pub fn run(
         try writer.writeByte('\n');
     } else try triage.report(writer);
     return summary;
+}
+
+/// Prints a failing seed: what failed, its configuration or mutant, the command that
+/// reproduces it and its entry for the regression list.
+fn write_failure(
+    writer: *std.Io.Writer,
+    reason: []const u8,
+    regression: Regression,
+    case: fuzz_ink.Generator.Case,
+    mutant: ?swarm_mutate.Mutant,
+    alone: bool,
+) !void {
+    try writer.print("failure ({s}): seed {d}, ", .{ reason, regression.seed });
+    if (mutant) |m| {
+        try writer.print("mutant: {f}\n", .{m});
+    } else {
+        try writer.print("swarm: {f}\n", .{case.swarm});
+    }
+    try writer.print("reproduce with: zig build swarm -Doptimize=ReleaseSafe -- " ++
+        "--target {t} --seed {d} --seeds 1", .{ regression.target, regression.seed });
+    if (regression.mix) |mix| try writer.print(" --mix {x}", .{mix});
+    try writer.writeByte('\n');
+    var path_buffer: [Regression.story_path_max]u8 = undefined;
+    try writer.print("regression: add {f} to {s}, and the story the reproducing run " ++
+        "writes to {s} as {s}\n", .{
+        regression,
+        Regression.list_path,
+        regressions_out,
+        regression.story_path(&path_buffer),
+    });
+    // Reproducing one seed shows the mutant.
+    if (mutant != null and alone) try writer.print("mutant source:\n{s}\n", .{case.source});
+}
+
+/// Writes `regression`'s story to `regressions_out` and prints its entry, flushed.
+fn write_story(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    regression: Regression,
+    case: fuzz_ink.Generator.Case,
+) !void {
+    var path_buffer: [Regression.story_path_max]u8 = undefined;
+    const name = std.fs.path.basename(regression.story_path(&path_buffer));
+    var out_buffer: [regressions_out.len + Regression.story_path_max]u8 = undefined;
+    const out_path = std.fmt.bufPrint(&out_buffer, "{s}/{s}", .{ regressions_out, name }) catch
+        unreachable;
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, regressions_out);
+    try cwd.writeFile(io, .{ .sub_path = out_path, .data = case.source });
+    try writer.print("wrote {s}; its entry: {f}\n", .{ out_path, regression });
+    try writer.flush();
 }
 
 /// Null when the seed's case passes; otherwise what failed.
@@ -1288,6 +1387,43 @@ test "the host target passes a few seeds, and reports a failing action with its 
     without.weights.set(.set_variable, 0);
     const passes = try run(gpa, &out.writer, .host_synthetic, seed, budget, .{ .mix = without });
     try std.testing.expectEqual(@as(u32, 0), passes.failures);
+}
+
+test "a failing seed prints its regression entry, which replays the failure on its story" {
+    // P19.6: the synthetic host target's failure line names its entry for
+    // test/swarm_regressions.zon; replaying the entry on the seed's story fails the same
+    // way, and the host target passes it.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const failed = try run(gpa, &out.writer, .host_synthetic, 1, .{ .seeds = 6 }, .{});
+    try std.testing.expect(failed.failures > 0);
+    const text = out.written();
+    const prefix = "failure (synthetic set_variable): seed ";
+    const seed_text = text[std.mem.indexOf(u8, text, prefix).? + prefix.len ..];
+    const seed_end = std.mem.indexOfScalar(u8, seed_text, ',').?;
+    const seed = try std.fmt.parseInt(u64, seed_text[0..seed_end], 10);
+    const regression: Regression = .{
+        .target = .host_synthetic,
+        .seed = seed,
+        .mix = HostPlan.draw(seed, null).mix.encode(),
+    };
+    var expected: [256]u8 = undefined;
+    const line = try std.fmt.bufPrint(&expected, "regression: add .{{ .target = " ++
+        ".host_synthetic, .seed = {d}, .mix = 0x{x}, .bug = \"\" }}, to " ++
+        "test/swarm_regressions.zon, and the story the reproducing run writes to " ++
+        "zig-out/swarm/regressions as test/swarm_regressions/host_synthetic-{d}.ink\n", .{
+        seed, regression.mix.?, seed,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, text, line) != null);
+
+    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
+    const source = generate_hosted(seed, &buffer).source;
+    const failure = (try replay(gpa, regression, source)).?;
+    try std.testing.expectEqualStrings("synthetic set_variable", failure);
+    var passing = regression;
+    passing.target = .host;
+    try std.testing.expectEqual(null, try replay(gpa, passing, source));
 }
 
 test "the mutate target passes a few seeds of a ground-truth story and counts its mutants" {
