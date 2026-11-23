@@ -7,6 +7,13 @@ name: Differential swarm
 on:
   schedule:
     - cron: "17 3 * * *"
+  # A pull request that changes the run itself checks it before it reaches main.
+  pull_request:
+    paths:
+      - .github/workflows/differential.yml
+      - tools/ink_harness/**
+      - tools/collect_divergences.sh
+      - src/swarm_differential.zig
   workflow_dispatch:
     inputs:
       seed:
