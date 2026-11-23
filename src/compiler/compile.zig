@@ -676,6 +676,19 @@ const Recorded = struct {
     }
 };
 
+test "an error left out of a scope that reported a warning doesn't fail the story" {
+    // As in ink, the choice's warning marks the scope, so the end of line expected after it
+    // is left out; only reported errors fail ink's compilation, so the story compiles
+    // (test/ground_truth/diagnostics/scope_warning_then_error).
+    const gpa = std.testing.allocator;
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    var program = try compile_source_with(gpa, "Hello\n* }\n-> DONE\n", .{ .diagnostics = sink });
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 1), recorded.count);
+    try std.testing.expectEqual(messages.Severity.warning, recorded.severities[0]);
+}
+
 test "a story with only warnings compiles and still delivers them" {
     const gpa = std.testing.allocator;
     var recorded: Recorded = .{};

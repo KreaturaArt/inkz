@@ -9,7 +9,12 @@
 //!
 //! Nodes are built with zirp's scratch stack: finished nodes are values on the scratch
 //! stack, and `wrap` moves a parent's children into one contiguous run of the node arrays.
-//! Diagnostics survive backtracking, as ink's errors do.
+//! Diagnostics survive backtracking, as ink's errors do. As in ink, a rule scope reports
+//! at most one: StringParser's errorReportedAlreadyInScope is a flag per frame (`reported`),
+//! set on every frame when a diagnostic is kept, clear in a frame just pushed, carried into
+//! the caller when a rule succeeds (StringParserState.SquashFrom) and left behind when it
+//! fails or was a peek. The grammar clears it with `scope_succeeded` where ink runs a rule
+//! of its own that inkz inlines (ParseString, Parse(Identifier), Optional, ...).
 //!
 //! Bounds: frames are limited by `parse_depth_max` (deeper input gets one diagnostic and the
 //! parse unwinds, it doesn't crash); a gas counter bounds the steps by the input length, so a
@@ -200,10 +205,15 @@ pub fn Machine(comptime Grammar: type) type {
             phase: u8 = 0,
             /// Undo the rule's input even when it succeeds.
             peek: bool = false,
+            /// ink's reportedErrorInScope: a diagnostic was kept since this frame was pushed
+            /// or since its last sub-rule succeeded without one; further ones are left out.
+            reported: bool = false,
             checkpoint: Checkpoint,
             /// Rule-specific scratch: counts, saved positions.
             locals: [3]u32 = .{ 0, 0, 0 },
         };
+
+        pub const Attempt = struct { reported: bool, notes: u32 };
 
         pub const Checkpoint = struct {
             at: u32,
@@ -233,6 +243,9 @@ pub fn Machine(comptime Grammar: type) type {
         /// Set when an error (not a warning) came after the diagnostics were full, so a
         /// story with more warnings than room still fails on its error.
         errors_dropped: bool = false,
+        /// How many diagnostics were kept (with those past the full array): what tells an
+        /// `Attempt` whether one came in between.
+        notes_count: u32 = 0,
         /// The outcome of the frame that just returned.
         outcome: Outcome = .none,
         /// Set when the input is too deep or stopped progressing: every frame fails.
@@ -327,6 +340,11 @@ pub fn Machine(comptime Grammar: type) type {
                     if (frame.peek) machine.restore(frame.checkpoint);
                     machine.frames_count -= 1;
                     machine.outcome = .succeeded;
+                    // SucceedRule squashes the rule's scope flag into its caller; a peek
+                    // (CancelRule) leaves the caller's as it was.
+                    if (!frame.peek and machine.frames_count > 0) {
+                        machine.frames[machine.frames_count - 1].reported = frame.reported;
+                    }
                 },
                 .fail => {
                     machine.restore(machine.frames[machine.frames_count - 1].checkpoint);
@@ -350,16 +368,55 @@ pub fn Machine(comptime Grammar: type) type {
             machine.frames_count += 1;
         }
 
+        /// Records a diagnostic, unless the current rule scope already reported one (ink's
+        /// ErrorOnLine); a kept one marks every frame on the stack (NoteErrorReported). The
+        /// machine's own `too_deep` and `no_progress` are always kept.
         pub fn report(machine: *Self, code: Diagnostic.Code, offset: u32, extra: u32) void {
             assert(machine.diagnostics_count <= machine.workspace.diagnostics.len);
             assert(offset <= machine.source.len);
             const diagnostic: Diagnostic = .{ .code = code, .offset = offset, .extra = extra };
+            const own = code == .too_deep or code == .no_progress;
+            if (!own and machine.frames_count > 0 and
+                machine.frames[machine.frames_count - 1].reported)
+            {
+                // Left out altogether: ink's compilation fails only on the errors it
+                // reported (an earlier warning in the scope leaves this one's line skipped).
+                return;
+            }
+            for (machine.frames[0..machine.frames_count]) |*frame| frame.reported = true;
+            machine.notes_count += 1;
             if (machine.diagnostics_count == machine.workspace.diagnostics.len) {
                 if (!Grammar.is_warning(diagnostic)) machine.errors_dropped = true;
                 return;
             }
             machine.workspace.diagnostics[machine.diagnostics_count] = diagnostic;
             machine.diagnostics_count += 1;
+        }
+
+        /// A rule that ink runs and inkz inlines (ParseString, Parse(Whitespace), an
+        /// Optional's wrapper, ...) succeeded without a diagnostic of its own: as ink's
+        /// SucceedRule would, it clears the current scope's flag.
+        pub fn scope_succeeded(machine: *Self) void {
+            assert(machine.frames_count > 0);
+            machine.frames[machine.frames_count - 1].reported = false;
+        }
+
+        /// Where an inlined rule starts that may fail after a sub-rule of its own succeeded
+        /// (and so cleared the scope): `attempt_failed` puts the scope back as ink's FailRule
+        /// leaves the caller's, marked only if a diagnostic was kept in between.
+        pub fn attempt(machine: *const Self) Attempt {
+            assert(machine.frames_count > 0);
+            return .{
+                .reported = machine.frames[machine.frames_count - 1].reported,
+                .notes = machine.notes_count,
+            };
+        }
+
+        pub fn attempt_failed(machine: *Self, started: Attempt) void {
+            assert(machine.frames_count > 0);
+            assert(started.notes <= machine.notes_count);
+            const noted = started.notes != machine.notes_count;
+            machine.frames[machine.frames_count - 1].reported = started.reported or noted;
         }
 
         // Tokens.
@@ -459,7 +516,7 @@ pub fn Machine(comptime Grammar: type) type {
 /// A toy grammar for the core's tests: `expression = term (' + ' term)*`,
 /// `term = letter | '(' expression ')'`.
 const Toy = struct {
-    pub const Rule = enum { expression, term, stall };
+    pub const Rule = enum { expression, term, stall, scopes };
     const M = Machine(Toy);
 
     /// The toy has no warnings.
@@ -474,6 +531,7 @@ const Toy = struct {
             .term => term(machine, frame),
             // A broken rule that never makes progress: it peeks at a term forever.
             .stall => stall(frame),
+            .scopes => scopes(machine, frame),
         } catch return .fail;
     }
 
@@ -481,6 +539,32 @@ const Toy = struct {
         assert(frame.rule == .stall);
         frame.phase = 1;
         return .{ .peek = .term };
+    }
+
+    /// Reports in one scope around calls of `term`, on the input `(b|a`: what ink's
+    /// errorReportedAlreadyInScope keeps is told apart by `extra`.
+    fn scopes(machine: *M, frame: *M.Frame) Action(Rule) {
+        switch (frame.phase) {
+            0 => {
+                machine.report(.expected, machine.at, 1);
+                machine.report(.expected, machine.at, 2);
+                frame.phase = 1;
+                return .{ .call = .term };
+            },
+            1 => {
+                assert(machine.outcome == .failed);
+                machine.report(.expected, machine.at, 3);
+                machine.at = 3;
+                frame.phase = 2;
+                return .{ .call = .term };
+            },
+            else => {
+                assert(machine.outcome == .succeeded);
+                machine.report(.expected, machine.at, 4);
+                machine.report(.expected, machine.at, 5);
+                return .succeed;
+            },
+        }
     }
 
     fn accept(machine: *M, text: []const u8) bool {
@@ -532,6 +616,7 @@ const ToyResult = struct {
     diagnostics: u32,
     first: ?Diagnostic.Code,
     nodes: u32,
+    extras: [4]u32,
 };
 
 fn parse_toy(source: []const u8, depth_max: u32, start: Toy.Rule) !ToyResult {
@@ -543,11 +628,17 @@ fn parse_toy(source: []const u8, depth_max: u32, start: Toy.Rule) !ToyResult {
     var machine: Toy.M = .init(source, &workspace, frames);
     const outcome = try machine.run(start);
     const first = if (machine.diagnostics_count > 0) workspace.diagnostics[0].code else null;
+    var extras: [4]u32 = @splat(0);
+    const kept = @min(machine.diagnostics_count, extras.len);
+    for (workspace.diagnostics[0..kept], extras[0..kept]) |diagnostic, *extra| {
+        extra.* = diagnostic.extra;
+    }
     return .{
         .outcome = outcome,
         .diagnostics = machine.diagnostics_count,
         .first = first,
         .nodes = machine.nodes_count,
+        .extras = extras,
     };
 }
 
@@ -586,4 +677,14 @@ test "a rule that stops making progress runs out of gas" {
     const result = try parse_toy("anything", 8, .stall);
     try std.testing.expectEqual(Outcome.failed, result.outcome);
     try std.testing.expectEqual(Diagnostic.Code.no_progress, result.first.?);
+}
+
+test "a rule scope reports one diagnostic, as ink's errorReportedAlreadyInScope" {
+    // The second report in a scope is left out; a called rule has a scope of its own (its
+    // `)` is kept); a failed call leaves the caller's scope marked (3 is left out), and one
+    // that succeeds without a diagnostic clears it (4 is kept, then 5 is not).
+    const result = try parse_toy("(b|a", 8, .scopes);
+    try std.testing.expectEqual(Outcome.succeeded, result.outcome);
+    try std.testing.expectEqual(@as(u32, 3), result.diagnostics);
+    try std.testing.expectEqual([4]u32{ 1, ')', 4, 0 }, result.extras);
 }

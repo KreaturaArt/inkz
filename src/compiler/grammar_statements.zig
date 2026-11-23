@@ -40,6 +40,9 @@ pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_message(machine, .gather_in_inner_block);
             }
             _ = grammar.multiline_whitespace(machine);
+            // Interleave's Optional(MultilineWhitespace) succeeds either way: ink's
+            // Interleave rule starts its scope here, and each such step clears it.
+            machine.scope_succeeded();
             continue :phase 1;
         },
         // The loop's head, reached from phases 0 and 3 within their step.
@@ -55,6 +58,7 @@ pub fn statements(machine: *Machine, frame: *Frame) Error!Action {
         else => {
             if (machine.outcome == .failed) return finish_statements(machine, frame);
             _ = grammar.multiline_whitespace(machine);
+            machine.scope_succeeded();
             if (grammar.at_end(machine)) return finish_statements(machine, frame);
             continue :phase 1;
         },
@@ -260,7 +264,8 @@ pub fn knot_declaration(machine: *Machine, _: *Frame) Error!Action {
     _ = grammar.whitespace(machine);
     if (!try bracketed_parameters(machine)) try grammar.push_none(machine);
     _ = grammar.whitespace(machine);
-    _ = knot_title_equals(machine);
+    // Parse(KnotTitleEquals): a rule that succeeds clears the scope.
+    if (knot_title_equals(machine) > 0) machine.scope_succeeded();
     machine.result = @intFromBool(is_function);
     return .succeed;
 }
@@ -427,17 +432,21 @@ fn list_definition(machine: *Machine) Error!bool {
     const marker = machine.scratch_count;
     if (!try list_item(machine)) return false;
     while (true) {
+        // SeparatedList's rule for a separator and the next item.
         const saved = grammar.at(machine);
         const saved_tokens = machine.tokens_count;
+        const attempt = machine.attempt();
         _ = grammar.any_whitespace(machine);
         if (!grammar.parse_string(machine, ",")) {
             machine.at = saved;
+            machine.attempt_failed(attempt);
             break;
         }
         _ = grammar.any_whitespace(machine);
         if (!try list_item(machine)) {
             machine.at = saved;
             machine.tokens_count = saved_tokens;
+            machine.attempt_failed(attempt);
             break;
         }
     }
@@ -449,12 +458,14 @@ fn list_definition(machine: *Machine) Error!bool {
 /// ListElementDefinition: `name`, `(name)`, with an optional `= value`.
 fn list_item(machine: *Machine) Error!bool {
     const start = grammar.at(machine);
+    const attempt = machine.attempt();
     const selected = grammar.parse_string(machine, "(");
     var needs_close = selected;
     _ = grammar.whitespace(machine);
     const marker = machine.scratch_count;
     if (!try grammar.push_identifier(machine)) {
         machine.at = start;
+        machine.attempt_failed(attempt);
         return false;
     }
     _ = grammar.whitespace(machine);
@@ -530,12 +541,14 @@ fn check_initial_value(machine: *Machine, is_variable: bool) void {
 /// Parse(ListElementDefinitionSeparator): a comma with any whitespace around it.
 fn list_separator(machine: *Machine) bool {
     const start = grammar.at(machine);
+    const attempt = machine.attempt();
     _ = grammar.any_whitespace(machine);
     if (grammar.parse_string(machine, ",")) {
         _ = grammar.any_whitespace(machine);
         return true;
     }
     machine.at = start;
+    machine.attempt_failed(attempt);
     return false;
 }
 

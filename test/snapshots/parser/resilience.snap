@@ -40,15 +40,12 @@
             text"In a stitch."
             newline))))))
 ! 3:8 expected variable_name
-! 3:3 expected expression
 ! 4:5 expected variable_name
 ! 5:8 expected inner_logic
 ! 5:6 expected end_of_line
 ! 6:9 expected closing_brace
 ! 7:11 expected closing_parenthesis
 ! 8:11 expected right_operand
-! 8:6 expected expression
-! 8:6 expected end_of_line
 ! 9:9 message logic_line_expression
 ! 11:6 expected variable_name
 ! 16:1 message only_final_branch_else

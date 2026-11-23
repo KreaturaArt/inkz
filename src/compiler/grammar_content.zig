@@ -143,11 +143,15 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_message(machine, .tilde_in_content);
             } else machine.at = start;
             _ = try content_text(machine);
+            // Interleave's Optional(ContentText) succeeds either way, with no diagnostic:
+            // ink's Interleave rule starts its scope here, and each such step clears it.
+            machine.scope_succeeded();
             return grammar.call_then(frame, 1, .inline_logic_or_glue_or_start_tag);
         },
         1 => {
             const got_logic = machine.outcome == .succeeded;
             const got_text = try content_text(machine);
+            machine.scope_succeeded();
             if ((got_logic or got_text) and !grammar.at_end(machine)) {
                 return .{ .call = .inline_logic_or_glue_or_start_tag };
             }
@@ -296,9 +300,11 @@ fn inner_logic_alternative(machine: *Machine, frame: *Frame) Error!Action {
 /// Peek(Spaced(String("}"))).
 fn closing_brace_ahead(machine: *Machine) bool {
     const start = grammar.at(machine);
+    const attempt = machine.attempt();
     _ = grammar.whitespace(machine);
     const found = grammar.parse_string(machine, "}");
     machine.at = start;
+    machine.attempt_failed(attempt);
     return found;
 }
 
@@ -511,11 +517,13 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
 /// ElseExpression: `else` and `:`, restoring the input on failure.
 fn else_expression(machine: *Machine) bool {
     const start = grammar.at(machine);
+    const attempt = machine.attempt();
     if (grammar.parse_string(machine, "else")) {
         _ = grammar.whitespace(machine);
         if (grammar.parse_string(machine, ":")) return true;
     }
     machine.at = start;
+    machine.attempt_failed(attempt);
     return false;
 }
 
@@ -559,6 +567,7 @@ fn symbol_annotation(machine: *Machine) ?u32 {
 fn word_annotation(machine: *Machine) Error!?u32 {
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
+    const attempt = machine.attempt();
     var kind: u32 = 0;
     while (try grammar.identifier(machine)) |token| {
         const word = grammar.token_text(machine, token);
@@ -580,6 +589,7 @@ fn word_annotation(machine: *Machine) Error!?u32 {
     if (kind != 0 and grammar.parse_string(machine, ":")) return kind;
     machine.at = start;
     machine.tokens_count = saved_tokens;
+    machine.attempt_failed(attempt);
     return null;
 }
 
