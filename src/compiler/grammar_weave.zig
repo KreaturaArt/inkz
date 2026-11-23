@@ -291,12 +291,9 @@ fn finish_multi_divert(machine: *Machine, frame: *Frame) Error!void {
             grammar.report_message(machine, .empty_divert_outside_choice);
         }
     }
-    if (machine.flags & grammar.tag_active != 0) try grammar.insert_node(
-        machine,
-        marker,
-        .tag_end,
-        0,
-    );
+    if (machine.flags & grammar.tag_active != 0) {
+        try grammar.insert_node(machine, marker, .tag_end, 0);
+    }
     machine.flags &= ~grammar.tag_active;
 }
 

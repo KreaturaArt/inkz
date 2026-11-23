@@ -156,10 +156,8 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
             if ((got_logic or got_text) and !grammar.at_end(machine)) {
                 return .{ .call = .inline_logic_or_glue_or_start_tag };
             }
-            if (machine.plain_flags & grammar.parsing_choice != 0) return finish_mixed(
-                machine,
-                frame,
-            );
+            const in_choice = machine.plain_flags & grammar.parsing_choice != 0;
+            if (in_choice) return finish_mixed(machine, frame);
             frame.locals[1] = machine.scratch_count;
             return grammar.call_then(frame, 2, .multi_divert);
         },
@@ -176,11 +174,9 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
                 const last = diverts + @intFromBool(tag_was_active);
                 if (last > frame.checkpoint.scratch) {
                     const tag = machine.workspace.scratch_tags[last - 1];
-                    if (tag == .text or tag == .text_space) _ = try trim_text_at(
-                        machine,
-                        last - 1,
-                        true,
-                    );
+                    if (tag == .text or tag == .text_space) {
+                        _ = try trim_text_at(machine, last - 1, true);
+                    }
                 }
             }
             return finish_mixed(machine, frame);
@@ -212,10 +208,9 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
     _ = grammar.whitespace(machine);
     const hash = grammar.at(machine);
     if (!grammar.parse_string(machine, "#")) return .fail;
-    if (machine.flags & grammar.parsing_string != 0) grammar.report_message(
-        machine,
-        .tag_in_string,
-    );
+    if (machine.flags & grammar.parsing_string != 0) {
+        grammar.report_message(machine, .tag_in_string);
+    }
     const token = try machine.add_token(hash, hash + 1);
     if (machine.flags & grammar.tag_active != 0) {
         const marker = machine.scratch_count;
@@ -332,10 +327,9 @@ pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
 pub fn disallow_increment(machine: *Machine, marker: u32) void {
     const tag = grammar.top_tag(machine, marker) orelse return;
     assert(machine.scratch_count == marker + 1);
-    if (tag == .increment or tag == .decrement) grammar.report_message(
-        machine,
-        .increment_not_allowed,
-    );
+    if (tag == .increment or tag == .decrement) {
+        grammar.report_message(machine, .increment_not_allowed);
+    }
 }
 
 /// ConditionExpression: an expression and `:`.
@@ -516,10 +510,8 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
                 if (no_expression) {
                     grammar.report_message(machine, .branch_without_content);
                     const statements_marker = machine.scratch_count;
-                    const empty = try machine.add_token(
-                        grammar.at(machine),
-                        grammar.at(machine),
-                    );
+                    const here = grammar.at(machine);
+                    const empty = try machine.add_token(here, here);
                     try machine.push_node(.text, empty.to_int());
                     try machine.wrap(.statements, statements_marker);
                 } else try grammar.push_none(machine);
