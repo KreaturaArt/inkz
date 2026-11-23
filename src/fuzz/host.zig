@@ -38,6 +38,9 @@ pub const Call = enum {
     continue_maximally,
     errors,
     unbind,
+    /// A choice's text and one of its tags (`current_choice`, `current_choice_tag`), at
+    /// positions that may be past them.
+    choice_text,
 };
 
 /// The calls a session may make (a swarm over calls, plan §3.5). `cont` is always in it, so
@@ -181,6 +184,13 @@ fn call_kind(
         .cont_alloc => if (story.can_continue()) gpa.free(try story.cont_alloc(gpa)),
         .continue_maximally => try story.continue_maximally(writer),
         .errors => try read_errors(story, choices.choose(bool)),
+        .choice_text => {
+            const position: u32 = @intCast(choices.below(story.current_choices_count() + 1));
+            const choice = (try story.current_choice(position)).get();
+            assert(choice.index == position);
+            const tag: u32 = @intCast(choices.below(choice.tags_count + 1));
+            _ = (try story.current_choice_tag(position, tag)).get();
+        },
         .unbind => {
             const name = pick(choices, &externals);
             try story.unbind_external_function(name);
