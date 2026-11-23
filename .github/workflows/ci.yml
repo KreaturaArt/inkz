@@ -23,7 +23,7 @@ jobs:
       - name: zig build ci
         run: zig build ci --summary failures
 
-  # Five minutes of seeded swarm runs (play and save in turn) once ci passes; the
+  # Five minutes of seeded swarm runs (play, save and host in turn) once ci passes; the
   # seed changes every run, and a failure prints the command that reproduces it.
   swarm:
     needs: ci

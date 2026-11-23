@@ -115,9 +115,9 @@ Shared pieces:
 
 ## Long seeded runs and triage
 
-`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|all> --seed S --seeds N`
-(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play` and `save`,
-splitting the time between them. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
+`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|host|all> --seed S --seeds N`
+(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play`, `save` and
+`host`, with 4, 3 and 3 tenths of the time. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
 hk pre-push hook in `hk.pkl` runs `--seconds 10`; `hk install` once per clone)
 (`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
 configuration and a generated story, and the target checks it. Every target checks the
@@ -135,7 +135,17 @@ first one's did (lines, choice counts and errors, hashed per call), or a limit s
 after the same calls. `save` plays to a drawn call (or the first after it with no fallback
 choice pending), saves, loads the save into a fresh story, checks that it saves the same,
 and plays both on with the same choices: the same calls, and the same save at the end.
-Every failure prints its configuration and the command that reproduces it. The run
+`host` (P18.5) acts as a host on stories with `hub` and `typed` on (and without `drop` and
+`collision`, so they compile): it puts an observer on every global and runs the simulator's
+action mix (`simulation.simulate_mix` with `Mix.draw`: seeded choices, save and load, a flow
+switch and back, `set_variable`, `evaluate_function`, `choose_path_string`, compact-always),
+then a session of up to 48 host calls drawn as the host fuzz target draws them
+(`fuzz/host.zig`: also `remove_flow`, tags, `get_variable`, visit counts, `reset_state`,
+save and load); the state checks after every call, and a save loaded must save the same. It
+leaves out the program checks, which play and save make, and binds `e0` unless its fallback
+is allowed. Every failure prints its configuration and the command that reproduces it; a
+host failure's command also has `--mix <hex>` (`Mix.encode`), which replaces the drawn mix,
+so a mix with an action's weight set to 0 shows whether the action matters. The run
 ends with the **triage** (`src/testing/swarm_triage.zig`, after the swarm paper's §5): the
 features on in every failing run are *triggers*, and those off in every failing run but
 used by passing ones are *suppressors*. `--target save --seeds 2000` takes 39 s and finds
@@ -149,11 +159,14 @@ it (`ended`); since P18.3 also the stories stopped at their first line because `
 binding (`unbound externals`; a run with `e0` bound fails then), the second plays under
 other limits (`limited runs`) and those a limit stopped (`limit errors`; for `save`, saves
 too large for the loader's scratch), and the saves loaded mid-play and played on (`resumed
-saves`). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
+saves`); the host target's line also has the actions its mixes took, the host calls made
+after them, the changes the observers saw, and the actions and calls that returned an error
+(by name, the most frequent four). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
 and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
 `typed`, after P18.3 bound `e0`, varied the limits and resumed saves, and after P18.4
 folded the compile checks into play and save (and `all` dropped `compile`, so play and save
-get 4.5 s each instead of 3 s):
+get 4.5 s each instead of 3 s), and after P18.5 added `host` (play 3.6 s, save and host 2.7 s
+each):
 
 | | compile failures | play: compiled | runtime errors | lines | choices | step cap |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -162,6 +175,7 @@ get 4.5 s each instead of 3 s):
 | after P18.2 | 1,085 / 9,144 (11.9%) | 5,239 / 5,963 | 1,795 | 84,115 | 63,192 | 2,138 |
 | after P18.3 | 1,065 / 8,968 (11.9%) | 4,177 / 4,749 | 883 | 81,110 | 58,993 | 2,018 |
 | after P18.4 | 1,095 / 9,087 (12.0%) | 4,317 / 4,911 | 922 | 83,496 | 60,718 | 2,074 |
+| after P18.5 | 818 / 6,834 (12.0%) | 3,686 / 4,188 | 775 | 72,202 | 52,738 | 1,803 |
 
 The failures left are the error features' (`name_conflict` is `collision`'s). Played
 stories now run longer, so fewer fit in the time. After P18.3 a quarter of the runtime
@@ -174,6 +188,19 @@ cost `play` about 22% of its throughput (5,000 seeds from seed 99: 3.5 s before,
 after; `--seconds 5` from seed 99: 1,390 to 1,530 runs/s before and 1,000 to 1,120 after, `save`
 1,210 and 920, `compile` 2,930 and 2,280), under the 30% at which they would run on a fraction of
 the seeds, so every compiled story gets them.
+
+In that run the host target took 4,408 seeds, all compiling (they leave out `drop` and
+`collision`): 124,245 lines, 76,627 choices, 16,035 mix actions (round_trip 3,933,
+switch_flow 4,061, set_variable 4,478, evaluate 2,162, choose_path 1,401), 31,511 host
+calls after them and 181,915 observed changes; 1,422 stories reported a runtime error, and
+5,380 actions and calls returned one (ChoiceLimit 1,614, the session's out-of-range choice
+index; VariableNotDeclared 1,252 and PathNotFound 1,087, its names outside the story's
+pool; CannotRemoveDefaultFlow 605). `--target host --seconds 5` from seed 99 runs 1,624
+seeds/s; 90 s from seed 100000 ran 145,346 seeds without a failure. Its first run found a
+bug: a limit error in the newline lookahead restored the state but left the divert of the
+failed function call pending (ink keeps it in the state, as `divertedPointer`), and
+`choose_path_string` then asserted (`save_load_test.zig`, "a cont that fails in the newline
+lookahead leaves no divert pending").
 
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.
