@@ -117,7 +117,8 @@ const ListOrigin = @import("../core/program.zig").ListOrigin;
 const Opcode = @import("../core/instruction.zig").Opcode;
 
 /// A root with a list literal of two items, a variable pointer `x` (context 0), a plain
-/// divert to the knot `k` and a text, over the lists `letters = a, b` and an empty `none`.
+/// divert to the knot `k`, a text and a `true`, over the lists `letters = a, b` and an empty
+/// `none`.
 fn build_records(gpa: std.mem.Allocator) !Program {
     var builder = try ProgramBuilder.init(gpa);
     defer builder.deinit();
@@ -126,6 +127,7 @@ fn build_records(gpa: std.mem.Allocator) !Program {
     try builder.add_variable_pointer("x", 0);
     try builder.add_divert("k", .{});
     try builder.add(.text, try builder.intern("A"));
+    try builder.add(.bool, true);
     _ = try builder.list_origin("letters", &.{
         .{ .name = "a", .value = 1 },
         .{ .name = "b", .value = 2 },
@@ -186,8 +188,9 @@ test "an image's list literals are checked word by word" {
 
 test "an image's variable pointers, divert kinds and newline are checked" {
     // A variable pointer's name must be a string and its context at least -1; a divert's
-    // kind must be one of three in its two bits; the newline string must be "\n". Corrupt
-    // each, expect a rejected image, restore it; the untouched image loads.
+    // kind must be one of three in its two bits; the newline string must be "\n"; a bool
+    // operand is 0 or 1 and an opcode without one has 0. Corrupt each, expect a rejected
+    // image, restore it; the untouched image loads.
     const gpa = std.testing.allocator;
     var program = try build_records(gpa);
     defer program.deinit(gpa);
@@ -210,6 +213,17 @@ test "an image's variable pointers, divert kinds and newline are checked" {
     program.newline = program.strings.find("A").?;
     try expect_rejected(&program, .newline_not_newline);
     program.newline = newline;
+    // A bool past 1 or a no-operand word not 0: `Instruction.get` asserts both.
+    const opcodes = program.instructions.items(.opcode);
+    const operands = program.instructions.items(.operand);
+    const boolean = std.mem.indexOfScalar(Opcode, opcodes, .bool).?;
+    operands[boolean] = 2;
+    try expect_rejected(&program, .operand_not_encodable);
+    operands[boolean] = 1;
+    const done = std.mem.indexOfScalar(Opcode, opcodes, .done).?;
+    operands[done] = 1;
+    try expect_rejected(&program, .operand_not_encodable);
+    operands[done] = 0;
     var image: std.Io.Writer.Allocating = .init(gpa);
     defer image.deinit();
     try program_image.write(&program, &image.writer);

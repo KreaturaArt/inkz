@@ -147,6 +147,8 @@ pub const Program = struct {
         list_item_out_of_range,
         list_origin_out_of_range,
         variable_pointer_context_out_of_range,
+        /// A `.bool` operand past 1 or a `.none` operand not 0 (`Instruction.get` asserts).
+        operand_not_encodable,
     };
 
     pub fn deinit(program: *Program, gpa: std.mem.Allocator) void {
@@ -390,7 +392,9 @@ pub const Program = struct {
                 .variable_pointer => program.check_variable_pointer(operand),
                 .list => program.check_list_literal(operand),
                 .global => if (operand >= program.globals.len) .global_out_of_range else .ok,
-                .none, .integer, .float, .boolean => .ok,
+                .none => if (operand != 0) .operand_not_encodable else .ok,
+                .boolean => if (operand > 1) .operand_not_encodable else .ok,
+                .integer, .float => .ok,
             };
             if (result != .ok) return result;
         }
