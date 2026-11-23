@@ -173,7 +173,8 @@ pub const Play = enum { hub, typed };
 ///   `TODO:` lines (inklecate's author warnings), text in Latin, CJK and emoji, and the
 ///   global `größe`, a name of non-ASCII letters, read as a number.
 /// - `scientific`: float literals whose values print in scientific notation (`1E+09`,
-///   `1E-05`), as .NET does for exponents from 9 up and below -4.
+///   `1.23E-05`), as .NET does for exponents from 9 up and below -4, as terms and printed
+///   on a line of their own.
 /// - `mistyped_divert`: `VAR d1` holds no divert target (5, 0, 2.5 or a string), and one
 ///   place per source uses it as one: `-> d1` (outside functions), `TURNS_SINCE(d1)` or
 ///   `READ_COUNT(d1)`, ink's runtime errors.
@@ -250,6 +251,7 @@ const ExtraLine = enum {
     author_warning,
     unicode_text,
     mistyped_divert,
+    scientific_text,
 };
 
 const ExtraTerm = enum {
@@ -1523,6 +1525,7 @@ pub const Generator = struct {
         }
         if (constructs.contains(.mistyped_divert) and !generator.mistyped and
             !generator.in_function) kinds.insert(.mistyped_divert);
+        if (constructs.contains(.scientific)) kinds.insert(.scientific_text);
         assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
@@ -1578,6 +1581,10 @@ pub const Generator = struct {
                 generator.print("~ d0 = -> {s}\n", .{generator.divert_value()});
             },
             .comment, .author_warning, .unicode_text => |kind| generator.lexical_line(kind),
+            .scientific_text => {
+                generator.used.constructs.insert(.scientific);
+                generator.put("Floats {0.0000123} {-2147483647.5} {1000000000.5}\n");
+            },
             .mistyped_divert => {
                 generator.used.constructs.insert(.mistyped_divert);
                 generator.mistyped = true;
