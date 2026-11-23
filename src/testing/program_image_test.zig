@@ -186,6 +186,33 @@ test "an image's list literals are checked word by word" {
     try std.testing.expectEqual(Program.Fault.ok, program.check());
 }
 
+test "a list item read as a variable has its written name in the image" {
+    // One item and one origin is a list item read as a variable, followed by the name it
+    // was written with (ink_json_write reads it): a literal last in `extra` claiming that
+    // shape has no name word, a fault and a rejected image instead of a read past the end.
+    const gpa = std.testing.allocator;
+    var builder = try ProgramBuilder.init(gpa);
+    defer builder.deinit();
+    _ = try builder.begin_container(.{});
+    try builder.add_list_literal(&.{ "letters.a", "letters.b" }, &.{});
+    _ = try builder.list_origin("letters", &.{
+        .{ .name = "a", .value = 1 },
+        .{ .name = "b", .value = 2 },
+    });
+    try builder.end_container();
+    var program = try builder.finish();
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(Program.Fault.ok, program.check());
+    const extra: []u32 = @constCast(program.extra);
+    const list = record_at(&program, .list);
+    try std.testing.expectEqual(extra.len, list + 4);
+    // Item 0, then item 1's index read as origin 0.
+    extra[list] = 1;
+    extra[list + 1] = 1;
+    extra[list + 3] = 0;
+    try expect_rejected(&program, .extra_out_of_range);
+}
+
 test "an image's variable pointers, divert kinds and newline are checked" {
     // A variable pointer's name must be a string and its context at least -1; a divert's
     // kind must be one of three in its two bits; the newline string must be "\n"; a bool

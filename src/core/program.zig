@@ -441,6 +441,13 @@ pub const Program = struct {
         for (tail[literal.items_count..]) |origin| {
             if (origin >= program.list_origins.len) return .list_origin_out_of_range;
         }
+        // A list item read as a variable (one item, one origin) is followed by the name it
+        // was written with, which the JSON writer reads.
+        if (literal.items_count == 1 and literal.origins_count == 1) {
+            const name_at = tail_at + 2;
+            if (name_at >= program.extra.len) return .extra_out_of_range;
+            if (program.extra[name_at] >= program.strings.count()) return .string_out_of_range;
+        }
         return .ok;
     }
 
