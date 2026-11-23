@@ -166,6 +166,9 @@ pub const Play = enum { hub, typed };
 /// - `target_counts`: `READ_COUNT(-> k)` and `TURNS_SINCE(->k)` of any knot or the stitch,
 ///   and divert targets compared with `==` or `!=` (with `d0` when `divert_variable` is on),
 ///   when the operator is on.
+/// - `list_operations`: the intersection `^` of `l0` and list literals.
+/// - `item_values`: `LIST l2 = (p2 = 2), q2 = 5, r2`, whose items have values of their own
+///   (`r2` is 6), in list expressions with `l0`'s.
 pub const Construct = enum {
     turns,
     math,
@@ -176,6 +179,8 @@ pub const Construct = enum {
     divert_variable,
     parameters,
     target_counts,
+    list_operations,
+    item_values,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -197,7 +202,9 @@ const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(
         .temp_read, .ref_call, .global_read, .turns, .math, .list_value, .target_count,
     }),
     .string = .empty,
-    .list = .initMany(&.{ .item_full, .item_bare, .ambiguous, .list_function }),
+    .list = .initMany(&.{
+        .item_full, .item_bare, .ambiguous, .list_function, .intersection, .item_value,
+    }),
 });
 /// Ink's operators on each kind: arithmetic, comparison and logic on numbers, joining,
 /// equality and containment on strings, and the set operations and comparisons on lists.
@@ -237,6 +244,8 @@ const ExtraTerm = enum {
     list_value,
     list_function,
     target_count,
+    intersection,
+    item_value,
 };
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
@@ -414,6 +423,7 @@ pub const Swarm = struct {
             swarm.terms.remove(.list);
             swarm.terms.remove(.list_query);
             swarm.constructs.remove(.list_functions);
+            swarm.constructs.remove(.list_operations);
         }
         if (!declared.contains(.l0) and !swarm.resolution.contains(.l1)) {
             swarm.resolution.remove(.items);
@@ -821,6 +831,10 @@ pub const Generator = struct {
         if (generator.swarm.constructs.contains(.divert_variable) and generator.keep()) {
             generator.used.constructs.insert(.divert_variable);
             generator.print("VAR d0 = -> {s}\n", .{generator.divert_value()});
+        }
+        if (generator.swarm.constructs.contains(.item_values) and generator.keep()) {
+            generator.used.constructs.insert(.item_values);
+            generator.put("LIST l2 = (p2 = 2), q2 = 5, r2\n");
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1561,6 +1575,10 @@ pub const Generator = struct {
             kinds.insert(.list_function);
         }
         if (constructs.contains(.target_counts)) kinds.insert(.target_count);
+        if (constructs.contains(.list_operations) and generator.declared(.l0)) {
+            kinds.insert(.intersection);
+        }
+        if (constructs.contains(.item_values)) kinds.insert(.item_value);
         return kinds;
     }
 
@@ -1596,6 +1614,16 @@ pub const Generator = struct {
             },
             .list_function => generator.list_function(),
             .target_count => generator.target_count(),
+            .intersection => {
+                generator.used.constructs.insert(.list_operations);
+                generator.put(generator.pick(&.{
+                    "(l0 ^ (l0.a, c))", "((l0.a, b) ^ l0)", "(l0 ^ ())",
+                }));
+            },
+            .item_value => {
+                generator.used.constructs.insert(.item_values);
+                generator.put(generator.pick(&.{ "l2", "(p2, r2)", "l2.q2", "q2" }));
+            },
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1637,7 +1665,7 @@ pub const Generator = struct {
     /// A function of ink's on lists that returns one, of `l0`.
     fn list_function(generator: *Generator) void {
         generator.used.constructs.insert(.list_functions);
-        switch (generator.choices.below(8)) {
+        switch (generator.choices.below(9)) {
             0 => generator.put("LIST_MIN(l0)"),
             1 => generator.put("LIST_MAX(l0)"),
             2 => generator.put("LIST_ALL(l0)"),
@@ -1650,6 +1678,8 @@ pub const Generator = struct {
             // `l0.a` is the only full name that the `items` feature doesn't own.
             6 => generator.put("LIST_RANGE(LIST_ALL(l0), l0.a, 2)"),
             7 => generator.print("l0({d})", .{generator.choices.range(u8, 1, 3)}),
+            // Both bounds lists: the lowest item of one, the highest of the other.
+            8 => generator.put("LIST_RANGE(LIST_ALL(l0), b, LIST_MAX(l0))"),
             else => unreachable,
         }
     }
@@ -2130,6 +2160,8 @@ test "each construct appears when on and never when off" {
         .divert_variable = &.{ "VAR d0", "-> d0", "~ d0 =" },
         .parameters = &.{ "tunnel1(", "thread1(", "jump1(" },
         .target_counts = &.{ "READ_COUNT(", "TURNS_SINCE(->k", "== ->", "!= ->" },
+        .list_operations = &.{" ^ "},
+        .item_values = &.{ "LIST l2", "l2", "p2", "q2" },
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
