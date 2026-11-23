@@ -1,0 +1,96 @@
+name: Fuzz
+
+# Bounded coverage-guided fuzzing (docs/fuzzing.md, "In CI"): each main target of
+# `zig build fuzz` runs once with --fuzz=N in ReleaseSafe, in its own job. A crash or a failed
+# check fails the job and uploads the crashing input (.zig-cache/f/crash) and the fuzzer's log
+# as the `fuzz-crash-<target>-<run id>` artifact.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "41 2 * * *"
+  # A pull request that changes the run itself checks it before it reaches main.
+  pull_request:
+    paths:
+      - .github/workflows/fuzz.yml
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Inputs per target, e.g. 50K (empty: each target's default)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+jobs:
+  fuzz:
+    name: fuzz (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    # The cap for one target: the build takes one to two minutes, the run two to four.
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # runs: about two minutes of fuzzing each on ubuntu-latest, from local timings
+        # (docs/fuzzing.md). filter: the target's -Dtest-filter, from the table of targets.
+        include:
+          - { target: comments, filter: "comment removal", runs: 200K }
+          - { target: include, filter: "INCLUDE discovery", runs: 200K }
+          - { target: parser, filter: "well-formed tree", runs: 100K }
+          - { target: sema, filter: "consistent tree", runs: 50K }
+          - { target: lower, filter: "survive their JSON", runs: 20K }
+          - { target: compiler-raw, filter: "compiler never crashes", runs: 200K }
+          - { target: json, filter: "mutated ink JSON", runs: 100K }
+          - { target: json-raw, filter: "JSON loader never crashes", runs: 200K }
+          - { target: image, filter: "mutated program image", runs: 200K }
+          - { target: image-raw, filter: "image loader never crashes", runs: 200K }
+          - { target: vm, filter: "keeps the state consistent", runs: 25K }
+          - { target: save, filter: "loaded save plays", runs: 15K }
+          - { target: save-raw, filter: "save loader never crashes", runs: 100K }
+          - { target: host, filter: "host calls", runs: 40K }
+          - { target: limits, filter: "limits drawn", runs: 30K }
+    defaults:
+      run:
+        shell: bash
+    env:
+      FILTER: ${{ matrix.filter }}
+      RUNS: ${{ inputs.runs || matrix.runs }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs minimum_zig_version from build.zig.zon, as ci.yml does.
+      - uses: EuroZig/setup-zig@v3
+
+      # Zig 0.17's `zig build --fuzz=N` exits 0 even when the test process crashed or a check
+      # failed: it prints "error: test '...' exited with code 1; input saved to
+      # '.zig-cache/f/crash'" and moves on. So the job fails on that file or an error line.
+      - name: zig build fuzz
+        timeout-minutes: 12
+        run: |
+          echo "reproduce with:"
+          echo "  zig build fuzz -Doptimize=ReleaseSafe --fuzz=$RUNS -Dtest-filter=\"$FILTER\""
+          zig build fuzz -Doptimize=ReleaseSafe --fuzz="$RUNS" -Dtest-filter="$FILTER" \
+            2>&1 | tee fuzz.log
+          if [ -e .zig-cache/f/crash ] || grep -q '^error: ' fuzz.log; then
+            echo "::error::fuzz target '$FILTER' failed; the input is in the fuzz-crash artifact"
+            exit 1
+          fi
+
+      # The input the fuzzer saved for the crashed run, and the fuzzer's log. They are copied
+      # out of .zig-cache because upload-artifact skips hidden directories.
+      - name: Collect the crash
+        if: failure()
+        run: |
+          mkdir -p zig-out/fuzz-crash
+          cp .zig-cache/f/crash zig-out/fuzz-crash/crash.bin || true
+          cp .zig-cache/tmp/libfuzzer.log fuzz.log zig-out/fuzz-crash/ || true
+          echo "$FILTER --fuzz=$RUNS" > zig-out/fuzz-crash/target.txt
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: fuzz-crash-${{ matrix.target }}-${{ github.run_id }}
+          path: zig-out/fuzz-crash/
+          if-no-files-found: ignore
+          retention-days: 30
