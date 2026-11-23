@@ -31,33 +31,21 @@ pub const Builder = struct {
     parsed: *const grammar.Parsed,
     /// The files of the compilation, for INCLUDE (none: a single file).
     space: ?*const source_space.Space = null,
-    kinds: std.ArrayList(Kind) = .empty,
-    flags: std.ArrayList(u16) = .empty,
-    parents: std.ArrayList(ObjectIndex) = .empty,
-    nodes: std.ArrayList(NodeIndex) = .empty,
-    children_first: std.ArrayList(u32) = .empty,
-    children_count: std.ArrayList(u32) = .empty,
-    indents: std.ArrayList(u32) = .empty,
-    /// A weave's run of `items` (other objects: 0, 0).
-    items_first: std.ArrayList(u32) = .empty,
-    items_count: std.ArrayList(u32) = .empty,
+    objects: std.MultiArrayList(sema.Object) = .empty,
+    /// A weave's run of `items` and base indentation, by object (other objects: zeros).
+    runs: std.ArrayList(Run) = .empty,
     children: std.ArrayList(ObjectIndex) = .empty,
     items: std.ArrayList(u32) = .empty,
     /// Objects whose children are still to be created.
     work: std.ArrayList(ObjectIndex) = .empty,
 
+    const Run = struct { first: u32 = 0, count: u32 = 0, indent: u32 = 0 };
+
     pub fn deinit(builder: *Builder) void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
+        assert(builder.children.items.len <= builder.objects.len);
         const gpa = builder.gpa;
-        builder.kinds.deinit(gpa);
-        builder.flags.deinit(gpa);
-        builder.parents.deinit(gpa);
-        builder.nodes.deinit(gpa);
-        builder.children_first.deinit(gpa);
-        builder.children_count.deinit(gpa);
-        builder.indents.deinit(gpa);
-        builder.items_first.deinit(gpa);
-        builder.items_count.deinit(gpa);
+        builder.objects.deinit(gpa);
+        builder.runs.deinit(gpa);
         builder.children.deinit(gpa);
         builder.items.deinit(gpa);
         builder.work.deinit(gpa);
@@ -71,38 +59,22 @@ pub const Builder = struct {
 
     /// Creates the story and expands every object from a work list.
     pub fn run(builder: *Builder) !void {
-        assert(builder.kinds.items.len == 0);
+        assert(builder.objects.len == 0);
         const story = try builder.create(.story, 0, .none, builder.tree().root);
         try builder.work.append(builder.gpa, story);
         var steps: u32 = 0;
         while (builder.work.pop()) |object| : (steps += 1) {
-            assert(steps <= builder.kinds.items.len);
+            assert(steps <= builder.objects.len);
             try builder.expand(object);
         }
-        assert(builder.children.items.len + 1 == builder.kinds.items.len);
+        assert(builder.children.items.len + 1 == builder.objects.len);
     }
 
     pub fn finish(builder: *Builder) !sema.Tree {
-        const gpa = builder.gpa;
         assert(builder.work.items.len == 0);
-        assert(builder.kinds.items.len > 0);
-        // The tree's columns are parallel: one entry per object in each.
-        assert(builder.flags.items.len == builder.kinds.items.len);
-        assert(builder.parents.items.len == builder.kinds.items.len);
-        assert(builder.nodes.items.len == builder.kinds.items.len);
-        assert(builder.children_first.items.len == builder.kinds.items.len);
-        assert(builder.children_count.items.len == builder.kinds.items.len);
-        assert(builder.indents.items.len == builder.kinds.items.len);
-        return .{
-            .kinds = try builder.kinds.toOwnedSlice(gpa),
-            .flags = try builder.flags.toOwnedSlice(gpa),
-            .parents = try builder.parents.toOwnedSlice(gpa),
-            .nodes = try builder.nodes.toOwnedSlice(gpa),
-            .children_first = try builder.children_first.toOwnedSlice(gpa),
-            .children_count = try builder.children_count.toOwnedSlice(gpa),
-            .children = try builder.children.toOwnedSlice(gpa),
-            .indents = try builder.indents.toOwnedSlice(gpa),
-        };
+        assert(builder.runs.items.len == builder.objects.len);
+        const children = try builder.children.toOwnedSlice(builder.gpa);
+        return .{ .objects = builder.objects.toOwnedSlice(), .children = children };
     }
 
     /// A new object without children yet.
@@ -114,23 +86,21 @@ pub const Builder = struct {
         node: NodeIndex,
     ) !ObjectIndex {
         const gpa = builder.gpa;
-        const object: ObjectIndex = .from_int(@intCast(builder.kinds.items.len));
-        try builder.kinds.append(gpa, kind);
-        try builder.flags.append(gpa, flags);
-        try builder.parents.append(gpa, parent);
-        try builder.nodes.append(gpa, node);
-        try builder.children_first.append(gpa, 0);
-        try builder.children_count.append(gpa, 0);
-        try builder.indents.append(gpa, 0);
-        try builder.items_first.append(gpa, 0);
-        try builder.items_count.append(gpa, 0);
-        assert(builder.kinds.items.len == builder.items_count.items.len);
+        const object: ObjectIndex = .from_int(@intCast(builder.objects.len));
+        try builder.objects.append(gpa, .{
+            .kind = kind,
+            .flags = flags,
+            .parent = parent,
+            .node = node,
+        });
+        try builder.runs.append(gpa, .{});
+        assert(builder.objects.len == builder.runs.items.len);
         return object;
     }
 
     /// Adds a child (to the run being written for its parent) and queues it.
     fn adopt(builder: *Builder, child: ObjectIndex) !void {
-        assert(!builder.parents.items[child.to_int()].is_none());
+        assert(!builder.objects.items(.parent)[child.to_int()].is_none());
         try builder.children.append(builder.gpa, child);
         try builder.work.append(builder.gpa, child);
         assert(builder.children.items.len > 0);
@@ -138,16 +108,16 @@ pub const Builder = struct {
 
     fn add_child(builder: *Builder, parent: ObjectIndex, node: NodeIndex) !void {
         assert(!node.is_none());
-        assert(parent.to_int() < builder.kinds.items.len);
+        assert(parent.to_int() < builder.objects.len);
         try builder.adopt(try builder.create_from_node(parent, node));
     }
 
     /// Creates `object`'s children, as ink's constructor for its kind does.
     fn expand(builder: *Builder, object: ObjectIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
+        assert(builder.children.items.len <= builder.objects.len);
         const first: u32 = @intCast(builder.children.items.len);
-        const node = builder.nodes.items[object.to_int()];
-        switch (builder.kinds.items[object.to_int()]) {
+        const node = builder.objects.items(.node)[object.to_int()];
+        switch (builder.objects.items(.kind)[object.to_int()]) {
             .story, .knot, .stitch => try builder.expand_flow(object, node),
             .weave => try builder.expand_weave(object),
             .choice => try builder.expand_choice(object, node),
@@ -163,9 +133,9 @@ pub const Builder = struct {
             },
             else => if (!node.is_none()) try builder.expand_by_tag(object, node),
         }
-        builder.children_first.items[object.to_int()] = first;
         const end: u32 = @intCast(builder.children.items.len);
-        builder.children_count.items[object.to_int()] = end - first;
+        builder.objects.items(.children_first)[object.to_int()] = first;
+        builder.objects.items(.children_count)[object.to_int()] = end - first;
     }
 
     /// FlowBase.SplitWeaveAndSubFlowContent: the weave first, then the sub-flows.
@@ -268,9 +238,7 @@ pub const Builder = struct {
         assert(count > 0);
         assert(first + count <= builder.items.items.len);
         const weave = try builder.create(.weave, 0, parent, .none);
-        builder.indents.items[weave.to_int()] = indent;
-        builder.items_first.items[weave.to_int()] = first;
-        builder.items_count.items[weave.to_int()] = count;
+        builder.runs.items[weave.to_int()] = .{ .first = first, .count = count, .indent = indent };
         return weave;
     }
 
@@ -307,9 +275,10 @@ pub const Builder = struct {
 
     /// Weave.ConstructWeaveHierarchyFromIndentation over the weave's item run.
     fn expand_weave(builder: *Builder, weave: ObjectIndex) !void {
-        const base = builder.indents.items[weave.to_int()];
-        const first = builder.items_first.items[weave.to_int()];
-        const end = first + builder.items_count.items[weave.to_int()];
+        const weave_run = builder.runs.items[weave.to_int()];
+        const base = weave_run.indent;
+        const first = weave_run.first;
+        const end = first + weave_run.count;
         var position = first;
         while (position < end) {
             const item = builder.items.items[position];
@@ -336,7 +305,7 @@ pub const Builder = struct {
     }
 
     fn create_item(builder: *Builder, parent: ObjectIndex, item: u32) !ObjectIndex {
-        assert(parent.to_int() < builder.kinds.items.len);
+        assert(parent.to_int() < builder.objects.len);
         if (item == item_gather) return builder.create(.gather, 0, parent, .none);
         if (item == item_done) return builder.create(.divert, Flags.done, parent, .none);
         if (item == item_newline) return builder.create(.text, Flags.newline, parent, .none);
@@ -378,7 +347,7 @@ pub const Builder = struct {
     /// ConditionalSingleBranch: a weave of its content (if any), then its own condition (ink
     /// sets ownExpression after construction, so it comes last).
     fn expand_branch(builder: *Builder, branch: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
+        assert(builder.children.items.len <= builder.objects.len);
         const ast = builder.tree();
         const is_else = ast.tag(node) == .else_branch;
         const content = ast.slot(node, .content);
@@ -412,7 +381,7 @@ pub const Builder = struct {
 
     /// The children of the other kinds, from their syntax node's shape.
     fn expand_by_tag(builder: *Builder, object: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
+        assert(builder.children.items.len <= builder.objects.len);
         const ast = builder.tree();
         switch (ast.tag(node)) {
             .content_list, .string, .conditions => {
@@ -435,12 +404,12 @@ pub const Builder = struct {
     }
 
     fn expand_fixed(builder: *Builder, object: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.kinds.items.len);
+        assert(builder.children.items.len <= builder.objects.len);
         const ast = builder.tree();
         const tag = ast.tag(node);
         switch (tag) {
             .divert, .tunnel, .thread, .function_call => {
-                if (builder.kinds.items[object.to_int()] == .function_call) {
+                if (builder.objects.items(.kind)[object.to_int()] == .function_call) {
                     // ink's proxy divert carries the call's arguments.
                     const proxy = try builder.create(.divert, Flags.function_call, object, node);
                     return builder.adopt(proxy);

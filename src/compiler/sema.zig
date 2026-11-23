@@ -6,7 +6,7 @@
 //! elements hold their content in weaves. Names are resolved on this tree (resolve.zig), and
 //! the lowering generates from it.
 //!
-//! An object is a row of parallel arrays: its kind, kind-specific flags, its parent, the syntax
+//! An object is a row of a MultiArrayList: its kind, kind-specific flags, its parent, the syntax
 //! node it came from (or none for the objects ink synthesizes), and its children, a contiguous
 //! run of `children`. The tree is built with a work list, without recursion: expanding an
 //! object creates all its children (shallowly) at once, so each child run is final as soon as
@@ -100,59 +100,63 @@ pub const Flags = struct {
     pub const sticky: u16 = 1 << 3;
 };
 
+/// An object's row of the tree.
+pub const Object = struct {
+    kind: Kind,
+    /// Kind-specific `Flags`.
+    flags: u16,
+    /// None for the story.
+    parent: ObjectIndex,
+    /// None for the objects ink synthesizes.
+    node: NodeIndex,
+    /// Its children: a run of the tree's `children`.
+    children_first: u32 = 0,
+    children_count: u32 = 0,
+};
+
 pub const Tree = struct {
-    kinds: []const Kind,
-    flags: []const u16,
-    parents: []const ObjectIndex,
-    nodes: []const NodeIndex,
-    children_first: []const u32,
-    children_count: []const u32,
+    objects: std.MultiArrayList(Object).Slice,
     children: []const ObjectIndex,
-    /// A weave's base indentation (ink's baseIndentIndex), by object; 0 for other objects.
-    indents: []const u32,
 
     pub const root: ObjectIndex = .from_int(0);
 
     pub fn count(tree: *const Tree) u32 {
-        assert(tree.kinds.len == tree.parents.len);
-        assert(tree.kinds.len > 0);
-        return @intCast(tree.kinds.len);
+        assert(tree.objects.len > 0);
+        assert(tree.children.len < tree.objects.len);
+        return @intCast(tree.objects.len);
     }
 
     pub fn kind(tree: *const Tree, object: ObjectIndex) Kind {
         assert(object.to_int() < tree.count());
-        assert(tree.kinds.len == tree.flags.len);
-        return tree.kinds[object.to_int()];
+        return tree.objects.items(.kind)[object.to_int()];
     }
 
+    /// Whether any of `flag`'s bits is set.
     pub fn has(tree: *const Tree, object: ObjectIndex, flag: u16) bool {
         assert(object.to_int() < tree.count());
         assert(flag != 0);
-        return tree.flags[object.to_int()] & flag != 0;
+        return tree.objects.items(.flags)[object.to_int()] & flag != 0;
     }
 
     pub fn parent(tree: *const Tree, object: ObjectIndex) ObjectIndex {
         assert(object.to_int() < tree.count());
-        assert(tree.parents[0] == .none);
-        return tree.parents[object.to_int()];
+        return tree.objects.items(.parent)[object.to_int()];
     }
 
     pub fn node(tree: *const Tree, object: ObjectIndex) NodeIndex {
         assert(object.to_int() < tree.count());
-        assert(tree.nodes.len == tree.kinds.len);
-        return tree.nodes[object.to_int()];
+        return tree.objects.items(.node)[object.to_int()];
     }
 
     pub fn children_of(tree: *const Tree, object: ObjectIndex) []const ObjectIndex {
         assert(object.to_int() < tree.count());
-        const first = tree.children_first[object.to_int()];
-        const length = tree.children_count[object.to_int()];
+        const first = tree.objects.items(.children_first)[object.to_int()];
+        const length = tree.objects.items(.children_count)[object.to_int()];
         assert(first + length <= tree.children.len);
         return tree.children[first..][0..length];
     }
 
     pub fn is_flow(tree: *const Tree, object: ObjectIndex) bool {
-        assert(tree.kinds.len == tree.parents.len);
         const object_kind = tree.kind(object);
         assert(@backingInt(object_kind) < @typeInfo(Kind).@"enum".field_names.len);
         return object_kind == .story or object_kind == .knot or object_kind == .stitch;
@@ -227,16 +231,9 @@ pub const Tree = struct {
     }
 
     pub fn deinit(tree: *Tree, gpa: Allocator) void {
-        assert(tree.kinds.len == tree.parents.len);
-        assert(tree.kinds.len > 0);
-        gpa.free(tree.kinds);
-        gpa.free(tree.flags);
-        gpa.free(tree.parents);
-        gpa.free(tree.nodes);
-        gpa.free(tree.children_first);
-        gpa.free(tree.children_count);
+        assert(tree.objects.len > 0);
+        tree.objects.deinit(gpa);
         gpa.free(tree.children);
-        gpa.free(tree.indents);
         tree.* = undefined;
     }
 };
@@ -328,7 +325,6 @@ pub fn object_offset(
     object_initial: ObjectIndex,
 ) u32 {
     assert(object_initial.to_int() < tree.count());
-    assert(tree.nodes.len == tree.kinds.len);
     var object = object_initial;
     while (!object.is_none()) : (object = tree.parent(object)) {
         // The "\n" ink ends a line with has the line's position: its content's.
@@ -432,8 +428,7 @@ const dump = @import("dump.zig");
 
 /// The tree as one line per object, indented: its kind and the name or text it carries.
 fn render(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree) ![]u8 {
-    assert(tree.kinds.len == tree.parents.len);
-    assert(tree.children.len < tree.kinds.len);
+    assert(tree.count() > 0);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     var objects = tree.walk(gpa, Tree.root, .pre);
@@ -453,8 +448,7 @@ fn render_label(
     object: ObjectIndex,
     out: *std.Io.Writer,
 ) !void {
-    assert(tree.kinds.len == tree.parents.len);
-    assert(tree.children.len < tree.kinds.len);
+    assert(tree.count() > 0);
     const node = tree.node(object);
     if (node.is_none()) return;
     const ast = &parsed.tree;

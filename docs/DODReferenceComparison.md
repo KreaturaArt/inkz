@@ -318,7 +318,7 @@ Measured densities:
 | Choice | inkz | fino | zirp |
 |---|---|---|---|
 | Stages | parse → sema object tree → resolve → IR → layout → `ProgramBuilder` | parse → (pre-pass `collectFns`) → bytecode, **no IR** | parse → AstRlAnnotate (ported); AstGen/ZIR not ported |
-| Object tree | SoA `sema.Tree`: kinds u8, flags u16 (bits shared per kind), parents, nodes, `children_first`/`count`, `children` (`sema.zig:103-112`), about 23 B/object | none | none |
+| Object tree | `sema.Tree`: a MultiArrayList of `sema.Object` (kind u8, flags u16 with bits shared per kind, parent, node, `children_first`/`count`) and `children` (`sema.zig:104-119`), 23 B/object | none | none |
 | Resolution results | Side tables indexed by `ObjectIndex`: `targets`, `references`, a bitset, `item_values`, … (`resolve.zig:141-174`) | Inline in the compiler (`locals` stack) | `AutoHashMap(Node.Index, void)` (AstRlAnnotate) |
 | Names | **Source slices** with Wyhash keys `{scope, name}` until the builder interns them | Interned `u24` from the parser on | `[]const u8` from tokens |
 | IR | AoS `Item` tagged union, 40 B, stored whole (side arrays dropped in P17.18); per-container **linked list** via `next`, then flattened (`lower_ir.zig`) | n/a | n/a (upstream ZIR in the copied AstGen) |

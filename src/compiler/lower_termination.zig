@@ -218,7 +218,7 @@ fn is_terminating_divert(tree: *const Tree, object: ObjectIndex) bool {
     assert(tree.count() > 0);
     if (tree.kind(object) != .divert) return false;
     const returns = Flags.thread | Flags.tunnel | Flags.function_call;
-    if (tree.flags[object.to_int()] & returns != 0) return false;
+    if (tree.has(object, returns)) return false;
     return tree.kind(tree.parent(object)) != .divert_target;
 }
 
