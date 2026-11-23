@@ -9,6 +9,7 @@ const fuzz_ink = @import("fuzz_ink.zig");
 const triage_module = @import("swarm_triage.zig");
 const swarm_mutate = @import("swarm_mutate.zig");
 const compile = @import("../compiler/compile.zig");
+const source_space = @import("../compiler/source_space.zig");
 const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
 const fuzz_play = @import("../fuzz/play.zig");
@@ -62,6 +63,9 @@ pub const Summary = struct {
     failures: u32 = 0,
     /// Runs of a large configuration (`Swarm.large`).
     large: u32 = 0,
+    /// Stories compiled from files too (`Split`), and the files.
+    included: u32 = 0,
+    included_files: u32 = 0,
     /// Sources that didn't compile, counted under their first error's code.
     compile_failures: u32 = 0,
     codes: Codes = .{},
@@ -99,9 +103,12 @@ pub const Summary = struct {
     mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("{d} runs ({d} large), {d} failures; compile failures {d}", .{
+        try writer.print("{d} runs ({d} large, {d} included from {d} files), {d} failures; " ++
+            "compile failures {d}", .{
             summary.runs,
             summary.large,
+            summary.included,
+            summary.included_files,
             summary.failures,
             summary.compile_failures,
         });
@@ -311,6 +318,11 @@ fn check_case(
         const fails = case.swarm.lines.contains(.glue) and !case.swarm.terms.contains(.random);
         return if (fails) "synthetic" else null;
     }
+    // The compile, play and save targets compile a quarter of their stories from files too.
+    if (target == .compile or target == .play or target == .save) {
+        const plays = target != .compile;
+        if (try check_included(gpa, case.source, seed, plays, summary)) |failure| return failure;
+    }
     var first_error: ?[]const u8 = null;
     const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
     var program = compile.compile_source_with(gpa, case.source, .{
@@ -336,6 +348,153 @@ fn check_case(
         .synthetic, .host, .host_synthetic => unreachable,
     }
     return null;
+}
+
+/// How a seed's story is split into files that INCLUDE each other: the root and the content
+/// before the first knot in `main.ink`, the knots and functions in one or two more files,
+/// each included from `main.ink` (flat) or the second from the first (chained).
+const Split = struct {
+    /// 1 (no split, 3 in 4 seeds), 2 or 3.
+    files: u8,
+    chained: bool,
+    /// Where the third file starts, as a fraction of the knots after the first.
+    cut: u32,
+
+    /// Mixed into the seed, so the split doesn't repeat the other plans' draws.
+    const salt = 0x1c1_7de5;
+    const names = [_][]const u8{ "main.ink", "part1.ink", "part2.ink" };
+    /// Ends the root before the INCLUDEs. ink's PreProcessTopLevelObjects ends each
+    /// INCLUDE's content with a newline, which joins the root's weave where the INCLUDE
+    /// stands: after a choice it lands in the choice's body and drops the divert to the
+    /// gather (in inklecate too), and before the root it moves every path that an error
+    /// message names. After a divert it is never reached.
+    const root_end = "-\n-> DONE\n";
+
+    const Story = struct {
+        files: []const source_space.MemoryFile,
+        /// The story in one source: the root, `root_end` and the other files' content.
+        joined: []const u8,
+    };
+
+    fn draw(seed: u64) Split {
+        var prng: std.Random.DefaultPrng = .init(seed ^ salt);
+        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+        const split = choices.weighted(3, 1);
+        return .{
+            .files = if (split) choices.range(u8, 2, 3) else 1,
+            .chained = choices.choose(bool),
+            .cut = choices.choose(u32),
+        };
+    }
+
+    /// The files of `source` and the one source they join to; null when `source` has no
+    /// knot to split at.
+    fn story_of(split: Split, arena: std.mem.Allocator, source: []const u8) !?Story {
+        assert(split.files >= 2 and split.files <= names.len);
+        var knots: usize = 0;
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |line| knots += @intFromBool(std.mem.startsWith(u8, line, "==="));
+        if (knots == 0) return null;
+        // The first knot starts the second file; the third starts at a later one, if any.
+        const third = if (split.files == 3 and knots > 1) 1 + split.cut % (knots - 1) else 0;
+        var starts: [2]usize = .{ source.len, source.len };
+        var knot: usize = 0;
+        var offset: usize = 0;
+        lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |line| : (offset += line.len + 1) {
+            if (!std.mem.startsWith(u8, line, "===")) continue;
+            if (knot == 0) starts[0] = offset;
+            if (knot == third and third > 0) starts[1] = offset;
+            knot += 1;
+        }
+        const root = source[0..starts[0]];
+        const first = source[starts[0]..starts[1]];
+        const second = source[starts[1]..];
+        const three = second.len > 0;
+        const files = try arena.alloc(source_space.MemoryFile, if (three) 3 else 2);
+        const includes = if (three and !split.chained)
+            "INCLUDE part1.ink\nINCLUDE part2.ink\n"
+        else
+            "INCLUDE part1.ink\n";
+        files[0] = .{
+            .path = names[0],
+            .text = try std.mem.concat(arena, u8, &.{ root, root_end, includes }),
+        };
+        files[1] = .{ .path = names[1], .text = if (three and split.chained)
+            try std.mem.concat(arena, u8, &.{ "INCLUDE part2.ink\n", first })
+        else
+            first };
+        if (three) files[2] = .{ .path = names[2], .text = second };
+        const joined = try std.mem.concat(arena, u8, &.{ root, root_end, first, second });
+        return .{ .files = files, .joined = joined };
+    }
+};
+
+/// With the seed's split (`Split.draw`), the story compiled from its files and from the
+/// one source they join to: null when both compile, or both fail with the same first
+/// error, and (with `plays`) play the same; otherwise what differed.
+fn check_included(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    seed: u64,
+    plays: bool,
+    summary: *Summary,
+) !?[]const u8 {
+    const split: Split = .draw(seed);
+    if (split.files == 1) return null;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const story = try split.story_of(arena_state.allocator(), source) orelse return null;
+    summary.included += 1;
+    summary.included_files += @intCast(story.files.len);
+    var joined_error: ?[]const u8 = null;
+    const joined_sink: messages.Sink = .{ .context = &joined_error, .function = keep_first_error };
+    var joined = compile.compile_source_with(gpa, story.joined, .{
+        .diagnostics = joined_sink,
+    }) catch |err| switch (err) {
+        error.CompileFailed => null,
+        else => return err,
+    };
+    defer if (joined) |*program| program.deinit(gpa);
+    var first_error: ?[]const u8 = null;
+    const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
+    var program = compile.compile_files_with(gpa, story.files, story.files[0].path, .{
+        .diagnostics = sink,
+    }) catch |err| switch (err) {
+        error.CompileFailed => {
+            if (joined != null) return "INCLUDE failed a story that compiles";
+            const same = std.mem.eql(u8, joined_error orelse "none", first_error orelse "none");
+            return if (same) null else "INCLUDE changed the first error";
+        },
+        else => return err,
+    };
+    defer program.deinit(gpa);
+    const one = if (joined) |*one| one else return "INCLUDE compiled a story that fails";
+    if (program.check() != .ok) return "Program.check of the included story";
+    if (!plays) return null;
+    const plan: Plan = .draw(seed);
+    var one_trace = plan.trace();
+    if (try play_roomy(gpa, one, seed, plan, &one_trace)) |failure| return failure;
+    var trace = plan.trace();
+    if (try play_roomy(gpa, &program, seed, plan, &trace)) |failure| return failure;
+    return if (Trace.same(&one_trace, &trace)) null else "INCLUDE changed the play";
+}
+
+/// Plays `program` once as `plan` says, under its default limits, into `trace`.
+fn play_roomy(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    seed: u64,
+    plan: Plan,
+    trace: *Trace,
+) !?[]const u8 {
+    var story: api.Story = undefined;
+    try fuzz_play.init_story(&story, gpa, program, plan.setup);
+    defer story.deinit(gpa);
+    story.on_error = Trace.note;
+    story.on_error_context = trace;
+    var prng: std.Random.DefaultPrng = .init(seed);
+    return advance(&story, prng.random(), trace, plan.steps);
 }
 
 /// Null when `program` (compiled from `source`) passes `Program.check` and is the same
@@ -1135,4 +1294,37 @@ test "saves compare the same with their flows in another order, and differ other
     try std.testing.expect(try same_but_flow_order(gpa, a, b));
     try std.testing.expect(!try same_but_flow_order(gpa, a, c));
     try std.testing.expect(!try same_but_flow_order(gpa, a, d));
+}
+
+test "a split story includes its knots from two or three files and plays as one source" {
+    // P19.4: the root stays in main.ink, ended by Split.root_end before its INCLUDEs; the
+    // knots go to part1.ink and, from a later knot on, part2.ink, included from main.ink
+    // or from part1.ink. 40 seeds of the play target compile a quarter of their stories
+    // from files too, and those compile and play as the joined source does.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const source = "VAR x = 1\nRoot\n-> k0\n=== k0 ===\nK0\n-> k1\n=== k1 ===\nK1\n-> END\n";
+    const flat: Split = .{ .files = 3, .chained = false, .cut = 0 };
+    const story = (try flat.story_of(arena, source)).?;
+    try std.testing.expectEqual(@as(usize, 3), story.files.len);
+    try std.testing.expectEqualStrings("VAR x = 1\nRoot\n-> k0\n" ++ Split.root_end ++
+        "INCLUDE part1.ink\nINCLUDE part2.ink\n", story.files[0].text);
+    try std.testing.expectEqualStrings("=== k0 ===\nK0\n-> k1\n", story.files[1].text);
+    try std.testing.expectEqualStrings("=== k1 ===\nK1\n-> END\n", story.files[2].text);
+    const chained: Split = .{ .files = 3, .chained = true, .cut = 0 };
+    const chain = (try chained.story_of(arena, source)).?;
+    const chain_main = chain.files[0].text;
+    try std.testing.expect(std.mem.endsWith(u8, chain_main, "-> DONE\nINCLUDE part1.ink\n"));
+    try std.testing.expect(std.mem.startsWith(u8, chain.files[1].text, "INCLUDE part2.ink\n"));
+    try std.testing.expectEqualStrings(story.joined, chain.joined);
+    try std.testing.expect(try flat.story_of(arena, "No knots\n") == null);
+
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .play, 1, .{ .seeds = 40 }, .{});
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    try std.testing.expect(summary.included > 0 and summary.included < summary.runs);
+    try std.testing.expect(summary.included_files >= 2 * summary.included);
 }
