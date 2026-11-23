@@ -323,14 +323,13 @@ const Discovery = struct {
                 .offset = start,
             });
         }
-        const clean = try discovery.arena.dupe(u8, parsed.source);
         try discovery.files.append(discovery.arena, .{
             .path = path,
             .parent = parent,
             .depth = depth,
         });
         try discovery.discovered.append(discovery.arena, .{
-            .text = clean,
+            .text = text,
             .includes = includes.items,
         });
     }
@@ -339,23 +338,16 @@ const Discovery = struct {
     fn lay_out(discovery: *Discovery) !Space {
         assert(discovery.bounds.include_files_max > 0);
         const gpa = discovery.gpa;
-        var total: usize = 0;
-        for (discovery.discovered.items) |file| total += file.text.len;
-        // Each file is within the bound, but together they may not be: the space's offsets
-        // are u32.
-        if (total > discovery.bounds.source_bytes_max) return error.SourceTooLarge;
-        // The regions first: the buffer is owned by parse_space from its allocation on.
-        const regions = try discovery.arena.alloc(grammar.Region, discovery.files.items.len);
-        const buffer = try gpa.alloc(u8, total);
-        var at: u32 = 0;
-        for (discovery.discovered.items, discovery.files.items, regions) |file, *entry, *region| {
-            @memcpy(buffer[at..][0..file.text.len], file.text);
-            entry.start = at;
-            entry.end = at + @as(u32, @intCast(file.text.len));
-            region.* = .{ .start = entry.start, .end = entry.end };
-            at = entry.end;
-        }
-        var parsed = try grammar.parse_space(gpa, buffer, regions, discovery.bounds);
+        var parsed = parsed: {
+            var space_parser = try grammar.SpaceParser.init(gpa, discovery.bounds);
+            errdefer space_parser.deinit(gpa);
+            for (discovery.discovered.items, discovery.files.items) |file, *entry| {
+                entry.start = @intCast(space_parser.buffer.items.len);
+                _ = try space_parser.add(gpa, file.text);
+                entry.end = @intCast(space_parser.buffer.items.len);
+            }
+            break :parsed try space_parser.finish(gpa);
+        };
         errdefer parsed.deinit(gpa);
         var included: std.AutoHashMapUnmanaged(u32, u32) = .empty;
         errdefer included.deinit(gpa);

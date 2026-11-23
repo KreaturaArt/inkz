@@ -157,7 +157,7 @@ pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options)
         };
     };
     defer parsed.deinit(gpa);
-    if (options.statistics) |statistics| statistics.workspace_retries = parsed.attempts - 1;
+    if (options.statistics) |statistics| statistics.workspace_retries = parsed.retries();
     var collector = messages.Collector.init(gpa);
     defer collector.deinit();
     defer if (options.diagnostics) |sink| collector.deliver(sink);
@@ -198,7 +198,7 @@ pub fn compile_file_with(
         else => |other| return other,
     };
     defer space.deinit(gpa);
-    if (options.statistics) |statistics| statistics.workspace_retries = space.parsed.attempts - 1;
+    if (options.statistics) |statistics| statistics.workspace_retries = space.parsed.retries();
     var collector = messages.Collector.init(gpa);
     defer collector.deinit();
     defer if (options.diagnostics) |sink| collector.deliver(sink);

@@ -453,10 +453,16 @@ pub const Parsed = struct {
     /// Set when an error came after the diagnostics were full: the story still fails.
     errors_dropped: bool = false,
     buffer: []u8,
-    /// With parse_space: each region's story root (the first is `tree.root`).
-    roots: []const ast.NodeIndex = &.{},
-    /// How many times the source was parsed: more than 1 when the workspace was too small.
-    attempts: u32 = 1,
+    /// Each file's story root (the first is `tree.root`).
+    roots: []const ast.NodeIndex,
+    /// How many times a file was parsed: once each, more when the workspace was too small.
+    parses: u32,
+
+    /// The parses beyond one per file: the retries a full workspace took.
+    pub fn retries(parsed: *const Parsed) u32 {
+        assert(parsed.parses >= parsed.roots.len);
+        return parsed.parses - @as(u32, @intCast(parsed.roots.len));
+    }
 
     pub fn diagnostics(parsed: *const Parsed) []const core.Diagnostic {
         assert(parsed.buffer.len >= parsed.source.len);
@@ -501,7 +507,7 @@ pub const Parsed = struct {
         assert(parsed.buffer.len >= parsed.source.len);
         parsed.workspace.deinit(gpa);
         gpa.free(parsed.buffer);
-        if (parsed.roots.len > 0) gpa.free(parsed.roots);
+        gpa.free(parsed.roots);
         parsed.* = undefined;
     }
 };
@@ -516,101 +522,139 @@ pub const ParseError = error{
     WorkspaceFull,
 } || std.mem.Allocator.Error;
 
-/// Parses one ink file (ink's InkParser.Parse): comments are removed first, then the file is
-/// one region of `parse_space`.
+/// Parses one ink file (ink's InkParser.Parse): a space of one file.
 pub fn parse(
     gpa: std.mem.Allocator,
     source: []const u8,
     bounds: limits.CompilerLimits,
 ) ParseError!Parsed {
     assert(bounds.source_bytes_max > 0);
-    if (source.len > bounds.source_bytes_max) return error.SourceTooLarge;
-    const buffer = try gpa.alloc(u8, source.len);
-    const comments_zone = profile.begin(.compile_comments);
-    const length: u32 = @intCast(lexical.eliminate_comments(source, buffer).len);
-    comments_zone.end();
-    assert(length <= source.len);
-    const clean = gpa.realloc(buffer, length) catch |err| {
-        gpa.free(buffer);
-        return err;
-    };
-    return parse_space(gpa, clean, &.{.{ .start = 0, .end = length }}, bounds);
+    var space = try SpaceParser.init(gpa, bounds);
+    errdefer space.deinit(gpa);
+    _ = try space.add(gpa, source);
+    return space.finish(gpa);
 }
 
-/// A file's range in a shared source space.
-pub const Region = struct { start: u32, end: u32 };
-
-/// Parses each region of `buffer` (comment-free files laid end to end) into one
-/// tree, so token and node indices are global. Takes ownership of `buffer`.
-pub fn parse_space(
-    gpa: std.mem.Allocator,
-    buffer: []u8,
-    regions: []const Region,
+/// Parses files one after another into one tree, so token and node indices are global:
+/// each file's comments are removed and its text appended to the space, then it is parsed
+/// as a region of its own. A file's INCLUDEs can be read from its region before the next
+/// file is added.
+pub const SpaceParser = struct {
     bounds: limits.CompilerLimits,
-) ParseError!Parsed {
-    assert(regions.len > 0);
-    errdefer gpa.free(buffer);
-    if (buffer.len > bounds.source_bytes_max) return error.SourceTooLarge;
-    const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
-    defer gpa.free(frames);
-    const roots = try gpa.alloc(ast.NodeIndex, regions.len);
-    errdefer gpa.free(roots);
-    var scale: u32 = 1;
-    for (0..bounds.compile_retries_max + 1, 1..) |_, attempt| {
-        const length: u32 = @intCast(buffer.len);
-        var workspace = try core.Workspace.init(gpa, length, bounds.diagnostics_max, scale);
-        var machine: Machine = .init(buffer, &workspace, frames);
-        if (!parse_regions(&machine, buffer, regions, roots)) {
-            // Freed here, before the errdefer below is armed, so it is freed once.
-            workspace.deinit(gpa);
+    /// The comment-free files, end to end.
+    buffer: std.ArrayList(u8) = .empty,
+    roots: std.ArrayList(ast.NodeIndex) = .empty,
+    frames: []Frame,
+    workspace: core.Workspace,
+    /// Its workspace pointer is set on each use: the parser may move between calls.
+    machine: Machine,
+    /// Doubles each time a region finds the workspace full.
+    scale: u32 = 1,
+    parses: u32 = 0,
+
+    pub fn init(gpa: std.mem.Allocator, bounds: limits.CompilerLimits) !SpaceParser {
+        assert(bounds.parse_depth_max > 0);
+        const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
+        errdefer gpa.free(frames);
+        return .{
+            .bounds = bounds,
+            .frames = frames,
+            .workspace = try core.Workspace.init(gpa, 0, bounds.diagnostics_max, 1),
+            .machine = .init("", undefined, frames),
+        };
+    }
+
+    /// Frees a parser that wasn't finished (or whose finish failed).
+    pub fn deinit(space: *SpaceParser, gpa: std.mem.Allocator) void {
+        assert(space.frames.len > 0);
+        space.workspace.deinit(gpa);
+        space.buffer.deinit(gpa);
+        space.roots.deinit(gpa);
+        gpa.free(space.frames);
+        space.* = undefined;
+    }
+
+    /// Appends a file and parses it: its region's story root. A full workspace grows and
+    /// the region alone is parsed again, at most `compile_retries_max` times in all.
+    pub fn add(
+        space: *SpaceParser,
+        gpa: std.mem.Allocator,
+        source: []const u8,
+    ) ParseError!ast.NodeIndex {
+        const bounds = space.bounds;
+        if (source.len > bounds.source_bytes_max) return error.SourceTooLarge;
+        const start = space.buffer.items.len;
+        try space.buffer.ensureTotalCapacityPrecise(gpa, start + source.len);
+        try space.roots.ensureUnusedCapacity(gpa, 1);
+        const comments_zone = profile.begin(.compile_comments);
+        const clean = lexical.eliminate_comments(source, space.buffer.unusedCapacitySlice());
+        comments_zone.end();
+        // Each file is within the bound, but together they may not be: offsets are u32.
+        if (start + clean.len > bounds.source_bytes_max) return error.SourceTooLarge;
+        space.buffer.items.len += clean.len;
+        const machine = &space.machine;
+        machine.workspace = &space.workspace;
+        const saved = machine.*;
+        while (true) {
+            try space.workspace.reserve(gpa, @intCast(space.buffer.items.len), space.scale, .{
+                .nodes = machine.nodes_count,
+                .tokens = machine.tokens_count,
+                .diagnostics = machine.diagnostics_count,
+            });
+            space.parses += 1;
+            machine.begin_region(space.buffer.items, @intCast(start));
+            const outcome = machine.run(.story) catch |err| switch (err) {
+                error.WorkspaceFull => core.Outcome.failed,
+            };
+            if (!machine.workspace_full and outcome == .succeeded) {
+                if (machine.commit_root()) |root| {
+                    space.roots.appendAssumeCapacity(root);
+                    return root;
+                } else |_| machine.workspace_full = true;
+            }
             if (!machine.workspace_full) return error.ParseFailed;
-            scale *= 2;
-            continue;
+            const retries = space.parses - space.roots.items.len;
+            if (retries > bounds.compile_retries_max) return error.WorkspaceFull;
+            // The region again, from where it started, with twice the room.
+            machine.* = saved;
+            space.scale *= 2;
         }
-        errdefer workspace.deinit(gpa);
-        var tree = machine.finish_regions(roots[0]);
-        try workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
-        assert(workspace.node_tags.len == machine.nodes_count);
-        tree.tags = workspace.node_tags;
-        tree.data = workspace.node_data;
+    }
+
+    /// The tree of the regions parsed so far, valid until the next `add`.
+    pub fn tree(space: *const SpaceParser, root: ast.NodeIndex) ast.Ast {
+        assert(space.roots.items.len > 0);
+        return space.machine.finish_regions(root);
+    }
+
+    /// The parsed space; the parser is used up (on failure, `deinit` frees it).
+    pub fn finish(space: *SpaceParser, gpa: std.mem.Allocator) !Parsed {
+        assert(space.roots.items.len > 0);
+        const machine = &space.machine;
+        machine.workspace = &space.workspace;
+        const roots = try space.roots.toOwnedSlice(gpa);
+        errdefer gpa.free(roots);
+        const buffer = try space.buffer.toOwnedSlice(gpa);
+        errdefer gpa.free(buffer);
+        var tree_settled = machine.finish_regions(roots[0]);
+        try space.workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
+        assert(space.workspace.node_tags.len == machine.nodes_count);
+        tree_settled.tags = space.workspace.node_tags;
+        tree_settled.data = space.workspace.node_data;
+        gpa.free(space.frames);
         return .{
             .source = buffer,
-            .tree = tree,
-            .workspace = workspace,
+            .tree = tree_settled,
+            .workspace = space.workspace,
             .tokens_count = machine.tokens_count,
             .diagnostics_count = machine.diagnostics_count,
             .errors_dropped = machine.errors_dropped,
             .buffer = buffer,
             .roots = roots,
-            .attempts = @intCast(attempt),
+            .parses = space.parses,
         };
     }
-    return error.WorkspaceFull;
-}
-
-/// Whether every region parsed (false: retry with more room if the workspace was full).
-fn parse_regions(
-    machine: *Machine,
-    buffer: []const u8,
-    regions: []const Region,
-    roots: []ast.NodeIndex,
-) bool {
-    assert(roots.len == regions.len);
-    for (regions, roots) |region, *root| {
-        assert(region.start <= region.end and region.end <= buffer.len);
-        machine.begin_region(buffer[0..region.end], region.start);
-        const outcome = machine.run(.story) catch |err| switch (err) {
-            error.WorkspaceFull => core.Outcome.failed,
-        };
-        if (machine.workspace_full or outcome != .succeeded) return false;
-        root.* = machine.commit_root() catch {
-            machine.workspace_full = true;
-            return false;
-        };
-        assert(!root.is_none());
-    }
-    return true;
-}
+};
 
 test "a dense story of short knots parses in one attempt" {
     // The bench's generated story (0.43 nodes per byte) overflowed the workspace
@@ -629,7 +673,7 @@ test "a dense story of short knots parses in one attempt" {
     }
     var parsed = try parse(gpa, source.written(), .{});
     defer parsed.deinit(gpa);
-    try std.testing.expectEqual(@as(u32, 1), parsed.attempts);
+    try std.testing.expectEqual(@as(u32, 1), parsed.parses);
     try std.testing.expectEqual(@as(u32, 0), parsed.diagnostics_count);
     try std.testing.expect(parsed.tree.tags.len > source.written().len / 4 + 256);
 }

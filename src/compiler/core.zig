@@ -74,9 +74,8 @@ pub const Workspace = struct {
     /// used. `scale` doubles on each retry.
     pub fn init(gpa: Allocator, source_length: u32, diagnostics_max: u32, scale: u32) !Workspace {
         assert(scale >= 1);
-        const length: usize = source_length;
-        const nodes: usize = (length / 2 + 256) * scale;
-        const tokens: usize = (length / 6 + 256) * scale;
+        const nodes = nodes_for(source_length, scale);
+        const tokens: usize = (@as(usize, source_length) / 6 + 256) * scale;
         var workspace: Workspace = undefined;
         workspace.node_tags = try gpa.alloc(ast.Tag, nodes);
         errdefer gpa.free(workspace.node_tags);
@@ -93,6 +92,37 @@ pub const Workspace = struct {
         workspace.diagnostics = try gpa.alloc(Diagnostic, diagnostics_max);
         assert(workspace.node_tags.len == nodes);
         return workspace;
+    }
+
+    fn nodes_for(source_length: u32, scale: u32) usize {
+        assert(scale >= 1);
+        return (@as(usize, source_length) / 2 + 256) * scale;
+    }
+
+    /// Makes room for `source_length` bytes at `scale` (a new file added, or a retry),
+    /// keeping the first `nodes`, `tokens` and `diagnostics`; the scratch stack is empty
+    /// between files. All or nothing: on failure the workspace is as it was.
+    pub fn reserve(
+        workspace: *Workspace,
+        gpa: Allocator,
+        source_length: u32,
+        scale: u32,
+        used: struct { nodes: u32, tokens: u32, diagnostics: u32 },
+    ) !void {
+        assert(used.nodes <= workspace.node_tags.len);
+        assert(used.diagnostics <= workspace.diagnostics.len);
+        if (nodes_for(source_length, scale) <= workspace.node_tags.len) return;
+        const diagnostics_max: u32 = @intCast(workspace.diagnostics.len);
+        var bigger = try Workspace.init(gpa, source_length, diagnostics_max, scale);
+        assert(bigger.token_starts.len >= workspace.token_starts.len);
+        @memcpy(bigger.node_tags[0..used.nodes], workspace.node_tags[0..used.nodes]);
+        @memcpy(bigger.node_data[0..used.nodes], workspace.node_data[0..used.nodes]);
+        @memcpy(bigger.token_starts[0..used.tokens], workspace.token_starts[0..used.tokens]);
+        @memcpy(bigger.token_ends[0..used.tokens], workspace.token_ends[0..used.tokens]);
+        const diagnostics = used.diagnostics;
+        @memcpy(bigger.diagnostics[0..diagnostics], workspace.diagnostics[0..diagnostics]);
+        workspace.deinit(gpa);
+        workspace.* = bigger;
     }
 
     /// After a parse: drops the scratch stack (only the parse uses it)
