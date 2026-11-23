@@ -1426,6 +1426,41 @@ test "a failing seed prints its regression entry, which replays the failure on i
     try std.testing.expectEqual(null, try replay(gpa, passing, source));
 }
 
+test "the swarm regressions replay on their stories without a failure" {
+    // P19.6: each entry of test/swarm_regressions.zon is a seed that once failed, with the
+    // story it failed on in test/swarm_regressions/ (docs/fuzzing.md).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cwd = std.Io.Dir.cwd();
+    const limit: std.Io.Limit = .limited(1 << 20);
+    const list = try cwd.readFileAllocOptions(io, Regression.list_path, arena, limit, .of(u8), 0);
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const regressions = std.zon.parse.fromSlice([]const Regression, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = list,
+        .diagnostics = &diagnostics,
+    }) catch |err| {
+        if (err == error.ParseZon) diagnostics.log(Regression.list_path);
+        return err;
+    };
+    try std.testing.expect(regressions.len > 0);
+    var failures: u32 = 0;
+    for (regressions) |regression| {
+        try std.testing.expect(regression.bug.len > 0);
+        var path_buffer: [Regression.story_path_max]u8 = undefined;
+        const path = regression.story_path(&path_buffer);
+        const source = try cwd.readFileAlloc(io, path, arena, .limited(fuzz_ink.source_bytes_max));
+        const failure = try replay(gpa, regression, source) orelse continue;
+        failures += 1;
+        std.debug.print("{s} fails ({s}) again: {s}\n", .{ path, failure, regression.bug });
+    }
+    try std.testing.expectEqual(@as(u32, 0), failures);
+}
+
 test "the mutate target passes a few seeds of a ground-truth story and counts its mutants" {
     // P19.3: 24 mutants of one story (read from disk) pass the program checks and the plays;
     // some compile and play, some fail with a counted code, and each mutation is counted.
