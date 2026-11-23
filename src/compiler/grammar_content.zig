@@ -231,6 +231,16 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
         grammar.report_expected(machine, .inner_logic);
         return .fail;
     }
+    // DisallowIncrement(logic): only an expression (InnerExpression's) can be one.
+    const workspace = machine.workspace;
+    const logic = machine.scratch_count - 1;
+    assert(logic == frame.checkpoint.scratch);
+    if (workspace.scratch_tags[logic] == .inline_value) {
+        const inner = workspace.node_tags[workspace.scratch_data[logic]];
+        if (inner == .increment or inner == .decrement) {
+            grammar.report_message(machine, .increment_not_allowed);
+        }
+    }
     _ = grammar.whitespace(machine);
     grammar.expect_string(machine, "}", .closing_brace);
     const was = frame.locals[1];
@@ -251,6 +261,7 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
                 try machine.push_node(.sequence_kind, kind);
                 return grammar.call_then(frame, 1, .inner_sequence_objects);
             }
+            frame.locals[0] = machine.diagnostics_count;
             frame.locals[1] = grammar.at(machine);
             return grammar.call_then(frame, 2, .condition_expression);
         },
@@ -268,6 +279,10 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
             if (machine.outcome == .succeeded) {
                 return grammar.call(machine, frame, 3, .inner_conditional_content, 1);
             }
+            // InnerConditionalContent starts with Parse(ConditionExpression), which fails
+            // here as it just did: inkz doesn't parse it again, it reports its diagnostics
+            // again.
+            machine.report_again(frame.locals[0]);
             frame.locals[2] = 0;
             return grammar.call(machine, frame, 4, full_alternatives[0], 0);
         },
@@ -314,7 +329,7 @@ pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
         return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .failed) return .fail;
-    disallow_increment(machine, frame.checkpoint.scratch);
+    // InlineLogic disallows an increment once the braces hold all of it.
     try machine.wrap(.inline_value, frame.checkpoint.scratch);
     return .succeed;
 }

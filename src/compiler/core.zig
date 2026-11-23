@@ -383,6 +383,22 @@ pub fn Machine(comptime Grammar: type) type {
                 // reported (an earlier warning in the scope leaves this one's line skipped).
                 return;
             }
+            machine.keep(diagnostic);
+        }
+
+        /// Reports again the diagnostics kept from `first` on, as a parse of the same
+        /// input in the same state would (ink parses some rules twice, such as
+        /// ConditionExpression in InnerLogic and again in InnerConditionalContent): each in a
+        /// scope of its own, so kept as they were the first time.
+        pub fn report_again(machine: *Self, first: u32) void {
+            assert(first <= machine.diagnostics_count);
+            const last = machine.diagnostics_count;
+            for (first..last) |index| machine.keep(machine.workspace.diagnostics[index]);
+        }
+
+        /// NoteErrorReported, then the diagnostic stored (or counted, if they are full).
+        fn keep(machine: *Self, diagnostic: Diagnostic) void {
+            assert(machine.diagnostics_count <= machine.workspace.diagnostics.len);
             for (machine.frames[0..machine.frames_count]) |*frame| frame.reported = true;
             machine.notes_count += 1;
             if (machine.diagnostics_count == machine.workspace.diagnostics.len) {
