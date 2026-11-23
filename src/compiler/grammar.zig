@@ -621,12 +621,6 @@ pub const SpaceParser = struct {
         }
     }
 
-    /// The tree of the regions parsed so far, valid until the next `add`.
-    pub fn tree(space: *const SpaceParser, root: ast.NodeIndex) ast.Ast {
-        assert(space.roots.items.len > 0);
-        return space.machine.finish_regions(root);
-    }
-
     /// The parsed space; the parser is used up (on failure, `deinit` frees it).
     pub fn finish(space: *SpaceParser, gpa: std.mem.Allocator) !Parsed {
         assert(space.roots.items.len > 0);
@@ -636,15 +630,15 @@ pub const SpaceParser = struct {
         errdefer gpa.free(roots);
         const buffer = try space.buffer.toOwnedSlice(gpa);
         errdefer gpa.free(buffer);
-        var tree_settled = machine.finish_regions(roots[0]);
+        var tree = machine.finish_regions(roots[0]);
         try space.workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
         assert(space.workspace.node_tags.len == machine.nodes_count);
-        tree_settled.tags = space.workspace.node_tags;
-        tree_settled.data = space.workspace.node_data;
+        tree.tags = space.workspace.node_tags;
+        tree.data = space.workspace.node_data;
         gpa.free(space.frames);
         return .{
             .source = buffer,
-            .tree = tree_settled,
+            .tree = tree,
             .workspace = space.workspace,
             .tokens_count = machine.tokens_count,
             .diagnostics_count = machine.diagnostics_count,

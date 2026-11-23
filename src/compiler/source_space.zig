@@ -313,7 +313,8 @@ const Discovery = struct {
         const parser = &discovery.parser;
         const start: u32 = @intCast(parser.buffer.items.len);
         const root = try parser.add(discovery.gpa, text);
-        const tree = parser.tree(root);
+        // The regions so far, valid until the next file is added.
+        const tree = parser.machine.finish_regions(root);
         var includes: std.ArrayList(Include) = .empty;
         var nodes = tree.walk(discovery.gpa, root);
         defer nodes.deinit();
