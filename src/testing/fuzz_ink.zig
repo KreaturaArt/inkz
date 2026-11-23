@@ -148,7 +148,11 @@ pub const Play = enum { hub, typed };
 ///   numbers, variables and constants.
 /// - `list_functions`: `LIST_VALUE` (a number) and `LIST_MIN`, `LIST_MAX`, `LIST_ALL`,
 ///   `LIST_INVERT`, `LIST_RANDOM`, `LIST_RANGE` and `l0(n)` (lists) of `l0`.
-pub const Construct = enum { turns, math, list_functions };
+/// - `seed_random`: the line `~ SEED_RANDOM(n)`, which reseeds what `RANDOM`, shuffles and
+///   `LIST_RANDOM` draw.
+/// - `conditional_else`: the multi-line conditional of one condition and an `- else:`
+///   branch (`block` writes the one with a branch per condition).
+pub const Construct = enum { turns, math, list_functions, seed_random, conditional_else };
 
 /// The kinds of value a `typed` expression keeps to.
 const Kind = enum { number, string, list };
@@ -190,6 +194,8 @@ const ExtraLine = enum {
     ref_call,
     global_assign,
     collision,
+    seed_random,
+    conditional_else,
 };
 
 const ExtraTerm = enum {
@@ -1287,6 +1293,9 @@ pub const Generator = struct {
         if (on.contains(.ref) and generator.ref_targets_count() > 0) kinds.insert(.ref_call);
         if (generator.swarm.globals_extra > 0) kinds.insert(.global_assign);
         if (on.contains(.collision) and !generator.collided) kinds.insert(.collision);
+        const constructs = generator.swarm.constructs;
+        if (constructs.contains(.seed_random)) kinds.insert(.seed_random);
+        if (constructs.contains(.conditional_else)) kinds.insert(.conditional_else);
         assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
@@ -1327,6 +1336,22 @@ pub const Generator = struct {
                 generator.put("\n");
             },
             .collision => generator.collision(),
+            .seed_random => {
+                generator.used.constructs.insert(.seed_random);
+                generator.put("~ SEED_RANDOM(");
+                if (generator.declared(.c0) and generator.choices.choose(bool)) {
+                    generator.put("c0");
+                } else {
+                    generator.print("{d}", .{generator.choices.choose(i8)});
+                }
+                generator.put(")\n");
+            },
+            .conditional_else => {
+                generator.used.constructs.insert(.conditional_else);
+                generator.put("{ ");
+                generator.expression();
+                generator.put(":\nIf yes\n- else:\nIf no\n}\n");
+            },
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1712,7 +1737,7 @@ const markers_unique = [_]Marker{
     unique_marker("<>", "lines", Line.glue),
     unique_marker("<- ", "lines", Line.thread),
     unique_marker(" ->\n", "lines", Line.tunnel),
-    unique_marker("else:", "lines", Line.block),
+    unique_marker("- else: Else", "lines", Line.block),
     unique_marker("{ stopping", "lines", Line.block),
     unique_marker("{ shuffle once", "lines", Line.block),
     unique_marker("{&", "inlines", Inline.cycle),
@@ -1889,6 +1914,8 @@ test "each construct appears when on and never when off" {
         .turns = &.{"TURNS()"},
         // `MIN(` and `MAX(` are also in `LIST_MIN(` and `LIST_MAX(`.
         .math = &.{ "POW(", "FLOOR(", "CEILING(", "INT(", "FLOAT(" },
+        .seed_random = &.{"SEED_RANDOM("},
+        .conditional_else = &.{ "If yes", "If no" },
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
