@@ -366,7 +366,10 @@ pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
     const attempt = machine.attempt();
-    const token = try identifier(machine) orelse return false;
+    const token = try identifier(machine) orelse {
+        machine.attempt_failed(attempt);
+        return false;
+    };
     if (std.mem.eql(u8, token_text(machine, token), word)) return true;
     // The rule that wanted `word` fails, leaving its caller's scope as it was.
     machine.at = start;
@@ -678,4 +681,20 @@ test "the parser reports an unclosed brace" {
     try std.testing.expect(parsed.diagnostics_count > 0);
     const expected: u32 = @backingInt(Expectation.inner_logic);
     try std.testing.expectEqual(expected, parsed.diagnostics()[0].extra);
+}
+
+test "each literal rule reports an integer out of range in a scope of its own" {
+    // ink's ExpressionFloat (through ParseFloat's ParseInt) and then ExpressionInt read the
+    // integer, each in a rule of its own, so inklecate reports it twice (ink v1.2.1).
+    const gpa = std.testing.allocator;
+    var parsed = try parse(gpa, "VAR x = 0\n~ x = 99999999999\n", .{});
+    defer parsed.deinit(gpa);
+    var count: u32 = 0;
+    for (parsed.diagnostics()) |diagnostic| {
+        assert(diagnostic.code == .message);
+        const message: Message = @fromBackingInt(diagnostic.extra);
+        if (message == .integer_out_of_range) count += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 2), parsed.diagnostics_count);
+    try std.testing.expectEqual(@as(u32, 2), count);
 }

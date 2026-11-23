@@ -156,7 +156,10 @@ fn bracketed_name(machine: *Machine) Error!bool {
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
     const attempt = machine.attempt();
-    if (!grammar.parse_string(machine, "(")) return false;
+    if (!grammar.parse_string(machine, "(")) {
+        machine.attempt_failed(attempt);
+        return false;
+    }
     _ = grammar.whitespace(machine);
     if (!try grammar.push_identifier(machine)) {
         machine.at = start;

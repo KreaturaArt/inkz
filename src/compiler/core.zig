@@ -401,15 +401,15 @@ pub fn Machine(comptime Grammar: type) type {
             machine.frames[machine.frames_count - 1].reported = false;
         }
 
-        /// Where an inlined rule starts that may fail after a sub-rule of its own succeeded
-        /// (and so cleared the scope): `attempt_failed` puts the scope back as ink's FailRule
-        /// leaves the caller's, marked only if a diagnostic was kept in between.
-        pub fn attempt(machine: *const Self) Attempt {
+        /// BeginRule for a rule of ink's that inkz inlines: the current scope starts clear.
+        /// If the rule succeeds, the scope is what it left (SucceedRule's squash); if it
+        /// fails, `attempt_failed` puts the scope back as FailRule leaves the caller's,
+        /// marked only if a diagnostic was kept in between.
+        pub fn attempt(machine: *Self) Attempt {
             assert(machine.frames_count > 0);
-            return .{
-                .reported = machine.frames[machine.frames_count - 1].reported,
-                .notes = machine.notes_count,
-            };
+            const scope = &machine.frames[machine.frames_count - 1].reported;
+            defer scope.* = false;
+            return .{ .reported = scope.*, .notes = machine.notes_count };
         }
 
         pub fn attempt_failed(machine: *Self, started: Attempt) void {

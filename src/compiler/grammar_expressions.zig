@@ -58,6 +58,7 @@ fn infix_operator(machine: *Machine) ?u32 {
         return @intCast(position);
     }
     assert(grammar.at(machine) == start);
+    machine.attempt_failed(attempt);
     return null;
 }
 
@@ -102,8 +103,8 @@ fn infix(machine: *Machine, frame: *Frame) Error!Action {
             return grammar.call(machine, frame, 2, .expression, operators[position].precedence);
         }
         machine.at = start;
-        machine.attempt_failed(attempt);
     }
+    machine.attempt_failed(attempt);
     _ = grammar.whitespace(machine);
     return .succeed;
 }
@@ -367,7 +368,9 @@ fn variable_name(machine: *Machine) Error!bool {
 /// a rule of its own.
 fn literal(machine: *Machine) Error!bool {
     const start = grammar.at(machine);
-    const attempt = machine.attempt();
+    // Each alternative is a rule of its own: ParseFloat's ParseInt reports an integer out
+    // of range, and so does ExpressionInt's, in a scope of its own.
+    const float_attempt = machine.attempt();
     if (parse_int(machine)) {
         if (grammar.parse_string(machine, ".")) {
             while (!grammar.at_end(machine) and std.ascii.isDigit(grammar.rest(machine)[0])) {
@@ -377,12 +380,15 @@ fn literal(machine: *Machine) Error!bool {
             try machine.push_node(.float, token.to_int());
             return true;
         }
-        // ParseFloat failed: its rule leaves the scope as it was.
-        machine.at = start;
-        machine.attempt_failed(attempt);
     }
+    machine.at = start;
+    machine.attempt_failed(float_attempt);
     if (try push_integer(machine)) return true;
-    const token = try grammar.identifier(machine) orelse return false;
+    const bool_attempt = machine.attempt();
+    const token = try grammar.identifier(machine) orelse {
+        machine.attempt_failed(bool_attempt);
+        return false;
+    };
     const text = grammar.token_text(machine, token);
     if (std.mem.eql(u8, text, "true") or std.mem.eql(u8, text, "false")) {
         try machine.push_node(if (text[0] == 't') .true else .false, token.to_int());
@@ -392,15 +398,14 @@ fn literal(machine: *Machine) Error!bool {
     assert(token.to_int() == machine.tokens_count - 1);
     machine.at = start;
     machine.tokens_count -= 1;
-    machine.attempt_failed(attempt);
+    machine.attempt_failed(bool_attempt);
     return false;
 }
 
 /// ParseInt: an optional `-`, optional spaces, digits; a value out of range is an error.
+/// It is no rule of its own: the rule it is called in fails with it.
 fn parse_int(machine: *Machine) bool {
     const start = grammar.at(machine);
-    // ParseInt is no rule: the rule it is called in (ExpressionInt) fails with it.
-    const attempt = machine.attempt();
     _ = grammar.parse_string(machine, "-");
     _ = grammar.whitespace(machine);
     const digits = grammar.at(machine);
@@ -409,7 +414,6 @@ fn parse_int(machine: *Machine) bool {
     }
     if (grammar.at(machine) == digits) {
         machine.at = start;
-        machine.attempt_failed(attempt);
         return false;
     }
     const negative = machine.source[start] == '-';
@@ -419,7 +423,6 @@ fn parse_int(machine: *Machine) bool {
     if (value > limit) {
         grammar.report_message(machine, .integer_out_of_range);
         machine.at = start;
-        machine.attempt_failed(attempt);
         return false;
     }
     return true;
@@ -428,7 +431,11 @@ fn parse_int(machine: *Machine) bool {
 /// ExpressionInt: an integer leaf whose token covers the sign, spaces and digits.
 pub fn push_integer(machine: *Machine) Error!bool {
     const start = grammar.at(machine);
-    if (!parse_int(machine)) return false;
+    const attempt = machine.attempt();
+    if (!parse_int(machine)) {
+        machine.attempt_failed(attempt);
+        return false;
+    }
     const token = try machine.add_token(start, grammar.at(machine));
     try machine.push_node(.integer, token.to_int());
     return true;
