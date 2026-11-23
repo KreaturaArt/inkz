@@ -103,6 +103,13 @@ pub const Summary = struct {
     host_calls: u32 = 0,
     observed: u64 = 0,
     host_errors: Codes = .{},
+    /// The host target's calls by kind, its stories set up without an error handler, from
+    /// ink JSON, with `e0` not lookahead-safe and with the events (`HostPlan`), the events
+    /// called, and the stories that kept an error for the host to read.
+    calls: std.EnumArray(fuzz_host.Call, u32) = .initFill(0),
+    setups: std.EnumArray(HostPlan.Variation, u32) = .initFill(0),
+    events: u64 = 0,
+    kept_errors: u32 = 0,
     /// The mutate target's: the mutations its mutants had, by name.
     mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
 
@@ -175,6 +182,18 @@ pub const Summary = struct {
             summary.host_errors.total(),
         });
         try summary.host_errors.write_top(writer, 4);
+        try writer.writeAll("; calls");
+        for (std.enums.values(fuzz_host.Call), 0..) |call, index| {
+            const separator = if (index == 0) " " else ", ";
+            try writer.print("{s}{t} {d}", .{ separator, call, summary.calls.get(call) });
+        }
+        try writer.writeAll("; setups");
+        for (std.enums.values(HostPlan.Variation), 0..) |variation, index| {
+            const separator = if (index == 0) " " else ", ";
+            const count = summary.setups.get(variation);
+            try writer.print("{s}{t} {d}", .{ separator, variation, count });
+        }
+        try writer.print("; events {d}, kept errors {d}", .{ summary.events, summary.kept_errors });
     }
 };
 
@@ -1143,6 +1162,13 @@ const HostPlan = struct {
     mix: Mix,
     /// The calls of the session after the mix.
     calls: fuzz_host.CallSet,
+    /// How the story is set up besides `setup` (P19.8), each drawn on its own: without an
+    /// error handler (1 in 4), so the story keeps its errors and `cont` returns
+    /// `error.StoryError`; from the program's ink JSON (`init_from_json`, 1 in 4); with
+    /// every event counted (1 in 2). `setup.lookahead_unsafe` is drawn with them (1 in 4).
+    variations: std.EnumSet(Variation),
+
+    pub const Variation = enum { no_handler, from_json, lookahead_unsafe, events };
 
     /// Mixed into the seed, so the plan doesn't repeat the generator's or `Plan`'s draws.
     const salt = 0x4057_4057;
@@ -1157,10 +1183,17 @@ const HostPlan = struct {
         const calls = fuzz_host.draw_calls(choices);
         // Drawn last, so the draws before keep their seeds' values.
         setup.evaluate_in_external = choices.choose(bool);
+        var variations: std.EnumSet(Variation) = .empty;
+        if (choices.weighted(3, 1)) variations.insert(.no_handler);
+        if (choices.weighted(3, 1)) variations.insert(.from_json);
+        if (choices.weighted(3, 1)) variations.insert(.lookahead_unsafe);
+        if (choices.choose(bool)) variations.insert(.events);
+        setup.lookahead_unsafe = variations.contains(.lookahead_unsafe);
         return .{
             .setup = setup,
             .mix = mix orelse .draw(simulation_seed(seed)),
             .calls = calls,
+            .variations = variations,
         };
     }
 };
@@ -1182,6 +1215,7 @@ const HostTrace = struct {
     errored: bool = false,
     observed: u64 = 0,
     mismatched: u64 = 0,
+    events: u64 = 0,
 
     fn note(context: ?*anyopaque, message: []const u8, severity: api.Severity) void {
         const trace: *HostTrace = @ptrCast(@alignCast(context.?));
@@ -1198,6 +1232,52 @@ const HostTrace = struct {
         if (!same_value(value, read.get())) trace.mismatched += 1;
     }
 };
+
+/// Events that count their calls in the `HostTrace` they are given.
+const host_events: api.Events = .{
+    .on_did_continue = struct {
+        fn event(context: ?*anyopaque) void {
+            count_event(context);
+        }
+    }.event,
+    .on_make_choice = struct {
+        fn event(context: ?*anyopaque, text: []const u8, position: u32) void {
+            assert(text.len < 1 << 20 and position < 1 << 16);
+            count_event(context);
+        }
+    }.event,
+    .on_evaluate_function = struct {
+        fn event(context: ?*anyopaque, name: []const u8, arguments: []const api.Value) void {
+            assert(name.len > 0 and arguments.len <= api.external_arguments_max);
+            count_event(context);
+        }
+    }.event,
+    .on_complete_evaluate_function = struct {
+        fn event(
+            context: ?*anyopaque,
+            name: []const u8,
+            arguments: []const api.Value,
+            text: []const u8,
+            result: api.Value,
+        ) void {
+            assert(name.len > 0 and arguments.len <= api.external_arguments_max);
+            _ = text;
+            _ = result;
+            count_event(context);
+        }
+    }.event,
+    .on_choose_path_string = struct {
+        fn event(context: ?*anyopaque, path: []const u8, arguments: []const api.Value) void {
+            assert(path.len > 0 and arguments.len <= api.external_arguments_max);
+            count_event(context);
+        }
+    }.event,
+};
+
+fn count_event(context: ?*anyopaque) void {
+    const trace: *HostTrace = @ptrCast(@alignCast(context.?));
+    trace.events += 1;
+}
 
 /// Whether two host values are the same: floats by their bits (a NaN is itself), strings by
 /// their bytes.
@@ -1230,19 +1310,10 @@ fn play_host(
     assert(host.save_buffer.len == host_save_bytes);
     const plan = host.plan;
     var story: api.Story = undefined;
-    try fuzz_play.init_story(&story, gpa, program, plan.setup);
+    try init_host_story(gpa, &story, program, plan, summary);
     defer story.deinit(gpa);
     var trace: HostTrace = .{ .story = &story };
-    story.on_error = HostTrace.note;
-    story.on_error_context = &trace;
-    for (0..story.global_variable_count()) |position| {
-        const name = story.global_variable_name(@intCast(position)).?;
-        story.observe_variable(name, &trace, HostTrace.observe) catch |err| switch (err) {
-            // Past `observers_max`, the globals left go unobserved.
-            error.ObserverLimit => break,
-            error.VariableNotDeclared => unreachable,
-        };
-    }
+    watch(&story, &trace, plan.variations);
     story.state.compact_always = plan.mix.compact_always;
 
     var tally: simulation.Tally = .{};
@@ -1274,7 +1345,9 @@ fn play_host(
     while (count < fuzz_host.calls_max and choices.more(7, 1)) : (count += 1) {
         // After an error in the middle of a step the story fails closed until reset_state
         // or load_json, which the session may call.
-        _ = fuzz_host.call(gpa, &story, choices, &kept, plan.calls) catch |err| {
+        const kind = fuzz_host.pick_call(choices, plan.calls);
+        summary.calls.getPtr(kind).* += 1;
+        fuzz_host.make_call(gpa, &story, choices, &kept, kind) catch |err| {
             if (err == error.OutOfMemory) return err;
             summary.host_errors.add(@errorName(err), 1);
         };
@@ -1282,9 +1355,51 @@ fn play_host(
     }
     summary.host_calls += count;
     summary.observed += trace.observed;
-    summary.runtime_errors += @intFromBool(trace.errored);
+    summary.events += trace.events;
+    summary.kept_errors += @intFromBool(story.error_count() > 0);
+    summary.runtime_errors += @intFromBool(trace.errored or story.error_count() > 0);
     if (trace.mismatched > 0) return "an observer's value differs from get_variable";
     return null;
+}
+
+/// The host target's story on `program`, set up as `plan` says (from its ink JSON with
+/// `from_json`); counts the plan's variations.
+fn init_host_story(
+    gpa: std.mem.Allocator,
+    story: *api.Story,
+    program: *const Program,
+    plan: HostPlan,
+    summary: *Summary,
+) !void {
+    var iterator = plan.variations.iterator();
+    while (iterator.next()) |variation| summary.setups.getPtr(variation).* += 1;
+    if (!plan.variations.contains(.from_json)) {
+        return fuzz_play.init_story(story, gpa, program, plan.setup);
+    }
+    var json: std.Io.Writer.Allocating = .init(gpa);
+    defer json.deinit();
+    try ink_json.serialize(gpa, program, &json.writer);
+    try fuzz_play.init_story_from_json(story, gpa, json.written(), plan.setup);
+}
+
+/// Reports `story`'s errors (but with `no_handler`), events (with `events`) and every
+/// global's changes to `trace`.
+fn watch(story: *api.Story, trace: *HostTrace, variations: std.EnumSet(HostPlan.Variation)) void {
+    // Without a handler, the story keeps its errors for the session's `errors` call.
+    story.on_error = if (variations.contains(.no_handler)) null else HostTrace.note;
+    story.on_error_context = trace;
+    if (variations.contains(.events)) {
+        story.events = host_events;
+        story.events.context = trace;
+    }
+    for (0..story.global_variable_count()) |position| {
+        const name = story.global_variable_name(@intCast(position)).?;
+        story.observe_variable(name, trace, HostTrace.observe) catch |err| switch (err) {
+            // Past `observers_max`, the globals left go unobserved.
+            error.ObserverLimit => break,
+            error.VariableNotDeclared => unreachable,
+        };
+    }
 }
 
 /// The trace of `source` played under `limits`, with no external bound.
@@ -1404,6 +1519,25 @@ test "a passed deadline stops the run after its first seed" {
     const budget: Budget = .{ .seeds = 1000, .deadline = .now(io, .awake), .io = io };
     const summary = try run(gpa, &out.writer, .synthetic, 1, budget, .{});
     try std.testing.expectEqual(@as(u32, 1), summary.runs);
+}
+
+test "the host target makes every call and every setup variation" {
+    // P19.8: 100 seeds of the host target make each call of `fuzz_host.Call` and each
+    // `HostPlan.Variation`, call the events, and keep an error for the host to read in a
+    // story without a handler; none fails.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .host, 1, .{ .seeds = 100 }, .{});
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    for (std.enums.values(fuzz_host.Call)) |call| {
+        if (summary.calls.get(call) == 0) std.debug.print("never called: {t}\n", .{call});
+        try std.testing.expect(summary.calls.get(call) > 0);
+    }
+    for (summary.setups.values) |count| try std.testing.expect(count > 0);
+    try std.testing.expect(summary.events > 0);
+    try std.testing.expect(summary.kept_errors > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "; calls cont ") != null);
 }
 
 test "the host target passes a few seeds, and reports a failing action with its mix" {

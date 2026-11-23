@@ -12,6 +12,7 @@ const support = @import("../testing/support.zig");
 
 pub const Story = api.Story;
 pub const Value = api.Value;
+pub const BindOptions = api.BindOptions;
 const Allocator = std.mem.Allocator;
 const Limits = @import("../core/limits.zig").Limits;
 
@@ -31,7 +32,7 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
 }
 
 /// The external `e0(x)`: returns its argument.
-fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Value {
+pub fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Value {
     assert(context == null);
     return if (arguments.len > 0) arguments[0] else .null;
 }
@@ -61,6 +62,9 @@ pub const Setup = struct {
     bind_external: bool,
     /// `e0`, when bound, is `evaluating_echo` (the swarm's host target).
     evaluate_in_external: bool = false,
+    /// `e0`, when bound, isn't lookahead-safe (the swarm's host target): ink's error when
+    /// string evaluation (a choice's text) calls it, and a line that ends before the call.
+    lookahead_unsafe: bool = false,
 
     /// The fuzzer picks the seed, the fallback rule and whether `e0` is bound.
     pub fn pick(choices: fuzz_ink.Choices) Setup {
@@ -69,15 +73,25 @@ pub const Setup = struct {
             .fallbacks = choices.choose(bool),
             .bind_external = choices.choose(bool),
         };
-        assert(@sizeOf(Setup) <= 8);
+        assert(@sizeOf(Setup) <= 12);
         return setup;
     }
 };
 
+/// Generated stories loop; a small step budget keeps each input fast.
+const limits_default: Limits = .{ .steps_per_continue_max = steps_per_continue_max };
+
 pub fn init_story(story: *Story, gpa: Allocator, program: *const Program, setup: Setup) !void {
-    // Generated stories loop; a small step budget keeps each input fast.
-    const limits: Limits = .{ .steps_per_continue_max = steps_per_continue_max };
-    return init_story_with(story, gpa, program, setup, limits);
+    return init_story_with(story, gpa, program, setup, limits_default);
+}
+
+/// `init_story` from the program's ink JSON (`Story.init_from_json`, which owns the program
+/// it loads).
+pub fn init_story_from_json(story: *Story, gpa: Allocator, json: []const u8, setup: Setup) !void {
+    assert(json.len > 0);
+    try story.init_from_json(gpa, json, options_of(setup, limits_default));
+    try bind_externals(story, setup);
+    assert(story.state.check() == .ok);
 }
 
 pub fn init_story_with(
@@ -89,22 +103,32 @@ pub fn init_story_with(
 ) !void {
     assert(program.check() == .ok);
     assert(limits.check() == .ok);
-    try story.init(gpa, program, .{
+    try story.init(gpa, program, options_of(setup, limits));
+    try bind_externals(story, setup);
+    assert(story.state.check() == .ok);
+}
+
+fn options_of(setup: Setup, limits: Limits) Story.Options {
+    assert(limits.check() == .ok);
+    return .{
         .limits = limits,
         .random_seed = setup.random_seed,
         .allow_external_function_fallbacks = setup.fallbacks,
         // Runtime errors are part of play: generated stories divide by zero, mix types,
         // and run out of content.
         .on_error = support.ignore_message,
-    });
-    if (setup.bind_external) {
-        const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
-        for (program.externals) |external| {
-            const name = program.strings.get(external.name);
-            try story.bind_external_function(name, .{}, null, function);
-        }
+    };
+}
+
+fn bind_externals(story: *Story, setup: Setup) !void {
+    if (!setup.bind_external) return;
+    const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
+    const program = story.program;
+    for (program.externals) |external| {
+        const name = program.strings.get(external.name);
+        const options: BindOptions = .{ .lookahead_safe = !setup.lookahead_unsafe };
+        try story.bind_external_function(name, options, null, function);
     }
-    assert(story.state.check() == .ok);
 }
 
 /// Continues and chooses until the story ends, `steps` run out, or a call fails; the state

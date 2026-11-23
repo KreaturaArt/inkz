@@ -12,7 +12,7 @@ const Value = play.Value;
 /// The calls a session makes at most.
 pub const calls_max = 48;
 
-const Call = enum {
+pub const Call = enum {
     cont,
     choose,
     choose_path,
@@ -30,6 +30,14 @@ const Call = enum {
     current_text,
     flow_names,
     save_and_load,
+    /// P19.8: `cont_alloc`; `continue_maximally` into a writer of 256 bytes, which a story
+    /// that runs on fills (`error.WriteFailed`); the kept errors and warnings, each written
+    /// out, then (half the time) `reset_errors`; `unbind_external_function`, then (half the
+    /// time) `e0` bound again, lookahead-safe or not.
+    cont_alloc,
+    continue_maximally,
+    errors,
+    unbind,
 };
 
 /// The calls a session may make (a swarm over calls, plan §3.5). `cont` is always in it, so
@@ -49,6 +57,7 @@ const paths = [_][]const u8{ "k0", "k1", "k2", "k0.s0", "f0", "e0", "k0.s1", "mi
 const variables = [_][]const u8{ "v0", "v1", "v2", "c0", "l0", "missing" };
 const functions = [_][]const u8{ "f0", "f1", "e0", "k0", "missing" };
 const flows = [_][]const u8{ "DEFAULT_FLOW", "one", "two" };
+const externals = [_][]const u8{ "e0", "missing" };
 
 const Sink = struct {
     count: u32 = 0,
@@ -93,17 +102,32 @@ pub fn call(
 ) !Call {
     assert(story.state.check() == .ok);
     assert(calls.contains(.cont));
+    const kind = pick_call(choices, calls);
+    try make_call(gpa, story, choices, kept, kind);
+    return kind;
+}
+
+/// The next call of a session, from `calls`.
+pub fn pick_call(choices: fuzz_ink.Choices, calls: CallSet) Call {
+    assert(calls.contains(.cont));
+    // The full set takes the choice the target took before swarms.
+    if (calls.eql(.full)) return choices.choose(Call);
+    return fuzz_ink.pick_from(choices, Call, calls);
+}
+
+/// Call `kind`, as `call` does.
+pub fn make_call(
+    gpa: std.mem.Allocator,
+    story: *play.Story,
+    choices: fuzz_ink.Choices,
+    kept: *?Value,
+    kind: Call,
+) !void {
     var sink: Sink = .{};
     var text: [256]u8 = undefined;
     var writer: std.Io.Writer = .fixed(&text);
-    // The full set takes the choice the target took before swarms.
-    const kind = if (calls.eql(.full))
-        choices.choose(Call)
-    else
-        fuzz_ink.pick_from(choices, Call, calls);
     try call_kind(gpa, story, choices, kept, kind, &sink, &writer);
     assert(writer.end <= text.len);
-    return kind;
 }
 
 fn call_kind(
@@ -154,7 +178,33 @@ fn call_kind(
         .current_text => _ = try story.current_text(),
         .flow_names => try story.alive_flow_names(sink),
         .save_and_load => try save_and_load(gpa, story),
+        .cont_alloc => if (story.can_continue()) gpa.free(try story.cont_alloc(gpa)),
+        .continue_maximally => try story.continue_maximally(writer),
+        .errors => try read_errors(story, choices.choose(bool)),
+        .unbind => {
+            const name = pick(choices, &externals);
+            try story.unbind_external_function(name);
+            if (choices.choose(bool)) {
+                const options: play.BindOptions = .{ .lookahead_safe = choices.choose(bool) };
+                try story.bind_external_function(name, options, null, play.echo);
+            }
+        },
     }
+}
+
+/// Writes out every kept error and warning (and asks for one past each), then resets them
+/// when `reset`.
+fn read_errors(story: *play.Story, reset: bool) !void {
+    var buffer: [64]u8 = undefined;
+    var discarding: std.Io.Writer.Discarding = .init(&buffer);
+    const writer = &discarding.writer;
+    assert(story.has_error() == (story.error_count() > 0));
+    assert(story.has_warning() == (story.warning_count() > 0));
+    for (0..story.error_count()) |position| try story.write_error(@intCast(position), writer);
+    for (0..story.warning_count()) |position| try story.write_warning(@intCast(position), writer);
+    if (story.write_error(story.error_count(), writer)) |_| unreachable else |_| {}
+    if (story.write_warning(story.warning_count(), writer)) |_| unreachable else |_| {}
+    if (reset) try story.reset_errors();
 }
 
 /// A save loaded back into the story it came from.
