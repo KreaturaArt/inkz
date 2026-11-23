@@ -18,7 +18,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Installs minimum_zig_version from build.zig.zon (build.zig checks it is exact).
+      # Installs minimum_zig_version from build.zig.zon, the oldest Zig the project supports.
       - uses: EuroZig/setup-zig@v3
 
       - name: zig build ci

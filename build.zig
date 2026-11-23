@@ -2,15 +2,19 @@ const std = @import("std");
 const builtin = @import("builtin");
 const zon = @import("build.zig.zon");
 
-// build.zig.zon pins the one Zig version this project builds with; CI installs it from
-// there (setup-zig), and mise.toml has to match.
+// build.zig.zon's minimum_zig_version names the oldest Zig this project builds with; CI
+// installs that version (setup-zig). Zig 0.x breaks its API between minor releases, so the
+// "major" version here is major.minor: any 0.17.x from the minimum on builds.
 comptime {
     const required = std.SemanticVersion.parse(zon.minimum_zig_version) catch
         @compileError("Invalid minimum_zig_version in build.zig.zon");
-    if (builtin.zig_version.order(required) != .eq) {
+    const current = builtin.zig_version;
+    if (current.major != required.major or current.minor != required.minor or
+        current.order(required) == .lt)
+    {
         @compileError(std.fmt.comptimePrint(
-            "This project requires Zig {s}, but you are using {s}",
-            .{ zon.minimum_zig_version, builtin.zig_version_string },
+            "This project requires Zig {d}.{d}.x from {s} on, but you are using {s}",
+            .{ required.major, required.minor, zon.minimum_zig_version, builtin.zig_version_string },
         ));
     }
 }
