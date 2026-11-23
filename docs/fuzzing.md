@@ -355,6 +355,33 @@ lookahead leaves no divert pending").
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.
 
+### Reducing a failure (P19.7)
+
+`zig build swarm -Doptimize=ReleaseSafe -- --target <t> --seed S [--mix M] --reduce <story|seed> [--seconds T]`
+(`src/testing/swarm_reduce.zig`) shrinks a failing seed of any target to a smaller story that
+fails with the same reason, for at most `T` seconds (60 by default; 100,000 checks at most),
+and writes it to `zig-out/swarm/regressions/<target>-<seed>.reduced.ink` with the entry that
+replays it. `--reduce seed` starts from the seed's case: a generated one is first reduced by
+features with `swarm-reduce`'s reducer (`reduce.features`, `src/testing/reduce.zig`: each
+swarm feature dropped in turn and the case generated again from the seed, kept when it still
+fails the same); the story, given (such as the one a `--seeds 1` run writes) or reduced so,
+is then reduced by lines (`reduce.lines`: chunks of half the lines first, halved after each
+pass, then single lines until a pass drops none). Each check replays the seed on a candidate
+in a child process, `dev swarm --target <t> --seed S [--mix M] --story <file>` (which prints
+`replay: failure (<reason>)` or `replay: pass`, and is useful alone), so a crash is a reason
+too: its panic message, the function of its first frame and its first frame outside the
+standard library (`reached unreachable code in step (dev), at src/compiler/core.zig:303:90
+in run (dev)`). In ReleaseSafe an assert is inlined into its caller, so two asserts in one
+function give the same reason: a reduced crash may be another of that function's. The
+synthetic target's failure depends on its configuration only, so it reduces from its seed,
+in process; the tests reduce the synthetic targets (a seed's case by features to no story
+line, a host story of over 40 lines to at most 5).
+
+Measured with fixes reverted in a worktree (ReleaseSafe): `mutate` 67029 (38e57e6's crash)
+went from 35 lines to 1, `<- thread1("blue<- thread2("blue")`, in 15 checks (0.2 s); `save`
+106 (7fc407d's `save round trip`) from its 105-line story to 11 lines in 133 checks (0.3 s),
+and with `--reduce seed` from 34 features to 5 and to 3 lines in 55 checks (0.15 s).
+
 ### Swarm against the full mix (2026-11-20)
 
 Each target fuzzed from an empty corpus (`.zig-cache/f` and `.zig-cache/v` removed) for
@@ -411,7 +438,8 @@ zig build swarm-check -Doptimize=ReleaseSafe -- zig-out/swarm/1
    Each replay runs in its own process (`dev replay --json`), so a crash is a result. Every
    divergence is printed with its configuration, and the step fails.
 4. `zig build swarm-reduce -- <dir> <n> --harness reference/ink_harness_build/ink_harness.dll`
-   reduces a divergent case by features. It regenerates the case from its seed with one
+   reduces a divergent case by features (`reduce.features` in `src/testing/reduce.zig`,
+   which `swarm --reduce` shares). It regenerates the case from its seed with one
    swarm feature removed at a time (a set key, or a bound lowered to its least value), runs
    ink on the candidate, and keeps the removal when the same kind of divergence stays. That
    is one ink run per feature, so a configuration of 60 features takes 61 runs.

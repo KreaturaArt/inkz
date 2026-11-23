@@ -214,27 +214,35 @@ fn replay_reason(stdout: []const u8) error{UnexpectedReplayOutput}!?[]const u8 {
     return error.UnexpectedReplayOutput;
 }
 
-/// `crash at <frame>`: the first frame of the panic's trace outside the standard library
-/// (where an assert failed), from `src/` on; or the way it ended.
+/// `<panic message> in <function>, at <frame>`: the panic's message, the function of its
+/// trace's first frame (an assert's, inlined there in ReleaseSafe) and the first frame
+/// outside the standard library, from `src/` on; or the way it ended, without a trace.
 fn crash_reason(
     arena: std.mem.Allocator,
     stderr: []const u8,
     term: std.process.Child.Term,
 ) ![]const u8 {
+    var message: []const u8 = "crash";
+    var function: ?[]const u8 = null;
     var lines = std.mem.splitScalar(u8, stderr, '\n');
     while (lines.next()) |line| {
-        if (std.mem.indexOf(u8, line, ": 0x") == null) continue;
+        if (std.mem.indexOf(u8, line, " panic: ")) |at| {
+            message = line[at + " panic: ".len ..];
+            continue;
+        }
+        const address = std.mem.indexOf(u8, line, ": 0x") orelse continue;
+        const name = std.mem.indexOfPos(u8, line, address, " in ") orelse continue;
+        if (function == null) function = line[name + " in ".len ..];
         if (std.mem.indexOf(u8, line, "/std/") != null) continue;
         const from = std.mem.indexOf(u8, line, "src/") orelse continue;
-        const address = std.mem.indexOf(u8, line, ": 0x").?;
-        const name = std.mem.indexOf(u8, line, " in ") orelse address;
-        const frame = try std.fmt.allocPrint(arena, "crash at {s}{s}", .{
+        return std.fmt.allocPrint(arena, "{s} in {s}, at {s}{s}", .{
+            message,
+            function.?,
             line[from..address],
             line[name..],
         });
-        return frame;
     }
-    return std.fmt.allocPrint(arena, "crash: {any}", .{term});
+    return std.fmt.allocPrint(arena, "{s}: {any}", .{ message, term });
 }
 
 // Tests.
@@ -353,5 +361,7 @@ test "an isolated check reads the child's reason, and a crash's frame" {
         "/zig/lib/std/debug.zig:420:14: 0x1 in assert (dev)\n" ++
         "/repo/src/runtime/vm.zig:12:5: 0x2 in step (dev)\n";
     const crash = try crash_reason(arena, stderr, .{ .signal = .ABRT });
-    try std.testing.expectEqualStrings("crash at src/runtime/vm.zig:12:5 in step (dev)", crash);
+    const expected = "reached unreachable code in assert (dev), at src/runtime/vm.zig:12:5 " ++
+        "in step (dev)";
+    try std.testing.expectEqualStrings(expected, crash);
 }
