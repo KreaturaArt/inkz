@@ -169,6 +169,11 @@ pub const Play = enum { hub, typed };
 /// - `list_operations`: the intersection `^` of `l0` and list literals.
 /// - `item_values`: `LIST l2 = (p2 = 2), q2 = 5, r2`, whose items have values of their own
 ///   (`r2` is 6), in list expressions with `l0`'s.
+/// - `lexical`: `//` and `/* */` comments (on their own lines, after text and inside it),
+///   `TODO:` lines (inklecate's author warnings), text in Latin, CJK and emoji, and the
+///   global `größe`, a name of non-ASCII letters, read as a number.
+/// - `scientific`: float literals whose values print in scientific notation (`1E+09`,
+///   `1E-05`), as .NET does for exponents from 9 up and below -4.
 pub const Construct = enum {
     turns,
     math,
@@ -181,6 +186,8 @@ pub const Construct = enum {
     target_counts,
     list_operations,
     item_values,
+    lexical,
+    scientific,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -199,7 +206,8 @@ const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
 });
 const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(.{
     .number = .initMany(&.{
-        .temp_read, .ref_call, .global_read, .turns, .math, .list_value, .target_count,
+        .temp_read,      .ref_call,   .global_read, .turns, .math, .list_value, .target_count,
+        .unicode_global, .scientific,
     }),
     .string = .empty,
     .list = .initMany(&.{
@@ -230,6 +238,9 @@ const ExtraLine = enum {
     seed_random,
     conditional_else,
     divert_assign,
+    comment,
+    author_warning,
+    unicode_text,
 };
 
 const ExtraTerm = enum {
@@ -246,6 +257,8 @@ const ExtraTerm = enum {
     target_count,
     intersection,
     item_value,
+    unicode_global,
+    scientific,
 };
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
@@ -835,6 +848,10 @@ pub const Generator = struct {
         if (generator.swarm.constructs.contains(.item_values) and generator.keep()) {
             generator.used.constructs.insert(.item_values);
             generator.put("LIST l2 = (p2 = 2), q2 = 5, r2\n");
+        }
+        if (generator.swarm.constructs.contains(.lexical) and generator.keep()) {
+            generator.used.constructs.insert(.lexical);
+            generator.put("VAR größe = 3\n");
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1478,6 +1495,11 @@ pub const Generator = struct {
         if (constructs.contains(.seed_random)) kinds.insert(.seed_random);
         if (constructs.contains(.conditional_else)) kinds.insert(.conditional_else);
         if (constructs.contains(.divert_variable)) kinds.insert(.divert_assign);
+        if (constructs.contains(.lexical)) {
+            kinds.insert(.comment);
+            kinds.insert(.author_warning);
+            kinds.insert(.unicode_text);
+        }
         assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
@@ -1532,6 +1554,7 @@ pub const Generator = struct {
                 generator.used.constructs.insert(.divert_variable);
                 generator.print("~ d0 = -> {s}\n", .{generator.divert_value()});
             },
+            .comment, .author_warning, .unicode_text => |kind| generator.lexical_line(kind),
             .conditional_else => {
                 generator.used.constructs.insert(.conditional_else);
                 generator.put("{ ");
@@ -1540,6 +1563,22 @@ pub const Generator = struct {
             },
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// A line of the `lexical` construct: a comment, an author warning or non-ASCII text.
+    fn lexical_line(generator: *Generator, kind: ExtraLine) void {
+        generator.used.constructs.insert(.lexical);
+        switch (kind) {
+            .comment => generator.put(generator.pick(&.{
+                "// A line comment\n",
+                "Before a comment // the comment\n",
+                "/* A block comment\nover two lines */\n",
+                "Around /* inside */ a comment\n",
+            })),
+            .author_warning => generator.put("TODO: an author's note\n"),
+            .unicode_text => generator.put("Grüße, café, 日本語 ☕\n"),
+            else => unreachable,
+        }
     }
 
     /// One of the temps declared in this flow.
@@ -1579,6 +1618,8 @@ pub const Generator = struct {
             kinds.insert(.intersection);
         }
         if (constructs.contains(.item_values)) kinds.insert(.item_value);
+        if (constructs.contains(.lexical)) kinds.insert(.unicode_global);
+        if (constructs.contains(.scientific)) kinds.insert(.scientific);
         return kinds;
     }
 
@@ -1618,6 +1659,16 @@ pub const Generator = struct {
                 generator.used.constructs.insert(.list_operations);
                 generator.put(generator.pick(&.{
                     "(l0 ^ (l0.a, c))", "((l0.a, b) ^ l0)", "(l0 ^ ())",
+                }));
+            },
+            .unicode_global => {
+                generator.used.constructs.insert(.lexical);
+                generator.put("größe");
+            },
+            .scientific => {
+                generator.used.constructs.insert(.scientific);
+                generator.put(generator.pick(&.{
+                    "1000000000.5", "2147483647.5", "0.00001", "0.0000123", "-0.00005",
                 }));
             },
             .item_value => {
@@ -2162,6 +2213,8 @@ test "each construct appears when on and never when off" {
         .target_counts = &.{ "READ_COUNT(", "TURNS_SINCE(->k", "== ->", "!= ->" },
         .list_operations = &.{" ^ "},
         .item_values = &.{ "LIST l2", "l2", "p2", "q2" },
+        .lexical = &.{ "//", "/*", "TODO:", "größe", "Grüße" },
+        .scientific = &.{"0000"},
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
