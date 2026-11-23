@@ -123,13 +123,52 @@ const words = [_][]const u8{ "Hello", "the cat", "a", "", "!", "  spaced  ", "x\
 ///   1/8 and not in `Swarm.all`; `Swarm.classic` has it, as the first generator dropped.
 pub const Resolution = enum { temp, ref, items, l1, collision, drop };
 
-/// The story's shape:
+/// Features that keep a played story going:
 /// - `hub`: the root diverts to a knot `hub`, and the hub, each knot and the stitch end in
 ///   a block of choices (most sticky, a few to END or DONE) that divert to the hub, the
 ///   knots and the stitch, so play loops through choices; a knot ends otherwise with
 ///   probability 1/8. Tunnels call a knot `tunnel0` that only tunnels reach and that returns
 ///   with `->->`, so no knot that a divert reaches ends in a tunnel return.
-pub const Structure = enum { hub };
+/// - `typed`: each expression keeps to one kind of value, numbers (and booleans), strings
+///   or lists, with the operators ink defines on it; variables, temps, parameters and
+///   function returns keep theirs (`v1` a string, `l0` a list, the others numbers), so
+///   expressions don't stop play at a type error. Where a kind has no term here, an
+///   expression whose value isn't stored takes another kind, and a stored one the kind's
+///   empty value.
+pub const Play = enum { hub, typed };
+
+/// The kinds of value a `typed` expression keeps to.
+const Kind = enum { number, string, list };
+
+/// The terms and the resolution terms of each kind: `variable` names `v0` or `v2` as a
+/// number and `v1` as a string.
+const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
+    .number = .initMany(&.{
+        .integer,    .float,         .boolean, .variable, .constant,
+        .call,       .call_external, .random,  .visits,   .turns_since,
+        .list_query, .choice_count,  .negate,
+    }),
+    .string = .initMany(&.{ .string, .variable }),
+    .list = .initOne(.list),
+});
+const kind_resolution_terms = std.enums.EnumArray(Kind, std.EnumSet(ResolutionTerm)).init(.{
+    .number = .initMany(&.{ .temp_read, .ref_call, .global_read }),
+    .string = .empty,
+    .list = .initMany(&.{ .item_full, .item_bare, .ambiguous }),
+});
+/// Ink's operators on each kind: arithmetic, comparison and logic on numbers, joining,
+/// equality and containment on strings, and the set operations and comparisons on lists.
+const kind_operators = std.enums.EnumArray(Kind, std.EnumSet(Operator)).init(.{
+    .number = .initMany(&.{
+        .add,  .subtract, .multiply,   .divide,        .modulo, .equal, .not_equal,
+        .less, .greater,  .less_equal, .greater_equal, .@"and", .@"or",
+    }),
+    .string = .initMany(&.{ .add, .equal, .not_equal, .contains, .not_contains }),
+    .list = .initMany(&.{
+        .add,        .subtract,      .equal,    .not_equal,    .less, .greater,
+        .less_equal, .greater_equal, .contains, .not_contains, .has,
+    }),
+});
 
 const ResolutionLine = enum {
     temp_declare,
@@ -178,7 +217,7 @@ pub const Swarm = struct {
     /// Globals `n0`... declared beyond `v0`-`v2`, read and assigned: 0 to 64 (`g` would
     /// collide with the gathers' labels).
     globals_extra: u8,
-    structure: std.EnumSet(Structure),
+    play: std.EnumSet(Play),
 
     pub const lines_limit = 10;
     pub const terms_limit = 4;
@@ -202,7 +241,7 @@ pub const Swarm = struct {
         .knots_count = knots_limit,
         .resolution = .initOne(.drop),
         .globals_extra = 0,
-        .structure = .empty,
+        .play = .empty,
     };
 
     /// Every feature at the largest bounds, but `collision` and `drop`, which would make
@@ -213,7 +252,7 @@ pub const Swarm = struct {
         swarm.resolution.remove(.collision);
         swarm.resolution.remove(.drop);
         swarm.globals_extra = globals_extra_limit;
-        swarm.structure = .full;
+        swarm.play = .full;
         break :all swarm;
     };
 
@@ -231,7 +270,7 @@ pub const Swarm = struct {
         .knots_count = 0,
         .resolution = .empty,
         .globals_extra = 0,
-        .structure = .empty,
+        .play = .empty,
     };
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
@@ -255,7 +294,7 @@ pub const Swarm = struct {
                 choices.range(u8, 1, globals_extra_limit)
             else
                 0,
-            .structure = .empty,
+            .play = .empty,
         };
         // A collision or a drop fails the compile, so each gets ¼ of the usual probability.
         if (swarm.resolution.contains(.collision) and !choices.weighted(3, 1)) {
@@ -265,7 +304,8 @@ pub const Swarm = struct {
             swarm.resolution.remove(.drop);
         }
         // Drawn last, so the other features of a seed's draw stay as they were before it.
-        if (choices.weighted(1, 3)) swarm.structure.insert(.hub);
+        if (choices.weighted(1, 3)) swarm.play.insert(.hub);
+        if (choices.choose(bool)) swarm.play.insert(.typed);
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -514,6 +554,8 @@ pub const Generator = struct {
     /// Whether the last term written was `not v2`, which ink won't let a `?`, `!?` or `has`
     /// follow.
     negated: bool = false,
+    /// The kind of value the expression being written keeps to, with `typed`.
+    kind: ?Kind = null,
     /// Whether the current flow is a function with the parameter `x`.
     parameter: bool = false,
     /// Whether the source has its one collision.
@@ -545,7 +587,7 @@ pub const Generator = struct {
         };
         generator.declarations();
         generator.weave(false);
-        if (swarm.structure.contains(.hub)) generator.hub();
+        if (swarm.play.contains(.hub)) generator.hub();
         for (0..swarm.knots_count) |index| generator.knot(@intCast(index));
         generator.functions();
         const length = generator.writer.end;
@@ -612,7 +654,7 @@ pub const Generator = struct {
     /// diverts outside choices never loop.
     fn divert_target(generator: *Generator) []const u8 {
         const swarm = generator.swarm;
-        if (!swarm.structure.contains(.hub)) return generator.target(swarm.targets);
+        if (!swarm.play.contains(.hub)) return generator.target(swarm.targets);
         const ends: std.EnumSet(Target) = .initMany(&.{ .end, .done });
         return generator.hub_or(swarm.targets.intersectWith(generator.later.unionWith(ends)));
     }
@@ -620,7 +662,7 @@ pub const Generator = struct {
     /// A knot; with `hub`, the hub or a knot after this flow, so that threads never nest
     /// without end.
     fn thread_target(generator: *Generator) []const u8 {
-        if (!generator.swarm.structure.contains(.hub)) return generator.knot_target();
+        if (!generator.swarm.play.contains(.hub)) return generator.knot_target();
         return generator.hub_or(generator.swarm.targets.intersectWith(generator.later));
     }
 
@@ -630,8 +672,17 @@ pub const Generator = struct {
         return generator.target(set);
     }
 
+    /// A declared variable; in a `typed` expression, one of its kind when one is declared.
     fn variable(generator: *Generator) []const u8 {
-        const set = generator.swarm.declarations.intersectWith(variables);
+        var set = generator.swarm.declarations.intersectWith(variables);
+        if (generator.kind) |kind| {
+            const of_kind = set.intersectWith(switch (kind) {
+                .number => .initMany(&.{ .v0, .v2 }),
+                .string => .initOne(.v1),
+                .list => .empty,
+            });
+            if (of_kind.count() > 0) set = of_kind;
+        }
         return @tagName(generator.pick_enabled(Declaration, set));
     }
 
@@ -719,7 +770,7 @@ pub const Generator = struct {
             .choice => generator.choice(),
             .gather => generator.gather(),
             .divert => generator.print("-> {s}\n", .{generator.divert_target()}),
-            .tunnel => if (generator.swarm.structure.contains(.hub)) {
+            .tunnel => if (generator.swarm.play.contains(.hub)) {
                 generator.put("-> tunnel0 ->\n");
             } else {
                 generator.print("-> {s} ->\n", .{generator.knot_target()});
@@ -818,9 +869,14 @@ pub const Generator = struct {
         if (!generator.declared(.l0)) allowed &= ~@as(u8, 1 << 4);
         if (!generator.declared(.v0) or !generator.declared(.v1)) allowed &= ~@as(u8, 1 << 5);
         const kind = generator.pick_bit(u3, allowed);
+        // With `typed`, what the target holds; a plain temp is never read.
+        var value: ?Kind = null;
         switch (kind) {
-            0, 1 => generator.print("~ {s} = ", .{generator.variable()}),
-            2 => generator.print("~ {s} += ", .{generator.variable()}),
+            0, 1, 2 => {
+                const name = generator.variable();
+                generator.print("~ {s} {s} ", .{ name, if (kind == 2) "+=" else "=" });
+                value = if (std.mem.eql(u8, name, "v1")) .string else .number;
+            },
             3 => {
                 // A second `temp` of the same name in one flow is a duplicate declaration.
                 const index = generator.choices.choose(u1);
@@ -834,7 +890,13 @@ pub const Generator = struct {
             6 => generator.put("~ f0("),
             7 => generator.put("~ e0("),
         }
-        generator.expression();
+        switch (kind) {
+            3 => generator.expression(),
+            4 => generator.expression_typed(.list),
+            5 => generator.expression_typed(.string),
+            6, 7 => generator.expression_typed(.number),
+            else => generator.expression_typed(value.?),
+        }
         generator.put(if (kind >= 6) ")\n" else "\n");
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -861,15 +923,61 @@ pub const Generator = struct {
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
-    /// A flat chain of terms joined by operators.
+    /// An expression of any kind: with `typed`, a number with weight ½, else a string or a
+    /// list, of the kinds with terms here (of any kind when none has).
     fn expression(generator: *Generator) void {
+        if (!generator.swarm.play.contains(.typed)) return generator.expression_of(null, false);
+        var kinds: std.EnumSet(Kind) = .empty;
+        for (std.enums.values(Kind)) |of| {
+            if (generator.kind_terms_here(of).count() > 0) kinds.insert(of);
+        }
+        if (kinds.count() == 0) return generator.expression_of(null, false);
+        const number = kinds.contains(.number) and
+            (kinds.count() == 1 or generator.choices.choose(bool));
+        kinds.remove(.number);
+        const kind = if (number) .number else generator.pick_enabled(Kind, kinds);
+        generator.expression_of(kind, false);
+    }
+
+    /// An expression that, with `typed`, keeps to `kind`, for a variable, temp, parameter
+    /// or return value of that kind; where the kind has no terms here, its empty value
+    /// (`0`, `""` or `()`) stands in.
+    fn expression_typed(generator: *Generator, kind: Kind) void {
+        if (!generator.swarm.play.contains(.typed)) return generator.expression_of(null, false);
+        if (generator.kind_terms_here(kind).count() == 0) {
+            return generator.put(switch (kind) {
+                .number => "0",
+                .string => "\"\"",
+                .list => "()",
+            });
+        }
+        generator.expression_of(kind, true);
+    }
+
+    /// A flat chain of terms joined by operators, of `kind` when it isn't null. A
+    /// comparison of strings or lists gives a boolean, which a second one would compare with
+    /// a string or a list: an unstored chain keeps to one, a `stored` one to none.
+    fn expression_of(generator: *Generator, kind: ?Kind, stored: bool) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
+        assert(generator.kind == null);
+        assert(kind != null or !stored);
+        generator.kind = kind;
+        defer generator.kind = null;
         var term_start = generator.writer.end;
         generator.term();
         const terms_max = generator.swarm.terms_max;
         var terms: u32 = 1;
+        const set_operations: std.EnumSet(Operator) = .initMany(&.{ .add, .subtract });
+        var operators = generator.swarm.operators;
+        if (kind) |of| operators = operators.intersectWith(kind_operators.get(of));
+        const compares = kind != null and kind != .number;
+        if (compares and stored) operators = operators.intersectWith(set_operations);
         while (terms < terms_max and !!generator.choices.more(2, 1)) : (terms += 1) {
-            const operator = generator.pick_enabled(Operator, generator.swarm.operators);
+            if (operators.count() == 0) break;
+            const operator = generator.pick_enabled(Operator, operators);
+            if (compares and !set_operations.contains(operator)) {
+                operators = operators.intersectWith(set_operations);
+            }
             generator.used.operators.insert(operator);
             const containment = operator == .contains or operator == .not_contains or
                 operator == .has;
@@ -895,11 +1003,18 @@ pub const Generator = struct {
     fn term(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
         generator.negated = false;
-        const kinds = generator.resolution_terms();
-        if (kinds.count() > 0 and generator.choices.weighted(2, 1)) {
+        var kinds = generator.resolution_terms();
+        var set = generator.swarm.terms;
+        if (generator.kind) |of| {
+            const here = generator.kind_terms_here(of);
+            if (here.count() > 0) {
+                kinds = here.resolution;
+                set = here.terms;
+            }
+        }
+        if (kinds.count() > 0 and (set.count() == 0 or generator.choices.weighted(2, 1))) {
             return generator.resolution_term(kinds);
         }
-        const set = generator.swarm.terms;
         const kind = if (set.eql(.full))
             generator.choices.choose(Term)
         else
@@ -928,6 +1043,32 @@ pub const Generator = struct {
             .negate => generator.negate(),
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    const TermsHere = struct {
+        resolution: std.EnumSet(ResolutionTerm),
+        terms: std.EnumSet(Term),
+
+        fn count(here: TermsHere) usize {
+            return here.resolution.count() + here.terms.count();
+        }
+    };
+
+    /// The terms of kind `of` possible here and now.
+    fn kind_terms_here(generator: *const Generator, of: Kind) TermsHere {
+        var terms = generator.swarm.terms.intersectWith(kind_terms.get(of));
+        const variables_of = switch (of) {
+            .number => generator.declared(.v0) or generator.declared(.v2),
+            .string => generator.declared(.v1),
+            .list => false,
+        };
+        if (!variables_of) terms.remove(.variable);
+        return .{
+            .resolution = generator.resolution_terms().intersectWith(
+                kind_resolution_terms.get(of),
+            ),
+            .terms = terms,
+        };
     }
 
     fn turns_since(generator: *Generator) void {
@@ -970,8 +1111,8 @@ pub const Generator = struct {
     /// The root diverts to the knot `hub`, a block of choices; with tunnels on, the knot
     /// `tunnel0` that they call follows.
     fn hub(generator: *Generator) void {
-        assert(generator.swarm.structure.contains(.hub));
-        generator.used.structure.insert(.hub);
+        assert(generator.swarm.play.contains(.hub));
+        generator.used.play.insert(.hub);
         generator.put("-> hub\n=== hub ===\n");
         generator.flow_start(false);
         generator.hub_choices();
@@ -988,7 +1129,7 @@ pub const Generator = struct {
     /// One in 4 is once-only, but not the last when none before it is sticky, so the block
     /// always offers a choice.
     fn hub_choices(generator: *Generator) void {
-        assert(generator.swarm.structure.contains(.hub));
+        assert(generator.swarm.play.contains(.hub));
         const knots = generator.swarm.targets.intersectWith(knot_targets);
         const ends = generator.swarm.targets.intersectWith(.initMany(&.{ .end, .done }));
         generator.put("-\n");
@@ -1020,7 +1161,7 @@ pub const Generator = struct {
     /// or (but with `hub`) a tunnel return.
     fn knot_end(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
-        const hub_on = generator.swarm.structure.contains(.hub);
+        const hub_on = generator.swarm.play.contains(.hub);
         if (hub_on and generator.choices.weighted(1, 7)) return generator.hub_choices();
         // A divert to a target is always possible, and a tunnel return without `hub`.
         var allowed: u8 = if (hub_on) 0b1000 else 0b1010;
@@ -1054,7 +1195,7 @@ pub const Generator = struct {
             generator.flow_start(parameter);
             generator.weave(true);
             generator.put("~ return ");
-            generator.expression();
+            generator.expression_typed(.number);
             generator.put("\n");
         }
         generator.flow_start(false);
@@ -1106,7 +1247,7 @@ pub const Generator = struct {
                 for (0..generator.choices.below(@popCount(free))) |_| free &= free - 1;
                 const index = @ctz(free);
                 generator.print("~ temp u{d} = ", .{index});
-                generator.expression();
+                generator.expression_typed(.number);
                 generator.put("\n");
                 // Declared after its expression, which can't read it yet.
                 generator.temps |= @as(u8, 1) << @intCast(index);
@@ -1114,7 +1255,7 @@ pub const Generator = struct {
             .temp_assign => {
                 generator.used.resolution.insert(.temp);
                 generator.print("~ u{d} = ", .{generator.declared_temp()});
-                generator.expression();
+                generator.expression_typed(.number);
                 generator.put("\n");
             },
             .temp_increment => {
@@ -1129,7 +1270,7 @@ pub const Generator = struct {
             .global_assign => {
                 const global = generator.choices.below(generator.swarm.globals_extra);
                 generator.print("~ n{d} = ", .{global});
-                generator.expression();
+                generator.expression_typed(.number);
                 generator.put("\n");
             },
             .collision => generator.collision(),
@@ -1210,9 +1351,17 @@ pub const Generator = struct {
     /// What a ref parameter can point to: the declared globals, the extra globals, this
     /// flow's temps and the function's parameter.
     fn ref_targets_count(generator: *const Generator) u32 {
-        const globals = generator.swarm.declarations.intersectWith(variables).count();
+        const globals = generator.ref_globals().count();
         return @as(u32, @intCast(globals)) + @intFromBool(generator.swarm.globals_extra > 0) +
             generator.temps_declared() + @intFromBool(generator.parameter);
+    }
+
+    /// The declared globals a ref parameter can point to: with `typed`, the numbers, which
+    /// `f2` increments and returns.
+    fn ref_globals(generator: *const Generator) std.EnumSet(Declaration) {
+        const globals = generator.swarm.declarations.intersectWith(variables);
+        if (!generator.swarm.play.contains(.typed)) return globals;
+        return globals.differenceWith(.initOne(.v1));
     }
 
     /// `f2(target)` or `f3(target)`, which passes it on as a pointer to a pointer.
@@ -1222,7 +1371,7 @@ pub const Generator = struct {
         generator.used.resolution.insert(.ref);
         generator.put(if (generator.choices.choose(bool)) "f2(" else "f3(");
         var chosen: u32 = @intCast(generator.choices.below(count));
-        const declared_variables = generator.swarm.declarations.intersectWith(variables);
+        const declared_variables = generator.ref_globals();
         const globals: u32 = @intCast(declared_variables.count());
         if (chosen < globals) {
             var keys = declared_variables.iterator();
@@ -1328,7 +1477,7 @@ test "the same choices give the same source" {
 }
 
 test "most generated sources compile, and every construct appears" {
-    // The sources reach the stages after the parser: 64 seeds compiled; the
+    // The sources reach the stages after the parser: 128 seeds compiled; the
     // constructs counted across all of them.
     const gpa = std.testing.allocator;
     var buffer: [source_bytes_max]u8 = undefined;
@@ -1340,7 +1489,7 @@ test "most generated sources compile, and every construct appears" {
     };
     var seen: [markers.len]bool = @splat(false);
     var compiled: u32 = 0;
-    const seeds = 64;
+    const seeds = 128;
     for (0..seeds) |seed| {
         const source = generate_seeded(seed, &buffer, .{});
         for (markers, 0..) |marker, i| {
@@ -1534,16 +1683,16 @@ test "Swarm.format round-trips through Swarm.parse" {
         "lines=text",
         "lines=nope terms=integer operators=add inlines= targets=k0 declarations= " ++
             "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
-            "globals_extra=0 structure=",
+            "globals_extra=0 play=",
         // k2 names a knot that a count of 1 doesn't write.
         "lines=text terms=integer operators=add inlines= targets=k2 declarations= " ++
             "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= " ++
-            "globals_extra=0 structure=",
+            "globals_extra=0 play=",
     };
     for (invalid) |bad| try std.testing.expectError(error.InvalidSwarm, Swarm.parse(bad));
     const one = "lines=text terms=integer operators=add inlines= targets=k0 declarations= " ++
         "lines_max=1 terms_max=1 choice_depth_max=1 knots_count=1 resolution= globals_extra=0 " ++
-        "structure=";
+        "play=";
     var writer: std.Io.Writer = .fixed(&text);
     try writer.print("{f}", .{try Swarm.parse(one)});
     try std.testing.expectEqualStrings(one, writer.buffered());
