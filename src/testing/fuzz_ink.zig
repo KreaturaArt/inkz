@@ -5,11 +5,12 @@
 //!
 //! Every name comes from a small pool that the generator declares (knots `k0`–`k2`, stitch
 //! `k0.s0`, functions `f0(x)`, `f1()` and the external `e0(x)` with its fallback, variables
-//! `v0`–`v2`, `c0` and the list `l0`), so the sources parse and resolve and reach the later
-//! stages. For the stages that must reject broken input, a swarm with `drop` or `collision`
-//! (each drawn 1 in 8) leaves names out or reuses them, and the parser targets splice raw
-//! bytes in. Nothing recurses: expressions are flat chains of terms, and
-//! nesting is bounded by a depth counter.
+//! `v0`–`v2`, `c0` and the list `l0`; with `hub`, the knots `hub` and `tunnel0`), so the
+//! sources parse and resolve and reach the later stages. For the stages that must reject
+//! broken input, a swarm with `drop` or `collision` (each drawn 1 in 8) leaves names out or
+//! reuses them, and the parser targets splice raw bytes in. For the play targets, `hub` and
+//! `typed` keep a played story going through choices without errors. Nothing recurses:
+//! expressions are flat chains of terms, and nesting is bounded by a depth counter.
 
 const std = @import("std");
 const assert = std.debug.assert;
