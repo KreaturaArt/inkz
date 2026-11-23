@@ -42,8 +42,7 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
             _ = grammar.whitespace(machine);
             if (named) _ = grammar.newline_direct(machine);
             frame.locals[1] = machine.scratch_count;
-            frame.phase = 1;
-            return .{ .call = .choice_single_condition };
+            return grammar.call_then(frame, 1, .choice_single_condition);
         },
         1 => return choice_conditions(machine, frame),
         2 => return choice_after_start(machine, frame),
@@ -52,15 +51,13 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
             grammar.expect_string(machine, "]", .closing_bracket);
             try finish_section(machine, frame, choice_option);
             frame.locals[1] = machine.scratch_count;
-            frame.phase = 4;
-            return .{ .call = .mixed_text_and_logic };
+            return grammar.call_then(frame, 4, .mixed_text_and_logic);
         },
         4 => {
             if (machine.outcome == .succeeded) frame.locals[2] |= choice_inner;
             _ = grammar.whitespace(machine);
             try grammar.end_tag_if_necessary(machine, frame.locals[2] & choice_inner != 0);
-            frame.phase = 5;
-            return .{ .call = .multi_divert };
+            return grammar.call_then(frame, 5, .multi_divert);
         },
         else => return finish_choice(machine, frame),
     }
@@ -83,8 +80,7 @@ fn choice_conditions(machine: *Machine, frame: *Frame) Error!Action {
     _ = grammar.whitespace(machine);
     machine.plain_flags |= grammar.parsing_choice;
     frame.locals[1] = machine.scratch_count;
-    frame.phase = 2;
-    return .{ .call = .mixed_text_and_logic };
+    return grammar.call_then(frame, 2, .mixed_text_and_logic);
 }
 
 /// After the start content: weave-style `[...]`, or straight on to the diverts.
@@ -95,15 +91,13 @@ fn choice_after_start(machine: *Machine, frame: *Frame) Error!Action {
         frame.locals[2] |= choice_brackets;
         try finish_section(machine, frame, choice_start);
         frame.locals[1] = machine.scratch_count;
-        frame.phase = 3;
-        return .{ .call = .mixed_text_and_logic };
+        return grammar.call_then(frame, 3, .mixed_text_and_logic);
     }
     _ = grammar.whitespace(machine);
     try finish_section(machine, frame, choice_start);
     try grammar.push_none(machine);
     frame.locals[1] = machine.scratch_count;
-    frame.phase = 5;
-    return .{ .call = .multi_divert };
+    return grammar.call_then(frame, 5, .multi_divert);
 }
 
 /// EndTagIfNecessary on a content section, then its content list (or none if it is null).
@@ -234,14 +228,12 @@ pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
     switch (frame.phase) {
         0 => {
             _ = grammar.whitespace(machine);
-            frame.phase = 1;
-            return .{ .call = .start_thread };
+            return grammar.call_then(frame, 1, .start_thread);
         },
         1 => {
             if (machine.outcome == .succeeded) return .succeed;
             if (!divert_arrow(machine, frame)) return .fail;
-            frame.phase = 2;
-            return .{ .call = .divert_identifier_with_arguments };
+            return grammar.call_then(frame, 2, .divert_identifier_with_arguments);
         },
         else => {
             if (machine.outcome == .succeeded) {
@@ -314,8 +306,7 @@ pub fn start_thread(machine: *Machine, frame: *Frame) Error!Action {
         _ = grammar.whitespace(machine);
         if (!grammar.parse_string(machine, "<-")) return .fail;
         _ = grammar.whitespace(machine);
-        frame.phase = 1;
-        return .{ .call = .divert_identifier_with_arguments };
+        return grammar.call_then(frame, 1, .divert_identifier_with_arguments);
     }
     if (machine.outcome == .failed) {
         grammar.report_expected(machine, .divert_target);
@@ -337,8 +328,7 @@ pub fn divert_identifier_with_arguments(machine: *Machine, frame: *Frame) Error!
         _ = grammar.whitespace(machine);
         if (!try divert_path(machine)) return .fail;
         _ = grammar.whitespace(machine);
-        frame.phase = 1;
-        return .{ .call = .function_call_arguments };
+        return grammar.call_then(frame, 1, .function_call_arguments);
     }
     if (machine.outcome == .failed) try grammar.push_none(machine);
     // The path and the arguments (or none).
@@ -369,8 +359,7 @@ fn divert_path(machine: *Machine) Error!bool {
 /// SingleDivert: a multi-divert that is one plain divert (or thread, or bare `->`).
 pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
     if (frame.phase == 0) {
-        frame.phase = 1;
-        return .{ .call = .multi_divert };
+        return grammar.call_then(frame, 1, .multi_divert);
     }
     assert(frame.phase == 1);
     if (machine.outcome == .failed) return .fail;

@@ -17,9 +17,7 @@ const Level = grammar.Level;
 /// Parse: the top-level statements make the story.
 pub fn story(machine: *Machine, frame: *Frame) Error!Action {
     switch (frame.phase) {
-        0 => {
-            return grammar.call(machine, frame, 1, .statements, @backingInt(Level.top));
-        },
+        0 => return grammar.call(machine, frame, 1, .statements, @backingInt(Level.top)),
         else => {
             const marker = frame.checkpoint.scratch;
             if (machine.outcome == .succeeded) assert(machine.scratch_count > marker);
@@ -199,11 +197,9 @@ pub fn stitch_definition(machine: *Machine, frame: *Frame) Error!Action {
 fn flow_definition(machine: *Machine, frame: *Frame, comptime level: Level) Error!Action {
     comptime assert(level == .knot or level == .stitch);
     const knot = level == .knot;
+    const declaration_rule: grammar.Rule = if (knot) .knot_declaration else .stitch_declaration;
     switch (frame.phase) {
-        0 => {
-            frame.phase = 1;
-            return .{ .call = if (knot) .knot_declaration else .stitch_declaration };
-        },
+        0 => return grammar.call_then(frame, 1, declaration_rule),
         1 => {
             if (machine.outcome == .failed) return .fail;
             // The declaration's result: whether the flow is a function.
@@ -572,13 +568,11 @@ pub fn logic_line(machine: *Machine, frame: *Frame) Error!Action {
             if (!grammar.parse_string(machine, "~")) return .fail;
             _ = grammar.whitespace(machine);
             machine.flags &= ~grammar.saw_function_call;
-            frame.phase = 1;
-            return .{ .call = .return_statement };
+            return grammar.call_then(frame, 1, .return_statement);
         },
         1 => {
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);
-            frame.phase = 2;
-            return .{ .call = .temp_declaration_or_assignment };
+            return grammar.call_then(frame, 2, .temp_declaration_or_assignment);
         },
         2 => {
             if (machine.outcome == .succeeded) return finish_logic_line(machine, frame);

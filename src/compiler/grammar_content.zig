@@ -114,8 +114,7 @@ pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Acti
     switch (frame.phase) {
         0 => {
             _ = grammar.whitespace(machine);
-            frame.phase = 1;
-            return .{ .call = .mixed_text_and_logic };
+            return grammar.call_then(frame, 1, .mixed_text_and_logic);
         },
         else => {
             assert(frame.phase == 1);
@@ -153,8 +152,7 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_message(machine, .tilde_in_content);
             } else machine.at = start;
             _ = try content_text(machine);
-            frame.phase = 1;
-            return .{ .call = .inline_logic_or_glue_or_start_tag };
+            return grammar.call_then(frame, 1, .inline_logic_or_glue_or_start_tag);
         },
         1 => {
             const got_logic = machine.outcome == .succeeded;
@@ -167,8 +165,7 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
                 frame,
             );
             frame.locals[1] = machine.scratch_count;
-            frame.phase = 2;
-            return .{ .call = .multi_divert };
+            return grammar.call_then(frame, 2, .multi_divert);
         },
         else => {
             assert(frame.phase == 2);
@@ -205,8 +202,7 @@ fn finish_mixed(machine: *Machine, frame: *Frame) Action {
 /// InlineLogicOrGlueOrStartTag: OneOf(InlineLogic, Glue, StartTag).
 pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error!Action {
     if (frame.phase == 0) {
-        frame.phase = 1;
-        return .{ .call = .inline_logic };
+        return grammar.call_then(frame, 1, .inline_logic);
     }
     assert(frame.phase == 1);
     if (machine.outcome == .succeeded) return .succeed;
@@ -243,8 +239,7 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
             if (!grammar.parse_string(machine, "{")) return .fail;
             frame.locals[1] = machine.flags;
             _ = grammar.whitespace(machine);
-            frame.phase = 1;
-            return .{ .call = .inner_logic };
+            return grammar.call_then(frame, 1, .inner_logic);
         },
         else => {
             if (machine.outcome == .failed) {
@@ -271,12 +266,10 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
             _ = grammar.whitespace(machine);
             if (try sequence_type_annotation(machine)) |kind| {
                 try machine.push_node(.sequence_kind, kind);
-                frame.phase = 1;
-                return .{ .call = .inner_sequence_objects };
+                return grammar.call_then(frame, 1, .inner_sequence_objects);
             }
             frame.locals[1] = grammar.at(machine);
-            frame.phase = 2;
-            return .{ .call = .condition_expression };
+            return grammar.call_then(frame, 2, .condition_expression);
         },
         1 => {
             if (machine.outcome == .failed) {
@@ -292,10 +285,8 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
             if (machine.outcome == .succeeded) {
                 return grammar.call(machine, frame, 3, .inner_conditional_content, 1);
             }
-            frame.phase = 4;
             frame.locals[2] = 0;
-            machine.argument = 0;
-            return .{ .call = full_alternatives[0] };
+            return grammar.call(machine, frame, 4, full_alternatives[0], 0);
         },
         3 => {
             if (machine.outcome == .succeeded) return .succeed;
@@ -386,8 +377,7 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
                 return inline_branch_next(machine, frame);
             }
             _ = grammar.multiline_whitespace(machine);
-            frame.phase = 20;
-            return .{ .call = .single_multiline_condition };
+            return grammar.call_then(frame, 20, .single_multiline_condition);
         },
         10 => return inline_branch(machine, frame),
         20 => {
@@ -406,8 +396,7 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
             // The query slot, then the sole branch's empty condition and its statements.
             assert(machine.scratch_count >= frame.locals[1] + 3);
             try machine.wrap(.conditional_branch, machine.scratch_count - 2);
-            frame.phase = 22;
-            return .{ .call = .single_multiline_condition };
+            return grammar.call_then(frame, 22, .single_multiline_condition);
         },
         else => {
             assert(frame.phase == 22);
@@ -519,12 +508,8 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
             if (!grammar.parse_string(machine, "-")) return .fail;
             _ = grammar.whitespace(machine);
             frame.locals[1] = @intFromBool(else_expression(machine));
-            frame.phase = if (frame.locals[1] == 1) 2 else 1;
-            if (frame.locals[1] == 1) {
-                machine.argument = @backingInt(Level.inner_block);
-                return .{ .call = .statements };
-            }
-            return .{ .call = .condition_expression };
+            if (frame.locals[1] == 0) return grammar.call_then(frame, 1, .condition_expression);
+            return grammar.call(machine, frame, 2, .statements, @backingInt(Level.inner_block));
         },
         1 => {
             if (machine.outcome == .failed) try grammar.push_none(machine);
@@ -635,8 +620,7 @@ pub fn inner_sequence(machine: *Machine, frame: *Frame) Error!Action {
         _ = grammar.whitespace(machine);
         const kind = try sequence_type_annotation(machine) orelse stopping;
         try machine.push_node(.sequence_kind, kind);
-        frame.phase = 1;
-        return .{ .call = .inner_sequence_objects };
+        return grammar.call_then(frame, 1, .inner_sequence_objects);
     }
     if (machine.outcome == .failed) return .fail;
     // InnerSequenceObjects leaves a branches list on top: its count node is read.
@@ -654,13 +638,11 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
         0 => {
             if (grammar.newline(machine)) {
                 _ = grammar.multiline_whitespace(machine);
-                frame.phase = 1;
-                return .{ .call = .single_multiline_sequence_element };
+                return grammar.call_then(frame, 1, .single_multiline_sequence_element);
             }
             frame.locals[1] = 0;
             frame.locals[2] = machine.scratch_count;
-            frame.phase = 2;
-            return .{ .call = .mixed_text_and_logic };
+            return grammar.call_then(frame, 2, .mixed_text_and_logic);
         },
         1 => {
             const element: grammar.Rule = .single_multiline_sequence_element;
