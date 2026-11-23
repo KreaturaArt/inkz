@@ -65,6 +65,8 @@ pub const Mutation = enum {
     flip_bool,
     /// The name after a `->`, to another name of the story, END, DONE or one it doesn't have.
     change_divert,
+    /// A word, to another word of the story or one it doesn't have.
+    change_name,
     /// A piece of ink syntax at a drawn place.
     insert_token,
     /// Up to 32 bytes.
@@ -172,12 +174,13 @@ fn apply(
         },
         .change_divert => {
             const span = pick(choices, text, .divert_target) orelse return false;
-            const others = [_][]const u8{ "END", "DONE", "nowhere", "", "->", "0", "a.b.c" };
-            const target = if (choices.choose(bool))
-                identifier_in(text, pick(choices, text, .identifier).?)
-            else
-                others[choices.below(others.len)];
-            return replace(text, span, target, writer);
+            const others = &.{ "END", "DONE", "nowhere", "", "->", "0", "a.b.c" };
+            return replace(text, span, other_name(choices, text, others), writer);
+        },
+        .change_name => {
+            const span = pick(choices, text, .identifier) orelse return false;
+            const others = &.{ "nowhere", "x", "ref", "not", "END", "a.b" };
+            return replace(text, span, other_name(choices, text, others), writer);
         },
         .insert_token => {
             const at = choices.below(text.len + 1);
@@ -216,7 +219,7 @@ const tokens = [_][]const u8{
     "\t",             "\u{e9}",            "{~",        "{&",                      "{!",
     "{stopping:",     "->-> x\n",          "-> x ->\n", "=== function f(x) ===\n", ".",
     "&&",             "==",                "!=",        "+=",                      "--",
-    "not ",           "mod ",              "\"a\" + ",  "RANDOM(",                 "TURNS_SINCE(",
+    "not ",           "has ",              "\"a\" + ",  "RANDOM(",                 "TURNS_SINCE(",
 };
 
 /// A byte range of the text, `end` exclusive (a text is at most `source_bytes_max` long).
@@ -348,8 +351,13 @@ fn next_unit(text: []const u8, unit: Unit, from: usize) ?Span {
     }
 }
 
-fn identifier_in(text: []const u8, span: Span) []const u8 {
-    return text[span.start..span.end];
+/// A word of `text`, or one of `others`.
+fn other_name(choices: Choices, text: []const u8, others: []const []const u8) []const u8 {
+    assert(others.len > 0);
+    if (choices.choose(bool)) {
+        if (pick(choices, text, .identifier)) |span| return text[span.start..span.end];
+    }
+    return others[choices.below(others.len)];
 }
 
 fn identifier_byte(byte: u8) bool {
@@ -442,6 +450,9 @@ test "mutations that don't apply are left out, and a full buffer keeps the story
         if (mutant.applied_count == 0) continue;
         try std.testing.expectEqual(.insert_token, mutant.mutations()[0]);
     }
+    // Diverts without a word to put in their place take one of the made-up names.
+    const arrows: Corpus = .{ .ids = &.{"arrows"}, .sources = &.{"-> ->\n->->\n"} };
+    for (0..256) |seed| _ = mutate(&arrows, seed, &buffers);
     // A story as long as the buffer: nothing that adds bytes fits.
     const long: [fuzz_ink.source_bytes_max]u8 = @splat('x');
     const full: Corpus = .{ .ids = &.{"full"}, .sources = &.{&long} };
