@@ -174,6 +174,9 @@ pub const Play = enum { hub, typed };
 ///   global `größe`, a name of non-ASCII letters, read as a number.
 /// - `scientific`: float literals whose values print in scientific notation (`1E+09`,
 ///   `1E-05`), as .NET does for exponents from 9 up and below -4.
+/// - `mistyped_divert`: `VAR d1` holds no divert target (5, 0, 2.5 or a string), and one
+///   place per source uses it as one: `-> d1` (outside functions), `TURNS_SINCE(d1)` or
+///   `READ_COUNT(d1)`, ink's runtime errors.
 pub const Construct = enum {
     turns,
     math,
@@ -188,6 +191,7 @@ pub const Construct = enum {
     item_values,
     lexical,
     scientific,
+    mistyped_divert,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -206,8 +210,8 @@ const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
 });
 const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(.{
     .number = .initMany(&.{
-        .temp_read,      .ref_call,   .global_read, .turns, .math, .list_value, .target_count,
-        .unicode_global, .scientific,
+        .temp_read,      .ref_call,   .global_read,    .turns, .math, .list_value, .target_count,
+        .unicode_global, .scientific, .mistyped_count,
     }),
     .string = .empty,
     .list = .initMany(&.{
@@ -241,6 +245,7 @@ const ExtraLine = enum {
     comment,
     author_warning,
     unicode_text,
+    mistyped_divert,
 };
 
 const ExtraTerm = enum {
@@ -259,6 +264,7 @@ const ExtraTerm = enum {
     item_value,
     unicode_global,
     scientific,
+    mistyped_count,
 };
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
@@ -683,6 +689,8 @@ pub const Generator = struct {
     parameter: bool = false,
     /// Whether the source has its one collision.
     collided: bool = false,
+    /// Whether the source has its one use of `d1` as a divert target.
+    mistyped: bool = false,
     /// The knots and the stitch written after the current flow, which its diverts and
     /// threads may name with `hub`: the root comes first, then `k0`, `k0.s0`, `k1`, `k2`.
     later: std.EnumSet(Target) = knot_targets,
@@ -852,6 +860,10 @@ pub const Generator = struct {
         if (generator.swarm.constructs.contains(.lexical) and generator.keep()) {
             generator.used.constructs.insert(.lexical);
             generator.put("VAR größe = 3\n");
+        }
+        if (generator.swarm.constructs.contains(.mistyped_divert) and generator.keep()) {
+            generator.used.constructs.insert(.mistyped_divert);
+            generator.print("VAR d1 = {s}\n", .{generator.pick(&.{ "5", "0", "2.5", "\"text\"" })});
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1500,6 +1512,8 @@ pub const Generator = struct {
             kinds.insert(.author_warning);
             kinds.insert(.unicode_text);
         }
+        if (constructs.contains(.mistyped_divert) and !generator.mistyped and
+            !generator.in_function) kinds.insert(.mistyped_divert);
         assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
@@ -1555,6 +1569,11 @@ pub const Generator = struct {
                 generator.print("~ d0 = -> {s}\n", .{generator.divert_value()});
             },
             .comment, .author_warning, .unicode_text => |kind| generator.lexical_line(kind),
+            .mistyped_divert => {
+                generator.used.constructs.insert(.mistyped_divert);
+                generator.mistyped = true;
+                generator.put("-> d1\n");
+            },
             .conditional_else => {
                 generator.used.constructs.insert(.conditional_else);
                 generator.put("{ ");
@@ -1620,6 +1639,9 @@ pub const Generator = struct {
         if (constructs.contains(.item_values)) kinds.insert(.item_value);
         if (constructs.contains(.lexical)) kinds.insert(.unicode_global);
         if (constructs.contains(.scientific)) kinds.insert(.scientific);
+        if (constructs.contains(.mistyped_divert) and !generator.mistyped) {
+            kinds.insert(.mistyped_count);
+        }
         return kinds;
     }
 
@@ -1670,6 +1692,14 @@ pub const Generator = struct {
                 generator.put(generator.pick(&.{
                     "1000000000.5", "2147483647.5", "0.00001", "0.0000123", "-0.00005",
                 }));
+            },
+            .mistyped_count => {
+                generator.used.constructs.insert(.mistyped_divert);
+                generator.mistyped = true;
+                generator.put(if (generator.choices.choose(bool))
+                    "TURNS_SINCE(d1)"
+                else
+                    "READ_COUNT(d1)");
             },
             .item_value => {
                 generator.used.constructs.insert(.item_values);
@@ -2210,11 +2240,12 @@ test "each construct appears when on and never when off" {
         .choice_tags = &.{"# ct"},
         .divert_variable = &.{ "VAR d0", "-> d0", "~ d0 =" },
         .parameters = &.{ "tunnel1(", "thread1(", "jump1(" },
-        .target_counts = &.{ "READ_COUNT(", "TURNS_SINCE(->k", "== ->", "!= ->" },
+        .target_counts = &.{ "READ_COUNT(-> ", "TURNS_SINCE(->k", "== ->", "!= ->" },
         .list_operations = &.{" ^ "},
         .item_values = &.{ "LIST l2", "l2", "p2", "q2" },
         .lexical = &.{ "//", "/*", "TODO:", "größe", "Grüße" },
         .scientific = &.{"0000"},
+        .mistyped_divert = &.{ "VAR d1", "(d1)", "-> d1" },
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",

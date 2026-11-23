@@ -516,11 +516,15 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
 fn count_of_target(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .turns_since or opcode == .read_count_of_target);
     const target = try pop_evaluation(story);
-    if (target != .divert_target) return ops.fail(
-        story,
-        "TURNS_SINCE expected a divert target (knot, stitch, label name)",
-        .{},
-    );
+    if (target != .divert_target) {
+        // ink's message, which names TURNS_SINCE for READ_COUNT too, and says what it saw.
+        const expected = "TURNS_SINCE expected a divert target (knot, stitch, label name), " ++
+            "but saw {s}";
+        const saw = try ops.value_text(story, target);
+        if (target != .integer) return ops.fail(story, expected, .{saw});
+        return ops.fail(story, expected ++ ". Did you accidentally pass a read count " ++
+            "('knot_name') instead of a target ('-> knot_name')?", .{saw});
+    }
     const container = target.divert_target;
     const count: i32 = if (opcode == .turns_since)
         ops.turns_since(story, container)
