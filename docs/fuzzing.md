@@ -103,7 +103,10 @@ Shared pieces:
 
 ## Long seeded runs and triage
 
-`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save> --seed S --seeds N`
+`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|all> --seed S --seeds N`
+(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` splits the time between
+the three targets. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
+hk pre-push hook in `hk.pkl` runs `--seconds 10`; `hk install` once per clone)
 (`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
 configuration and a generated story, and the target checks it. `compile` checks the program
 and that it compiles the same twice. `play` plays it with seeded choices and checks the

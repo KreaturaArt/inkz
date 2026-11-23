@@ -22,3 +22,18 @@ jobs:
 
       - name: zig build ci
         run: zig build ci --summary failures
+
+  # Five minutes of seeded swarm runs (compile, play and save in turn) once ci passes; the
+  # seed changes every run, and a failure prints the command that reproduces it.
+  swarm:
+    needs: ci
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: EuroZig/setup-zig@v3
+
+      - name: zig build swarm
+        run: >-
+          zig build swarm -Doptimize=ReleaseSafe --
+          --target all --seconds 300 --seed ${{ github.run_id }}

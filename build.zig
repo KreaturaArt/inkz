@@ -166,7 +166,7 @@ const dev_commands = [_][2][]const u8{
     .{ "replay", "Replay one case and print its transcript (-- <id> | --json PATH --actions A)" },
     .{ "simulate", "Play every case with seeded random choices" },
     .{ "transcripts", "Regenerate test/transcripts" },
-    .{ "swarm", "Seeded swarm runs (-- --target compile|play|save --seed S --seeds N)" },
+    .{ "swarm", "Seeded swarm runs (-- --target compile|play|save|all --seed S --seeds N | --seconds T)" },
     .{ "swarm-gen", "Write generated swarm cases (-- --seed S --count N --out DIR)" },
     .{ "swarm-check", "Compare inkz with ink's results for swarm cases (-- DIR)" },
     .{ "swarm-reduce", "Reduce a divergent swarm case (-- DIR CASE --harness DLL)" },

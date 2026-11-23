@@ -6,8 +6,8 @@
 //!   (src/testing/isolated.zig), so a crash is contained in that process.
 //! - `simulate ...`: seeded random play of the ground-truth cases (src/simulate.zig).
 //! - `transcripts`: regenerates `test/transcripts/` from the runtime.
-//! - `swarm --target <compile|play|save> [--seed S] [--seeds N]`: seeded swarm runs out of
-//!   the fuzzer (src/testing/swarm_runner.zig); exits with 1 when a run failed.
+//! - `swarm --target <compile|play|save|all> [--seed S] [--seeds N] [--seconds T]`: seeded
+//!   swarm runs out of the fuzzer (src/testing/swarm_runner.zig); exits with 1 when a run failed.
 //! - `swarm-gen`, `swarm-check`, `swarm-reduce`: the differential swarm run
 //!   (src/swarm_differential.zig).
 
@@ -84,24 +84,47 @@ fn replay(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8)
 
 fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
     assert(arguments.len > 0);
-    var target: runner.Target = .play;
+    // Null target: compile, play and save in turn, sharing the time budget.
+    var target: ?runner.Target = .play;
     var seed: u64 = 1;
-    var seeds: u32 = 1000;
+    var seeds: ?u32 = null;
+    var seconds: ?u32 = null;
     var index: usize = 1;
     while (index + 1 < arguments.len) : (index += 2) {
         const name = arguments[index];
         const value = arguments[index + 1];
         if (std.mem.eql(u8, name, "--target")) {
-            target = std.meta.stringToEnum(runner.Target, value) orelse return error.UnknownTarget;
+            target = if (std.mem.eql(u8, value, "all"))
+                null
+            else
+                std.meta.stringToEnum(runner.Target, value) orelse return error.UnknownTarget;
         } else if (std.mem.eql(u8, name, "--seed")) {
             seed = try std.fmt.parseInt(u64, value, 10);
         } else if (std.mem.eql(u8, name, "--seeds")) {
             seeds = try std.fmt.parseInt(u32, value, 10);
+        } else if (std.mem.eql(u8, name, "--seconds")) {
+            seconds = try std.fmt.parseInt(u32, value, 10);
         } else return error.UnknownOption;
     }
+    const all: []const runner.Target = &.{ .compile, .play, .save };
+    const targets: []const runner.Target = if (target) |one| &.{one} else all;
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buffer);
-    const summary = try runner.run(gpa, &file_writer.interface, target, seed, seeds);
+    var failures: u32 = 0;
+    const started = std.Io.Timestamp.now(io, .awake);
+    for (targets, 0..) |each, position| {
+        const seeds_default: u32 = if (seconds == null) 1000 else std.math.maxInt(u32);
+        var budget: runner.Budget = .{ .seeds = seeds orelse seeds_default };
+        if (seconds) |total| {
+            // Target number n ends at n/len of the total, so all of them share it evenly.
+            const share_ns = @as(u64, total) * std.time.ns_per_s * (position + 1) / targets.len;
+            budget.deadline = .{ .nanoseconds = started.nanoseconds + share_ns };
+            budget.io = io;
+        }
+        try file_writer.interface.print("swarm {t}: first seed {d}\n", .{ each, seed });
+        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget);
+        failures += summary.failures;
+    }
     try file_writer.interface.flush();
-    if (summary.failures > 0) std.process.exit(1);
+    if (failures > 0) std.process.exit(1);
 }

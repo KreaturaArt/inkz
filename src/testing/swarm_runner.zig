@@ -24,18 +24,32 @@ pub const Target = enum {
 
 pub const Summary = struct { runs: u32 = 0, failures: u32 = 0 };
 
-/// Runs `seeds` seeds from `seed_first` on `target`, writing failures and the triage.
+/// How long a run goes: `seeds` seeds, or fewer when `deadline` passes first.
+pub const Budget = struct {
+    seeds: u32,
+    deadline: ?std.Io.Timestamp = null,
+    io: ?std.Io = null,
+
+    fn exhausted(budget: Budget) bool {
+        const deadline = budget.deadline orelse return false;
+        return std.Io.Timestamp.now(budget.io.?, .awake).nanoseconds >= deadline.nanoseconds;
+    }
+};
+
+/// Runs seeds from `seed_first` on `target` within `budget`, writing failures and the triage.
 pub fn run(
     gpa: std.mem.Allocator,
     writer: *std.Io.Writer,
     target: Target,
     seed_first: u64,
-    seeds: u32,
+    budget: Budget,
 ) !Summary {
-    assert(seeds > 0);
+    assert(budget.seeds > 0);
+    assert((budget.deadline == null) == (budget.io == null));
     var summary: Summary = .{};
     var triage: triage_module.Triage = .{};
-    for (0..seeds) |offset| {
+    for (0..budget.seeds) |offset| {
+        if (offset > 0 and budget.exhausted()) break;
         const seed = seed_first + offset;
         var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
         const case = fuzz_ink.generate_case_seeded(seed, &buffer, .{});
@@ -128,7 +142,7 @@ test "a failing swarm run prints the command that reproduces it, and the triage"
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    const summary = try run(gpa, &out.writer, .synthetic, 100, 200);
+    const summary = try run(gpa, &out.writer, .synthetic, 100, .{ .seeds = 200 });
     try std.testing.expect(summary.failures > 0);
     const text = out.written();
     try std.testing.expect(std.mem.indexOf(u8, text, "reproduce with: zig build swarm " ++
@@ -140,7 +154,7 @@ test "a failing swarm run prints the command that reproduces it, and the triage"
     const seed = try std.fmt.parseInt(u64, text[at..end], 10);
     var again: std.Io.Writer.Allocating = .init(gpa);
     defer again.deinit();
-    const replayed = try run(gpa, &again.writer, .synthetic, seed, 1);
+    const replayed = try run(gpa, &again.writer, .synthetic, seed, .{ .seeds = 1 });
     try std.testing.expectEqual(@as(u32, 1), replayed.failures);
 }
 
@@ -149,7 +163,17 @@ test "the real targets pass a few seeds" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     for ([_]Target{ .compile, .play, .save }) |target| {
-        const summary = try run(gpa, &out.writer, target, 1, 8);
+        const summary = try run(gpa, &out.writer, target, 1, .{ .seeds = 8 });
         try std.testing.expectEqual(@as(u32, 0), summary.failures);
     }
+}
+
+test "a passed deadline stops the run after its first seed" {
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const budget: Budget = .{ .seeds = 1000, .deadline = .now(io, .awake), .io = io };
+    const summary = try run(gpa, &out.writer, .synthetic, 1, budget);
+    try std.testing.expectEqual(@as(u32, 1), summary.runs);
 }
