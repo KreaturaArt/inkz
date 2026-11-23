@@ -116,12 +116,16 @@ Shared pieces:
 ## Long seeded runs and triage
 
 `zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|all> --seed S --seeds N`
-(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` splits the time between
-the three targets. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
+(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play` and `save`,
+splitting the time between them. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
 hk pre-push hook in `hk.pkl` runs `--seconds 10`; `hk install` once per clone)
 (`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
-configuration and a generated story, and the target checks it. `compile` checks the program
-and that it compiles the same twice. `play` plays it with seeded choices and checks the
+configuration and a generated story, and the target checks it. Every target checks the
+compiled program (`check_program`): it passes `Program.check`, and compiled a second time,
+serialized to JSON and loaded (`ink_json.serialize`, `ink_json.load`), and written to an
+image and loaded (`program_image`), it is the same program, every array element by element
+(`program_testing.first_difference`, which the structural gate uses too). `compile` does
+only that, so `all` leaves it out. `play` plays it with seeded choices and checks the
 state after every call; each seed binds `e0`, allows its fallback, both or neither (as the
 fuzz targets' `Setup` does), and draws the story's random seed. It then plays the seed a
 second time under the first play's fitted limits (`Limits.fitted(usage, 1)`), under tight
@@ -147,7 +151,9 @@ other limits (`limited runs`) and those a limit stopped (`limit errors`; for `sa
 too large for the loader's scratch), and the saves loaded mid-play and played on (`resumed
 saves`). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
 and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
-`typed`, and after P18.3 bound `e0`, varied the limits and resumed saves:
+`typed`, after P18.3 bound `e0`, varied the limits and resumed saves, and after P18.4
+folded the compile checks into play and save (and `all` dropped `compile`, so play and save
+get 4.5 s each instead of 3 s):
 
 | | compile failures | play: compiled | runtime errors | lines | choices | step cap |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -155,6 +161,7 @@ and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
 | after P18.1 | 1,413 / 12,278 (11.5%) | 6,255 / 7,085 | 2,991 | 16,887 | 442 | 154 |
 | after P18.2 | 1,085 / 9,144 (11.9%) | 5,239 / 5,963 | 1,795 | 84,115 | 63,192 | 2,138 |
 | after P18.3 | 1,065 / 8,968 (11.9%) | 4,177 / 4,749 | 883 | 81,110 | 58,993 | 2,018 |
+| after P18.4 | 1,095 / 9,087 (12.0%) | 4,317 / 4,911 | 922 | 83,496 | 60,718 | 2,074 |
 
 The failures left are the error features' (`name_conflict` is `collision`'s). Played
 stories now run longer, so fewer fit in the time. After P18.3 a quarter of the runtime
@@ -162,7 +169,11 @@ errors left are the stories without a binding for `e0` (209 of 883); the play ta
 most seeds twice. Its throughput (`--target play --seconds 5`) went from 2,001 to 1,558
 runs/s, `save` from 1,355 to 1,240 and `compile` stayed at about 3,000, so every seed gets
 the second play (doing it on a fraction of the seeds would only pay below half the
-throughput).
+throughput). P18.4's program checks (a second compile, the JSON and the image round trips)
+cost `play` about 22% of its throughput (5,000 seeds from seed 99: 3.5 s before, 4.5 s
+after; `--seconds 5` from seed 99: 1,390 to 1,530 runs/s before and 1,000 to 1,120 after, `save`
+1,210 and 920, `compile` 2,930 and 2,280), under the 30% at which they would run on a fraction of
+the seeds, so every compiled story gets them.
 
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.
