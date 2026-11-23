@@ -6,9 +6,10 @@
 //!   (src/testing/isolated.zig), so a crash is contained in that process.
 //! - `simulate ...`: seeded random play of the ground-truth cases (src/simulate.zig).
 //! - `transcripts`: regenerates `test/transcripts/` from the runtime.
-//! - `swarm --target <compile|play|save|all> [--seed S] [--seeds N] [--seconds T]`: seeded
-//!   swarm runs out of the fuzzer (src/testing/swarm_runner.zig), `all` being play and save;
-//!   exits with 1 when a run failed.
+//! - `swarm --target <compile|play|save|host|all> [--seed S] [--seeds N] [--seconds T]
+//!   [--mix <hex>]`: seeded swarm runs out of the fuzzer (src/testing/swarm_runner.zig), `all`
+//!   being play, save and host; `--mix` replays a host failure's mix. Exits with 1 when a
+//!   run failed.
 //! - `swarm-gen`, `swarm-check`, `swarm-reduce`: the differential swarm run
 //!   (src/swarm_differential.zig).
 
@@ -18,6 +19,7 @@ const cases = @import("testing/cases.zig");
 const transcripts = @import("testing/transcripts.zig");
 const runner = @import("testing/swarm_runner.zig");
 const simulate = @import("simulate.zig");
+const simulation = @import("testing/simulation.zig");
 const swarm_differential = @import("swarm_differential.zig");
 
 const Command = enum {
@@ -85,9 +87,10 @@ fn replay(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8)
 
 fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
     assert(arguments.len > 0);
-    // Null target: play and save in turn, sharing the time budget. Both check the compiled
-    // program as the compile target does, so `all` leaves that one out.
+    // Null target: play, save and host in turn, sharing the time budget. Play and save check
+    // the compiled program as the compile target does, so `all` leaves that one out.
     var target: ?runner.Target = .play;
+    var mix: ?simulation.Mix = null;
     var seed: u64 = 1;
     var seeds: ?u32 = null;
     var seconds: ?u32 = null;
@@ -106,25 +109,36 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
             seeds = try std.fmt.parseInt(u32, value, 10);
         } else if (std.mem.eql(u8, name, "--seconds")) {
             seconds = try std.fmt.parseInt(u32, value, 10);
+        } else if (std.mem.eql(u8, name, "--mix")) {
+            mix = try simulation.Mix.decode(try std.fmt.parseInt(u64, value, 16));
         } else return error.UnknownOption;
     }
-    const all: []const runner.Target = &.{ .play, .save };
+    // Play gets 4 tenths of the time, save and host 3 each: play's seeds also play again
+    // under other limits, and host's spend most of theirs on the host calls.
+    const all: []const runner.Target = &.{ .play, .save, .host };
+    const all_shares: []const u64 = &.{ 4, 3, 3 };
     const targets: []const runner.Target = if (target) |one| &.{one} else all;
+    const shares: []const u64 = if (target == null) all_shares else &.{1};
+    var shares_total: u64 = 0;
+    for (shares) |share| shares_total += share;
+    var shares_done: u64 = 0;
     var buffer: [4096]u8 = undefined;
     var file_writer = std.Io.File.stdout().writer(io, &buffer);
     var failures: u32 = 0;
     const started = std.Io.Timestamp.now(io, .awake);
-    for (targets, 0..) |each, position| {
+    assert(targets.len == shares.len);
+    for (targets, shares) |each, share| {
         const seeds_default: u32 = if (seconds == null) 1000 else std.math.maxInt(u32);
         var budget: runner.Budget = .{ .seeds = seeds orelse seeds_default };
+        shares_done += share;
         if (seconds) |total| {
-            // Target number n ends at n/len of the total, so all of them share it evenly.
-            const share_ns = @as(u64, total) * std.time.ns_per_s * (position + 1) / targets.len;
-            budget.deadline = .{ .nanoseconds = started.nanoseconds + share_ns };
+            // Each target ends at its share of the total and the shares before it.
+            const end_ns = @as(u64, total) * std.time.ns_per_s * shares_done / shares_total;
+            budget.deadline = .{ .nanoseconds = started.nanoseconds + end_ns };
             budget.io = io;
         }
         try file_writer.interface.print("swarm {t}: first seed {d}\n", .{ each, seed });
-        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget);
+        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, mix);
         failures += summary.failures;
     }
     try file_writer.interface.flush();

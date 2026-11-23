@@ -130,14 +130,22 @@ pub fn simulate(story: *Story, seed: i32, save_buffer: []u8) !Finding {
     return simulate_mix(story, seed, .full, save_buffer, null);
 }
 
-/// `simulate` with the actions and weights of `mix`; `counts`, when given, counts the
-/// actions taken.
+/// What a simulated run did: the actions it took, the lines it played and the choices it
+/// made.
+pub const Tally = struct {
+    actions: std.EnumArray(Mix.Action, u32) = .initFill(0),
+    lines: u32 = 0,
+    choices: u32 = 0,
+};
+
+/// `simulate` with the actions and weights of `mix`; `tally`, when given, counts what the
+/// run did.
 pub fn simulate_mix(
     story: *Story,
     seed: i32,
     mix: Mix,
     save_buffer: []u8,
-    counts: ?*std.EnumArray(Mix.Action, u32),
+    tally: ?*Tally,
 ) !Finding {
     var random = DotnetRandom.init(seed);
     try story.reset_state();
@@ -151,10 +159,11 @@ pub fn simulate_mix(
                 else => return err,
             };
             if (story.state.check() != .ok) return .check_failed;
+            if (tally) |counted| counted.lines += 1;
         }
         const roll = @rem(random.next(), 100);
         if (mix.pick(roll)) |action| {
-            if (counts) |counted| counted.getPtr(action).* += 1;
+            if (tally) |counted| counted.actions.getPtr(action).* += 1;
             switch (action) {
                 .round_trip => if (!try round_trip(story, save_buffer)) {
                     return .round_trip_differs;
@@ -170,6 +179,7 @@ pub fn simulate_mix(
         if (count == 0) return .ok;
         const pick: u32 = @intCast(@rem(random.next(), @as(i32, @intCast(count))));
         try story.choose_choice_index(pick);
+        if (tally) |counted| counted.choices += 1;
     }
     return .ok;
 }
@@ -311,16 +321,19 @@ test "a swarm mix takes only its actions, and the full mix is the old one" {
         const mix = Mix.draw(seed);
         try std.testing.expectEqual(mix.encode(), (try Mix.decode(mix.encode())).encode());
         if (mix.encode() != Mix.full.encode()) differs += 1;
-        var counts: std.EnumArray(Mix.Action, u32) = .initFill(0);
-        const finding = try simulate_mix(&story, seed, mix, save_buffer, &counts);
-        // The printed --swarm-config replays the run: the same finding and actions.
-        var replayed: std.EnumArray(Mix.Action, u32) = .initFill(0);
+        var tally: Tally = .{};
+        const finding = try simulate_mix(&story, seed, mix, save_buffer, &tally);
+        // The printed --swarm-config replays the run: the same finding, actions and play.
+        var replayed: Tally = .{};
         const config = try Mix.decode(mix.encode());
         const again = try simulate_mix(&story, seed, config, save_buffer, &replayed);
         try std.testing.expectEqual(finding, again);
-        try std.testing.expectEqualSlices(u32, &counts.values, &replayed.values);
+        try std.testing.expectEqualDeep(tally, replayed);
+        try std.testing.expect(tally.lines > 0);
         for (std.enums.values(Mix.Action)) |action| {
-            if (mix.weights.get(action) == 0) try std.testing.expectEqual(0, counts.get(action));
+            if (mix.weights.get(action) == 0) {
+                try std.testing.expectEqual(0, tally.actions.get(action));
+            }
         }
         try std.testing.expectEqual(
             try simulate(&story, seed, save_buffer),
