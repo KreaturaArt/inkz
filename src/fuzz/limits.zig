@@ -105,7 +105,7 @@ fn session(choices: fuzz_ink.Choices, limits: Limits, compact_always: bool) !?Se
     var result: Session = .{};
     var count: u32 = 0;
     while (count < calls_max and choices.more(7, 1)) : (count += 1) {
-        _ = host.call(&story, choices, &kept, calls) catch |err| {
+        _ = host.call(gpa, &story, choices, &kept, calls) catch |err| {
             result.errors.add(err);
             // A story that failed in the middle of a step stays failed.
             if (story.failed) assert(story.cont() == error.StoryFailed);

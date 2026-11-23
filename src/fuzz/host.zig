@@ -9,7 +9,8 @@ const play = @import("play.zig");
 const Program = @import("../core/program.zig").Program;
 
 const Value = play.Value;
-const calls_max = 48;
+/// The calls a session makes at most.
+pub const calls_max = 48;
 
 const Call = enum {
     cont,
@@ -81,7 +82,15 @@ fn value(choices: fuzz_ink.Choices, kept: ?Value) Value {
 
 /// One host call from `calls`; returns which. `kept` is the last divert target read, so one
 /// goes back in (strings and lists are views, valid only until the next mutating call).
-pub fn call(story: *play.Story, choices: fuzz_ink.Choices, kept: *?Value, calls: CallSet) !Call {
+/// `gpa` holds a save for `save_and_load`. The caller checks the state after the call (the
+/// swarm's host target reports a failed check instead of stopping at an assertion).
+pub fn call(
+    gpa: std.mem.Allocator,
+    story: *play.Story,
+    choices: fuzz_ink.Choices,
+    kept: *?Value,
+    calls: CallSet,
+) !Call {
     assert(story.state.check() == .ok);
     assert(calls.contains(.cont));
     var sink: Sink = .{};
@@ -92,13 +101,13 @@ pub fn call(story: *play.Story, choices: fuzz_ink.Choices, kept: *?Value, calls:
         choices.choose(Call)
     else
         fuzz_ink.pick_from(choices, Call, calls);
-    try call_kind(story, choices, kept, kind, &sink, &writer);
+    try call_kind(gpa, story, choices, kept, kind, &sink, &writer);
     assert(writer.end <= text.len);
-    assert(story.state.check() == .ok);
     return kind;
 }
 
 fn call_kind(
+    gpa: std.mem.Allocator,
     story: *play.Story,
     choices: fuzz_ink.Choices,
     kept: *?Value,
@@ -144,14 +153,13 @@ fn call_kind(
         .path_tags => try story.tags_for_content_at_path(pick(choices, &paths), sink),
         .current_text => _ = try story.current_text(),
         .flow_names => try story.alive_flow_names(sink),
-        .save_and_load => try save_and_load(story),
+        .save_and_load => try save_and_load(gpa, story),
     }
 }
 
 /// A save loaded back into the story it came from.
-fn save_and_load(story: *play.Story) !void {
+fn save_and_load(gpa: std.mem.Allocator, story: *play.Story) !void {
     assert(story.state.check() == .ok);
-    const gpa = std.testing.allocator;
     var save: std.Io.Writer.Allocating = .init(gpa);
     defer save.deinit();
     try story.to_json(&save.writer);
@@ -191,7 +199,7 @@ fn session_on(program: *const Program, choices: fuzz_ink.Choices) !Session {
     while (count < calls_max and choices.more(7, 1)) : (count += 1) {
         // An error is an answer. After one in the middle of a step the story fails closed
         // (error.StoryFailed) until reset_state or load_json, which the sequence may call.
-        const made = call(&story, choices, &kept, calls) catch continue;
+        const made = call(gpa, &story, choices, &kept, calls) catch continue;
         session.made.insert(made);
         assert(story.state.check() == .ok);
     }
