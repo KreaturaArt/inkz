@@ -362,6 +362,40 @@ test "a save's flows must include the default flow, each name once" {
     try std.testing.expectEqualStrings(both.written(), again.written());
 }
 
+test "a loaded save keeps its flows in the save's order, the current one too" {
+    // Found by the swarm's flow changes (P19.4): with flows `one` (current) and `two`, the
+    // load gave the current flow the last record, so the story saved its flows as
+    // DEFAULT_FLOW, two, one. ink's dictionary keeps the order the save lists them in, so a
+    // save that is loaded saves back the same.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    var program = try compile.compile_source(gpa, pointer_source);
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    support.quiet(&story);
+    try story.switch_flow("one");
+    try story.switch_flow("two");
+    _ = try story.cont();
+    try story.switch_flow("one");
+    var saved: std.Io.Writer.Allocating = .init(gpa);
+    defer saved.deinit();
+    try save.to_json(&story, &saved.writer);
+    const text = saved.written();
+    const one = std.mem.indexOf(u8, text, "\"one\":{").?;
+    try std.testing.expect(one < std.mem.indexOf(u8, text, "\"two\":{").?);
+    var loaded: Story = undefined;
+    try loaded.init(gpa, &program, .{});
+    defer loaded.deinit(gpa);
+    support.quiet(&loaded);
+    try load.load_json(&loaded, text);
+    var again: std.Io.Writer.Allocating = .init(gpa);
+    defer again.deinit();
+    try save.to_json(&loaded, &again.writer);
+    try std.testing.expectEqualStrings(text, again.written());
+}
+
 test "a saved variable pointer's context is checked on load and when followed" {
     // Found in review: a pointer's "ci" from a save reached the VM unchecked. Below -1 is
     // InvalidSave; a frame deeper than the call stack loads (ink only finds out when it

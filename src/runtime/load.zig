@@ -189,7 +189,8 @@ const Loader = struct {
         s.previous_random = previous;
     }
 
-    /// The flows: the current one last, so it ends up in the live buffers.
+    /// The flows, their records in the save's order: the current one loads last, so it ends
+    /// up in the live buffers.
     ///
     /// The default flow must be there, as every save ink writes from a story has it: ink
     /// writes one flow only while it has no named flows, and that one is the default. A lone
@@ -204,6 +205,12 @@ const Loader = struct {
         const current = if (current_name) |name| try as(name, .string) else null;
         if (!all.contains(flows.default_name)) return error.InvalidSave;
         if (current != null and !all.contains(current.?)) return error.InvalidSave;
+        // The records in the save's order first, as ink's dictionary keeps it, so that the
+        // story saves its flows in that order again although the current one loads last.
+        for (all.keys()) |name| {
+            if (name.len == 0) return error.InvalidSave;
+            _ = flows.record_for(loader.state(), name) catch return error.SaveTooLarge;
+        }
         for ([_]bool{ false, true }) |want_current| {
             for (all.keys(), all.values()) |name, flow_json| {
                 const is_current = current == null or std.mem.eql(u8, name, current.?);
