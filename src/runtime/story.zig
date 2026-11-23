@@ -536,6 +536,11 @@ pub const Story = struct {
         }
         if (story.evaluate_depth == 0 and lookahead.active(&story.state)) {
             lookahead.restore(&story.state);
+            // ink keeps the divert pending in the state (its divertedPointer), so the
+            // snapshot holds it, and the snapshot is taken between steps, where none is
+            // pending. A divert to a function or tunnel sets it before the frame push that
+            // can fail; left set, the next cont or choose_path_string ran from it.
+            story.diverted_pointer = .null;
             return err;
         }
         if (lookahead.active(&story.state)) lookahead.discard(&story.state);

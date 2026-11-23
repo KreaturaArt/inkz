@@ -201,6 +201,42 @@ test "a cont that fails in the newline lookahead leaves a state that saves" {
     try std.testing.expect(loaded.state.check() == .ok);
 }
 
+test "a cont that fails in the newline lookahead leaves no divert pending" {
+    // P18.5, found by the swarm's host target: a call to a function sets the pending divert
+    // before the frame push that fails at frames_max, and the lookahead's restore kept it,
+    // so choose_path_string asserted that none was pending. A function that recurses past
+    // frames_max right after the first line; cont fails, back at the end of that line, and
+    // the story chooses a knot and plays it.
+    const gpa = std.testing.allocator;
+    const compile = @import("../compiler/compile.zig");
+    const source =
+        \\Hello
+        \\{f(1)}
+        \\=== k ===
+        \\There.
+        \\-> END
+        \\=== function f(x) ===
+        \\~ return f(x + 1)
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    const limits: @import("../core/limits.zig").Limits = .{
+        .frames_max = 16,
+        .threads_max = 4,
+        .evaluate_depth_max = 4,
+    };
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{ .limits = limits });
+    defer story.deinit(gpa);
+    story.on_error = support.ignore_message;
+    try std.testing.expectError(error.FrameLimit, story.cont());
+    try std.testing.expect(story.diverted_pointer.is_null());
+    try story.choose_path_string("k", .{});
+    try std.testing.expectEqualStrings("There.\n", (try story.cont()).get());
+    try std.testing.expect(story.state.check() == .ok);
+}
+
 test "a cont that fails in the middle of a step fails closed until reset or load" {
     // Found by the host API fuzz target: after a limit error in the middle of a
     // step, the next cont ran on from the half-done state and asserted. A function
