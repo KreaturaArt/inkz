@@ -21,6 +21,12 @@ const runner = @import("testing/swarm_runner.zig");
 const simulate = @import("simulate.zig");
 const simulation = @import("testing/simulation.zig");
 const swarm_differential = @import("swarm_differential.zig");
+const coverage = @import("testing/coverage.zig");
+const build_options = @import("build_options");
+
+comptime {
+    if (build_options.coverage) coverage.reference_library();
+}
 
 /// The default panic, after the seed a swarm run was on (`runner.running`), so a crash
 /// can be reproduced.
@@ -157,6 +163,12 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
         try file_writer.interface.flush();
         const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, mix);
         failures += summary.failures;
+    }
+    // The coverage build (`zig build swarm-coverage`) reports what the run reached.
+    if (build_options.coverage) {
+        const path = "zig-out/coverage/swarm.txt";
+        try coverage.write_report(gpa, io, path, &file_writer.interface);
+        try file_writer.interface.print("coverage: wrote {s}\n", .{path});
     }
     try file_writer.interface.flush();
     if (failures > 0) std.process.exit(1);
