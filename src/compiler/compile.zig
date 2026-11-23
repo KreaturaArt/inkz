@@ -186,8 +186,30 @@ pub fn compile_file_with(
     path: []const u8,
     options: Options,
 ) !Program {
+    const files: source_space.Files = .{ .directory = .{ .io = io, .directory = directory } };
+    return compile_from(gpa, files, path, options);
+}
+
+/// Compiles the file `path` of `files` and the files it includes, all in memory: an INCLUDE
+/// names a file by its path in `files`.
+pub fn compile_files_with(
+    gpa: Allocator,
+    files: []const source_space.MemoryFile,
+    path: []const u8,
+    options: Options,
+) !Program {
+    assert(files.len > 0);
+    return compile_from(gpa, .{ .memory = files }, path, options);
+}
+
+fn compile_from(
+    gpa: Allocator,
+    files: source_space.Files,
+    path: []const u8,
+    options: Options,
+) !Program {
     assert(std.fs.path.basename(path).len > 0);
-    var space = source_space.load(gpa, io, directory, path, .{}) catch |err| switch (err) {
+    var space = source_space.load_files(gpa, files, path, .{}) catch |err| switch (err) {
         // The parser gave up on a file or on the space.
         error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
             if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, path);
@@ -333,6 +355,34 @@ test "compile_source fails on an INCLUDE it can't load instead of dropping it" {
     // An INCLUDE in a comment is no INCLUDE.
     var program = try compile_source(gpa, "// INCLUDE missing.ink\nHello\n");
     program.deinit(gpa);
+}
+
+test "files in memory compile to inklecate's JSON, and a missing one fails" {
+    // P19.4: a story's knots in two included files, one included through the other, give
+    // inklecate's JSON (checked against ink v1.2.1): ink's PreProcessTopLevelObjects ends
+    // each INCLUDE's content with a newline and puts the included flows after the file's
+    // own. An INCLUDE of a path the files don't have is its "Failed to load" error.
+    const gpa = std.testing.allocator;
+    const files = [_]source_space.MemoryFile{
+        .{ .path = "main.ink", .text = "VAR x = 1\nStart {x}\n-> k0\nINCLUDE a.ink\n" },
+        .{ .path = "a.ink", .text = "INCLUDE b.ink\n=== k1 ===\nIn k1\n-> END\n" },
+        .{ .path = "b.ink", .text = "=== k0 ===\nIn k0\n-> k1\n" },
+    };
+    var program = try compile_files_with(gpa, &files, "main.ink", .{});
+    defer program.deinit(gpa);
+    var json: std.Io.Writer.Allocating = .init(gpa);
+    defer json.deinit();
+    try ink_json.serialize(gpa, &program, &json.writer);
+    const expected = "{\"inkVersion\":21,\"root\":[[\"^Start \",\"ev\",{\"VAR?\":\"x\"}," ++
+        "\"out\",\"/ev\",\"\\n\",{\"->\":\"k0\"},\"\\n\",\"\\n\",[\"done\",{\"#n\":\"g-0\"}]," ++
+        "null],\"done\",{\"k1\":[\"^In k1\",\"\\n\",\"end\",null],\"k0\":[\"^In k0\"," ++
+        "\"\\n\",{\"->\":\"k1\"},null],\"global decl\":[\"ev\",1,{\"VAR=\":\"x\"},\"/ev\"," ++
+        "\"end\",null]}],\"listDefs\":{}}";
+    try std.testing.expectEqualStrings(expected, json.written());
+    try std.testing.expectError(
+        error.CompileFailed,
+        compile_files_with(gpa, files[0..2], "main.ink", .{}),
+    );
 }
 
 /// inklecate's JSON for `~ temp x = 1`, `~ x++`, `{x}` at story level: ink resolves a

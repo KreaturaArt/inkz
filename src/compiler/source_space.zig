@@ -183,11 +183,33 @@ pub const Decoded = struct {
 /// An INCLUDE of a parsed file: its node, name and offset in the space.
 const Include = struct { node: NodeIndex, name: []const u8, offset: u32 };
 
+/// A file of an in-memory compilation: its path, as the root's or an INCLUDE's path names
+/// it, and its text.
+pub const MemoryFile = struct { path: []const u8, text: []const u8 };
+
+/// Where a compilation's files come from: a directory, or files in memory (which the
+/// swarm compiles INCLUDEs from without touching the file system).
+pub const Files = union(enum) {
+    directory: struct { io: std.Io, directory: std.Io.Dir },
+    memory: []const MemoryFile,
+};
+
 /// Loads `root_path` (relative to `directory`) and everything it includes, and parses it.
 pub fn load(
     gpa: Allocator,
     io: std.Io,
     directory: std.Io.Dir,
+    root_path: []const u8,
+    bounds: limits.CompilerLimits,
+) !Space {
+    const files: Files = .{ .directory = .{ .io = io, .directory = directory } };
+    return load_files(gpa, files, root_path, bounds);
+}
+
+/// Loads `root_path` from `files` and everything it includes, and parses it.
+pub fn load_files(
+    gpa: Allocator,
+    files: Files,
     root_path: []const u8,
     bounds: limits.CompilerLimits,
 ) !Space {
@@ -198,8 +220,7 @@ pub fn load(
     var discovery: Discovery = .{
         .gpa = gpa,
         .arena = arena_state.allocator(),
-        .io = io,
-        .directory = directory,
+        .files_from = files,
         .bounds = bounds,
         .parser = try grammar.SpaceParser.init(gpa, bounds),
     };
@@ -223,8 +244,7 @@ pub fn load(
 const Discovery = struct {
     gpa: Allocator,
     arena: Allocator,
-    io: std.Io,
-    directory: std.Io.Dir,
+    files_from: Files,
     bounds: limits.CompilerLimits,
     parser: grammar.SpaceParser,
     files: std.ArrayList(File) = .empty,
@@ -303,14 +323,24 @@ const Discovery = struct {
     /// The file's text, or null if it can't be read.
     fn read(discovery: *Discovery, path: []const u8) !?[]const u8 {
         assert(path.len > 0);
-        const limit: std.Io.Limit = .limited(file_bytes_max);
-        const directory = discovery.directory;
-        const io = discovery.io;
-        const text = directory.readFileAlloc(io, path, discovery.arena, limit) catch |err| {
-            switch (err) {
+        const text = switch (discovery.files_from) {
+            .directory => |from| from.directory.readFileAlloc(
+                from.io,
+                path,
+                discovery.arena,
+                .limited(file_bytes_max),
+            ) catch |err| switch (err) {
                 error.OutOfMemory => return err,
                 else => return null,
-            }
+            },
+            .memory => |files| text: {
+                for (files) |file| {
+                    if (!std.mem.eql(u8, file.path, path)) continue;
+                    if (file.text.len > file_bytes_max) return null;
+                    break :text file.text;
+                }
+                return null;
+            },
         };
         // The arena frees the copy.
         return (try Decoded.of(discovery.arena, text)).text;
