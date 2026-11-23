@@ -19,9 +19,11 @@ const Swarm = fuzz_ink.Swarm;
 pub const Target = enum {
     /// Compiles; a compiled program passes `Program.check` and compiles the same twice.
     compile,
-    /// Compiles and plays with seeded choices; the state checks after every call.
+    /// Compiles and plays with seeded choices; the state checks after every call. Most seeds
+    /// play again under other limits (`Plan`): the same calls, or a limit stops it.
     play,
-    /// Plays, saves, loads the save into a fresh story, and saves again: the same save.
+    /// Plays to a drawn call, saves, loads the save into a fresh story (which saves the
+    /// same), and plays both on: the same calls, and the same save at the end.
     save,
     /// Fails when glue is on and RANDOM is off: the runner's own test.
     synthetic,

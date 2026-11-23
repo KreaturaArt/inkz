@@ -1,6 +1,6 @@
-//! Shared by the runtime's fuzz targets: a generated story compiled into
-//! a program, a story on it whose errors go to a handler, and play with fuzzer-picked
-//! choices.
+//! Shared by the runtime's fuzz targets and the swarm's play (`zig build swarm`): a
+//! generated story compiled into a program, a story on it whose errors go to a handler, and
+//! play with fuzzer-picked choices.
 
 const std = @import("std");
 const assert = std.debug.assert;

@@ -122,8 +122,16 @@ hk pre-push hook in `hk.pkl` runs `--seconds 10`; `hk install` once per clone)
 (`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
 configuration and a generated story, and the target checks it. `compile` checks the program
 and that it compiles the same twice. `play` plays it with seeded choices and checks the
-state after every call. `save` plays, saves, loads the save into a fresh story and saves
-again. Every failure prints its configuration and the command that reproduces it. The run
+state after every call; each seed binds `e0`, allows its fallback, both or neither (as the
+fuzz targets' `Setup` does), and draws the story's random seed. It then plays the seed a
+second time under the first play's fitted limits (`Limits.fitted(usage, 1)`), under tight
+limits drawn as the limits target draws them, or with the heap compacting at every
+reservation (or not at all, 1 in 6): every call of the second play must show what the
+first one's did (lines, choice counts and errors, hashed per call), or a limit stops it
+after the same calls. `save` plays to a drawn call (or the first after it with no fallback
+choice pending), saves, loads the save into a fresh story, checks that it saves the same,
+and plays both on with the same choices: the same calls, and the same save at the end.
+Every failure prints its configuration and the command that reproduces it. The run
 ends with the **triage** (`src/testing/swarm_triage.zig`, after the swarm paper's §5): the
 features on in every failing run are *triggers*, and those off in every failing run but
 used by passing ones are *suppressors*. `--target save --seeds 2000` takes 39 s and finds
@@ -133,19 +141,28 @@ Each target's summary line also says what the runs reached, counted without allo
 compile failures by the first error's diagnostic code (the most frequent four), played
 stories that hit a runtime error, lines played, choices made, played stories still going
 after the 64 calls a play gets (`step cap`), and those that ended without an error before
-it (`ended`). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
-and after P18.1 made dropping names a swarm feature, and after P18.2 added `hub` and
-`typed`:
+it (`ended`); since P18.3 also the stories stopped at their first line because `e0` had no
+binding (`unbound externals`; a run with `e0` bound fails then), the second plays under
+other limits (`limited runs`) and those a limit stopped (`limit errors`; for `save`, saves
+too large for the loader's scratch), and the saves loaded mid-play and played on (`resumed
+saves`). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
+and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
+`typed`, and after P18.3 bound `e0`, varied the limits and resumed saves:
 
 | | compile failures | play: compiled | runtime errors | lines | choices | step cap |
 | --- | --- | --- | --- | --- | --- | --- |
 | before | 4,363 / 13,842 (31.5%) | 5,336 / 7,800 | 2,350 | 13,164 | 411 | 114 |
 | after P18.1 | 1,413 / 12,278 (11.5%) | 6,255 / 7,085 | 2,991 | 16,887 | 442 | 154 |
 | after P18.2 | 1,085 / 9,144 (11.9%) | 5,239 / 5,963 | 1,795 | 84,115 | 63,192 | 2,138 |
+| after P18.3 | 1,065 / 8,968 (11.9%) | 4,177 / 4,749 | 883 | 81,110 | 58,993 | 2,018 |
 
 The failures left are the error features' (`name_conflict` is `collision`'s). Played
-stories now run longer, so fewer fit in the time. Of the runtime errors left, most are the
-unbound external `e0` (no play binds it yet).
+stories now run longer, so fewer fit in the time. After P18.3 a quarter of the runtime
+errors left are the stories without a binding for `e0` (209 of 883); the play target plays
+most seeds twice. Its throughput (`--target play --seconds 5`) went from 2,001 to 1,558
+runs/s, `save` from 1,355 to 1,240 and `compile` stayed at about 3,000, so every seed gets
+the second play (doing it on a fraction of the seeds would only pay below half the
+throughput).
 
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.
