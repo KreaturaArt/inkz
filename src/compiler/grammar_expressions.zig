@@ -231,8 +231,8 @@ pub fn expression_string(machine: *Machine, frame: *Frame) Error!Action {
         machine.flags |= grammar.parsing_string;
         return grammar.call_then(frame, 1, .mixed_text_and_logic);
     }
-    // Set before the call; the callee's backtracking restores it to that.
-    assert(machine.flags & grammar.parsing_string != 0);
+    // Set before the call, but a string in a divert's arguments within this one cleared it
+    // when it ended, as ink clears parsingStringExpression.
     if (!grammar.parse_string(machine, "\"")) grammar.report_expected(machine, .closing_quote);
     machine.flags &= ~grammar.parsing_string;
     const marker = frame.checkpoint.scratch;

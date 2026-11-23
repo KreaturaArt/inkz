@@ -344,6 +344,26 @@ test "a literal ink can't fold, such as - true, fails to compile instead of leak
     program.deinit(gpa);
 }
 
+test "a string in a thread's arguments inside an unclosed string fails to compile" {
+    // P19.6: the inner string ends and clears ink's parsingStringExpression, which the outer
+    // one asserted was still set (the swarm's mutate target, seed 67029, cut a line in
+    // half). inklecate prints only the first message; inkz also prints two more in the same
+    // rule scope (git issue 2746c05).
+    const gpa = std.testing.allocator;
+    const source = "Hello\n<- t(\"a<- t(\"b\")\n-> DONE\n== t(n) ==\nx\n-> DONE\n";
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var printer: Printer = .{ .out = &out };
+    const sink: messages.Sink = .{ .context = &printer, .function = Printer.print };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, source, .{
+        .diagnostics = sink,
+    }));
+    const first = "' line 2: Expected close quote for string expression but saw end of line\n";
+    const end = std.mem.indexOfScalar(u8, out.written(), '\n').? + 1;
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "ERROR: '"));
+    try std.testing.expect(std.mem.endsWith(u8, out.written()[0..end], first));
+}
+
 test "compile_source fails on an INCLUDE it can't load instead of dropping it" {
     // ERROR: line 1: Failed to load: 'missing.ink' (inklecate). compile_source reads no
     // files, so every INCLUDE fails; it was once dropped silently, compiling "Hello" alone.
