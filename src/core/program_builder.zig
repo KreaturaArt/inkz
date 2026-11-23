@@ -865,11 +865,7 @@ test "finish frees everything and leaves the builder whole when an allocation fa
     // pool init after it left `builder.strings` undefined for `deinit`. Fail every
     // allocation of building and finishing the sample in turn; the testing allocator
     // reports any leak and `deinit` any broken builder.
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        build_and_finish_sample,
-        .{},
-    );
+    try @import("allocation_failures.zig").check(build_and_finish_sample, .{});
 }
 
 test "nested containers come out contiguous with ink paths" {

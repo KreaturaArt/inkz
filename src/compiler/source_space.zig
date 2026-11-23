@@ -453,11 +453,7 @@ test "loading a space frees everything whichever allocation fails" {
     const io = std.testing.io;
     try temporary.dir.writeFile(io, .{ .sub_path = "a.ink", .data = "INCLUDE b.ink\nA\n" });
     try temporary.dir.writeFile(io, .{ .sub_path = "b.ink", .data = "B\n" });
-    try std.testing.checkAllAllocationFailures(
-        std.testing.allocator,
-        load_and_free,
-        .{temporary.dir},
-    );
+    try @import("../core/allocation_failures.zig").check(load_and_free, .{temporary.dir});
 }
 
 /// Three files with INCLUDEs and block comments that span lines, in a temporary directory.

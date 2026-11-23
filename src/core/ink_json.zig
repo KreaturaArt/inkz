@@ -722,7 +722,7 @@ test "loading frees everything when an allocation fails" {
         \\{"inkVersion":21,"root":[{"list":{"l.a":1,"l.b":2}},{"list":{},"origins":["l"]},
         \\{"^var":"x","ci":0},"done",null],"listDefs":{"l":{"a":1,"b":2}}}
     ;
-    try std.testing.checkAllAllocationFailures(std.testing.allocator, load_and_free, .{json});
+    try @import("allocation_failures.zig").check(load_and_free, .{json});
 }
 
 /// Counts the resolved targets in `program`, failing on any divert or choice that has none.
