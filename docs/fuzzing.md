@@ -50,6 +50,25 @@ before it. Random bytes would mostly stop at the first check.
   with more parameters than arguments fails closed"). `--target all --seconds 60` from seed
   1 then ran 25,821 play, 16,036 save and 27,776 host seeds without a failure (play: 2,812
   compile failures, 4,861 runtime errors, 458,046 lines, 325,496 choices).
+- **Larger stories, flows and files (P19.4).** One drawn subset in 16 is *large*: up to
+  32 lines a flow, 8 terms an expression and 6 levels of weave, and its weaves and
+  expressions go on longer (a flow otherwise ends after 4 lines on average), so its stories
+  have 2.6 times the bytes (2,690 against 1,033 on average over 2,000 draws; the longest
+  7,399). `Swarm.classic` doesn't change. The swarm runner's plans (not `Swarm` features,
+  so the triage doesn't see them) add the rest: each play gets a step cap of 64 or, half
+  the time, 4 to 256 calls; a quarter of the plays switch to the flows `one` and `two`, back
+  to the default flow, or remove one, before 1 call in 8 (a new flow starts at the top of the
+  story); and a quarter of the stories of the compile, play and save targets are also
+  compiled from 2 or 3 files in memory (`compile.compile_files_with`): the root in
+  `main.ink`, ended by `-\n-> DONE` before its INCLUDEs, the knots in `part1.ink` and, from
+  a drawn later knot, `part2.ink`, included from `main.ink` or from `part1.ink`. They must
+  compile, or fail with the same first error, as the one source they join to, and play the
+  same. The root ends with a divert because ink ends each INCLUDE's content with a newline
+  (`PreProcessTopLevelObjects`) that joins the weave where the INCLUDE stands: after a
+  choice it goes into the choice's body and drops its divert to the gather (inklecate
+  does the same; inkz matches it), and at the top it moves the paths that runtime errors
+  name. 1 in 8 of the splits also includes a missing file or main.ink again, and must fail
+  with `include_not_found` or `include_cycle`.
 - **Loader targets.** These start from a valid file (a program image, a story's JSON or a
   save) and let the fuzzer edit its words or tokens.
 
@@ -152,7 +171,7 @@ limits drawn as the limits target draws them, or with the heap compacting at eve
 reservation (or not at all, 1 in 6): every call of the second play must show what the
 first one's did (lines, choice counts and errors, hashed per call), or a limit stops it
 after the same calls. `save` plays to a drawn call (or the first after it with no fallback
-choice pending), saves, loads the save into a fresh story, checks that it saves the same,
+choice pending in any flow, else to the step cap with no save), saves, loads the save into a fresh story, checks that it saves the same,
 and plays both on with the same choices: the same calls, and the same save at the end.
 `host` (P18.5) acts as a host on stories with `hub` and `typed` on (and without `drop` and
 `collision`, so they compile): it puts an observer on every global and runs the simulator's
@@ -186,8 +205,11 @@ nothing.
 Each target's summary line also says what the runs reached, counted without allocating:
 compile failures by the first error's diagnostic code (the most frequent four), played
 stories that hit a runtime error, lines played, choices made, played stories still going
-after the 64 calls a play gets (`step cap`), and those that ended without an error before
-it (`ended`); since P18.3 also the stories stopped at their first line because `e0` had no
+after the calls a play gets (`step cap`), and those that ended without an error before
+it (`ended`); since P19.4 also the large configurations' runs (`large`), the stories also
+compiled from files, their files and the broken ones (`included ... from ... files, ...
+broken`), the plays that made more than 64 calls (`long plays`), and the flow switches and
+removals (`flow changes`); since P18.3 also the stories stopped at their first line because `e0` had no
 binding (`unbound externals`; a run with `e0` bound fails then), the second plays under
 other limits (`limited runs`) and those a limit stopped (`limit errors`; for `save`, saves
 too large for the loader's scratch), and the saves loaded mid-play and played on (`resumed
@@ -457,11 +479,50 @@ valid story reaches (an increment of an unknown variable, a divert-target or `re
 argument that isn't one, `not` before `?` or `has`, 746-1113). A mutation rarely makes
 exactly those; a targeted generator feature would.
 
+### Flows, INCLUDE, larger stories and step caps (P19.4, 2026-11-23)
+
+`zig build swarm-coverage -- --target all --seconds 20` from seed 1, before and after
+P19.4, lines hit:
+
+| Module | before | after |
+|---|---|---|
+| src/compiler | 1,900 / 2,528 (75.2 %) | 2,004 / 2,534 (79.1 %) |
+| src/runtime | 1,535 / 1,853 (82.8 %) | 1,539 / 1,863 (82.6 %) |
+| src/core | 639 / 858 (74.5 %) | 642 / 858 (74.8 %) |
+
+By file (blocks): `source_space.zig` 9.0 to 66.0 %, `sema_includes.zig` 0 to 73.1 %,
+`compile.zig` 37.5 to 50.0 %, `messages.zig` 44.8 to 47.9 % (the INCLUDE problems),
+`flows.zig` 76.9 to 80.0 %. Of the INCLUDE code only `try` error edges, a root in a
+subdirectory (the path join, `source_space.zig:292-294`) and the depth and file-count
+limits (304, 307) stay unreached; the `source_space.zig` tests cover them. The runtime
+gains little: the host target switched and removed flows already. The seeds do more, so
+fewer fit: 1,869 play, 1,377 save, 2,775 host and 5,602 mutate runs in the 20 s, against
+2,675, 1,896, 3,115 and 5,567 before; 5,000 seeds take 7.5 s instead of 5.7 s for `play`
+and 8.5 s instead of 6.5 s for `save` (ReleaseSafe; the step caps are 1.5 times as long on average, and a
+quarter of the stories compile and play twice more). `--target all --seconds 60` from seed
+1 then ran 13,982 play, 9,471 save, 19,028 host and 20,598 mutate seeds without a failure
+(play: 753 large, 3,441 included from 8,602 files of which 414 broken, 2,198 long plays,
+18,928 flow changes).
+
+The flow changes found two bugs, both in the order of the flows in a save. A loaded save
+gave the current flow the last record, so a save with `one` (current) and `two` saved back
+as `two`, `one`; it now takes the records in the save's order first, as ink's dictionary
+does (`save_load_test.zig`, "a loaded save keeps its flows in the save's order"). And a new
+flow took the first free record, where .NET's Dictionary takes the one freed last (checked
+with .NET 8); it now does the same (`flows.zig`, "a new flow takes the record freed last").
+Two differences are ink's own and the save target allows them: after a flow is removed and
+another made, a story and its loaded save list their flows in other orders (the loaded
+dictionary has no holes), so the end saves compare but for flow order; and a parked flow
+that keeps a fallback choice to the step cap has no save, as the loaded save would save
+other choice indices. inkz recomputes those where ink keeps the saved ones: P19.9 (git
+issue e8ec540). Compiling from files found no difference to inklecate: the choice body's
+newline above is inklecate's JSON too.
+
 Real **gaps**, each assigned to a Phase 19 issue (P19.8 is git issue ba7dd2c):
 
 | Area | Where | Follow-up |
 |---|---|---|
-| INCLUDE and `compile_file` | `compiler/source_space.zig:61-328`, `compiler/sema_includes.zig:19-108`, `compiler/compile.zig:176-226`, `grammar_statements.zig:376-381` | P19.4 |
+| INCLUDE and `compile_file` | `compiler/source_space.zig:61-328`, `compiler/sema_includes.zig:19-108`, `compiler/compile.zig:176-226`, `grammar_statements.zig:376-381` | P19.4: done but a root in a subdirectory and the depth and file limits (below) |
 | Most diagnostics: the generator only makes `drop` and `collision` errors | `compiler/messages.zig:190-267,409-613,746-1113` (texts of other codes, scopes, expressions), `grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462,493-501` (error recovery), `lower_termination.zig:183-193`, `resolve_lookups.zig:93-103` | P19.3 (mutants): all but the scopes, the expression printer and the semantic-error texts (above) |
 | `TURNS_SINCE`/`READ_COUNT` of `-> target`, divert targets in expressions | `runtime/vm.zig:500,516-529`, `resolve_passes.zig:290-323` | P19.8 |
 | List `^`, `LIST_RANGE` with list bounds, a bare list item as a value | `runtime/lists.zig:223-230,357-362`, `runtime/ops.zig:520-523` | P19.8 |
