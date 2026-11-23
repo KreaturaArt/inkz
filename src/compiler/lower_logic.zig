@@ -45,7 +45,6 @@ pub fn divert_item(lowering: *const Lowering, divert: ObjectIndex) ir_module.Div
 fn first_component(lowering: *const Lowering, divert: ObjectIndex) []const u8 {
     const ast = lowering.ast();
     const node = lowering.tree.node(divert);
-    assert(!node.is_none());
     if (ast.tag(node) == .function_call) return lowering.parsed.slot_text(node, .name);
     const path = ast.slot(node, .path);
     if (ast.tag(path) != .path) return "";
@@ -103,7 +102,6 @@ pub fn add_arguments(lowering: *Lowering, container: ContainerId, divert: Object
 
 fn is_reference_parameter(lowering: *const Lowering, flow: ObjectIndex, position: usize) bool {
     // A knot's or stitch's syntax has its parameters at 1; the story has none.
-    assert(lowering.tree.is_flow(flow));
     assert(lowering.tree.kind(flow) != .story);
     const ast = lowering.ast();
     const parameters = ast.slot(lowering.tree.node(flow), .parameters);
@@ -116,7 +114,6 @@ pub fn generate_tunnel_onwards(lowering: *Lowering, onwards: ObjectIndex) !Resul
     const ir = &lowering.ir;
     const container = try ir.new_container();
     _ = try ir.add_opcode(container, .eval_start);
-    assert(lowering.tree.kind(onwards) == .tunnel_onwards);
     const children = lowering.tree.children_of(onwards);
     // At most the divert to take instead of returning.
     assert(children.len <= 1);
@@ -147,7 +144,6 @@ fn own_expression(lowering: *const Lowering, branch: ObjectIndex) ?ObjectIndex {
     for (lowering.tree.children_of(branch)) |child| {
         if (lower.is_expression(lowering.tree.kind(child))) return child;
     }
-    assert(lowering.tree.kind(branch) == .conditional_branch);
     return null;
 }
 
@@ -190,7 +186,6 @@ fn branch_flags(lowering: *const Lowering, branch: ObjectIndex) BranchFlags {
 
 /// ConditionalSingleBranch.GenerateRuntimeObject: the test and divert, and the content `b`.
 pub fn generate_branch(lowering: *Lowering, branch: ObjectIndex) !Result {
-    assert(lowering.tree.kind(branch) == .conditional_branch);
     const flags = branch_flags(lowering, branch);
     const ir = &lowering.ir;
     const container = try ir.new_container();
@@ -223,7 +218,6 @@ fn branch_content(lowering: *const Lowering, branch: ObjectIndex) ?ContainerId {
     for (lowering.tree.children_of(branch)) |child| {
         if (lowering.tree.kind(child) == .weave) return lowering.result(child).container;
     }
-    assert(lowering.tree.kind(branch) == .conditional_branch);
     return null;
 }
 
@@ -262,7 +256,6 @@ const once = ast_module.sequence_once;
 /// Sequence.GenerateRuntimeObject.
 pub fn generate_sequence(lowering: *Lowering, sequence: ObjectIndex) !Result {
     const ir = &lowering.ir;
-    assert(lowering.tree.kind(sequence) == .sequence);
     const kind_leaf = lowering.ast().slot(lowering.tree.node(sequence), .kind);
     assert(lowering.ast().tag(kind_leaf) == .sequence_kind);
     const kind = lowering.ast().data[kind_leaf.to_int()];
@@ -346,7 +339,6 @@ fn add_sequence_branch(
 /// VariableAssignment.GenerateRuntimeObject (a global declaration generates nothing here).
 pub fn generate_assignment(lowering: *Lowering, assignment: ObjectIndex) !Result {
     const tree = lowering.tree;
-    assert(tree.kind(assignment) == .variable_assignment);
     if (tree.has(assignment, Flags.global)) return .none;
     const ir = &lowering.ir;
     const container = try ir.new_container();
@@ -366,7 +358,6 @@ pub fn generate_assignment(lowering: *Lowering, assignment: ObjectIndex) !Result
 pub fn generate_return(lowering: *Lowering, object: ObjectIndex) !Result {
     const ir = &lowering.ir;
     const container = try ir.new_container();
-    assert(lowering.tree.kind(object) == .@"return");
     const children = lowering.tree.children_of(object);
     // At most the returned expression.
     assert(children.len <= 1);
@@ -382,6 +373,5 @@ pub fn generate_return(lowering: *Lowering, object: ObjectIndex) !Result {
 }
 
 comptime {
-    assert(@sizeOf(Item) > 0);
     assert(@sizeOf(resolve.Reference) == 1);
 }

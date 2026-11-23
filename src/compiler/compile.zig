@@ -90,7 +90,6 @@ fn lower_parsed(
     options: Options,
     report: ?Report,
 ) !lower.Lowered {
-    assert(parsed.tree.tags.len > 0);
     assert(space == null or space.?.files.len > 0);
     const sema_zone = profile.begin(.compile_sema);
     var tree = if (space) |files| try sema.build_space_tree(gpa, files) else try sema.build_tree(
@@ -142,7 +141,6 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
 
 /// `compile_source` with options.
 pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options) !Program {
-    assert(@TypeOf(gpa) == Allocator);
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
         defer profile_zone.end();
@@ -188,7 +186,6 @@ pub fn compile_file_with(
     options: Options,
 ) !Program {
     assert(std.fs.path.basename(path).len > 0);
-    assert(path.len > 0);
     var space = source_space.load(gpa, io, directory, path, .{}) catch |err| switch (err) {
         // The parser gave up on a file or on the space.
         error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
@@ -218,7 +215,6 @@ pub fn compile_file_with(
 /// whose paths are longer than the JSON writer's 64 components (about 60 nested weave
 /// levels) is CompileFailed.
 pub fn compile_to_json(gpa: Allocator, source: []const u8) ![]u8 {
-    assert(@TypeOf(gpa) == Allocator);
     var program = try compile_source(gpa, source);
     defer program.deinit(gpa);
     var out: std.Io.Writer.Allocating = .init(gpa);

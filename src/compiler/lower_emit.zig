@@ -25,7 +25,6 @@ const KeyTarget = program_builder.KeyTarget;
 /// Container.countFlags: start-only alone serves no purpose, so it is dropped.
 fn count_flags(flags: u8) u8 {
     assert(flags & 0xf8 == 0);
-    assert(flags <= 7);
     return if (flags == ir_module.count_start_only) 0 else flags;
 }
 
@@ -63,7 +62,6 @@ fn step(
     builder: *ProgramBuilder,
     frame: *Frame,
 ) !?ContainerId {
-    assert(lowered.ir.items.items.len == layout.item_container.len);
     const ir = &lowered.ir;
     const container = ir.container(frame.container);
     if (frame.next_named == null) {
@@ -101,8 +99,6 @@ fn step(
 }
 
 fn is_named_only(lowered: *Lowered, id: ContainerId) bool {
-    assert(id.to_int() < lowered.ir.containers.items.len);
-    assert(!lowered.root.is_none());
     const ir = &lowered.ir;
     const parent = ir.container(id).parent;
     if (parent.is_none()) return false;
@@ -113,7 +109,6 @@ fn is_named_only(lowered: *Lowered, id: ContainerId) bool {
 }
 
 fn add_item(lowered: *Lowered, layout: *const Layout, builder: *ProgramBuilder, value: Item) !void {
-    assert(lowered.ir.items.items.len == layout.item_container.len);
     switch (value) {
         .container => unreachable,
         .opcode => |opcode| try builder.add_bare(opcode),
@@ -166,7 +161,6 @@ fn emit_divert(layout: *const Layout, builder: *ProgramBuilder, divert: ir_modul
 /// A target as the builder's key: the IR container, or an item's container and position.
 fn key_of(layout: *const Layout, target: Target) KeyTarget {
     assert(target == .container or target == .item);
-    assert(layout.item_container.len == layout.item_position.len);
     return switch (target) {
         .container => |id| .{ .key = id.to_int() },
         .item => |item_id| .{
@@ -178,7 +172,6 @@ fn key_of(layout: *const Layout, target: Target) KeyTarget {
 }
 
 fn add_assignment(builder: *ProgramBuilder, name: []const u8, global: bool, new: bool) !void {
-    assert(name.len > 0);
     if (global and new) return builder.add(.global_declare, try builder.global(name));
     if (global) return builder.add_variable(name, .assign);
     const interned = try builder.intern(name);
@@ -192,7 +185,6 @@ fn add_list(
     items: []const ir_module.ListItem,
     origins: []const []const u8,
 ) !void {
-    assert(!lowered.root.is_none());
     const arena = lowered.ir.arena.allocator();
     const names = try arena.alloc([]const u8, items.len);
     for (items, names) |item, *name| name.* = try std.fmt.allocPrint(arena, "{s}.{s}", .{
@@ -205,7 +197,6 @@ fn add_list(
 
 /// listDefs: each list with its items' values.
 fn add_lists(lowered: *Lowered, builder: *ProgramBuilder) !void {
-    assert(!lowered.root.is_none());
     const gpa = lowered.ir.gpa;
     var items: std.ArrayList(ProgramBuilder.ListItemDeclaration) = .empty;
     defer items.deinit(gpa);

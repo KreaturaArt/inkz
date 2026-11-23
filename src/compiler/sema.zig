@@ -127,29 +127,24 @@ pub const Tree = struct {
     }
 
     pub fn kind(tree: *const Tree, object: ObjectIndex) Kind {
-        assert(object.to_int() < tree.count());
         return tree.objects.items(.kind)[object.to_int()];
     }
 
     /// Whether any of `flag`'s bits is set.
     pub fn has(tree: *const Tree, object: ObjectIndex, flag: u16) bool {
-        assert(object.to_int() < tree.count());
         assert(flag != 0);
         return tree.objects.items(.flags)[object.to_int()] & flag != 0;
     }
 
     pub fn parent(tree: *const Tree, object: ObjectIndex) ObjectIndex {
-        assert(object.to_int() < tree.count());
         return tree.objects.items(.parent)[object.to_int()];
     }
 
     pub fn node(tree: *const Tree, object: ObjectIndex) NodeIndex {
-        assert(object.to_int() < tree.count());
         return tree.objects.items(.node)[object.to_int()];
     }
 
     pub fn children_of(tree: *const Tree, object: ObjectIndex) []const ObjectIndex {
-        assert(object.to_int() < tree.count());
         const first = tree.objects.items(.children_first)[object.to_int()];
         const length = tree.objects.items(.children_count)[object.to_int()];
         assert(first + length <= tree.children.len);
@@ -158,7 +153,6 @@ pub const Tree = struct {
 
     pub fn is_flow(tree: *const Tree, object: ObjectIndex) bool {
         const object_kind = tree.kind(object);
-        assert(@backingInt(object_kind) < @typeInfo(Kind).@"enum".field_names.len);
         return object_kind == .story or object_kind == .knot or object_kind == .stitch;
     }
 
@@ -184,7 +178,6 @@ pub const Tree = struct {
             assert(steps < tree.count());
             current = tree.parent(current);
         }
-        assert(tree.is_flow(current));
         return current;
     }
 
@@ -231,7 +224,6 @@ pub const Tree = struct {
     }
 
     pub fn deinit(tree: *Tree, gpa: Allocator) void {
-        assert(tree.objects.len > 0);
         tree.objects.deinit(gpa);
         gpa.free(tree.children);
         tree.* = undefined;
@@ -348,7 +340,6 @@ fn line_start(parsed: *const grammar.Parsed, tree: *const Tree, newline: ObjectI
     assert(tree.kind(newline) == .text);
     const siblings = tree.children_of(tree.parent(newline));
     var position = std.mem.indexOfScalar(ObjectIndex, siblings, newline).?;
-    assert(position < siblings.len);
     while (position > 0) {
         position -= 1;
         const sibling = siblings[position];
@@ -375,7 +366,6 @@ fn first_token(parsed: *const grammar.Parsed, root: NodeIndex) ?u32 {
 }
 
 fn has_token(tag: Tag) bool {
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     assert(ast_module.shape(tag) == .leaf);
     return switch (tag) {
         .none, .missing, .count, .header, .newline, .tag_end => false,
@@ -386,7 +376,6 @@ fn has_token(tag: Tag) bool {
 
 /// Builds the object tree of a parsed story.
 pub fn build_tree(gpa: Allocator, parsed: *const grammar.Parsed) !Tree {
-    assert(parsed.tree.tags.len == parsed.tree.data.len);
     assert(parsed.tree.tag(parsed.tree.root) == .story);
     var builder: build.Builder = .{ .gpa = gpa, .parsed = parsed };
     defer builder.deinit();
@@ -410,7 +399,6 @@ const dump = @import("dump.zig");
 
 /// The tree as one line per object, indented: its kind and the name or text it carries.
 fn render(gpa: Allocator, parsed: *const grammar.Parsed, tree: *const Tree) ![]u8 {
-    assert(tree.count() > 0);
     var out: std.Io.Writer.Allocating = .init(gpa);
     errdefer out.deinit();
     var objects = tree.walk(gpa, Tree.root, .pre);
@@ -430,7 +418,6 @@ fn render_label(
     object: ObjectIndex,
     out: *std.Io.Writer,
 ) !void {
-    assert(tree.count() > 0);
     const node = tree.node(object);
     if (node.is_none()) return;
     const ast = &parsed.tree;
@@ -446,7 +433,6 @@ fn render_label(
 }
 
 fn expect_tree(source: []const u8, expected: []const u8) !void {
-    assert(expected.len > 0);
     const gpa = std.testing.allocator;
     var parsed = try grammar.parse(gpa, source, .{});
     defer parsed.deinit(gpa);
@@ -616,8 +602,6 @@ test "expressions keep ink's shape: calls hold a proxy divert, {x} is the expres
 }
 
 fn expect_space_tree(comptime name: []const u8, expected: []const u8) !void {
-    assert(name.len > 0);
-    assert(expected.len > 0);
     const gpa = std.testing.allocator;
     var directory = try std.Io.Dir.cwd().openDir(
         std.testing.io,

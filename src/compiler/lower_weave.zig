@@ -32,13 +32,10 @@ pub const States = struct {
     kept: std.ArrayList(Kept) = .empty,
 
     pub fn init(gpa: Allocator) States {
-        assert(@sizeOf(Generation) > 0);
-        assert(@sizeOf(Passed) > 0);
         return .{ .gpa = gpa };
     }
 
     pub fn deinit(states: *States) void {
-        assert(states.passed.capacity >= states.passed.items.len);
         states.passed.deinit(states.gpa);
         states.kept.deinit(states.gpa);
     }
@@ -58,7 +55,6 @@ const Generation = struct {
 
 /// Weave.GenerateRuntimeObject.
 pub fn generate_weave(lowering: *Lowering, weave: ObjectIndex) !Result {
-    assert(lowering.tree.kind(weave) == .weave);
     const ir = &lowering.ir;
     const root = try ir.new_container();
     var generation: Generation = .{ .root = root, .current = root };
@@ -270,7 +266,6 @@ fn pass_to_ancestors(lowering: *Lowering, generation: *Generation, weave: Object
 
 /// Gather.GenerateRuntimeObject: named by its label (or later `g-N`), counted from its start.
 pub fn generate_gather(lowering: *Lowering, gather: ObjectIndex) !Result {
-    assert(lowering.tree.kind(gather) == .gather);
     assert(lowering.runtime_containers[gather.to_int()].is_none());
     const ir = &lowering.ir;
     const container = try ir.new_container();

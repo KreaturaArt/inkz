@@ -9,7 +9,6 @@ const lexical = @import("lexical.zig");
 
 /// Writes `parsed`'s tree to `out`; long lists have an item per line, indented.
 pub fn write(gpa: std.mem.Allocator, parsed: *const grammar.Parsed, out: *std.Io.Writer) !void {
-    assert(parsed.tree.root.to_int() < parsed.tree.tags.len);
     const tree = &parsed.tree;
     var nodes = tree.walk(gpa, tree.root);
     defer nodes.deinit();
@@ -60,8 +59,6 @@ pub fn write_diagnostics(parsed: *const grammar.Parsed, out: *std.Io.Writer) !vo
 /// Lists of statements and content get a line per item; short lists (paths, arguments,
 /// parameters) stay on one line.
 fn one_per_line(tag: ast.Tag) bool {
-    assert(ast.shape(.story) == .list);
-    assert(@backingInt(tag) < @typeInfo(ast.Tag).@"enum".field_names.len);
     return switch (tag) {
         .story, .statements, .content_list, .branches, .list_items, .string, .conditions => true,
         else => false,
@@ -69,7 +66,6 @@ fn one_per_line(tag: ast.Tag) bool {
 }
 
 fn leaf(parsed: *const grammar.Parsed, node: ast.NodeIndex, out: *std.Io.Writer) !void {
-    assert(node.to_int() < parsed.tree.data.len);
     const tag = parsed.tree.tag(node);
     const word = parsed.tree.data[node.to_int()];
     assert(ast.shape(tag) == .leaf);

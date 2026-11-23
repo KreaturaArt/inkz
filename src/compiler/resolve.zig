@@ -186,15 +186,12 @@ pub const Code = enum(u8) {
     duplicate_list_literal_item,
 
     pub fn is_warning(code: Code) bool {
-        assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
-        assert(@sizeOf(Code) == 1);
         return code == .loose_end or code == .duplicate_list_literal_item;
     }
 
     /// Whether ink reports it through Story.Error, which keeps no one-error-per-object rule:
     /// it neither checks nor marks the object.
     pub fn reported_by_story(code: Code) bool {
-        assert(@backingInt(code) < @typeInfo(Code).@"enum".field_names.len);
         return switch (code) {
             .constant_redefined, .ambiguous_list_item, .duplicate_external => true,
             else => false,
@@ -255,8 +252,6 @@ pub const Resolution = struct {
     }
 
     pub fn deinit(resolution: *Resolution, gpa: Allocator) void {
-        assert(resolution.targets.len == resolution.references.len);
-        assert(resolution.diverts.len == resolution.targets.len);
         resolution.externals.deinit(gpa);
         gpa.free(resolution.targets);
         gpa.free(resolution.references);
@@ -283,7 +278,6 @@ const KeyContext = struct {
     }
 
     pub fn eql(_: KeyContext, a: Key, b: Key) bool {
-        assert(!a.scope.is_none() and !b.scope.is_none());
         return a.scope == b.scope and std.mem.eql(u8, a.name, b.name);
     }
 };
@@ -297,13 +291,10 @@ pub const Path = struct {
 
     pub fn first(path: *const Path) []const u8 {
         assert(path.count > 0);
-        assert(path.count <= path_components_max);
         return path.components[0];
     }
 
     pub fn is_single(path: *const Path, name: []const u8) bool {
-        assert(path.count <= path_components_max);
-        assert(name.len > 0);
         return path.count == 1 and std.mem.eql(u8, path.components[0], name);
     }
 };
@@ -363,7 +354,6 @@ pub const Context = struct {
     }
 
     pub fn ast(context: *const Context) *const ast_module.Ast {
-        assert(context.parsed.tree.tags.len > 0);
         return &context.parsed.tree;
     }
 
@@ -400,7 +390,6 @@ pub const Context = struct {
         object: ObjectIndex,
         details: Details,
     ) !void {
-        assert(object.to_int() < context.tree.count());
         // A global VAR's duplicate goes through Story.Error too (its scope is the story).
         const by_story = code.reported_by_story() or (code == .duplicate_declaration and
             context.tree.has(object, sema.Flags.global));
@@ -483,7 +472,6 @@ pub const Context = struct {
         name: []const u8,
     ) ?ObjectIndex {
         assert(scope.to_int() < context.tree.count());
-        assert(table.count() <= context.tree.count());
         return table.get(.{ .scope = scope, .name = name });
     }
 };
@@ -540,8 +528,6 @@ const Fixture = struct {
     }
 
     fn deinit(fixture: *Fixture) void {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         const gpa = std.testing.allocator;
         fixture.resolution.deinit(gpa);
         fixture.tree.deinit(gpa);
@@ -550,8 +536,6 @@ const Fixture = struct {
 
     /// The `nth` object of `kind` in tree order (pre-order).
     fn nth(fixture: *const Fixture, kind: sema.Kind, nth_wanted: u32) ObjectIndex {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         var objects = fixture.tree.walk(std.testing.allocator, Tree.root, .pre);
         defer objects.deinit();
         var seen: u32 = 0;
@@ -564,20 +548,14 @@ const Fixture = struct {
     }
 
     fn target(fixture: *const Fixture, object: ObjectIndex) ObjectIndex {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         return fixture.resolution.targets[object.to_int()];
     }
 
     fn reference(fixture: *const Fixture, object: ObjectIndex) Reference {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         return fixture.resolution.references[object.to_int()];
     }
 
     fn codes(fixture: *const Fixture) []const Diagnostic {
-        assert(fixture.tree.count() > 0);
-        assert(fixture.resolution.targets.len == fixture.tree.count());
         return fixture.resolution.diagnostics;
     }
 };
@@ -721,7 +699,6 @@ test "parameters, divert parameters, constants, list items and functions" {
 }
 
 fn expect_fixture_resolves(comptime path: []const u8) !void {
-    assert(path.len > 0);
     comptime assert(std.mem.endsWith(u8, path, ".ink"));
     const gpa = std.testing.allocator;
     const limit: std.Io.Limit = .limited(4 * 1024 * 1024);

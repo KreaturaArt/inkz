@@ -60,7 +60,6 @@ pub const Space = struct {
 
     pub fn deinit(space: *Space, gpa: Allocator) void {
         assert(space.parsed.roots.len == space.files.len);
-        assert(space.files.len > 0);
         if (space.newlines) |newlines| gpa.free(newlines);
         space.included.deinit(gpa);
         space.parsed.deinit(gpa);
@@ -70,7 +69,6 @@ pub const Space = struct {
 
     /// The story an INCLUDE node brings in, if it could be included.
     pub fn included_story(space: *const Space, include: NodeIndex) ?NodeIndex {
-        assert(space.files.len > 0);
         assert(space.parsed.tree.tag(include) == .include);
         const file = space.included.get(include.to_int()) orelse return null;
         if (file == no_file) return null;
@@ -81,7 +79,6 @@ pub const Space = struct {
     /// (built here the first time). Columns count the comment-free text, as ink's
     /// CommentEliminator leaves it.
     pub fn locate(space: *Space, gpa: Allocator, offset: u32) Allocator.Error!Location {
-        assert(space.files.len > 0);
         assert(offset <= space.parsed.source.len);
         if (space.newlines == null) space.newlines = try newline_offsets(gpa, space.parsed.source);
         const newlines = space.newlines.?;
@@ -102,7 +99,6 @@ pub const Space = struct {
     /// The file an offset is in: the last one that starts at or before it (files are laid
     /// end to end, so at a boundary the later file wins, as the scan does).
     pub fn file_at(space: *const Space, offset: u32) usize {
-        assert(space.files.len > 0);
         var low: usize = 0;
         var high: usize = space.files.len;
         while (low < high) {
@@ -116,7 +112,6 @@ pub const Space = struct {
     /// `locate` by scanning: the file table linearly, the text for newlines. The reference
     /// the table is tested against.
     pub fn location_scan(space: *const Space, offset: u32) Location {
-        assert(space.files.len > 0);
         assert(offset <= space.parsed.source.len);
         var file_index: usize = 0;
         for (space.files, 0..) |file, position| {
@@ -139,7 +134,6 @@ fn newline_offsets(gpa: Allocator, text: []const u8) Allocator.Error![]u32 {
         offsets[count] = @intCast(at);
         count += 1;
     }
-    assert(count == offsets.len);
     return offsets;
 }
 
@@ -151,7 +145,6 @@ fn lower_bound(sorted: []const u32, value: u32) usize {
         const middle = low + (high - low) / 2;
         if (sorted[middle] < value) low = middle + 1 else high = middle;
     }
-    assert(low <= sorted.len);
     return low;
 }
 
@@ -159,9 +152,7 @@ fn lower_bound(sorted: []const u32, value: u32) usize {
 /// before inklecate parses it.
 pub fn without_bom(text: []const u8) []const u8 {
     const bom = "\xEF\xBB\xBF";
-    const stripped = if (std.mem.startsWith(u8, text, bom)) text[bom.len..] else text;
-    assert(stripped.len == text.len or stripped.len + bom.len == text.len);
-    return stripped;
+    return if (std.mem.startsWith(u8, text, bom)) text[bom.len..] else text;
 }
 
 /// An INCLUDE of a parsed file: its node, name and offset in the space.
@@ -252,7 +243,6 @@ const Discovery = struct {
         root_directory: []const u8,
         chain: anytype,
     ) !u32 {
-        assert(discovery.bounds.include_files_max > 0);
         const path = if (root_directory.len == 0)
             include_found.name
         else
@@ -309,7 +299,6 @@ const Discovery = struct {
         parent: u32,
         depth: u32,
     ) !void {
-        assert(discovery.bounds.include_files_max > 0);
         const parser = &discovery.parser;
         const start: u32 = @intCast(parser.buffer.items.len);
         const root = try parser.add(discovery.gpa, text);
@@ -345,7 +334,6 @@ const Discovery = struct {
 const fixtures = "test/fixture/original/runtime/misc";
 
 fn load_fixture(gpa: Allocator, comptime name: []const u8) !Space {
-    assert(name.len > 0);
     comptime assert(std.mem.endsWith(u8, name, ".ink"));
     var directory = try std.Io.Dir.cwd().openDir(std.testing.io, fixtures, .{});
     defer directory.close(std.testing.io);

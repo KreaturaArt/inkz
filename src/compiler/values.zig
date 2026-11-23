@@ -28,7 +28,6 @@ pub const Error = error{
 };
 
 fn token_text(parsed: *const grammar.Parsed, leaf: NodeIndex) []const u8 {
-    assert(leaf.to_int() < parsed.tree.tags.len);
     const tree = &parsed.tree;
     assert(ast_module.shape(tree.tag(leaf)) == .leaf);
     const token = tree.data[leaf.to_int()];
@@ -38,7 +37,6 @@ fn token_text(parsed: *const grammar.Parsed, leaf: NodeIndex) []const u8 {
 
 /// The value of a number token: an integer may be written `- 5` (ink's ParseInt).
 fn number(parsed: *const grammar.Parsed, leaf: NodeIndex) Literal {
-    assert(leaf.to_int() < parsed.tree.tags.len);
     const text = token_text(parsed, leaf);
     assert(text.len > 0);
     switch (parsed.tree.tag(leaf)) {
@@ -60,7 +58,6 @@ fn number(parsed: *const grammar.Parsed, leaf: NodeIndex) Literal {
 
 /// UnaryExpression.WithInner on a number.
 fn fold(operator: ast_module.Tag, inner: Literal) Error!Literal {
-    assert(@backingInt(std.meta.activeTag(inner)) < 5);
     assert(operator == .negate or operator == .not);
     if (operator == .negate) return switch (inner) {
         .integer => |value| .{ .integer = -%value },
@@ -82,7 +79,6 @@ pub fn literal(
     object: ObjectIndex,
 ) Error!?Literal {
     assert(object.to_int() < tree.count());
-    assert(parsed.tree.tags.len > 0);
     const ast = &parsed.tree;
     switch (tree.kind(object)) {
         .number => return number(parsed, tree.node(object)),
@@ -116,8 +112,6 @@ pub fn literal(
 
 /// ink's Expression.Equals for constants: the same literal.
 pub fn equal(a: Literal, b: Literal) bool {
-    assert(@backingInt(std.meta.activeTag(b)) < 5);
-    assert(@backingInt(std.meta.activeTag(a)) < 5);
     if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
     return switch (a) {
         .integer => |value| value == b.integer,

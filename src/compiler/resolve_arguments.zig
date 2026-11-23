@@ -118,7 +118,6 @@ fn check_reference(
 /// `-> name`; the error is on the parameter's flow.
 pub fn check_divert_parameter(context: *Context, divert: ObjectIndex, name: []const u8) !void {
     assert(context.tree.kind(divert) == .divert);
-    assert(name.len > 0);
     const owner = context.tree.closest_flow(divert);
     const parameters = context.parameters(owner);
     for (parameters, 0..) |parameter, position| {
@@ -188,7 +187,6 @@ pub fn check_call(context: *Context, call: ObjectIndex, is_list: bool) !void {
 /// parser folds it) holding a float or a bool.
 fn is_non_integer_number(context: *const Context, argument: ObjectIndex) bool {
     const kind = context.tree.kind(argument);
-    assert(argument.to_int() < context.tree.count());
     if (kind != .number and kind != .unary) return false;
     // A fold ink can't do is reported where the expression is generated.
     const value = values.literal(context.parsed, context.tree, argument) catch return false;

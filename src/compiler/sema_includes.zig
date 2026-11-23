@@ -24,15 +24,12 @@ pub fn statements_of(tree: *const Ast, story: NodeIndex) NodeIndex {
 }
 
 fn is_flow_tag(tag: Tag) bool {
-    assert(@sizeOf(Tag) == 1);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return tag == .knot or tag == .function or tag == .stitch or tag == .function_stitch;
 }
 
 /// ink's `subStory.content != null`: whether the included story has anything at all, its
 /// own statements or content from its includes.
 fn has_content(space: *const source_space.Space, story: NodeIndex) bool {
-    assert(space.files.len > 0);
     assert(space.parsed.roots.len == space.files.len);
     const tree = &space.parsed.tree;
     var stack: [64]NodeIndex = undefined;
@@ -55,7 +52,6 @@ fn has_content(space: *const source_space.Space, story: NodeIndex) bool {
 
 /// What an INCLUDE at a story's top level contributes to that story's weave.
 pub fn contribution(space: *const source_space.Space, include: NodeIndex) Contribution {
-    assert(space.files.len > 0);
     const tree = &space.parsed.tree;
     assert(tree.tag(include) == .include);
     const story = space.included_story(include) orelse return .nothing;
@@ -81,7 +77,6 @@ pub fn hoisted_flows(
     story: NodeIndex,
     out: *std.ArrayList(NodeIndex),
 ) !void {
-    assert(space.files.len > 0);
     const tree = &space.parsed.tree;
     var stack: std.ArrayList(NodeIndex) = .empty;
     defer stack.deinit(gpa);
@@ -94,7 +89,6 @@ pub fn hoisted_flows(
         }
         try push_included(gpa, space, included, &stack);
     }
-    assert(stack.items.len == 0);
 }
 
 /// Pushes a story's included stories so that they pop in order.
@@ -104,16 +98,13 @@ fn push_included(
     story: NodeIndex,
     stack: *std.ArrayList(NodeIndex),
 ) !void {
-    assert(space.files.len > 0);
     const tree = &space.parsed.tree;
     const statements = statements_of(tree, story);
     var position = tree.list(statements).count;
-    const before = stack.items.len;
     while (position > 0) {
         position -= 1;
         const item = tree.item(statements, position);
         if (tree.tag(item) != .include) continue;
         if (space.included_story(item)) |included| try stack.append(gpa, included);
     }
-    assert(stack.items.len >= before);
 }

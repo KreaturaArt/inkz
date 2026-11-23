@@ -48,7 +48,6 @@ pub const Lowered = struct {
     lists: []const ListDefinition,
 
     pub fn deinit(lowered: *Lowered) void {
-        assert(!lowered.root.is_none());
         lowered.ir.deinit();
         lowered.* = undefined;
     }
@@ -79,7 +78,6 @@ pub const Lowering = struct {
         resolution: *const resolve.Resolution,
     ) !Lowering {
         assert(resolution.targets.len == tree.count());
-        assert(parsed.tree.tags.len > 0);
         const results = try gpa.alloc(Result, tree.count());
         errdefer gpa.free(results);
         @memset(results, .none);
@@ -142,7 +140,6 @@ pub const Lowering = struct {
     /// Records an error or a warning on `object`; as in ink, an object gets at most one of
     /// each.
     pub fn report(lowering: *Lowering, code: resolve.Code, object: ObjectIndex) !void {
-        assert(object.to_int() < lowering.tree.count());
         for (lowering.diagnostics.items) |diagnostic| {
             if (diagnostic.object != object) continue;
             if (diagnostic.code.is_warning() == code.is_warning()) return;
@@ -159,7 +156,6 @@ pub const Lowering = struct {
     }
 
     pub fn ast(lowering: *const Lowering) *const ast_module.Ast {
-        assert(lowering.parsed.tree.tags.len > 0);
         return &lowering.parsed.tree;
     }
 
@@ -175,7 +171,6 @@ pub const Lowering = struct {
     }
 
     pub fn result(lowering: *const Lowering, object: ObjectIndex) Result {
-        assert(object.to_int() < lowering.results.len);
         return lowering.results[object.to_int()];
     }
 
@@ -186,7 +181,6 @@ pub const Lowering = struct {
             .item => |id| try lowering.ir.attach_or_copy(container, id),
             .container => |child| _ = try lowering.ir.add_container(container, child),
         }
-        assert(container.to_int() < lowering.ir.containers.items.len);
     }
 
     /// The runtime object of an object used as content: an expression is wrapped in
@@ -212,7 +206,6 @@ pub const Lowering = struct {
             .item => |id| try lowering.ir.attach_or_copy(container, id),
             .container => |child| _ = try lowering.ir.add_container(container, child),
         }
-        assert(object.to_int() < lowering.tree.count());
     }
 
     /// Generates every object, children first.
@@ -266,7 +259,6 @@ pub const Lowering = struct {
     fn generate_content_list(lowering: *Lowering, list: ObjectIndex) !Result {
         const container = try lowering.ir.new_container();
         for (lowering.tree.children_of(list)) |child| try lowering.add_content(container, child);
-        assert(lowering.tree.kind(list) == .content_list);
         return .{ .container = container };
     }
 
@@ -294,7 +286,6 @@ pub const Lowering = struct {
             try buffer.append(arena, raw[position]);
         }
         if (tag == .text_space) try buffer.append(arena, ' ');
-        assert(buffer.items.len <= raw.len + 1);
         return buffer.items;
     }
 
@@ -405,14 +396,12 @@ pub const Lowering = struct {
 };
 
 fn has_parameters(lowering: *const Lowering, flow: ObjectIndex) bool {
-    assert(lowering.tree.is_flow(flow));
     assert(lowering.tree.kind(flow) != .story);
     const parameters = lowering.ast().slot(lowering.tree.node(flow), .parameters);
     return lowering.ast().tag(parameters) != .none and lowering.ast().list(parameters).count > 0;
 }
 
 pub fn is_expression(kind: Kind) bool {
-    assert(@backingInt(kind) < @typeInfo(Kind).@"enum".field_names.len);
     return switch (kind) {
         .number, .string_expression, .variable_reference, .function_call, .divert_target => true,
         .binary, .unary, .increment, .list_literal, .multiple_condition => true,

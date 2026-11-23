@@ -25,7 +25,6 @@ const choice_conditions_shift = 8;
 /// Choice: bullets, a label, conditions, then start, choice-only and inner content (the
 /// content after `]`, the diverts and a "\n").
 pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase <= 5);
     switch (frame.phase) {
         0 => {
             var bits: u32 = 0;
@@ -65,7 +64,6 @@ pub fn choice(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ChoiceCondition: Interleave(ChoiceSingleCondition, ChoiceConditionsSpace).
 fn choice_conditions(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .choice and frame.phase == 1);
     if (machine.outcome == .succeeded) {
         frame.locals[2] += 1 << choice_conditions_shift;
         _ = grammar.newline_direct(machine);
@@ -85,7 +83,6 @@ fn choice_conditions(machine: *Machine, frame: *Frame) Error!Action {
 
 /// After the start content: weave-style `[...]`, or straight on to the diverts.
 fn choice_after_start(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .choice and frame.phase == 2);
     if (machine.outcome == .succeeded) frame.locals[2] |= choice_start;
     if (grammar.parse_string(machine, "[")) {
         frame.locals[2] |= choice_brackets;
@@ -111,7 +108,6 @@ fn finish_section(machine: *Machine, frame: *Frame, bit: u32) Error!void {
 }
 
 fn finish_choice(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .choice and frame.phase == 5);
     const bits = frame.locals[2];
     const had_diverts = machine.outcome == .succeeded;
     // An empty divert only says the choice is intentionally blank.
@@ -186,8 +182,7 @@ pub fn choice_single_condition(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 /// Gather: dashes, an optional label, and an optional newline.
-pub fn gather(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase == 0);
+pub fn gather(machine: *Machine, _: *Frame) Error!Action {
     const depth = gather_dashes(machine);
     if (depth == 0) return .fail;
     const marker = machine.scratch_count;
@@ -224,7 +219,6 @@ pub fn dash_not_arrow(machine: *Machine) bool {
 /// MultiDivert: a thread, or arrows and targets (diverts, tunnels, `->->`, a bare `->`).
 /// locals: the marker, how many arrows and targets, and 1 + the index of the first `->->`.
 pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase <= 2);
     switch (frame.phase) {
         0 => {
             _ = grammar.whitespace(machine);
@@ -251,7 +245,6 @@ pub fn multi_divert(machine: *Machine, frame: *Frame) Error!Action {
 
 /// ParseDivertArrowOrTunnelOnwards, counted into the frame.
 fn divert_arrow(machine: *Machine, frame: *Frame) bool {
-    assert(frame.rule == .multi_divert);
     var arrows: u32 = 0;
     while (grammar.parse_string(machine, "->")) arrows += 1;
     if (arrows == 0) return false;
@@ -313,7 +306,6 @@ pub fn start_thread(machine: *Machine, frame: *Frame) Error!Action {
         try machine.wrap(.thread, marker);
         return .succeed;
     }
-    assert(machine.outcome == .succeeded);
     assert(grammar.top_tag(machine, 0) == .divert);
     machine.workspace.scratch_tags[machine.scratch_count - 1] = .thread;
     return .succeed;
@@ -358,7 +350,6 @@ pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
     if (frame.phase == 0) {
         return grammar.call_then(frame, 1, .multi_divert);
     }
-    assert(frame.phase == 1);
     if (machine.outcome == .failed) return .fail;
     if (machine.scratch_count != frame.checkpoint.scratch + 1) return .fail;
     const tag = grammar.top_tag(machine, frame.checkpoint.scratch).?;
@@ -368,5 +359,4 @@ pub fn single_divert(machine: *Machine, frame: *Frame) Error!Action {
 
 comptime {
     assert(choice_inner < 1 << choice_conditions_shift);
-    assert(@sizeOf(ast.Tag) == 1);
 }

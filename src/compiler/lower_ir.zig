@@ -148,8 +148,6 @@ pub const Ir = struct {
     flat: std.ArrayList(ItemId) = .empty,
 
     pub fn init(gpa: Allocator) Ir {
-        assert(@sizeOf(Container) > 0);
-        assert(@sizeOf(Item) > 0);
         return .{ .gpa = gpa, .arena = .init(gpa) };
     }
 
@@ -166,27 +164,21 @@ pub const Ir = struct {
     }
 
     pub fn container(ir: *Ir, id: ContainerId) *Container {
-        assert(id.to_int() < ir.containers.items.len);
-        assert(ir.containers.items.len > 0);
         return &ir.containers.items[id.to_int()];
     }
 
     pub fn item(ir: *const Ir, id: ItemId) Item {
-        assert(id.to_int() < ir.items.items.len);
-        assert(ir.items.items.len > 0);
         return ir.items.items[id.to_int()];
     }
 
     /// A divert item's divert, to set its target later.
     pub fn divert_of(ir: *Ir, id: ItemId) *Divert {
-        assert(id.to_int() < ir.items.items.len);
         return &ir.items.items[id.to_int()].divert;
     }
 
     pub fn new_container(ir: *Ir) !ContainerId {
         const id: ContainerId = .from_int(@intCast(ir.containers.items.len));
         try ir.containers.append(ir.gpa, .{});
-        assert(ir.containers.items.len == id.to_int() + 1);
         return id;
     }
 
@@ -195,20 +187,17 @@ pub const Ir = struct {
         try ir.items.append(ir.gpa, value);
         try ir.next.append(ir.gpa, .none);
         try ir.placed.append(ir.gpa, false);
-        assert(ir.items.items.len == id.to_int() + 1);
         return id;
     }
 
     /// Container.AddContent.
     pub fn add(ir: *Ir, to: ContainerId, value: Item) !ItemId {
-        assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
         try ir.attach(to, id);
         return id;
     }
 
     pub fn add_opcode(ir: *Ir, to: ContainerId, opcode: Opcode) !ItemId {
-        assert(to.to_int() < ir.containers.items.len);
         assert(@import("../core/instruction.zig").operand_kind(opcode) == .none);
         return ir.add(to, .{ .opcode = opcode });
     }
@@ -216,13 +205,11 @@ pub const Ir = struct {
     /// Adds a container as content.
     pub fn add_container(ir: *Ir, to: ContainerId, child: ContainerId) !ItemId {
         assert(to != child);
-        assert(child.to_int() < ir.containers.items.len);
         return ir.add(to, .{ .container = child });
     }
 
     /// Container.InsertContent at index 0 (the only position ink inserts at).
     pub fn prepend(ir: *Ir, to: ContainerId, value: Item) !ItemId {
-        assert(to.to_int() < ir.containers.items.len);
         const id = try ir.new_item(value);
         ir.placed.items[id.to_int()] = true;
         const container_entry = ir.container(to);
@@ -253,21 +240,17 @@ pub const Ir = struct {
             target.first = first;
         } else ir.next.items[target.last.to_int()] = first;
         target.last = last;
-        assert(!ir.container(to).first.is_none());
     }
 
     /// Adds an item made earlier; one already in a container is copied (as ink copies a
     /// constant's runtime objects each time it is used).
     pub fn attach_or_copy(ir: *Ir, to: ContainerId, id: ItemId) !void {
-        assert(id.to_int() < ir.items.items.len);
-        assert(to.to_int() < ir.containers.items.len);
         if (!ir.placed.items[id.to_int()]) return ir.attach(to, id);
         _ = try ir.add(to, ir.item(id));
     }
 
     /// The content of a container after flattening.
     pub fn content_of(ir: *const Ir, id: ContainerId) []const ItemId {
-        assert(id.to_int() < ir.containers.items.len);
         const entry = ir.containers.items[id.to_int()];
         assert(entry.flat_first + entry.flat_count <= ir.flat.items.len);
         return ir.flat.items[entry.flat_first..][0..entry.flat_count];
@@ -275,7 +258,6 @@ pub const Ir = struct {
 
     /// Adds an existing (unplaced) item to the end of a container's content.
     pub fn attach(ir: *Ir, to: ContainerId, id: ItemId) !void {
-        assert(id.to_int() < ir.items.items.len);
         assert(!ir.placed.items[id.to_int()]);
         ir.placed.items[id.to_int()] = true;
         ir.next.items[id.to_int()] = .none;
@@ -287,7 +269,6 @@ pub const Ir = struct {
     /// Each target that is a parsed object becomes that object's runtime container (from
     /// `containers`, by object), so emission needs nothing from the object tree.
     pub fn resolve_objects(ir: *Ir, containers: []const ContainerId) void {
-        assert(ir.items.items.len > 0);
         for (ir.items.items) |*entry| switch (entry.*) {
             .divert => |*divert| divert.target = resolved(divert.target, containers),
             .divert_target, .read_count => |*target| target.* = resolved(target.*, containers),
@@ -316,7 +297,6 @@ pub const Ir = struct {
 
 fn resolved(target: Target, containers: []const ContainerId) Target {
     if (target != .object) return target;
-    assert(target.object.to_int() < containers.len);
     const container = containers[target.object.to_int()];
     return if (container.is_none()) .none else .{ .container = container };
 }

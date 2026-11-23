@@ -89,7 +89,6 @@ fn generate(context: *Context, object: ObjectIndex) !void {
             const name = context.slot_name(object, .name);
             const is_list = context.lookup(&context.lists, Tree.root, name) != null;
             // A built-in's proxy divert is never generated, so never resolved.
-            assert(tree.children_of(object).len > 0);
             const proxy = tree.children_of(object)[0];
             assert(tree.kind(proxy) == .divert);
             if (ir.builtin(name) != null or is_list) {
@@ -148,8 +147,6 @@ fn check_flow(context: *Context, flow: ObjectIndex) !void {
 
 /// A divert a function may not contain: not a function call's, not a divert target's.
 fn is_disallowed_divert(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
     if (tree.kind(object) != .divert or tree.has(object, Flags.function_call)) return false;
     return tree.kind(tree.parent(object)) != .divert_target;
 }
@@ -269,7 +266,6 @@ fn check(context: *Context, object: ObjectIndex) !void {
         },
         else => {},
     }
-    assert(object.to_int() < context.tree.count());
 }
 
 /// Whether an object is one of ink's Expressions (the usage walk climbs through those).
@@ -427,7 +423,6 @@ fn check_divert_itself(context: *Context, divert: ObjectIndex, path: *const Path
 
 /// VariableReference: a constant, a list item, a read count, or a variable.
 fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
-    assert(context.tree.kind(reference) == .variable_reference);
     const node = context.tree.node(reference);
     const path = context.path_of(context.ast().slot(node, .path));
     assert(path.count > 0);
@@ -468,7 +463,6 @@ fn check_variable_reference(context: *Context, reference: ObjectIndex) !void {
 
 /// List.GenerateIntoContainer's lookups: each item of a list literal must exist, and once.
 fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
-    assert(context.tree.kind(literal) == .list_literal);
     const ast = context.ast();
     const node = context.tree.node(literal);
     const items = &context.literal_items;
@@ -494,7 +488,6 @@ fn check_list_literal(context: *Context, literal: ObjectIndex) !void {
 /// VariableAssignment.ResolveReferences.
 fn check_assignment(context: *Context, assignment: ObjectIndex) !void {
     const tree = context.tree;
-    assert(tree.kind(assignment) == .variable_assignment);
     const references = context.references;
     const is_global = tree.has(assignment, Flags.global);
     const declares = is_global or tree.has(assignment, Flags.new_temporary);
@@ -531,7 +524,6 @@ fn check_assignment(context: *Context, assignment: ObjectIndex) !void {
 /// IncDecExpression.ResolveReferences.
 fn check_increment(context: *Context, increment: ObjectIndex) !void {
     const tree = context.tree;
-    assert(tree.kind(increment) == .increment);
     const ast = context.ast();
     const node = tree.node(increment);
     const name = if (tree.has(increment, Flags.by_expression))

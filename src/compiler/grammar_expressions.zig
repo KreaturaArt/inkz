@@ -75,7 +75,6 @@ pub fn expression(machine: *Machine, frame: *Frame) Error!Action {
             return infix(machine, frame);
         },
         else => {
-            assert(frame.phase == 2);
             if (machine.outcome == .failed) {
                 grammar.report_expected(machine, .right_operand);
                 return .fail;
@@ -89,7 +88,6 @@ pub fn expression(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn infix(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression);
     // One operand so far: the first one, or the operators folded into it.
     assert(machine.scratch_count == frame.locals[1] + 1);
     const start = grammar.at(machine);
@@ -108,7 +106,6 @@ fn infix(machine: *Machine, frame: *Frame) Error!Action {
 /// ExpressionUnary: a divert target, or prefix operators and an operand, then `++`/`--`.
 /// locals: the marker and 1 + the prefix tag (0 if none).
 pub fn expression_unary(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase <= 5);
     switch (frame.phase) {
         0 => return grammar.call_then(frame, 1, .expression_divert_target),
         1 => {
@@ -151,7 +148,6 @@ fn prefix_operator(machine: *Machine) Error!u32 {
 }
 
 fn postfix(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .expression_unary);
     const marker = frame.checkpoint.scratch;
     assert(machine.scratch_count == marker + 1);
     if (frame.locals[1] != 0) {
@@ -174,7 +170,6 @@ pub fn expression_divert_target(machine: *Machine, frame: *Frame) Error!Action {
         _ = grammar.whitespace(machine);
         return grammar.call_then(frame, 1, .single_divert);
     }
-    assert(frame.phase == 1);
     if (machine.outcome == .failed) return .fail;
     if (grammar.top_tag(machine, frame.checkpoint.scratch) == .thread) return .fail;
     _ = grammar.whitespace(machine);
@@ -320,7 +315,6 @@ fn list_member(machine: *Machine) Error!bool {
         } else machine.tokens_count -= 1;
         // The first token now covers the whole dotted name.
         machine.workspace.token_ends[first.to_int()] = grammar.at(machine);
-        assert(machine.workspace.token_starts[first.to_int()] < grammar.at(machine));
     }
     try machine.push_node(.identifier, first.to_int());
     _ = grammar.whitespace(machine);
@@ -405,7 +399,6 @@ fn parse_int(machine: *Machine) bool {
     const negative = machine.source[start] == '-';
     const text = machine.source[digits..grammar.at(machine)];
     const value = std.fmt.parseInt(i64, text, 10) catch std.math.maxInt(i64);
-    assert(value >= 0);
     const limit: i64 = if (negative) 1 << 31 else (1 << 31) - 1;
     if (value > limit) {
         grammar.report_message(machine, .integer_out_of_range);

@@ -42,7 +42,6 @@ pub const Builder = struct {
     const Run = struct { first: u32 = 0, count: u32 = 0, indent: u32 = 0 };
 
     pub fn deinit(builder: *Builder) void {
-        assert(builder.children.items.len <= builder.objects.len);
         const gpa = builder.gpa;
         builder.objects.deinit(gpa);
         builder.runs.deinit(gpa);
@@ -52,8 +51,6 @@ pub const Builder = struct {
     }
 
     fn tree(builder: *const Builder) *const Ast {
-        assert(builder.parsed.tree.tags.len > 0);
-        assert(builder.parsed.tree.tags.len == builder.parsed.tree.data.len);
         return &builder.parsed.tree;
     }
 
@@ -94,7 +91,6 @@ pub const Builder = struct {
             .node = node,
         });
         try builder.runs.append(gpa, .{});
-        assert(builder.objects.len == builder.runs.items.len);
         return object;
     }
 
@@ -103,18 +99,15 @@ pub const Builder = struct {
         assert(!builder.objects.items(.parent)[child.to_int()].is_none());
         try builder.children.append(builder.gpa, child);
         try builder.work.append(builder.gpa, child);
-        assert(builder.children.items.len > 0);
     }
 
     fn add_child(builder: *Builder, parent: ObjectIndex, node: NodeIndex) !void {
         assert(!node.is_none());
-        assert(parent.to_int() < builder.objects.len);
         try builder.adopt(try builder.create_from_node(parent, node));
     }
 
     /// Creates `object`'s children, as ink's constructor for its kind does.
     fn expand(builder: *Builder, object: ObjectIndex) !void {
-        assert(builder.children.items.len <= builder.objects.len);
         const first: u32 = @intCast(builder.children.items.len);
         const node = builder.objects.items(.node)[object.to_int()];
         switch (builder.objects.items(.kind)[object.to_int()]) {
@@ -203,7 +196,6 @@ pub const Builder = struct {
         const first: u32 = @intCast(builder.items.items.len);
         try builder.append_story_items(includes.statements_of(builder.tree(), story));
         const count = @as(u32, @intCast(builder.items.items.len)) - first;
-        assert(count > 0);
         return builder.create_weave(parent, first, count, 0);
     }
 
@@ -305,7 +297,6 @@ pub const Builder = struct {
     }
 
     fn create_item(builder: *Builder, parent: ObjectIndex, item: u32) !ObjectIndex {
-        assert(parent.to_int() < builder.objects.len);
         if (item == item_gather) return builder.create(.gather, 0, parent, .none);
         if (item == item_done) return builder.create(.divert, Flags.done, parent, .none);
         if (item == item_newline) return builder.create(.text, Flags.newline, parent, .none);
@@ -341,13 +332,11 @@ pub const Builder = struct {
             const branch: NodeIndex = at(branches, position);
             try builder.add_child(conditional, branch);
         }
-        assert(ast.tag(ast.slot(node, .branches)) == .branches);
     }
 
     /// ConditionalSingleBranch: a weave of its content (if any), then its own condition (ink
     /// sets ownExpression after construction, so it comes last).
     fn expand_branch(builder: *Builder, branch: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.objects.len);
         const ast = builder.tree();
         const is_else = ast.tag(node) == .else_branch;
         const content = ast.slot(node, .content);
@@ -381,7 +370,6 @@ pub const Builder = struct {
 
     /// The children of the other kinds, from their syntax node's shape.
     fn expand_by_tag(builder: *Builder, object: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.objects.len);
         const ast = builder.tree();
         switch (ast.tag(node)) {
             .content_list, .string, .conditions => {
@@ -404,7 +392,6 @@ pub const Builder = struct {
     }
 
     fn expand_fixed(builder: *Builder, object: ObjectIndex, node: NodeIndex) !void {
-        assert(builder.children.items.len <= builder.objects.len);
         const ast = builder.tree();
         const tag = ast.tag(node);
         switch (tag) {
@@ -467,7 +454,6 @@ pub const Builder = struct {
             node = ast.slot(node, .inner);
         }
         const mapped = map_tag(ast.tag(node));
-        assert(ast.tag(node) != .inline_value);
         return builder.create(mapped.kind, mapped.flags | extra, parent, node);
     }
 };
@@ -548,14 +534,10 @@ fn at(items: anytype, position: usize) NodeIndex {
 }
 
 fn is_flow_tag(tag: Tag) bool {
-    assert(@sizeOf(Tag) == 1);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return tag == .knot or tag == .function or tag == .stitch or tag == .function_stitch;
 }
 
 fn is_binary(tag: Tag) bool {
-    assert(@sizeOf(Tag) == 1);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return switch (tag) {
         .add, .subtract, .multiply, .divide, .modulo, .equal, .not_equal, .less, .greater => true,
         .less_equal, .greater_equal, .@"and", .@"or", .has, .hasnt, .intersect => true,

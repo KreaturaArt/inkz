@@ -61,12 +61,10 @@ pub const Collector = struct {
     };
 
     pub fn init(gpa: Allocator) Collector {
-        assert(@TypeOf(gpa) == Allocator);
         return .{ .arena = .init(gpa) };
     }
 
     pub fn deinit(collector: *Collector) void {
-        assert(collector.entries.items.len <= collector.entries.capacity);
         collector.arena.deinit();
         collector.* = undefined;
     }
@@ -79,7 +77,6 @@ pub const Collector = struct {
     /// Author notes, then warnings, then errors, each in the order found (as inklecate prints
     /// them).
     pub fn deliver(collector: *const Collector, sink: Sink) void {
-        assert(collector.entries.items.len <= collector.entries.capacity);
         for ([_]Severity{ .author, .warning, .@"error" }) |severity| {
             for (collector.entries.items) |entry| {
                 if (entry.severity != severity) continue;
@@ -96,7 +93,6 @@ pub const Collector = struct {
     }
 
     pub fn has_errors(collector: *const Collector) bool {
-        assert(collector.entries.items.len <= collector.entries.capacity);
         for (collector.entries.items) |entry| {
             if (entry.severity == .@"error") return true;
         }
@@ -136,7 +132,6 @@ pub const Locator = struct {
 
 /// Renders the parse diagnostics (and the dropped-errors cap, once) into `collector`.
 pub fn collect_parse(collector: *Collector, locator: *const Locator) !void {
-    assert(locator.parsed.diagnostics_count <= locator.parsed.workspace.diagnostics.len);
     const parsed = locator.parsed;
     const arena = collector.arena.allocator();
     for (parsed.diagnostics()) |diagnostic| {
@@ -173,7 +168,6 @@ pub fn collect_parse(collector: *Collector, locator: *const Locator) !void {
 
 /// `TODO:` notes, which ink reports as author messages.
 fn collect_author_notes(collector: *Collector, locator: *const Locator) !void {
-    assert(locator.parsed.tree.tags.len == locator.parsed.tree.data.len);
     const parsed = locator.parsed;
     const tree = &parsed.tree;
     for (tree.tags, 0..) |tag, at| {
@@ -194,7 +188,6 @@ fn collect_author_notes(collector: *Collector, locator: *const Locator) !void {
 }
 
 fn code_name(diagnostic: core.Diagnostic) []const u8 {
-    assert(diagnostic.offset < std.math.maxInt(u32));
     return switch (diagnostic.code) {
         .expected => @tagName(@as(grammar.Expectation, @fromBackingInt(diagnostic.extra))),
         .message => @tagName(@as(grammar.Message, @fromBackingInt(diagnostic.extra))),
@@ -243,7 +236,6 @@ fn line_rest(source: []const u8, offset: u32) []const u8 {
 
 /// What ink's `Expect` says was expected.
 fn expected_text(expectation: grammar.Expectation) []const u8 {
-    assert(@backingInt(expectation) < @typeInfo(grammar.Expectation).@"enum".field_names.len);
     return switch (expectation) {
         .end_of_line => "end of line",
         .knot_content => "at least one line within the knot",
@@ -273,7 +265,6 @@ fn expected_text(expectation: grammar.Expectation) []const u8 {
 }
 
 fn message_text(message: grammar.Message) []const u8 {
-    assert(@backingInt(message) < @typeInfo(grammar.Message).@"enum".field_names.len);
     return switch (message) {
         .tilde_in_content => "You shouldn't use a '~' here - tildas are for logic that's on " ++
             "its own line. To do inline logic, use { curly braces } instead",
@@ -339,13 +330,11 @@ pub const Story = struct {
     locator: *const Locator,
 
     fn syntax(story: *const Story) *const ast_module.Ast {
-        assert(story.parsed.tree.tags.len > 0);
         return &story.parsed.tree;
     }
 
     /// A dotted path's text.
     fn path_text(story: *const Story, arena: Allocator, path: ast_module.NodeIndex) ![]const u8 {
-        assert(path.to_int() < story.parsed.tree.tags.len);
         const ast = story.syntax();
         if (ast.tag(path) != .path) return "";
         var text: std.ArrayList(u8) = .empty;
@@ -360,7 +349,6 @@ pub const Story = struct {
     /// The name an object's message uses: a divert's target, a reference's path, or the
     /// object's own name.
     fn name(story: *const Story, arena: Allocator, object: sema.ObjectIndex) ![]const u8 {
-        assert(object.to_int() < story.tree.count());
         const node = story.tree.node(object);
         if (node.is_none()) return "";
         const ast = story.syntax();
@@ -385,7 +373,6 @@ pub const Story = struct {
     /// What Divert's Error override puts before its own messages: "Function call " for a
     /// call, "Divert " for another divert; nothing for other objects.
     fn divert_prefix(story: *const Story, object: sema.ObjectIndex) []const u8 {
-        assert(object.to_int() < story.tree.count());
         if (story.tree.kind(object) != .divert) return "";
         const call = story.tree.has(object, sema.Flags.function_call);
         return if (call) "Function call " else "Divert ";
@@ -394,7 +381,6 @@ pub const Story = struct {
     /// ink's typeName of an object, as the naming messages print it.
     fn type_name(story: *const Story, object: sema.ObjectIndex) []const u8 {
         const tree = story.tree;
-        assert(object.to_int() < tree.count());
         return switch (tree.kind(object)) {
             .story => "Story",
             .knot, .stitch => if (tree.has(object, sema.Flags.function))
@@ -422,7 +408,6 @@ pub const Story = struct {
     /// "at top scope" (`'s', 'k' and at top scope`).
     fn scope_text(story: *const Story, arena: Allocator, object: sema.ObjectIndex) ![]const u8 {
         const tree = story.tree;
-        assert(object.to_int() < tree.count());
         var text: std.ArrayList(u8) = .empty;
         var ancestor = object;
         var count: u32 = 0;
@@ -445,7 +430,6 @@ pub const Story = struct {
         arena: Allocator,
         root: sema.ObjectIndex,
     ) ![]const u8 {
-        assert(root.to_int() < story.tree.count());
         var printer: ExpressionPrinter = .{ .story = story, .arena = arena };
         printer.stack[0] = .{ .object = root };
         printer.depth = 1;
@@ -535,7 +519,6 @@ pub const Story = struct {
     }
 
     fn offset(story: *const Story, object: sema.ObjectIndex) u32 {
-        assert(object.to_int() < story.tree.count());
         return sema.object_offset(story.parsed, story.tree, object);
     }
 
@@ -574,7 +557,6 @@ const ExpressionPrinter = struct {
         const story = printer.story;
         const tree = story.tree;
         const arena = printer.arena;
-        assert(object.to_int() < tree.count());
         const literal = values.literal(story.parsed, tree, object) catch null;
         if (literal) |value| return switch (value) {
             .integer => |number| printer.text.print(arena, "{d}", .{number}),
@@ -638,7 +620,6 @@ const ExpressionPrinter = struct {
 /// Whether ink reports `code` while it generates code (Story.ExportRuntime's first pass,
 /// or the constant and label checks just before it).
 fn reported_in_generation(code: resolve.Code) bool {
-    assert(@backingInt(code) < @typeInfo(resolve.Code).@"enum".field_names.len);
     return switch (code) {
         .constant_redefined, .duplicate_label, .duplicate_declaration => true,
         .duplicate_external, .duplicate_flow, .duplicate_list_item => true,
@@ -660,7 +641,6 @@ fn reported_in_generation(code: resolve.Code) bool {
 /// initializations after all flows, the rest in tree order.
 fn generation_order(tree: *const sema.Tree, diagnostic: resolve.Diagnostic) u64 {
     const object = diagnostic.object;
-    assert(object.to_int() < tree.count());
     const count: u64 = tree.count();
     if (diagnostic.code == .loose_end) {
         // The flow's last descendant: its last child's, down to a leaf.
@@ -686,7 +666,6 @@ fn generation_order(tree: *const sema.Tree, diagnostic: resolve.Diagnostic) u64 
 /// generation was an error (ink's `_hadError` is set by each message, so a warning after an
 /// error clears it).
 fn resolves_references(tree: *const sema.Tree, diagnostics: []const resolve.Diagnostic) bool {
-    assert(tree.count() > 0);
     var last: ?resolve.Diagnostic = null;
     var last_order: u64 = 0;
     for (diagnostics) |diagnostic| {
@@ -712,7 +691,6 @@ pub fn collect_resolve(
     resolved: []const resolve.Diagnostic,
     lowered: []const resolve.Diagnostic,
 ) !void {
-    assert(story.tree.count() > 0);
     const gpa = collector.arena.allocator();
     var all: std.ArrayList(resolve.Diagnostic) = .empty;
     try all.ensureTotalCapacity(gpa, resolved.len + lowered.len);
@@ -736,7 +714,6 @@ pub fn collect_resolve(
 }
 
 fn collect_one(collector: *Collector, story: *const Story, diagnostic: resolve.Diagnostic) !void {
-    assert(diagnostic.object.to_int() < story.tree.count());
     const where = try story.location(diagnostic.object);
     try collector.add(.{
         .severity = if (diagnostic.code.is_warning()) .warning else .@"error",
@@ -754,7 +731,6 @@ fn resolve_message(
     story: *const Story,
     diagnostic: resolve.Diagnostic,
 ) ![]const u8 {
-    assert(diagnostic.object.to_int() < story.tree.count());
     const object = diagnostic.object;
     const other = diagnostic.other;
     const name = if (diagnostic.name.len > 0) diagnostic.name else try story.name(arena, object);
@@ -1000,7 +976,6 @@ fn builtin_count_text(arena: Allocator, name: []const u8, expected: u32) ![]cons
 /// into without a divert, and a final tunnel that has nowhere to return to.
 fn loose_end(arena: Allocator, story: *const Story, object: sema.ObjectIndex) ![]const u8 {
     const tree = story.tree;
-    assert(object.to_int() < tree.count());
     var text: std.ArrayList(u8) = .empty;
     try text.appendSlice(arena, "Apparent loose end exists where the flow runs out. Do you " ++
         "need a '-> DONE' statement, choice or divert?");
@@ -1120,7 +1095,6 @@ fn give_up(err: anyerror, file: []const u8) Diagnostic {
         },
         else => unreachable,
     };
-    assert(message.len > 0);
     return .{
         .severity = .@"error",
         .code = code,

@@ -35,7 +35,6 @@ pub fn content_text(machine: *Machine) Error!bool {
         }
         machine.at += 1;
     }
-    assert(grammar.at(machine) >= start);
     if (grammar.at(machine) == start) return false;
     const token = try machine.add_token(start, grammar.at(machine));
     try machine.push_node(.text, token.to_int());
@@ -85,7 +84,6 @@ fn trimmed_end(source: []const u8, start: u32, end_initial: u32) u32 {
         }
         end -= if (backslashes % 2 == 1) 2 else 1;
     }
-    assert(end >= start);
     return end;
 }
 
@@ -97,11 +95,9 @@ fn trim_end_whitespace(machine: *Machine, marker: u32) Error!void {
         if (!try trim_text_at(machine, machine.scratch_count - 1, false)) return;
         machine.scratch_count -= 1;
     }
-    assert(machine.scratch_count >= marker);
 }
 
 pub fn is_divert(tag: ast.Tag) bool {
-    assert(@backingInt(tag) < @typeInfo(ast.Tag).@"enum".field_names.len);
     return switch (tag) {
         .divert, .tunnel, .thread, .empty_divert => true,
         else => false,
@@ -115,7 +111,6 @@ pub fn line_of_mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Acti
         _ = grammar.whitespace(machine);
         return grammar.call_then(frame, 1, .mixed_text_and_logic);
     }
-    assert(frame.phase == 1);
     if (machine.outcome == .failed) return .fail;
     const marker = frame.checkpoint.scratch;
     const workspace = machine.workspace;
@@ -162,7 +157,6 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
             return grammar.call_then(frame, 2, .multi_divert);
         },
         else => {
-            assert(frame.phase == 2);
             if (machine.outcome == .succeeded) {
                 const diverts = frame.locals[1];
                 // The diverts went on top of the line's content.
@@ -185,7 +179,6 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
 }
 
 fn finish_mixed(machine: *Machine, frame: *Frame) Action {
-    assert(frame.rule == .mixed_text_and_logic);
     assert(machine.scratch_count >= frame.checkpoint.scratch);
     if (machine.scratch_count == frame.checkpoint.scratch) return .fail;
     return .succeed;
@@ -196,7 +189,6 @@ pub fn inline_logic_or_glue_or_start_tag(machine: *Machine, frame: *Frame) Error
     if (frame.phase == 0) {
         return grammar.call_then(frame, 1, .inline_logic);
     }
-    assert(frame.phase == 1);
     if (machine.outcome == .succeeded) return .succeed;
     const start = grammar.at(machine);
     if (grammar.parse_string(machine, "<>")) {
@@ -292,8 +284,6 @@ const full_alternatives = [_]grammar.Rule{
 };
 
 fn inner_logic_alternative(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.rule == .inner_logic);
-    assert(frame.phase == 4);
     if (machine.outcome == .succeeded and closing_brace_ahead(machine)) return .succeed;
     machine.restore(frame.checkpoint);
     machine.at = frame.locals[1];
@@ -385,7 +375,6 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
             return grammar.call_then(frame, 22, .single_multiline_condition);
         },
         else => {
-            assert(frame.phase == 22);
             if (machine.outcome == .succeeded and grammar.top_tag(machine, 0) != .else_branch) {
                 grammar.report_message(machine, .expected_else);
                 to_else_branch(machine, machine.scratch_count - 1);
@@ -397,7 +386,6 @@ pub fn inner_conditional_content(machine: *Machine, frame: *Frame) Error!Action 
 
 /// Starts an inline branch: an empty condition slot, then the branch content.
 fn inline_branch_next(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase == 10);
     try grammar.push_none(machine);
     frame.locals[2] = machine.scratch_count;
     return .{ .call = .mixed_text_and_logic };
@@ -405,7 +393,6 @@ fn inline_branch_next(machine: *Machine, frame: *Frame) Error!Action {
 
 /// InlineConditionalBranches: Interleave(MixedTextAndLogic, Exclude(String("|"))).
 fn inline_branch(machine: *Machine, frame: *Frame) Error!Action {
-    assert(frame.phase == 10);
     const branches = frame.locals[1] + 1;
     // Each branch starts with its condition slot, above the query slot.
     assert(frame.locals[2] > branches);
@@ -433,7 +420,6 @@ fn to_else_branch(machine: *Machine, index: u32) void {
     assert(workspace.scratch_tags[index] == .conditional_branch);
     workspace.scratch_tags[index] = .else_branch;
     workspace.scratch_data[index] += 1;
-    assert(index < machine.scratch_count);
 }
 
 /// Whether the branch at scratch `index` has its own condition.
@@ -502,7 +488,6 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
             return grammar.call(machine, frame, 2, .statements, @backingInt(Level.inner_block));
         },
         else => {
-            assert(frame.phase == 2);
             const is_else = frame.locals[1] == 1;
             const marker = frame.checkpoint.scratch;
             if (machine.outcome == .failed) {
@@ -637,7 +622,6 @@ pub fn inner_sequence_objects(machine: *Machine, frame: *Frame) Error!Action {
         },
         else => {
             // InnerInlineSequenceObjects: Interleave(Optional(MixedTextAndLogic), String("|")).
-            assert(frame.phase == 2);
             if (machine.outcome == .succeeded) frame.locals[1] = 1;
             try machine.wrap(.content_list, frame.locals[2]);
             if (grammar.parse_string(machine, "|")) {

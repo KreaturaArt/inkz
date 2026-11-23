@@ -24,7 +24,6 @@ pub fn check_nested(
     loose_ends: []const ObjectIndex,
 ) !void {
     assert(lowering.tree.kind(weave) == .weave);
-    assert(loose_ends.len < lowering.tree.count());
     if (loose_ends.len == 0) return;
     if (enclosing_branching(lowering.tree, weave).is_none()) return;
     try validate(lowering, weave, loose_ends, .nested);
@@ -32,7 +31,6 @@ pub fn check_nested(
 
 /// The nearest conditional or sequence above `object`, or none.
 fn enclosing_branching(tree: *const Tree, object: ObjectIndex) ObjectIndex {
-    assert(object.to_int() < tree.count());
     var ancestor = tree.parent(object);
     while (!ancestor.is_none()) : (ancestor = tree.parent(ancestor)) {
         const kind = tree.kind(ancestor);
@@ -44,7 +42,6 @@ fn enclosing_branching(tree: *const Tree, object: ObjectIndex) ObjectIndex {
 /// FlowBase.GenerateRuntimeObject's check of a knot's or stitch's root weave.
 pub fn check_flow(lowering: *Lowering, flow: ObjectIndex, loose_ends: []const ObjectIndex) !void {
     assert(lowering.tree.is_flow(flow));
-    assert(loose_ends.len < lowering.tree.count());
     const tree = lowering.tree;
     if (tree.kind(flow) == .story or tree.has(flow, Flags.function)) return;
     const children = tree.children_of(flow);
@@ -61,7 +58,6 @@ fn validate(
     handler: Handler,
 ) !void {
     assert(lowering.tree.kind(weave) == .weave);
-    assert(loose_ends.len < lowering.tree.count());
     const tree = lowering.tree;
     // A final TODO means the author knows.
     if (last_significant(tree, weave)) |last| {
@@ -130,14 +126,11 @@ const Following = struct {
 
     fn linear(tree: *const Tree, weave: ObjectIndex) Following {
         assert(tree.kind(weave) == .weave);
-        assert(tree.count() > 0);
         return .{ .tree = tree, .inner = &.{}, .outer = tree.children_of(weave), .stops = false };
     }
 
     fn next(following: *Following) ?ObjectIndex {
-        assert(following.inner.len < following.tree.count());
         assert(following.stops or following.inner.len == 0);
-        assert(following.outer.len < following.tree.count());
         const tree = following.tree;
         while (following.inner.len > 0) {
             const object = following.inner[0];
@@ -166,10 +159,8 @@ fn validate_flow(
     default: ObjectIndex,
     handler: Handler,
 ) !void {
-    assert(default.to_int() < lowering.tree.count());
     assert(flow.tree == lowering.tree);
     const tree = lowering.tree;
-    assert(handler == .flow or handler == .nested);
     var terminated = false;
     var terminating = default;
     while (flow.next()) |object| {
@@ -190,7 +181,6 @@ fn validate_flow(
 /// BadNestedTerminationHandler: with one choice in the conditional, ink suggests a
 /// conditional choice instead.
 fn report_nested(lowering: *Lowering, terminating: ObjectIndex) !void {
-    assert(terminating.to_int() < lowering.tree.count());
     const tree = lowering.tree;
     const ancestor = enclosing_branching(tree, terminating);
     assert(!ancestor.is_none());
@@ -205,17 +195,13 @@ fn report_nested(lowering: *Lowering, terminating: ObjectIndex) !void {
 
 /// Weave.IsGlobalDeclaration: VAR and CONST are outside the flow.
 fn is_global_declaration(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
     const kind = tree.kind(object);
-    assert(tree.count() > 0);
     if (kind == .constant_declaration) return true;
     return kind == .variable_assignment and tree.has(object, Flags.global);
 }
 
 /// A divert that leaves the flow (not a thread, tunnel or function call's, nor a target).
 fn is_terminating_divert(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
     if (tree.kind(object) != .divert) return false;
     const returns = Flags.thread | Flags.tunnel | Flags.function_call;
     if (tree.has(object, returns)) return false;
@@ -223,7 +209,5 @@ fn is_terminating_divert(tree: *const Tree, object: ObjectIndex) bool {
 }
 
 fn is_tunnel_onwards(tree: *const Tree, object: ObjectIndex) bool {
-    assert(object.to_int() < tree.count());
-    assert(tree.count() > 0);
     return tree.kind(object) == .tunnel_onwards;
 }

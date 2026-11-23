@@ -23,7 +23,6 @@ const frames_max = 256;
 
 /// Emits `expression` into `container`.
 pub fn emit(lowering: *Lowering, container: ContainerId, expression: ObjectIndex) !void {
-    assert(!container.is_none());
     assert(lower.is_expression(lowering.tree.kind(expression)));
     var frames: [frames_max]Frame = undefined;
     var depth: u32 = 1;
@@ -39,7 +38,6 @@ pub fn emit(lowering: *Lowering, container: ContainerId, expression: ObjectIndex
             depth += 1;
         } else if (frame.stage == done) depth -= 1;
     }
-    assert(depth == 0);
 }
 
 /// A frame's stage once it has emitted everything.
@@ -119,7 +117,6 @@ fn binary(
 /// BinaryExpression's NativeNameForOp.
 pub fn native_name(tag: Tag) []const u8 {
     assert(ast_module.shape(tag) != .leaf);
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
     return switch (tag) {
         .add => "+",
         .subtract => "-",
@@ -143,7 +140,6 @@ pub fn native_name(tag: Tag) []const u8 {
 
 fn literal_item(value: values.Literal) Item {
     assert(value != .string and value != .divert_target);
-    assert(@backingInt(std.meta.activeTag(value)) < 5);
     return switch (value) {
         .integer => |integer| .{ .integer = integer },
         .float => |float| .{ .float = float },
@@ -188,7 +184,6 @@ pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const
     // The components are one run of the source (`a.b`), so the name is that range.
     const start = @intFromPtr(first.ptr) - @intFromPtr(lowering.parsed.source.ptr);
     const end = @intFromPtr(last.ptr) + last.len - @intFromPtr(lowering.parsed.source.ptr);
-    assert(start <= end and end <= lowering.parsed.source.len);
     return lowering.parsed.source[start..end];
 }
 
@@ -196,7 +191,6 @@ pub fn reference_name(lowering: *const Lowering, reference: ObjectIndex) []const
 /// (GenerateConstantIntoContainer): the constant's expression is the next frame.
 fn variable_reference(lowering: *Lowering, container: ContainerId, frame: *Frame) !?ObjectIndex {
     const reference = frame.object;
-    assert(lowering.tree.kind(reference) == .variable_reference);
     const target = lowering.resolution.targets[reference.to_int()];
     if (frame.stage == 1) {
         frame.stage = done;
@@ -227,7 +221,6 @@ fn increment(lowering: *Lowering, container: ContainerId, frame: *Frame) !?Objec
     const tree = lowering.tree;
     const ir = &lowering.ir;
     const object = frame.object;
-    assert(tree.kind(object) == .increment);
     const node = tree.node(object);
     const name = if (tree.has(object, Flags.by_expression))
         lowering.parsed.slot_text(node, .name)
@@ -287,7 +280,6 @@ fn function_call(lowering: *Lowering, container: ContainerId, frame: *Frame) !?O
 
 /// List.GenerateIntoContainer: each item by its list and value.
 fn list_literal(lowering: *Lowering, literal: ObjectIndex) !Item {
-    assert(lowering.tree.kind(literal) == .list_literal);
     const elements = lowering.resolution.list_literal_items(literal);
     const items = try lowering.ir.arena.allocator().alloc(ir_module.ListItem, elements.len);
     for (elements, items) |element, *item| {
@@ -308,7 +300,6 @@ pub fn list_definition_value(
     origin: []const u8,
 ) !Item {
     assert(lowering.tree.kind(definition) == .list_definition);
-    assert(origin.len > 0);
     const ast = lowering.ast();
     const arena = lowering.ir.arena.allocator();
     var items: std.ArrayList(ir_module.ListItem) = .empty;

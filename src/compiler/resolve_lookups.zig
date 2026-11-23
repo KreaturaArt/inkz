@@ -77,7 +77,6 @@ fn prepare_object(context: *Context, object: ObjectIndex) !void {
         },
         else => {},
     }
-    assert(object.to_int() < tree.count());
 }
 
 /// Story.ExportRuntime's constants: a CONST may be repeated only with the same value.
@@ -100,7 +99,6 @@ fn prepare_constant(context: *Context, constant: ObjectIndex) !void {
 }
 
 fn constant_literal(context: *const Context, constant: ObjectIndex) values.Error!?values.Literal {
-    assert(context.tree.kind(constant) == .constant_declaration);
     const children = context.tree.children_of(constant);
     if (children.len == 0) return null;
     return values.literal(context.parsed, context.tree, children[0]);
@@ -205,7 +203,6 @@ fn push_sub_flows(context: *Context, stack: *std.ArrayList(ObjectIndex), flow: O
         const child = children[position];
         if (context.tree.is_flow(child)) try stack.append(context.gpa, child);
     }
-    assert(context.tree.is_flow(flow));
 }
 
 /// Path.TryGetChildFromContext.
@@ -296,7 +293,6 @@ pub fn resolve_list_item(
             } else found = element;
         }
     }
-    if (found) |element| assert(context.tree.kind(element) == .list_element);
     return found;
 }
 

@@ -47,8 +47,6 @@ pub const Diagnostic = struct {
 pub const token_bytes = @sizeOf(u32) + @sizeOf(u32);
 
 comptime {
-    assert(@typeInfo(@FieldType(Workspace, "token_starts")).pointer.child == u32);
-    assert(@typeInfo(@FieldType(Workspace, "token_ends")).pointer.child == u32);
     assert(token_bytes == 8);
 }
 
@@ -90,12 +88,10 @@ pub const Workspace = struct {
         workspace.token_ends = try gpa.alloc(u32, tokens);
         errdefer gpa.free(workspace.token_ends);
         workspace.diagnostics = try gpa.alloc(Diagnostic, diagnostics_max);
-        assert(workspace.node_tags.len == nodes);
         return workspace;
     }
 
     fn nodes_for(source_length: u32, scale: u32) usize {
-        assert(scale >= 1);
         return (@as(usize, source_length) / 2 + 256) * scale;
     }
 
@@ -114,7 +110,6 @@ pub const Workspace = struct {
         if (nodes_for(source_length, scale) <= workspace.node_tags.len) return;
         const diagnostics_max: u32 = @intCast(workspace.diagnostics.len);
         var bigger = try Workspace.init(gpa, source_length, diagnostics_max, scale);
-        assert(bigger.token_starts.len >= workspace.token_starts.len);
         @memcpy(bigger.node_tags[0..used.nodes], workspace.node_tags[0..used.nodes]);
         @memcpy(bigger.node_data[0..used.nodes], workspace.node_data[0..used.nodes]);
         @memcpy(bigger.token_starts[0..used.tokens], workspace.token_starts[0..used.tokens]);
@@ -151,7 +146,6 @@ pub const Workspace = struct {
 
     /// release_syntax without its checks, for a settle that failed halfway.
     fn free_syntax(workspace: *Workspace, gpa: Allocator) void {
-        assert(workspace.diagnostics.len > 0);
         gpa.free(workspace.node_tags);
         gpa.free(workspace.node_data);
         gpa.free(workspace.token_starts);
@@ -163,7 +157,6 @@ pub const Workspace = struct {
     }
 
     pub fn deinit(workspace: *Workspace, gpa: Allocator) void {
-        assert(workspace.diagnostics.len > 0);
         assert(workspace.node_tags.len == workspace.node_data.len);
         gpa.free(workspace.node_tags);
         gpa.free(workspace.node_data);
@@ -178,7 +171,6 @@ pub const Workspace = struct {
 
 /// What a rule step does next.
 pub fn Action(comptime Rule: type) type {
-    comptime assert(@typeInfo(Rule) == .@"enum");
     comptime assert(@sizeOf(Rule) <= 4);
     return union(enum) {
         /// Run `rule`, then come back to this frame's next phase.
@@ -269,7 +261,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         pub fn checkpoint(machine: *const Self) Checkpoint {
-            assert(machine.nodes_count <= machine.workspace.node_tags.len);
             return .{
                 .at = machine.at,
                 .tokens = machine.tokens_count,
@@ -320,7 +311,6 @@ pub fn Machine(comptime Grammar: type) type {
         }
 
         fn apply(machine: *Self, action: Action(Rule)) Error!void {
-            assert(machine.frames_count > 0);
             switch (action) {
                 .call => |rule| {
                     machine.outcome = .none;
@@ -389,7 +379,6 @@ pub fn Machine(comptime Grammar: type) type {
 
         /// Pushes a finished node value on the scratch stack.
         pub fn push_node(machine: *Self, tag: ast.Tag, data: u32) Error!void {
-            assert(@backingInt(tag) < 256);
             const workspace = machine.workspace;
             if (machine.scratch_count == workspace.scratch_tags.len) return error.WorkspaceFull;
             workspace.scratch_tags[machine.scratch_count] = tag;
@@ -480,7 +469,6 @@ const Toy = struct {
     }
 
     pub fn step(machine: *M, frame: *M.Frame) Action(Rule) {
-        assert(machine.frames_count > 0);
         return switch (frame.rule) {
             .expression => expression(machine, frame),
             .term => term(machine, frame),
@@ -547,8 +535,6 @@ const ToyResult = struct {
 };
 
 fn parse_toy(source: []const u8, depth_max: u32, start: Toy.Rule) !ToyResult {
-    assert(source.len > 0);
-    assert(depth_max > 0);
     const gpa = std.testing.allocator;
     var workspace = try Workspace.init(gpa, @intCast(source.len), 16, 1);
     defer workspace.deinit(gpa);

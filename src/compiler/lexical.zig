@@ -30,14 +30,12 @@ pub fn eliminate_comments(source: []const u8, out: []u8) []const u8 {
         written += 1;
         read += 1;
     }
-    assert(written <= read);
     return out[0..written];
 }
 
 /// The length of the identifier at the start of `text`: ink's identifier characters (ASCII
 /// letters, digits, `_`, and its Unicode ranges), or null.
 pub fn identifier_length(text: []const u8) ?u32 {
-    assert(@sizeOf(u21) <= 4);
     var at: u32 = 0;
     while (at < text.len) {
         const length = std.unicode.utf8ByteSequenceLength(text[at]) catch break;
@@ -53,7 +51,6 @@ pub fn identifier_length(text: []const u8) ?u32 {
 /// InkParser_CharacterRanges.cs.
 pub fn is_identifier_character(code: u21) bool {
     assert(code <= 0x10FFFF);
-    assert(@sizeOf(u21) <= 4);
     if (code < 0x80) return std.ascii.isAlphanumeric(@intCast(code)) or code == '_';
     const ranges = [_][2]u21{
         .{ 0x0080, 0x00FF }, .{ 0x0100, 0x017F }, .{ 0x0180, 0x024F }, .{ 0x0370, 0x03FF },
@@ -69,7 +66,6 @@ pub fn is_identifier_character(code: u21) bool {
 /// The characters InkParser_CharacterRanges.cs excludes from its ranges.
 fn is_excluded(code: u21) bool {
     assert(code >= 0x80);
-    assert(code <= 0x10FFFF);
     return switch (code) {
         0x0378...0x0385, 0x0374, 0x0375, 0x0387, 0x038B, 0x038D, 0x03A2 => true,
         0x0482...0x0489 => true,

@@ -183,8 +183,6 @@ pub const Shape = union(enum) {
 
 /// Every tag's shape. No `else`: adding a tag forces a decision here.
 pub fn shape(tag: Tag) Shape {
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
-    assert(@sizeOf(Shape) <= 2);
     return switch (tag) {
         .none, .missing, .count, .header, .include, .identifier => .leaf,
         .parameter, .reference_parameter, .divert_parameter => .leaf,
@@ -292,15 +290,12 @@ pub const Ast = struct {
     root: NodeIndex,
 
     pub fn tag(ast: *const Ast, node: NodeIndex) Tag {
-        assert(node.to_int() < ast.tags.len);
-        assert(ast.tags.len == ast.data.len);
         return ast.tags[node.to_int()];
     }
 
     /// The token of a leaf.
     pub fn token(ast: *const Ast, node: NodeIndex) TokenIndex {
         assert(shape(ast.tag(node)) == .leaf);
-        assert(node.to_int() < ast.data.len);
         return .from_int(ast.data[node.to_int()]);
     }
 
@@ -308,9 +303,7 @@ pub const Ast = struct {
     pub fn child(ast: *const Ast, node: NodeIndex, position: u32) NodeIndex {
         const node_shape = shape(ast.tag(node));
         assert(node_shape == .fixed and position < node_shape.fixed);
-        const result: NodeIndex = .from_int(ast.data[node.to_int()] + position);
-        assert(result.to_int() < ast.tags.len);
-        return result;
+        return .from_int(ast.data[node.to_int()] + position);
     }
 
     /// The child named `which` of a fixed-shape node, whose tag must have it.
@@ -345,7 +338,6 @@ pub const Ast = struct {
     /// A walk of `root`'s subtree; `deinit` it. Without `gpa`, nodes deeper than the walk's
     /// inline frames are visited but not descended into.
     pub fn walk(ast: *const Ast, gpa: ?Allocator, root: NodeIndex) Walk {
-        assert(root.to_int() < ast.tags.len);
         return .{ .ast = ast, .gpa = gpa, .start = root };
     }
 };
@@ -412,7 +404,6 @@ pub const Walk = struct {
 
     /// Pushes a frame for a non-leaf node (if there is room).
     fn enter(walk: *Walk, node: NodeIndex) Allocator.Error!void {
-        assert(node.to_int() < walk.ast.tags.len);
         const children: u32 = switch (shape(walk.ast.tag(node))) {
             .leaf => return,
             .fixed => |count| count,
@@ -429,7 +420,6 @@ pub const Walk = struct {
     }
 
     fn child_at(walk: *const Walk, node: NodeIndex, position: u32) NodeIndex {
-        assert(walk.frames_count > 0);
         return switch (shape(walk.ast.tag(node))) {
             .leaf => unreachable,
             .fixed => walk.ast.child(node, position),
@@ -442,7 +432,7 @@ comptime {
     // Size guards: 5 bytes per node across the two arrays.
     assert(@sizeOf(Tag) == 1);
     assert(@sizeOf(u32) + @sizeOf(Tag) == 5);
-    assert(@typeInfo(Tag).@"enum".field_names.len < 256);
+    assert(@sizeOf(Shape) <= 2);
     // Every fixed shape has at least one child, and no node has more than a choice.
     for (@typeInfo(Tag).@"enum".field_names) |name| {
         const tag_shape = shape(@field(Tag, name));

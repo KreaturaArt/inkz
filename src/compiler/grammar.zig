@@ -103,7 +103,6 @@ pub const Grammar = struct {
 
     /// Whether a diagnostic is one of ink's warnings (it doesn't stop compilation).
     pub fn is_warning(diagnostic: core.Diagnostic) bool {
-        assert(@backingInt(diagnostic.code) < 8);
         if (diagnostic.code != .message) return false;
         const message: Message = @fromBackingInt(@intCast(diagnostic.extra));
         return message == .return_without_tilde or message == .choice_empty or
@@ -258,7 +257,6 @@ pub fn parse_newline(machine: *Machine) bool {
     const start = at(machine);
     _ = parse_string(machine, "\r");
     if (parse_string(machine, "\n")) {
-        assert(at(machine) > start);
         return true;
     }
     machine.at = start;
@@ -290,16 +288,13 @@ pub fn end_of_file(machine: *Machine) bool {
 
 /// EndOfLine: OneOf(Newline, EndOfFile).
 pub fn end_of_line(machine: *Machine) bool {
-    const found = newline(machine) or end_of_file(machine);
-    if (found) assert(at_end(machine) or machine.source[machine.at - 1] == '\n');
-    return found;
+    return newline(machine) or end_of_file(machine);
 }
 
 /// MultilineWhitespace: one or more newlines.
 pub fn multiline_whitespace(machine: *Machine) bool {
     var count: u32 = 0;
     while (newline(machine)) count += 1;
-    if (count > 0) assert(machine.source[machine.at - 1] == '\n');
     return count > 0;
 }
 
@@ -315,7 +310,6 @@ pub fn until_line_end(machine: *Machine) struct { start: u32, end: u32 } {
     const start = at(machine);
     const end = std.mem.indexOfAnyPos(u8, machine.source, start, "\n\r") orelse machine.source.len;
     machine.at = @intCast(end);
-    assert(end >= start);
     assert(end == machine.source.len or machine.source[end] == '\n' or
         machine.source[end] == '\r');
     return .{ .start = start, .end = @intCast(end) };
@@ -341,7 +335,6 @@ pub fn expect_end_of_line(machine: *Machine) void {
 pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
     const start = at(machine);
     const length = lexical.identifier_length(rest(machine)) orelse return null;
-    assert(length > 0);
     const text = rest(machine)[0..length];
     for (text) |character| {
         if (!std.ascii.isDigit(character)) break;
@@ -355,17 +348,14 @@ pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
     const workspace = machine.workspace;
     assert(token.to_int() < machine.tokens_count);
     const start = workspace.token_starts[token.to_int()];
-    assert(start <= workspace.token_ends[token.to_int()]);
     return machine.source[start..workspace.token_ends[token.to_int()]];
 }
 
 /// Parse(Identifier) == word: consumes the identifier only if it is `word`.
 pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
-    assert(word.len > 0);
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
     const token = try identifier(machine) orelse return false;
-    assert(token.to_int() == saved_tokens);
     if (std.mem.eql(u8, token_text(machine, token), word)) return true;
     machine.at = start;
     machine.tokens_count = saved_tokens;
@@ -404,7 +394,6 @@ pub fn top_tag(machine: *const Machine, marker: u32) ?ast.Tag {
 
 /// Reserved words that can't be variable names (ink's Story.IsReservedKeyword).
 pub fn is_reserved_keyword(name: []const u8) bool {
-    assert(name.len > 0);
     const words = [_][]const u8{
         "true", "false", "not", "return", "else", "VAR", "CONST", "temp", "LIST", "function",
     };
@@ -471,8 +460,6 @@ pub const Parsed = struct {
     }
 
     pub fn diagnostics(parsed: *const Parsed) []const core.Diagnostic {
-        assert(parsed.buffer.len >= parsed.source.len);
-        assert(parsed.diagnostics_count <= parsed.workspace.diagnostics.len);
         return parsed.workspace.diagnostics[0..parsed.diagnostics_count];
     }
 
@@ -482,7 +469,6 @@ pub const Parsed = struct {
         if (tag == .none or tag == .missing) return "";
         assert(ast.shape(tag) == .leaf);
         const token = parsed.tree.data[leaf.to_int()];
-        assert(token < parsed.tokens_count);
         const workspace = &parsed.workspace;
         return parsed.source[workspace.token_starts[token]..workspace.token_ends[token]];
     }
@@ -493,14 +479,12 @@ pub const Parsed = struct {
         node: ast.NodeIndex,
         comptime which: ast.Slot,
     ) []const u8 {
-        assert(!node.is_none());
         return parsed.leaf_text(parsed.tree.slot(node, which));
     }
 
     /// Frees the syntax tree and the tokens once the IR is lowered, keeping the
     /// source (the IR's names are slices of it) and the diagnostics.
     pub fn release_syntax(parsed: *Parsed, gpa: std.mem.Allocator) void {
-        assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
         assert(parsed.tree.tags.ptr == parsed.workspace.node_tags.ptr);
         parsed.workspace.release_syntax(gpa);
         parsed.tree.tags = &.{};
@@ -509,8 +493,6 @@ pub const Parsed = struct {
     }
 
     pub fn deinit(parsed: *Parsed, gpa: std.mem.Allocator) void {
-        assert(parsed.tokens_count <= parsed.workspace.token_starts.len);
-        assert(parsed.buffer.len >= parsed.source.len);
         parsed.workspace.deinit(gpa);
         gpa.free(parsed.buffer);
         gpa.free(parsed.roots);
@@ -534,7 +516,6 @@ pub fn parse(
     source: []const u8,
     bounds: limits.CompilerLimits,
 ) ParseError!Parsed {
-    assert(bounds.source_bytes_max > 0);
     var space = try SpaceParser.init(gpa, bounds);
     errdefer space.deinit(gpa);
     _ = try space.add(gpa, source);
@@ -559,7 +540,6 @@ pub const SpaceParser = struct {
     parses: u32 = 0,
 
     pub fn init(gpa: std.mem.Allocator, bounds: limits.CompilerLimits) !SpaceParser {
-        assert(bounds.parse_depth_max > 0);
         const frames = try gpa.alloc(Frame, bounds.parse_depth_max);
         errdefer gpa.free(frames);
         return .{
@@ -572,7 +552,6 @@ pub const SpaceParser = struct {
 
     /// Frees a parser that wasn't finished (or whose finish failed).
     pub fn deinit(space: *SpaceParser, gpa: std.mem.Allocator) void {
-        assert(space.frames.len > 0);
         space.workspace.deinit(gpa);
         space.buffer.deinit(gpa);
         space.roots.deinit(gpa);
@@ -638,7 +617,6 @@ pub const SpaceParser = struct {
         errdefer gpa.free(buffer);
         var tree = machine.finish_regions(roots[0]);
         try space.workspace.settle(gpa, machine.nodes_count, machine.tokens_count);
-        assert(space.workspace.node_tags.len == machine.nodes_count);
         tree.tags = space.workspace.node_tags;
         tree.data = space.workspace.node_data;
         gpa.free(space.frames);
