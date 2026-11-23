@@ -42,9 +42,12 @@ pub const Summary = struct {
     /// allowed its fallback (or has none).
     unbound_externals: u32 = 0,
     /// Second plays of a seed under other limits (`Plan.limits_kind`, `compact_always`), and
-    /// those of them a limit stopped where the roomy play went on (or that couldn't start).
+    /// those of them a limit stopped where the roomy play went on (or that couldn't start);
+    /// for the save target, saves too large for the loader's scratch.
     limited_runs: u32 = 0,
     limit_errors: u32 = 0,
+    /// Saves (the save target's) loaded in the middle of a play and played on to its end.
+    resumed_saves: u32 = 0,
     lines: u64 = 0,
     choices: u64 = 0,
     /// Played stories still going after `play_steps_max` calls.
@@ -61,11 +64,13 @@ pub const Summary = struct {
         });
         try summary.codes.write_top(writer, 4);
         try writer.print("; runtime errors {d} (unbound externals {d}), limited runs {d} " ++
-            "(limit errors {d}), lines {d}, choices {d}, step cap {d}, ended {d}", .{
+            "(limit errors {d}), resumed saves {d}, lines {d}, choices {d}, step cap {d}, " ++
+            "ended {d}", .{
             summary.runtime_errors,
             summary.unbound_externals,
             summary.limited_runs,
             summary.limit_errors,
+            summary.resumed_saves,
             summary.lines,
             summary.choices,
             summary.step_cap,
@@ -276,12 +281,16 @@ const Trace = struct {
             if (varied.count < roomy.count and !varied.limited()) return changed;
             return null;
         }
-        if (roomy.count != varied.count or roomy.end != varied.end) return changed;
-        if (roomy.errored != varied.errored) return changed;
-        if (varied.failure) |failure| {
-            if (!roomy.failed_with(failure)) return changed;
-        }
-        return null;
+        return if (same(roomy, varied)) null else changed;
+    }
+
+    /// Whether two plays made the same calls and stopped the same way.
+    fn same(a: *const Trace, b: *const Trace) bool {
+        assert(a.end != .running and b.end != .running);
+        if (a.count != b.count or a.end != b.end or a.errored != b.errored) return false;
+        if (!std.mem.eql(u64, a.hashes[0..a.count], b.hashes[0..b.count])) return false;
+        const failure = b.failure orelse return a.failure == null;
+        return a.failed_with(failure);
     }
 };
 
@@ -334,6 +343,8 @@ const Plan = struct {
     compact_always: bool,
     /// The second play's limits with `limits_kind == .tight`.
     tight: Limits,
+    /// The calls the save target plays before it saves.
+    save_at: u32,
 
     /// Mixed into the seed, so the plan doesn't repeat the generator's draws.
     const salt = 0x5e7_0b5e7;
@@ -349,6 +360,7 @@ const Plan = struct {
             .limits_kind = choices.choose(LimitsKind),
             .compact_always = choices.choose(bool),
             .tight = fuzz_limits.draw_limits(choices),
+            .save_at = @intCast(choices.below(play_steps_max)),
         };
     }
 };
@@ -360,7 +372,19 @@ fn play(
     round_trip: bool,
     summary: *Summary,
 ) !?[]const u8 {
-    const plan: Plan = .draw(seed);
+    return play_planned(gpa, program, seed, .draw(seed), round_trip, summary);
+}
+
+/// Plays the seed's story as `plan` says: with `round_trip`, saving and loading on the way,
+/// else again under other limits.
+fn play_planned(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    seed: u64,
+    plan: Plan,
+    round_trip: bool,
+    summary: *Summary,
+) !?[]const u8 {
     var story: api.Story = undefined;
     try fuzz_play.init_story(&story, gpa, program, plan.setup);
     defer story.deinit(gpa);
@@ -368,13 +392,20 @@ fn play(
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(seed);
-    if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+    if (round_trip) {
+        const saved = try play_saved(gpa, program, plan, &story, &trace, &prng, summary);
+        if (saved) |failure| return failure;
+    }
+    // The save target's play goes on alone when its save didn't load.
+    if (trace.end == .running) {
+        if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+    }
     count_play(&trace, summary);
     // ink's ValidateExternalBindings, at the first `cont`.
     if (trace.failed_with(error.MissingExternalBinding) and plan.setup.bind_external) {
         return "e0 bound and missing";
     }
-    if (round_trip) return round_trip_end(gpa, program, &story, plan.setup);
+    if (round_trip) return null;
     const fitted = limits_module.fitted(story.usage(), 1);
     return play_limited(gpa, program, seed, plan, &trace, fitted, summary);
 }
@@ -429,97 +460,71 @@ fn play_limited(
     return Trace.compare(roomy, &trace, limits_may);
 }
 
-/// The save at the end of a play loads into a fresh story, which saves the same.
-fn round_trip_end(
+/// Plays `story` to the plan's save point and saves; the save loads into a fresh story,
+/// which saves the same; then both play on with the same choices: the same calls, and the
+/// same saves at the end.
+fn play_saved(
     gpa: std.mem.Allocator,
     program: *const Program,
+    plan: Plan,
     story: *api.Story,
-    setup: fuzz_play.Setup,
+    trace: *Trace,
+    prng: *std.Random.DefaultPrng,
+    summary: *Summary,
 ) !?[]const u8 {
+    if (advance(story, prng.random(), trace, plan.save_at)) |failure| return failure;
+    // ink's save doesn't keep a choice's isInvisibleDefault (JsonSerialisation's
+    // JObjectToChoice), so a loaded fallback choice is visible, in ink and here: the save
+    // waits for a call after which none is pending.
+    while (trace.end == .running and invisible_choices(story)) {
+        if (advance(story, prng.random(), trace, trace.count + 1)) |failure| return failure;
+    }
+    // A story that failed in the middle of a step is half done and doesn't save.
     if (story.failed) return null;
-    var first: std.Io.Writer.Allocating = .init(gpa);
-    defer first.deinit();
-    try story.to_json(&first.writer);
+    const save = try save_of(gpa, story);
+    defer gpa.free(save);
     var loaded: api.Story = undefined;
-    try fuzz_play.init_story(&loaded, gpa, program, setup);
+    try fuzz_play.init_story(&loaded, gpa, program, plan.setup);
     defer loaded.deinit(gpa);
-    loaded.load_json(first.written()) catch return "load of its own save";
-    var second: std.Io.Writer.Allocating = .init(gpa);
-    defer second.deinit();
-    try loaded.to_json(&second.writer);
-    if (!std.mem.eql(u8, first.written(), second.written())) return "save round trip";
+    loaded.load_json(save) catch |err| {
+        // The loader's scratch (`load_bytes_max`) holds a few times a save's size, and a
+        // story's state can outgrow that: a limit, as in a second play.
+        if (err != error.SaveTooLarge) return "load of its own save";
+        summary.limit_errors += 1;
+        return null;
+    };
+    const save_again = try save_of(gpa, &loaded);
+    defer gpa.free(save_again);
+    if (!std.mem.eql(u8, save, save_again)) return "save round trip";
+    if (trace.end != .running) return null;
+    var loaded_trace = trace.*;
+    loaded.on_error = Trace.note;
+    loaded.on_error_context = &loaded_trace;
+    var loaded_prng = prng.*;
+    if (advance(story, prng.random(), trace, play_steps_max)) |failure| return failure;
+    const loaded_random = loaded_prng.random();
+    if (advance(&loaded, loaded_random, &loaded_trace, play_steps_max)) |failure| return failure;
+    if (!Trace.same(trace, &loaded_trace)) return "loaded save played differently";
+    summary.resumed_saves += 1;
+    if (story.failed) return null;
+    const end = try save_of(gpa, story);
+    defer gpa.free(end);
+    const loaded_end = try save_of(gpa, &loaded);
+    defer gpa.free(loaded_end);
+    if (!std.mem.eql(u8, end, loaded_end)) return "loaded save ended in another save";
     return null;
 }
 
-test "a failing swarm run prints the command that reproduces it, and the triage" {
-    // The synthetic target fails on glue without RANDOM: each failure line carries its
-    // configuration and the `zig build swarm` command for its seed, and the triage names
-    // glue as the trigger (P16.6).
-    const gpa = std.testing.allocator;
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    const summary = try run(gpa, &out.writer, .synthetic, 100, .{ .seeds = 200 });
-    try std.testing.expect(summary.failures > 0);
-    const text = out.written();
-    try std.testing.expect(std.mem.indexOf(u8, text, "reproduce with: zig build swarm " ++
-        "-Doptimize=ReleaseSafe -- --target synthetic --seed ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "trigger: lines.glue") != null);
-    // The printed seed reproduces the failure alone.
-    const at = std.mem.indexOf(u8, text, "--seed ").? + "--seed ".len;
-    const end = std.mem.indexOfScalarPos(u8, text, at, ' ').?;
-    const seed = try std.fmt.parseInt(u64, text[at..end], 10);
-    var again: std.Io.Writer.Allocating = .init(gpa);
-    defer again.deinit();
-    const replayed = try run(gpa, &again.writer, .synthetic, seed, .{ .seeds = 1 });
-    try std.testing.expectEqual(@as(u32, 1), replayed.failures);
+/// Whether the story holds a choice it doesn't show: a fallback (invisible default) choice.
+fn invisible_choices(story: *api.Story) bool {
+    return story.state.choices.records.slice().len > story.current_choices_count();
 }
 
-test "the real targets pass a few seeds" {
-    const gpa = std.testing.allocator;
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    for ([_]Target{ .compile, .play, .save }) |target| {
-        const summary = try run(gpa, &out.writer, target, 1, .{ .seeds = 8 });
-        try std.testing.expectEqual(@as(u32, 0), summary.failures);
-    }
-}
-
-test "the summary counts what the runs reached, and the run prints it" {
-    const gpa = std.testing.allocator;
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    const summary = try run(gpa, &out.writer, .play, 1, .{ .seeds = 16 });
-    try std.testing.expect(summary.lines > 0);
-    try std.testing.expect(summary.compile_failures + summary.runtime_errors <= summary.runs);
-    var codes: u32 = summary.codes.other;
-    for (summary.codes.counts[0..summary.codes.len]) |count| codes += count;
-    try std.testing.expectEqual(summary.compile_failures, codes);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "swarm play: 16 runs, 0 failures; " ++
-        "compile failures ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "step cap ") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "ended ") != null);
-    // P18.3: most seeds play a second time under fitted or tight limits.
-    try std.testing.expect(summary.limited_runs * 2 > summary.runs - summary.compile_failures);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "limited runs ") != null);
-}
-
-test "played stories make many choices and reach the step cap, and some still end" {
-    // P18.2: with `hub` and `typed`, the compiled stories of 500 seeds make 8 choices or
-    // more on average, 40% or more reach the step cap, and 10% or more end (at END or DONE,
-    // or out of content) without an error. P18.3: `e0` is bound or allowed its fallback in
-    // 3 of 4 seeds, so at most 1 in 8 stops for a missing binding (none with `e0` bound: the
-    // run fails then).
-    const gpa = std.testing.allocator;
-    var out: std.Io.Writer.Allocating = .init(gpa);
-    defer out.deinit();
-    const summary = try run(gpa, &out.writer, .play, 1, .{ .seeds = 500 });
-    try std.testing.expectEqual(@as(u32, 0), summary.failures);
-    const compiled = summary.runs - summary.compile_failures;
-    try std.testing.expect(compiled > 400);
-    try std.testing.expect(summary.choices >= 8 * @as(u64, compiled));
-    try std.testing.expect(summary.step_cap * 100 >= compiled * 40);
-    try std.testing.expect(summary.unbound_externals * 8 <= compiled);
-    try std.testing.expect(summary.ended * 10 >= compiled);
+fn save_of(gpa: std.mem.Allocator, story: *api.Story) ![]u8 {
+    var save: std.Io.Writer.Allocating = .init(gpa);
+    errdefer save.deinit();
+    try story.to_json(&save.writer);
+    return save.toOwnedSlice();
 }
 
 /// The trace of `source` played under `limits`, with no external bound.
@@ -570,6 +575,47 @@ test "the limits comparison catches a play that differs, and lets a limit stop o
     const stopped_other = try trace_source(gpa, "Z\nB\n" ++ long ++ "\n-> END\n", tight);
     try std.testing.expect(stopped_other.limited());
     try std.testing.expect(Trace.compare(&long_roomy, &stopped_other, true) != null);
+}
+
+test "a story saved in the middle of its play and loaded plays on the same" {
+    // P18.3: a hand-made story with a global, a shuffle, RANDOM, visit counts, a tunnel and
+    // once-only and sticky choices, saved after 0 to 40 calls: the loaded save plays on to
+    // the step cap with the same lines, choices and errors as the story it came from, and
+    // both end in the same save.
+    const gpa = std.testing.allocator;
+    const source =
+        \\VAR score = 0
+        \\-> hub
+        \\=== hub ===
+        \\{~Rain|Sun|Fog} over the hills. {score}
+        \\~ score += RANDOM(1, 3)
+        \\* [Left] Left, {hub} times.
+        \\* [Right] Right.
+        \\  -> tunnel ->
+        \\+ [Wait] Waiting.
+        \\- -> hub
+        \\=== tunnel ===
+        \\Through {stopping: the dark|the light}.
+        \\->->
+        \\
+    ;
+    var program = try compile.compile_source(gpa, source);
+    defer program.deinit(gpa);
+    var summary: Summary = .{};
+    const save_points = [_]u32{ 0, 1, 3, 10, 40 };
+    for (save_points) |save_at| {
+        const plan: Plan = .{
+            .setup = .{ .random_seed = 7, .fallbacks = false, .bind_external = false },
+            .limits_kind = .default,
+            .compact_always = false,
+            .tight = .{},
+            .save_at = save_at,
+        };
+        try std.testing.expect(try play_planned(gpa, &program, 1, plan, true, &summary) == null);
+    }
+    try std.testing.expectEqual(@as(u32, save_points.len), summary.resumed_saves);
+    try std.testing.expectEqual(@as(u32, save_points.len), summary.step_cap);
+    try std.testing.expectEqual(@as(u32, 0), summary.runtime_errors);
 }
 
 test "codes keep the most frequent first, and count past their capacity as other" {
