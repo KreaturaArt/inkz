@@ -173,9 +173,8 @@ const Loader = struct {
         try loader.variables(try as(try member(top, "variablesState"), .object));
         try loader.evaluation((try as(try member(top, "evalStack"), .array)).items);
         if (top.get("currentDivertTarget")) |target| {
-            var pointer = try loader.pointer_at(target);
-            if (pointer.index == Pointer.container_self) pointer.index = 0;
-            loader.story.diverted_pointer = pointer;
+            // ink's PointerAtPath, so a path to a container stays at the container itself.
+            loader.story.diverted_pointer = try loader.pointer_at(target);
         }
         try loader.counts(try as(try member(top, "visitCounts"), .object), .visits);
         try loader.counts(try as(try member(top, "turnIndices"), .object), .turns);

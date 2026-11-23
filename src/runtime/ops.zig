@@ -151,7 +151,10 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
         return fail(story, "Found {s}, when expected {s}", .{ pop_name(kind), pop_name(current) });
     }
     try pop_call_stack(story, null);
-    if (override) |target| story.diverted_pointer = .start_of(target);
+    // ink's PointerAtPath: at the container itself, as a variable divert (vm.next_content).
+    if (override) |target| {
+        story.diverted_pointer = .{ .container = target, .index = Pointer.container_self };
+    }
 }
 
 /// `out`: the top value as text, if the expression left one.
