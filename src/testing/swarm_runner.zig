@@ -63,9 +63,11 @@ pub const Summary = struct {
     failures: u32 = 0,
     /// Runs of a large configuration (`Swarm.large`).
     large: u32 = 0,
-    /// Stories compiled from files too (`Split`), and the files.
+    /// Stories compiled from files too (`Split`), the files, and the stories whose files
+    /// had a broken INCLUDE.
     included: u32 = 0,
     included_files: u32 = 0,
+    included_broken: u32 = 0,
     /// Sources that didn't compile, counted under their first error's code.
     compile_failures: u32 = 0,
     codes: Codes = .{},
@@ -103,12 +105,13 @@ pub const Summary = struct {
     mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("{d} runs ({d} large, {d} included from {d} files), {d} failures; " ++
-            "compile failures {d}", .{
+        try writer.print("{d} runs ({d} large, {d} included from {d} files, {d} broken), " ++
+            "{d} failures; compile failures {d}", .{
             summary.runs,
             summary.large,
             summary.included,
             summary.included_files,
+            summary.included_broken,
             summary.failures,
             summary.compile_failures,
         });
@@ -359,6 +362,24 @@ const Split = struct {
     chained: bool,
     /// Where the third file starts, as a fraction of the knots after the first.
     cut: u32,
+    /// 1 in 8 splits breaks an INCLUDE, which must fail with its error alone.
+    broken: Broken,
+
+    const Broken = enum {
+        none,
+        /// main.ink also includes a file that isn't there: `include_not_found`.
+        missing,
+        /// The last file includes main.ink, which is still open: `include_cycle`.
+        cycle,
+
+        fn code(broken: Broken) []const u8 {
+            return switch (broken) {
+                .none => unreachable,
+                .missing => "include_not_found",
+                .cycle => "include_cycle",
+            };
+        }
+    };
 
     /// Mixed into the seed, so the split doesn't repeat the other plans' draws.
     const salt = 0x1c1_7de5;
@@ -380,11 +401,14 @@ const Split = struct {
         var prng: std.Random.DefaultPrng = .init(seed ^ salt);
         const choices: fuzz_ink.Choices = .{ .random = prng.random() };
         const split = choices.weighted(3, 1);
-        return .{
-            .files = if (split) choices.range(u8, 2, 3) else 1,
-            .chained = choices.choose(bool),
-            .cut = choices.choose(u32),
-        };
+        const files = if (split) choices.range(u8, 2, 3) else 1;
+        const chained = choices.choose(bool);
+        const cut = choices.choose(u32);
+        const broken: Broken = if (choices.weighted(7, 1))
+            if (choices.choose(bool)) .missing else .cycle
+        else
+            .none;
+        return .{ .files = files, .chained = chained, .cut = cut, .broken = broken };
     }
 
     /// The files of `source` and the one source they join to; null when `source` has no
@@ -416,15 +440,20 @@ const Split = struct {
             "INCLUDE part1.ink\nINCLUDE part2.ink\n"
         else
             "INCLUDE part1.ink\n";
+        const missing = if (split.broken == .missing) "INCLUDE missing.ink\n" else "";
         files[0] = .{
             .path = names[0],
-            .text = try std.mem.concat(arena, u8, &.{ root, root_end, includes }),
+            .text = try std.mem.concat(arena, u8, &.{ root, root_end, includes, missing }),
         };
         files[1] = .{ .path = names[1], .text = if (three and split.chained)
             try std.mem.concat(arena, u8, &.{ "INCLUDE part2.ink\n", first })
         else
             first };
         if (three) files[2] = .{ .path = names[2], .text = second };
+        if (split.broken == .cycle) {
+            const last = &files[files.len - 1];
+            last.text = try std.mem.concat(arena, u8, &.{ "INCLUDE main.ink\n", last.text });
+        }
         const joined = try std.mem.concat(arena, u8, &.{ root, root_end, first, second });
         return .{ .files = files, .joined = joined };
     }
@@ -447,6 +476,26 @@ fn check_included(
     const story = try split.story_of(arena_state.allocator(), source) orelse return null;
     summary.included += 1;
     summary.included_files += @intCast(story.files.len);
+    if (split.broken != .none) {
+        summary.included_broken += 1;
+        var broken_error: ?[]const u8 = null;
+        const broken_sink: messages.Sink = .{
+            .context = &broken_error,
+            .function = keep_first_error,
+        };
+        var broken = compile.compile_files_with(gpa, story.files, story.files[0].path, .{
+            .diagnostics = broken_sink,
+        }) catch |err| switch (err) {
+            error.CompileFailed => {
+                const expected = split.broken.code();
+                const same = std.mem.eql(u8, expected, broken_error orelse "none");
+                return if (same) null else "a broken INCLUDE failed with another error";
+            },
+            else => return err,
+        };
+        broken.deinit(gpa);
+        return "a broken INCLUDE compiled";
+    }
     var joined_error: ?[]const u8 = null;
     const joined_sink: messages.Sink = .{ .context = &joined_error, .function = keep_first_error };
     var joined = compile.compile_source_with(gpa, story.joined, .{
@@ -1299,26 +1348,42 @@ test "saves compare the same with their flows in another order, and differ other
 test "a split story includes its knots from two or three files and plays as one source" {
     // P19.4: the root stays in main.ink, ended by Split.root_end before its INCLUDEs; the
     // knots go to part1.ink and, from a later knot on, part2.ink, included from main.ink
-    // or from part1.ink. 40 seeds of the play target compile a quarter of their stories
-    // from files too, and those compile and play as the joined source does.
+    // or from part1.ink; 1 in 8 splits breaks an INCLUDE (a missing file, a cycle). 40
+    // seeds of the play target compile a quarter of their stories from files too, and
+    // those compile and play as the joined source does.
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const source = "VAR x = 1\nRoot\n-> k0\n=== k0 ===\nK0\n-> k1\n=== k1 ===\nK1\n-> END\n";
-    const flat: Split = .{ .files = 3, .chained = false, .cut = 0 };
+    const flat: Split = .{ .files = 3, .chained = false, .cut = 0, .broken = .none };
     const story = (try flat.story_of(arena, source)).?;
     try std.testing.expectEqual(@as(usize, 3), story.files.len);
     try std.testing.expectEqualStrings("VAR x = 1\nRoot\n-> k0\n" ++ Split.root_end ++
         "INCLUDE part1.ink\nINCLUDE part2.ink\n", story.files[0].text);
     try std.testing.expectEqualStrings("=== k0 ===\nK0\n-> k1\n", story.files[1].text);
     try std.testing.expectEqualStrings("=== k1 ===\nK1\n-> END\n", story.files[2].text);
-    const chained: Split = .{ .files = 3, .chained = true, .cut = 0 };
+    const chained: Split = .{ .files = 3, .chained = true, .cut = 0, .broken = .none };
     const chain = (try chained.story_of(arena, source)).?;
     const chain_main = chain.files[0].text;
     try std.testing.expect(std.mem.endsWith(u8, chain_main, "-> DONE\nINCLUDE part1.ink\n"));
     try std.testing.expect(std.mem.startsWith(u8, chain.files[1].text, "INCLUDE part2.ink\n"));
     try std.testing.expectEqualStrings(story.joined, chain.joined);
     try std.testing.expect(try flat.story_of(arena, "No knots\n") == null);
+    // A broken split fails with its INCLUDE's error.
+    for ([_]Split.Broken{ .missing, .cycle }) |broken| {
+        var split = chained;
+        split.broken = broken;
+        const files = (try split.story_of(arena, source)).?.files;
+        var first_error: ?[]const u8 = null;
+        const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
+        try std.testing.expectError(error.CompileFailed, compile.compile_files_with(
+            std.testing.allocator,
+            files,
+            "main.ink",
+            .{ .diagnostics = sink },
+        ));
+        try std.testing.expectEqualStrings(broken.code(), first_error.?);
+    }
 
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
@@ -1327,4 +1392,5 @@ test "a split story includes its knots from two or three files and plays as one 
     try std.testing.expectEqual(@as(u32, 0), summary.failures);
     try std.testing.expect(summary.included > 0 and summary.included < summary.runs);
     try std.testing.expect(summary.included_files >= 2 * summary.included);
+    try std.testing.expect(summary.included_broken < summary.included);
 }
