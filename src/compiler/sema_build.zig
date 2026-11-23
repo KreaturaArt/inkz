@@ -474,69 +474,71 @@ pub const Builder = struct {
 
 const Mapped = struct { kind: Kind, flags: u16 = 0 };
 
-fn map_tag(tag: Tag) Mapped {
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
-    assert(tag != .inline_value and tag != .call_statement);
-    return switch (tag) {
-        .knot => .{ .kind = .knot },
-        .function => .{ .kind = .knot, .flags = Flags.function },
-        .stitch => .{ .kind = .stitch },
-        .function_stitch => .{ .kind = .stitch, .flags = Flags.function },
-        .choice => .{ .kind = .choice },
-        .sticky_choice => .{ .kind = .choice, .flags = Flags.sticky },
-        .gather => .{ .kind = .gather },
-        .content_list => .{ .kind = .content_list },
-        .text, .text_space, .error_text => .{ .kind = .text },
-        .newline => .{ .kind = .text, .flags = Flags.newline },
-        .glue => .{ .kind = .glue },
-        .tag_start => .{ .kind = .tag, .flags = Flags.tag_start },
-        .tag_end => .{ .kind = .tag },
-        .divert => .{ .kind = .divert },
-        .tunnel => .{ .kind = .divert, .flags = Flags.tunnel },
-        .thread => .{ .kind = .divert, .flags = Flags.thread },
-        .empty_divert => .{ .kind = .divert, .flags = Flags.empty },
-        .tunnel_onwards => .{ .kind = .tunnel_onwards },
-        .conditional => .{ .kind = .conditional },
-        .inline_conditional => .{ .kind = .conditional, .flags = Flags.inline_conditional },
-        .conditional_branch => .{ .kind = .conditional_branch },
-        .else_branch => .{ .kind = .conditional_branch, .flags = Flags.@"else" },
-        .sequence => .{ .kind = .sequence },
-        else => map_tag_other(tag),
+/// ink's class for each syntax tag that makes an object; the tags not listed are the binary
+/// operators.
+const tag_map = map: {
+    var map: std.EnumArray(Tag, Mapped) = .initFill(.{ .kind = .binary });
+    const entries = [_]struct { Tag, Kind, u16 }{
+        .{ .knot, .knot, 0 },
+        .{ .function, .knot, Flags.function },
+        .{ .stitch, .stitch, 0 },
+        .{ .function_stitch, .stitch, Flags.function },
+        .{ .choice, .choice, 0 },
+        .{ .sticky_choice, .choice, Flags.sticky },
+        .{ .gather, .gather, 0 },
+        .{ .content_list, .content_list, 0 },
+        .{ .text, .text, 0 },
+        .{ .text_space, .text, 0 },
+        .{ .error_text, .text, 0 },
+        .{ .newline, .text, Flags.newline },
+        .{ .glue, .glue, 0 },
+        .{ .tag_start, .tag, Flags.tag_start },
+        .{ .tag_end, .tag, 0 },
+        .{ .divert, .divert, 0 },
+        .{ .tunnel, .divert, Flags.tunnel },
+        .{ .thread, .divert, Flags.thread },
+        .{ .empty_divert, .divert, Flags.empty },
+        .{ .tunnel_onwards, .tunnel_onwards, 0 },
+        .{ .conditional, .conditional, 0 },
+        .{ .inline_conditional, .conditional, Flags.inline_conditional },
+        .{ .conditional_branch, .conditional_branch, 0 },
+        .{ .else_branch, .conditional_branch, Flags.@"else" },
+        .{ .sequence, .sequence, 0 },
+        .{ .temp_declaration, .variable_assignment, Flags.new_temporary },
+        .{ .assignment, .variable_assignment, 0 },
+        .{ .variable_declaration, .variable_assignment, Flags.global },
+        .{ .list_declaration, .variable_assignment, Flags.global | Flags.list },
+        .{ .const_declaration, .constant_declaration, 0 },
+        .{ .external_declaration, .external_declaration, 0 },
+        .{ .@"return", .@"return", 0 },
+        .{ .author_warning, .author_warning, 0 },
+        .{ .include, .included_file, 0 },
+        .{ .integer, .number, 0 },
+        .{ .float, .number, 0 },
+        .{ .true, .number, 0 },
+        .{ .false, .number, 0 },
+        .{ .string, .string_expression, 0 },
+        .{ .variable_reference, .variable_reference, 0 },
+        .{ .function_call, .function_call, 0 },
+        .{ .divert_target, .divert_target, 0 },
+        .{ .negate, .unary, 0 },
+        .{ .not, .unary, 0 },
+        .{ .increment, .increment, 0 },
+        .{ .decrement, .increment, Flags.decrement },
+        .{ .add_assignment, .increment, Flags.by_expression },
+        .{ .subtract_assignment, .increment, Flags.by_expression | Flags.decrement },
+        .{ .list_literal, .list_literal, 0 },
+        .{ .conditions, .multiple_condition, 0 },
     };
-}
+    for (entries) |entry| map.set(entry[0], .{ .kind = entry[1], .flags = entry[2] });
+    break :map map;
+};
 
-fn map_tag_other(tag: Tag) Mapped {
-    assert(@backingInt(tag) < @typeInfo(Tag).@"enum".field_names.len);
-    return switch (tag) {
-        .temp_declaration => .{ .kind = .variable_assignment, .flags = Flags.new_temporary },
-        .assignment => .{ .kind = .variable_assignment },
-        .variable_declaration => .{ .kind = .variable_assignment, .flags = Flags.global },
-        .list_declaration => .{ .kind = .variable_assignment, .flags = Flags.global | Flags.list },
-        .const_declaration => .{ .kind = .constant_declaration },
-        .external_declaration => .{ .kind = .external_declaration },
-        .@"return" => .{ .kind = .@"return" },
-        .author_warning => .{ .kind = .author_warning },
-        .include => .{ .kind = .included_file },
-        .integer, .float, .true, .false => .{ .kind = .number },
-        .string => .{ .kind = .string_expression },
-        .variable_reference => .{ .kind = .variable_reference },
-        .function_call => .{ .kind = .function_call },
-        .divert_target => .{ .kind = .divert_target },
-        .negate, .not => .{ .kind = .unary },
-        .increment => .{ .kind = .increment },
-        .decrement => .{ .kind = .increment, .flags = Flags.decrement },
-        .add_assignment => .{ .kind = .increment, .flags = Flags.by_expression },
-        .subtract_assignment => .{
-            .kind = .increment,
-            .flags = Flags.by_expression | Flags.decrement,
-        },
-        .list_literal => .{ .kind = .list_literal },
-        .conditions => .{ .kind = .multiple_condition },
-        else => {
-            assert(is_binary(tag));
-            return .{ .kind = .binary };
-        },
-    };
+fn map_tag(tag: Tag) Mapped {
+    assert(tag != .inline_value and tag != .call_statement);
+    const mapped = tag_map.get(tag);
+    assert(mapped.kind != .binary or is_binary(tag));
+    return mapped;
 }
 
 /// Item `position` of a listed range (`Ast.list`).
