@@ -154,6 +154,12 @@ pub const Play = enum { hub, typed };
 ///   branch (`block` writes the one with a branch per condition).
 /// - `choice_tags`: tags in a choice's start, choice-only and output text, one of them
 ///   with a value, and in the hub's choices.
+/// - `divert_variable`: `VAR d0 = -> k0`, assigned other knots and diverted to with
+///   `-> d0` (and passed to `jump1` with `parameters`); with `hub`, it always holds the hub.
+/// - `parameters`: knots with parameters, each reached by one kind of line with an
+///   argument: `-> tunnel1(n) ->` returns with `->->`, `<- thread1(n)` offers a choice, and
+///   `-> jump1(n, -> k0)` diverts to the target its second parameter holds (the hub with
+///   `hub`).
 pub const Construct = enum {
     turns,
     math,
@@ -161,6 +167,8 @@ pub const Construct = enum {
     seed_random,
     conditional_else,
     choice_tags,
+    divert_variable,
+    parameters,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -205,6 +213,7 @@ const ExtraLine = enum {
     collision,
     seed_random,
     conditional_else,
+    divert_assign,
 };
 
 const ExtraTerm = enum {
@@ -637,6 +646,7 @@ pub const Generator = struct {
         generator.weave(false);
         if (swarm.play.contains(.hub)) generator.hub();
         for (0..swarm.knots_count) |index| generator.knot(@intCast(index));
+        if (swarm.constructs.contains(.parameters)) generator.knots_with_parameters();
         generator.functions();
         const length = generator.writer.end;
         assert(length <= buffer.len);
@@ -765,6 +775,10 @@ pub const Generator = struct {
             index,
             index,
         });
+        if (generator.swarm.constructs.contains(.divert_variable) and generator.keep()) {
+            generator.used.constructs.insert(.divert_variable);
+            generator.print("VAR d0 = -> {s}\n", .{generator.divert_value()});
+        }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
@@ -818,16 +832,85 @@ pub const Generator = struct {
         switch (line) {
             .choice => generator.choice(),
             .gather => generator.gather(),
-            .divert => generator.print("-> {s}\n", .{generator.divert_target()}),
-            .tunnel => if (generator.swarm.play.contains(.hub)) {
+            .divert => generator.divert(),
+            .tunnel => if (generator.with_parameters()) {
+                generator.put("-> tunnel1(");
+                generator.expression_typed(.number);
+                generator.put(") ->\n");
+            } else if (generator.swarm.play.contains(.hub)) {
                 generator.put("-> tunnel0 ->\n");
             } else {
                 generator.print("-> {s} ->\n", .{generator.knot_target()});
             },
-            .thread => generator.print("<- {s}\n", .{generator.thread_target()}),
+            .thread => if (generator.with_parameters()) {
+                generator.put("<- thread1(");
+                generator.expression_typed(.number);
+                generator.put(")\n");
+            } else {
+                generator.print("<- {s}\n", .{generator.thread_target()});
+            },
             else => unreachable,
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// Whether a tunnel, thread or divert goes to a knot with parameters: half of them
+    /// with `parameters`.
+    fn with_parameters(generator: *Generator) bool {
+        if (!generator.swarm.constructs.contains(.parameters)) return false;
+        if (!generator.choices.choose(bool)) return false;
+        generator.used.constructs.insert(.parameters);
+        return true;
+    }
+
+    /// A divert: to a target, or with the constructs on, to `d0` or `jump1`.
+    fn divert(generator: *Generator) void {
+        const variable_on = generator.swarm.constructs.contains(.divert_variable);
+        if (variable_on and generator.choices.weighted(2, 1)) {
+            generator.used.constructs.insert(.divert_variable);
+            return generator.put("-> d0\n");
+        }
+        if (!generator.with_parameters()) {
+            return generator.print("-> {s}\n", .{generator.divert_target()});
+        }
+        generator.put("-> jump1(");
+        generator.expression_typed(.number);
+        if (variable_on and generator.choices.choose(bool)) {
+            generator.used.constructs.insert(.divert_variable);
+            generator.put(", d0)\n");
+        } else {
+            generator.print(", -> {s})\n", .{generator.divert_value()});
+        }
+    }
+
+    /// What `d0` and `jump1`'s target hold: a knot, or with `hub` the hub, so that a divert
+    /// to them never loops without a choice.
+    fn divert_value(generator: *Generator) []const u8 {
+        if (generator.swarm.play.contains(.hub)) return "hub";
+        return generator.knot_target();
+    }
+
+    /// The knots that tunnels, threads and diverts with arguments reach. Only tunnels reach
+    /// `tunnel1`, and only threads `thread1`, whose choice goes to any target (the hub with
+    /// `hub`).
+    fn knots_with_parameters(generator: *Generator) void {
+        assert(generator.swarm.constructs.contains(.parameters));
+        if (generator.keep()) {
+            generator.put("=== tunnel1(x) ===\nTunnel {x}\n~ x++\n->->\n");
+        }
+        if (generator.keep()) {
+            generator.put("=== thread1(x) ===\nThread {x}\n");
+            const to = if (generator.swarm.play.contains(.hub))
+                "hub"
+            else
+                generator.target(generator.swarm.targets);
+            generator.print("* [Thread {{x}}] -> {s}\n", .{to});
+            if (generator.swarm.targets.contains(.done)) {
+                generator.used.targets.insert(.done);
+                generator.put("-> DONE\n");
+            }
+        }
+        if (generator.keep()) generator.put("=== jump1(x, -> t) ===\nJump {x}\n-> t\n");
     }
 
     fn text_line(generator: *Generator) void {
@@ -1335,6 +1418,7 @@ pub const Generator = struct {
         const constructs = generator.swarm.constructs;
         if (constructs.contains(.seed_random)) kinds.insert(.seed_random);
         if (constructs.contains(.conditional_else)) kinds.insert(.conditional_else);
+        if (constructs.contains(.divert_variable)) kinds.insert(.divert_assign);
         assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
@@ -1384,6 +1468,10 @@ pub const Generator = struct {
                     generator.print("{d}", .{generator.choices.choose(i8)});
                 }
                 generator.put(")\n");
+            },
+            .divert_assign => {
+                generator.used.constructs.insert(.divert_variable);
+                generator.print("~ d0 = -> {s}\n", .{generator.divert_value()});
             },
             .conditional_else => {
                 generator.used.constructs.insert(.conditional_else);
@@ -1956,6 +2044,8 @@ test "each construct appears when on and never when off" {
         .seed_random = &.{"SEED_RANDOM("},
         .conditional_else = &.{ "If yes", "If no" },
         .choice_tags = &.{"# ct"},
+        .divert_variable = &.{ "VAR d0", "-> d0", "~ d0 =" },
+        .parameters = &.{ "tunnel1(", "thread1(", "jump1(" },
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
