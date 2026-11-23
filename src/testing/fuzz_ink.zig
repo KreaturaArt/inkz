@@ -160,6 +160,12 @@ pub const Play = enum { hub, typed };
 ///   argument: `-> tunnel1(n) ->` returns with `->->`, `<- thread1(n)` offers a choice, and
 ///   `-> jump1(n, -> k0)` diverts to the target its second parameter holds (the hub with
 ///   `hub`).
+///
+/// Constructs the coverage report listed as unreached (P19.8), appended so the draws of the
+/// ones above keep their order:
+/// - `target_counts`: `READ_COUNT(-> k)` and `TURNS_SINCE(->k)` of any knot or the stitch,
+///   and divert targets compared with `==` or `!=` (with `d0` when `divert_variable` is on),
+///   when the operator is on.
 pub const Construct = enum {
     turns,
     math,
@@ -169,6 +175,7 @@ pub const Construct = enum {
     choice_tags,
     divert_variable,
     parameters,
+    target_counts,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -186,7 +193,9 @@ const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
     .list = .initOne(.list),
 });
 const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(.{
-    .number = .initMany(&.{ .temp_read, .ref_call, .global_read, .turns, .math, .list_value }),
+    .number = .initMany(&.{
+        .temp_read, .ref_call, .global_read, .turns, .math, .list_value, .target_count,
+    }),
     .string = .empty,
     .list = .initMany(&.{ .item_full, .item_bare, .ambiguous, .list_function }),
 });
@@ -227,6 +236,7 @@ const ExtraTerm = enum {
     math,
     list_value,
     list_function,
+    target_count,
 };
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
@@ -1550,6 +1560,7 @@ pub const Generator = struct {
             kinds.insert(.list_value);
             kinds.insert(.list_function);
         }
+        if (constructs.contains(.target_counts)) kinds.insert(.target_count);
         return kinds;
     }
 
@@ -1584,6 +1595,7 @@ pub const Generator = struct {
                 }));
             },
             .list_function => generator.list_function(),
+            .target_count => generator.target_count(),
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1638,6 +1650,36 @@ pub const Generator = struct {
             // `l0.a` is the only full name that the `items` feature doesn't own.
             6 => generator.put("LIST_RANGE(LIST_ALL(l0), l0.a, 2)"),
             7 => generator.print("l0({d})", .{generator.choices.range(u8, 1, 3)}),
+            else => unreachable,
+        }
+    }
+
+    /// A count of a knot target's visits or turns, or a comparison of divert targets. The
+    /// `TURNS_SINCE` has no space after its `->`, which tells it from the term's.
+    fn target_count(generator: *Generator) void {
+        generator.used.constructs.insert(.target_counts);
+        const comparisons = generator.swarm.operators.intersectWith(
+            .initMany(&.{ .equal, .not_equal }),
+        );
+        const kinds: u32 = if (comparisons.count() > 0) 3 else 2;
+        switch (generator.choices.below(kinds)) {
+            0 => generator.print("READ_COUNT(-> {s})", .{generator.knot_target()}),
+            1 => generator.print("TURNS_SINCE(->{s})", .{generator.knot_target()}),
+            2 => {
+                const operator = generator.pick_enabled(Operator, comparisons);
+                generator.used.operators.insert(operator);
+                // `d0` holds a divert target too; ink compares the two by their paths.
+                const of_d0 = generator.swarm.constructs.contains(.divert_variable) and
+                    generator.choices.choose(bool);
+                if (of_d0) {
+                    generator.used.constructs.insert(.divert_variable);
+                    generator.put("(d0");
+                } else {
+                    generator.print("(-> {s}", .{generator.knot_target()});
+                }
+                generator.put(binary_operators[@backingInt(operator)]);
+                generator.print("-> {s})", .{generator.knot_target()});
+            },
             else => unreachable,
         }
     }
@@ -1910,7 +1952,7 @@ const markers_unique = [_]Marker{
     unique_marker("{f0(2)}", "inlines", Inline.calls),
     // `LIST_RANDOM(` and `SEED_RANDOM(` take one argument.
     unique_marker("RANDOM(1, 3)", "terms", Term.random),
-    unique_marker("TURNS_SINCE", "terms", Term.turns_since),
+    unique_marker("TURNS_SINCE(-> ", "terms", Term.turns_since),
     unique_marker("LIST_COUNT", "terms", Term.list_query),
     unique_marker("CHOICE_COUNT", "terms", Term.choice_count),
     // The assignment `~ e0(` calls it with an expression, which may be `2`.
@@ -2087,6 +2129,7 @@ test "each construct appears when on and never when off" {
         .choice_tags = &.{"# ct"},
         .divert_variable = &.{ "VAR d0", "-> d0", "~ d0 =" },
         .parameters = &.{ "tunnel1(", "thread1(", "jump1(" },
+        .target_counts = &.{ "READ_COUNT(", "TURNS_SINCE(->k", "== ->", "!= ->" },
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
