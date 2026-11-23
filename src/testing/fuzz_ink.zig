@@ -486,6 +486,11 @@ pub const Generator = struct {
     labels: u32 = 0,
     /// The temps `u0`-`u3` declared in the current flow, as bits.
     temps: u8 = 0,
+    /// The temps `t0` and `t1` (of assignments) declared in the current flow, as bits.
+    temps_plain: u2 = 0,
+    /// Whether the last term written was `not v2`, which ink won't let a `?`, `!?` or `has`
+    /// follow.
+    negated: bool = false,
     /// Whether the current flow is a function with the parameter `x`.
     parameter: bool = false,
     /// Whether the source has its one collision.
@@ -760,7 +765,14 @@ pub const Generator = struct {
         switch (kind) {
             0, 1 => generator.print("~ {s} = ", .{generator.variable()}),
             2 => generator.print("~ {s} += ", .{generator.variable()}),
-            3 => generator.print("~ temp t{d} = ", .{generator.choices.choose(u1)}),
+            3 => {
+                // A second `temp` of the same name in one flow is a duplicate declaration.
+                const index = generator.choices.choose(u1);
+                const bit = @as(u2, 1) << index;
+                const declare = if (generator.temps_plain & bit == 0) "temp " else "";
+                generator.temps_plain |= bit;
+                generator.print("~ {s}t{d} = ", .{ declare, index });
+            },
             4 => generator.put("~ l0 += "),
             5 => generator.put("~ v0++\n~ v1 = "),
             6 => generator.put("~ f0("),
@@ -796,20 +808,37 @@ pub const Generator = struct {
     /// A flat chain of terms joined by operators.
     fn expression(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
+        var term_start = generator.writer.end;
         generator.term();
         const terms_max = generator.swarm.terms_max;
         var terms: u32 = 1;
         while (terms < terms_max and !!generator.choices.more(2, 1)) : (terms += 1) {
             const operator = generator.pick_enabled(Operator, generator.swarm.operators);
             generator.used.operators.insert(operator);
+            const containment = operator == .contains or operator == .not_contains or
+                operator == .has;
+            if (containment and generator.negated) generator.unnegate(term_start);
             generator.put(binary_operators[@backingInt(operator)]);
+            term_start = generator.writer.end;
             generator.term();
         }
         assert(terms <= terms_max);
     }
 
+    /// Drops the `not ` of the `not v2` written at `start`: ink rejects a `not` left of `?`,
+    /// `!?` or `has` even in parentheses (its parser keeps no node for them).
+    fn unnegate(generator: *Generator, start: usize) void {
+        const end = generator.writer.end;
+        const buffer = generator.writer.buffer;
+        // A full buffer may have cut it short.
+        if (!std.mem.eql(u8, buffer[start..end], "not v2")) return;
+        std.mem.copyForwards(u8, buffer[start .. end - 4], buffer[start + 4 .. end]);
+        generator.writer.end = end - 4;
+    }
+
     fn term(generator: *Generator) void {
         assert(generator.writer.end <= generator.writer.buffer.len);
+        generator.negated = false;
         const kinds = generator.resolution_terms();
         if (kinds.count() > 0 and generator.choices.weighted(2, 1)) {
             return generator.resolution_term(kinds);
@@ -859,6 +888,7 @@ pub const Generator = struct {
         const v2 = generator.declared(.v2);
         assert(v0 or v2);
         const minus = if (v0 and v2) generator.choices.choose(bool) else v0;
+        generator.negated = !minus;
         generator.put(if (minus) "-v0" else "not v2");
     }
 
@@ -927,6 +957,7 @@ pub const Generator = struct {
     fn flow_start(generator: *Generator, parameter: bool) void {
         assert(generator.temps < 1 << temps_count);
         generator.temps = 0;
+        generator.temps_plain = 0;
         generator.parameter = parameter;
     }
 
