@@ -109,6 +109,8 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
     var seeds: ?u32 = null;
     var seconds: ?u32 = null;
     var index: usize = 1;
+    // Options come in pairs: a flag without its value is an error, not ignored.
+    if (arguments.len % 2 == 0) return error.MissingValue;
     while (index + 1 < arguments.len) : (index += 2) {
         const name = arguments[index];
         const value = arguments[index + 1];
