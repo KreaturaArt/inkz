@@ -648,12 +648,64 @@ Real **gaps**, each assigned to a Phase 19 issue (P19.8 is git issue ba7dd2c):
 |---|---|---|
 | INCLUDE and `compile_file` | `compiler/source_space.zig:61-328`, `compiler/sema_includes.zig:19-108`, `compiler/compile.zig:176-226`, `grammar_statements.zig:376-381` | P19.4: done but a root in a subdirectory and the depth and file limits (below) |
 | Most diagnostics: the generator only makes `drop` and `collision` errors | `compiler/messages.zig:190-267,409-613,746-1113` (texts of other codes, scopes, expressions), `grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462,493-501` (error recovery), `lower_termination.zig:183-193`, `resolve_lookups.zig:93-103` | P19.3 (mutants): all but the scopes, the expression printer and the semantic-error texts (above) |
-| `TURNS_SINCE`/`READ_COUNT` of `-> target`, divert targets in expressions | `runtime/vm.zig:500,516-529`, `resolve_passes.zig:290-323` | P19.8 |
-| List `^`, `LIST_RANGE` with list bounds, a bare list item as a value | `runtime/lists.zig:223-230,357-362`, `runtime/ops.zig:520-523` | P19.8 |
-| Comments, non-ASCII identifiers and text, `TODO:`, explicit list item values | `compiler/lexical.zig:16-22,60-69`, `grammar_statements.zig:360-365,465-471` | P19.8 |
-| Floats printed in scientific notation | `runtime/value.zig:160-166` | P19.8 |
-| Host API never called by the host target: `global_tags`, errors without a handler (`error_count`, `write_error`), `cont_alloc`, `unbind_external_function`, `init_from_json`, the `events` callbacks, a non-lookahead-safe external inside string evaluation | `runtime/story.zig:277-283,377-381,426-443,518,793,887-917`, `evaluate.zig:49,68-79`, `story_paths.zig:49`, `ops.zig:1013-1025` | P19.8 |
-| A divert through a variable that holds no target | `runtime/vm.zig:399-407` | P19.8 |
+| `TURNS_SINCE`/`READ_COUNT` of `-> target`, divert targets in expressions | `runtime/vm.zig:500,516-529`, `resolve_passes.zig:290-323` | P19.8: done (below) |
+| List `^`, `LIST_RANGE` with list bounds, a bare list item as a value | `runtime/lists.zig:223-230,357-362`, `runtime/ops.zig:520-523` | P19.8: done (below) |
+| Comments, non-ASCII identifiers and text, `TODO:`, explicit list item values | `compiler/lexical.zig:16-22,60-69`, `grammar_statements.zig:360-365,465-471` | P19.8: done (below) |
+| Floats printed in scientific notation | `runtime/value.zig:160-166` | P19.8: done (below) |
+| Host API never called by the host target: `global_tags`, errors without a handler (`error_count`, `write_error`), `cont_alloc`, `unbind_external_function`, `init_from_json`, the `events` callbacks, a non-lookahead-safe external inside string evaluation | `runtime/story.zig:277-283,377-381,426-443,518,793,887-917`, `evaluate.zig:49,68-79`, `story_paths.zig:49`, `ops.zig:1013-1025` | P19.8: done (below) |
+| A divert through a variable that holds no target | `runtime/vm.zig:399-407` | P19.8: done (below) |
+
+### Constructs and host calls the report listed (P19.8, 2026-11-23)
+
+Seven generator constructs, appended to `Construct` so `Swarm.classic` keeps its golden
+hashes: `target_counts` (`READ_COUNT(-> k)`, `TURNS_SINCE(->k)`, divert targets compared
+with `==` and `!=`), `list_operations` (`^`), `item_values` (`LIST l2 = (p2 = 2), q2 = 5,
+r2`), `lexical` (`//` and `/* */` comments, `TODO:`, non-ASCII text and the global
+`größe`), `scientific` (floats that print as `1.23E-05` or `-2.1474836E+09`),
+`mistyped_divert` (`VAR d1` of 5, 0, 2.5 or a string used once as `-> d1`,
+`TURNS_SINCE(d1)` or `READ_COUNT(d1)`) and `string_calls` (a choice text calling `e0`);
+`list_functions` also writes a `LIST_RANGE` whose bounds are both lists. The host target's
+sessions now also call `cont_alloc`, `continue_maximally`, the kept errors and warnings
+(`error_count`, `write_error`, `reset_errors`), `unbind_external_function` and
+`current_choice`/`current_choice_tag`, and each seed draws its setup's variations: no error
+handler (1 in 4), `init_from_json` (1 in 4), `e0` not lookahead-safe (1 in 4), every event
+(1 in 2). The summary counts the calls by kind, the variations, the events and the stories
+that kept an error.
+
+`zig build swarm-coverage -- --target all --seconds 20` from seed 1, before and after,
+lines hit:
+
+| Module | before | after |
+|---|---|---|
+| src/compiler | 2,003 / 2,534 (79.0 %) | 1,999 / 2,534 (78.9 %) |
+| src/runtime | 1,531 / 1,857 (82.4 %) | 1,575 / 1,859 (84.7 %) |
+| src/core | 641 / 858 (74.7 %) | 641 / 858 (74.7 %) |
+
+By file (blocks): `story.zig` 67.5 to 78.0 %, `evaluate.zig` 68.8 to 77.9 %, `value.zig`
+60.0 to 70.0 %, `vm.zig` 80.8 to 81.5 %, `resolve_passes.zig` 70.8 to 73.0 %. The compiler
+gains nothing measurable: `mutate` had reached comments, `TODO:` and item values already,
+and its share decides the last few lines between runs. The 20 s ran 2,226 play, 1,607 save,
+3,142 host and 6,638 mutate seeds; `--target all --seconds 60` then ran 16,635 play, 10,988
+save, 22,416 host and 27,263 mutate seeds without a failure.
+
+Still listed, but reached: `lists.zig:223-230` (a list as `LIST_RANGE`'s maximum),
+`vm.zig:518-523` (`TURNS_SINCE` of a value), `vm.zig:407`, `value.zig:164` and
+`story.zig:890` (`global_tags`). A one-story run (`swarm-coverage -- --target play --story
+probe.ink`) whose story runs `LIST_RANGE(LIST_ALL(l0), b, LIST_MAX(l0))` and
+`TURNS_SINCE(d1)` still lists them, while the lines around them count as hit, and the
+differential's transcripts show inkz printing their results and messages as ink does: the
+ReleaseSafe build attributes these blocks to other lines (inlined or merged code), so the
+report under-counts there. Not reachable from compiled ink: `ops.zig:520-523`
+(`single_item_list`), as the program builder turns a bare list item into a list literal and
+inklecate rejects a `ref` to one. Left out on purpose: `continue_maximally_alloc` (a story
+that loops without choices would grow it without bound) and warnings (`write_warning`'s
+text), which only a `VAR?` of an unknown name makes, which no compiled story has.
+
+Spot checks against ink v1.2.1 (`swarm-gen`, `reference:swarm`, `swarm-check`), 900 drawn
+cases in five runs (seeds 1, 1000, 2000, 3000 and 4000), found no divergence. Reading ink
+for `mistyped_divert` found one difference first: inkz's error for `TURNS_SINCE` or
+`READ_COUNT` of a value that is no divert target left out ink's "but saw 5" and its hint for
+an integer; it now says both (ground-truth case `swarm/turns_since_of_value`).
 
 ## Results (2026-11-13)
 
