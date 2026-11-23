@@ -445,12 +445,39 @@ pub const State = struct {
         return state.warnings.count > 0;
     }
 
-    /// ink's ResetErrors.
+    /// The diagnostics a lookahead snapshot holds (none without one): a nested ResetErrors
+    /// (a function evaluated from an external during the lookahead) keeps them, entries and
+    /// bytes, since `lookahead.restore` puts their counts back.
+    pub const DiagnosticMarks = struct {
+        errors: u32 = 0,
+        warnings: u32 = 0,
+        bytes: u32 = 0,
+        dropped: u32 = 0,
+    };
+
+    pub fn diagnostic_marks(state: *const State) DiagnosticMarks {
+        if (!lookahead_module.active(state)) return .{};
+        const snapshot = &state.snapshot;
+        assert(snapshot.errors <= state.errors.count);
+        assert(snapshot.warnings <= state.warnings.count);
+        assert(snapshot.diagnostic_bytes <= state.diagnostic_bytes_used);
+        assert(snapshot.diagnostics_dropped <= state.diagnostics_dropped);
+        return .{
+            .errors = snapshot.errors,
+            .warnings = snapshot.warnings,
+            .bytes = snapshot.diagnostic_bytes,
+            .dropped = snapshot.diagnostics_dropped,
+        };
+    }
+
+    /// ink's ResetErrors, down to `diagnostic_marks`: in ink the lookahead runs on a copy of
+    /// the state, so a reset there leaves the original's diagnostics alone.
     pub fn reset_errors(state: *State) void {
-        state.errors.clear();
-        state.warnings.clear();
-        state.diagnostic_bytes_used = 0;
-        state.diagnostics_dropped = 0;
+        const marks = state.diagnostic_marks();
+        state.errors.count = marks.errors;
+        state.warnings.count = marks.warnings;
+        state.diagnostic_bytes_used = marks.bytes;
+        state.diagnostics_dropped = marks.dropped;
     }
 
     /// Compacts the heap. Only `reserve` (and load) calls it, while the roots hold every
@@ -843,6 +870,32 @@ test "errors and warnings are bounded and reset together" {
     state.reset_errors();
     try std.testing.expect(!state.has_error() and !state.has_warning());
     try std.testing.expectEqual(@as(u32, 0), state.diagnostics_dropped);
+    try std.testing.expectEqual(@as(u32, 0), state.diagnostic_bytes_used);
+}
+
+test "a reset during a lookahead keeps the snapshot's diagnostics" {
+    // P17 review: a function evaluated from an external during the newline lookahead
+    // reports and resets errors; resetting to zero let its new message overwrite a kept
+    // warning's bytes, and the restore brought back the count over the other text.
+    const gpa = std.testing.allocator;
+    var program = try test_program(gpa);
+    defer program.deinit(gpa);
+    var state: State = undefined;
+    try state.init(gpa, &program, .{ .warnings_max = 4 });
+    defer state.deinit(gpa);
+    state.add_diagnostic(.warning, .null, "kept", .{});
+    lookahead_module.take(&state);
+    state.add_diagnostic(.warning, .null, "nested", .{});
+    state.reset_errors();
+    try std.testing.expectEqual(@as(u32, 1), state.warnings.count);
+    state.add_diagnostic(.warning, .null, "again", .{});
+    const again = state.diagnostic_text(state.warnings.slice()[1]);
+    try std.testing.expectEqualStrings("RUNTIME WARNING: again", again);
+    lookahead_module.restore(&state);
+    try std.testing.expectEqual(@as(u32, 1), state.warnings.count);
+    const kept = state.diagnostic_text(state.warnings.slice()[0]);
+    try std.testing.expectEqualStrings("RUNTIME WARNING: kept", kept);
+    state.reset_errors();
     try std.testing.expectEqual(@as(u32, 0), state.diagnostic_bytes_used);
 }
 

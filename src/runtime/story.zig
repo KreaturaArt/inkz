@@ -449,11 +449,14 @@ pub const Story = struct {
         const profile_zone = profile.begin(.report_diagnostics);
         defer profile_zone.end();
         const state = &story.state;
-        if (!state.has_error() and !state.has_warning()) return;
+        // In a lookahead, the diagnostics its snapshot holds wait for the outer report.
+        const marks = state.diagnostic_marks();
+        if (state.errors.count == marks.errors and state.warnings.count == marks.warnings and
+            state.diagnostics_dropped == marks.dropped) return;
         const handler = story.on_error orelse return error.StoryError;
         const lists = [_][]const state_module.Diagnostic{
-            state.errors.slice(),
-            state.warnings.slice(),
+            state.errors.slice()[marks.errors..],
+            state.warnings.slice()[marks.warnings..],
         };
         const severities = [_]Severity{ .@"error", .warning };
         for (lists, severities) |list, severity| {
@@ -463,9 +466,9 @@ pub const Story = struct {
                 handler(story.on_error_context, state.diagnostic_text(diagnostic), severity);
             }
         }
-        if (state.diagnostics_dropped > 0) {
+        if (state.diagnostics_dropped > marks.dropped) {
             var buffer: [128]u8 = undefined;
-            const dropped = state.diagnostics_dropped;
+            const dropped = state.diagnostics_dropped - marks.dropped;
             const text = std.fmt.bufPrint(&buffer, "RUNTIME ERROR: {d} more errors and " ++
                 "warnings didn't fit errors_max or warnings_max", .{dropped}) catch &buffer;
             story.callback_depth += 1;
