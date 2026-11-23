@@ -17,10 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Keep in step with mise.toml.
+      # Installs minimum_zig_version from build.zig.zon (build.zig checks it is exact).
       - uses: EuroZig/setup-zig@v3
-        with:
-          version: 0.17.1
 
       - name: zig build ci
         run: zig build ci --summary failures

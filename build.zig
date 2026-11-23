@@ -1,4 +1,19 @@
 const std = @import("std");
+const builtin = @import("builtin");
+const zon = @import("build.zig.zon");
+
+// build.zig.zon pins the one Zig version this project builds with; CI installs it from
+// there (setup-zig), and mise.toml has to match.
+comptime {
+    const required = std.SemanticVersion.parse(zon.minimum_zig_version) catch
+        @compileError("Invalid minimum_zig_version in build.zig.zon");
+    if (builtin.zig_version.order(required) != .eq) {
+        @compileError(std.fmt.comptimePrint(
+            "This project requires Zig {s}, but you are using {s}",
+            .{ zon.minimum_zig_version, builtin.zig_version_string },
+        ));
+    }
+}
 
 pub fn build(b: *std.Build) void {
     const target = b.standardTargetOptions(.{});
