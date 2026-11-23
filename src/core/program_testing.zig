@@ -1,35 +1,53 @@
-//! Test helpers for programs: field-by-field equality.
+//! Program equality, field by field: for tests and for the swarm's round trips.
 
-// lint: allow assertion_density: test helpers, built only into tests; they report with expect.
+// lint: allow assertion_density: comparisons that name a difference; nothing to assert.
 
 const std = @import("std");
 const Program = @import("program.zig").Program;
 
-/// Whether two programs are the same, field by field.
-pub fn expect_same_program(expected: *const Program, actual: *const Program) !void {
-    const testing = std.testing;
-    try testing.expectEqualSlices(u8, expected.strings.bytes.items, actual.strings.bytes.items);
-    try testing.expectEqualSlices(u32, expected.strings.ends.items, actual.strings.ends.items);
-    try expect_same_columns(expected.instructions, actual.instructions);
-    try expect_same_columns(expected.containers, actual.containers);
-    try testing.expectEqualSlices(u32, expected.extra, actual.extra);
-    inline for (.{ "named", "globals", "list_origins", "list_items", "externals" }) |field| {
-        const left = @field(expected, field);
-        const right = @field(actual, field);
-        try testing.expectEqual(left.len, right.len);
-        for (left, right) |a, b| try testing.expect(std.meta.eql(a, b));
+/// The name of the first field in which two programs differ (every array, element by
+/// element, and every scalar), or null when they are the same.
+pub fn first_difference(expected: *const Program, actual: *const Program) ?[]const u8 {
+    if (!std.mem.eql(u8, expected.strings.bytes.items, actual.strings.bytes.items)) {
+        return "strings.bytes";
     }
-    try testing.expectEqual(expected.global_declaration, actual.global_declaration);
-    try testing.expectEqual(expected.count_slots_count, actual.count_slots_count);
+    if (!std.mem.eql(u32, expected.strings.ends.items, actual.strings.ends.items)) {
+        return "strings.ends";
+    }
+    if (!same_columns(expected.instructions, actual.instructions)) return "instructions";
+    if (!same_columns(expected.containers, actual.containers)) return "containers";
+    if (!std.mem.eql(u32, expected.extra, actual.extra)) return "extra";
+    const arrays = .{ "name_classes", "named", "globals", "list_origins", "list_items" };
+    inline for (arrays ++ .{"externals"}) |field| {
+        if (!same_items(@field(expected, field), @field(actual, field))) return field;
+    }
+    inline for (.{ "global_declaration", "count_slots_count", "ink_version", "newline" }) |field| {
+        if (@field(expected, field) != @field(actual, field)) return field;
+    }
+    return null;
 }
 
-fn expect_same_columns(expected: anytype, actual: @TypeOf(expected)) !void {
-    try std.testing.expectEqual(expected.len, actual.len);
+/// Fails (naming the field) when two programs differ.
+pub fn expect_same_program(expected: *const Program, actual: *const Program) !void {
+    const field = first_difference(expected, actual) orelse return;
+    std.debug.print("programs differ in {s}\n", .{field});
+    return error.TestExpectedEqual;
+}
+
+fn same_items(expected: anytype, actual: @TypeOf(expected)) bool {
+    if (expected.len != actual.len) return false;
+    for (expected, actual) |a, b| if (!std.meta.eql(a, b)) return false;
+    return true;
+}
+
+fn same_columns(expected: anytype, actual: @TypeOf(expected)) bool {
+    if (expected.len != actual.len) return false;
     const Item = @TypeOf(expected.get(0));
     inline for (comptime std.meta.fieldNames(Item)) |name| {
         const column = @field(std.meta.FieldEnum(Item), name);
         for (expected.items(column), actual.items(column)) |a, b| {
-            try std.testing.expect(std.meta.eql(a, b));
+            if (!std.meta.eql(a, b)) return false;
         }
     }
+    return true;
 }

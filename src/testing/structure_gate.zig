@@ -114,6 +114,32 @@ test "the verified pair: loading the serialized program gives the same program" 
     }
 }
 
+test "program equality names an array that differs in one element" {
+    // P18.4: the check the swarm's round trips use looks at every array, not only lengths.
+    const gpa = std.testing.allocator;
+    var compiled = try compile.compile_source(gpa, "VAR x = 1\n== k ==\n{x} -> DONE\n");
+    defer compiled.deinit(gpa);
+    try std.testing.expect(program_testing.first_difference(&compiled, &compiled) == null);
+
+    var globals = try gpa.dupe(@TypeOf(compiled.globals[0]), compiled.globals);
+    defer gpa.free(globals);
+    try std.testing.expectEqual(@as(usize, 1), globals.len);
+    globals[0].name = compiled.newline;
+    var other = compiled;
+    other.globals = globals;
+    const globals_differ = program_testing.first_difference(&compiled, &other).?;
+    try std.testing.expectEqualStrings("globals", globals_differ);
+
+    var named = try gpa.dupe(@TypeOf(compiled.named[0]), compiled.named);
+    defer gpa.free(named);
+    try std.testing.expect(named.len > 0);
+    named[named.len - 1].name = compiled.newline;
+    other = compiled;
+    other.named = named;
+    const named_differ = program_testing.first_difference(&compiled, &other).?;
+    try std.testing.expectEqualStrings("named", named_differ);
+}
+
 test "every ground-truth story compiles without a workspace retry" {
     // The workspace estimate covers the corpus: a retry is a whole second parse (F14,
     // P16.17); "a source denser than the workspace estimate retries" shows the other side.
