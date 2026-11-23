@@ -85,8 +85,11 @@ generating targets share this through `fuzz_ink.run_target(check, passed_min)`.
 
 `--fuzz=N` starts the coverage-guided fuzzer. It stops after about N inputs and prints the
 runs, the unique runs and the coverage. Its corpus is kept in `.zig-cache/f`, so the counts
-add up across runs. When an input crashes, it is saved to `.zig-cache/f/crash`. To replay
-it, call the target's check function in a test with `Smith{ .in = @embedFile("crash.bin") }`.
+add up across runs. When an input crashes or fails a check, it is saved to
+`.zig-cache/f/crash` and the fuzzing stops with `error: test '...' exited with code 1;
+input saved to '.zig-cache/f/crash'`, but **`zig build` still exits 0** (Zig 0.17.1), so a
+script must look for that line or the file. To replay the input, call the target's check
+function in a test with `Smith{ .in = @embedFile("crash.bin") }`.
 
 **Build with `-Doptimize=ReleaseSafe`.** It keeps every assert and is about 20 times faster
 than Debug. The compiler and runtime targets need that speed: a 100K run takes one to two
@@ -94,6 +97,51 @@ minutes.
 
 The coverage figures below count the whole test binary, compiler and runtime included. They
 compare runs of one target, not targets with each other.
+
+### In CI
+
+`.github/workflows/fuzz.yml` fuzzes each target of the table below for a bounded number of
+inputs, on every push to main, every night and on demand (`workflow_dispatch`, with an
+optional `runs` for every target). Each target is a job of its own on ubuntu-latest, so the
+targets run side by side and a crash names its target; a job is capped at 15 minutes and
+its fuzz step at 12. The step runs
+
+```sh
+zig build fuzz -Doptimize=ReleaseSafe --fuzz=<runs> -Dtest-filter="<filter>"
+```
+
+and fails when `.zig-cache/f/crash` exists or the log has an `error:` line, because the
+build's exit code doesn't say. A failed job uploads `crash.bin`, the fuzzer's
+`libfuzzer.log`, the step's log and the target and bound as the artifact
+`fuzz-crash-<target>-<run id>` (kept 30 days). The corpus isn't kept between runs: its
+directory is named by a hash of the binary's coverage points, which changes with the code.
+
+The bounds give each target about a minute locally (an M-series Mac, ReleaseSafe, the build
+included; lower and VM at 20K and save, host and limits from a fresh corpus, the others
+after a 20K run had filled theirs). A runner about half as fast takes two to four minutes; the first runs
+on GitHub will tell.
+
+| Target | Filter | Runs | Local |
+|---|---|---:|---:|
+| Comment removal | `comment removal` | 200K | 15 s |
+| INCLUDE discovery | `INCLUDE discovery` | 200K | 58 s |
+| Parser | `well-formed tree` | 100K | 45 s |
+| Sema and resolve | `consistent tree` | 50K | 38 s |
+| Lower and emit | `survive their JSON` | 20K | 98 s |
+| Compiler (raw) | `compiler never crashes` | 200K | 49 s |
+| JSON loader | `mutated ink JSON` | 100K | 48 s |
+| JSON loader (raw) | `JSON loader never crashes` | 200K | 18 s |
+| Program image | `mutated program image` | 200K | 25 s |
+| Program image (raw) | `image loader never crashes` | 200K | 22 s |
+| VM | `keeps the state consistent` | 25K | 76 s |
+| Save and load | `loaded save plays` | 15K | 74 s |
+| Save loader (raw) | `save loader never crashes` | 100K | 49 s |
+| Host API | `host calls` | 40K | 46 s |
+| Limits | `limits drawn` | 30K | 47 s |
+
+The raw image and comment targets saturate early (26 and 125 coverage points), so more runs
+would add nothing. The first timing run, at 20K each, found a bug in the save target within
+10,382 inputs (see "What the targets found").
 
 ## Targets
 
@@ -558,6 +606,7 @@ All runs used ReleaseSafe unless noted. None crashed once the bugs below were fi
 | JSON loader | A content object with an empty key (`{"":"$r"}`) reached an assert. | `error.InvalidInkJson`; the cases are in "malformed input returns an error instead of crashing". |
 | Save and load | A limit or host error in the newline lookahead left the snapshot active, and saving then asserted. | The story goes back to its last line (`Story.fail_step`). |
 | Host API | After a limit error in the middle of a step, the next `cont` ran on from the half-done state and asserted in `end_string`. | The story fails closed with `error.StoryFailed` until `reset_state` or `load_json` (see `docs/RunningYourInk.md`). |
+| Save and load (CI bounds, P19.5) | A global string that doubled past 64 KiB in play saved, but its save didn't load: `load_json` refused every string longer than a u16 with `error.SaveTooLarge`. | Only an output item's text, whose length is a u16, keeps the bound; a value's string is bounded by the heap ("a string variable longer than 64 KiB saves and loads" in `api_test.zig`). |
 | Swarm `mutate` | A source with ill-formed UTF-8 compiled to JSON with the bytes as they were, which `ink_json.load` rejected. | Each maximal subpart compiles as U+FFFD, as inklecate reads it (`source_space.Decoded`). |
 
 Two of the first assumptions turned out wrong; the parser was correct both times:
