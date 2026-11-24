@@ -149,6 +149,7 @@ test {
     _ = @import("fuzz/lower.zig");
     _ = @import("fuzz/json.zig");
     _ = @import("fuzz/image.zig");
+    _ = @import("fuzz/play.zig");
     _ = @import("fuzz/vm.zig");
     _ = @import("fuzz/save.zig");
     _ = @import("fuzz/host.zig");

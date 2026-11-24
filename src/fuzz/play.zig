@@ -150,3 +150,51 @@ pub fn play(story: *Story, choices: fuzz_ink.Choices, steps: u32) bool {
     assert(taken == steps);
     return true;
 }
+
+/// Whether `save` may hold a float that doesn't load back as it was: ink's save writes an
+/// infinity as ±3.4E+38 and NaN as 0.0 (SimpleJson's Write(float)), so the loaded story
+/// shows `-3.4E+38` where the saved one showed `-Infinity`. A real 0.0 reads the same as NaN,
+/// so a save with any 0.0 counts.
+pub fn save_loses_floats(gpa: Allocator, save: []const u8) !bool {
+    var scanner: std.json.Scanner = .initCompleteInput(gpa, save);
+    defer scanner.deinit();
+    while (true) switch (try scanner.next()) {
+        .number => |text| for ([_][]const u8{ "3.4E+38", "-3.4E+38", "0.0" }) |stand_in| {
+            if (std.mem.eql(u8, text, stand_in)) return true;
+        },
+        .end_of_document => return false,
+        else => {},
+    };
+}
+
+test "fuzz: a save with an infinity or NaN loses floats" {
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\VAR low = 1.0
+        \\~ low = -1.0 / 0.0
+        \\Hi
+        \\* [Go]
+        \\  {low}
+        \\-> END
+    );
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    _ = try story.cont();
+    var save: std.Io.Writer.Allocating = .init(gpa);
+    defer save.deinit();
+    try story.to_json(&save.writer);
+    try std.testing.expect(try save_loses_floats(gpa, save.written()));
+
+    // The loaded story shows ink's stand-in, as ink does.
+    var loaded: Story = undefined;
+    try loaded.init(gpa, &program, .{});
+    defer loaded.deinit(gpa);
+    try loaded.load_json(save.written());
+    try loaded.choose_choice_index(0);
+    try std.testing.expectEqualStrings("-3.4E+38\n", (try loaded.cont()).get());
+
+    try std.testing.expect(try save_loses_floats(gpa, "{\"a\":[0.0]}"));
+    try std.testing.expect(!try save_loses_floats(gpa, "{\"a\":[1.5,3,-2.0,\"0.0\"]}"));
+}

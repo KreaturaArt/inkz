@@ -752,4 +752,7 @@ Two of the first assumptions turned out wrong; the parser was correct both times
 One difference is ink's own behaviour, and inkz keeps it. ink's save doesn't keep a
 choice's `isInvisibleDefault` (`JObjectToChoice` in `JsonSerialisation.cs`), so a pending
 fallback choice becomes visible after a load, in C# ink and here. The save target therefore
-doesn't compare such saves.
+doesn't compare such saves. Nor does it compare a save with an infinity or NaN: ink's
+SimpleJson writes them as ±3.4E+38 and 0.0, so a loaded `-Infinity` shows `-3.4E+38`, in C#
+ink and here (`save_loses_floats` in `src/fuzz/play.zig`; a real 0.0 reads the same as NaN,
+so a save with one isn't compared either). The swarm's save target skips them too.

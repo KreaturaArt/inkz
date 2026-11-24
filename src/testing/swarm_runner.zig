@@ -1078,6 +1078,9 @@ fn play_saved(
     defer gpa.free(save_again);
     if (!std.mem.eql(u8, save, save_again)) return "save round trip";
     if (trace.end != .running) return null;
+    // ink's save writes an infinity as ±3.4E+38 and NaN as 0.0, so the loaded story may
+    // show other floats.
+    if (try fuzz_play.save_loses_floats(gpa, save)) return null;
     var loaded_trace = trace.*;
     loaded.on_error = Trace.note;
     loaded.on_error_context = &loaded_trace;
