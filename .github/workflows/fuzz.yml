@@ -8,8 +8,8 @@ name: Fuzz
 # or the `seed` input), and a run with one seed takes the same inputs, so the printed command
 # reproduces a run up to the point it reached.
 on:
-  push:
-    branches: [main]
+  # Nightly, not on every push to main: the nightly run fuzzes main anyway, and a run takes
+  # 15 of the free plan's 20 concurrent jobs.
   schedule:
     - cron: "41 2 * * *"
   # A pull request that changes the run itself checks it before it reaches main.

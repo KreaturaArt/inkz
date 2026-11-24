@@ -100,8 +100,8 @@ compare runs of one target, not targets with each other.
 
 ### In CI
 
-`.github/workflows/fuzz.yml` fuzzes each target of the table below for a fixed time, on
-every push to main, every night and on demand (`workflow_dispatch`, with optional `minutes`
+`.github/workflows/fuzz.yml` fuzzes each target of the table below for a fixed time, every
+night, on pull requests that change the workflow and on demand (`workflow_dispatch`, with optional `minutes`
 and `seed`). Each target is a job of its own on ubuntu-latest, so the targets run side by
 side and a crash names its target. The step runs
 
