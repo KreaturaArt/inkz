@@ -11,8 +11,8 @@
 //!    - runtime: inklecate's JSON played by inkz against ink's transcript;
 //!    - pipeline: inkz's own JSON played by inkz against ink's transcript;
 //!    - structure: inkz's JSON against inklecate's.
-//! 4. `reduce` drops one swarm feature at a time while a divergence stays (delta debugging
-//!    over features: one oracle call per feature).
+//! 4. `reduce.features` (`reduce.zig`) drops one swarm feature at a time while a divergence
+//!    stays (delta debugging over features: one oracle call per feature).
 
 const std = @import("std");
 const assert = std.debug.assert;
@@ -55,7 +55,7 @@ pub fn write_case(
 ) !Swarm {
     assert(name.len > 0);
     var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-    // The draw comes first either way, so a candidate from `reduce` starts from the same
+    // The draw comes first either way, so a candidate from `reduce.features` starts from the same
     // choices as the case it reduces.
     var prng: std.Random.DefaultPrng = .init(seed);
     const choices: fuzz_ink.Choices = .{ .random = prng.random() };
@@ -381,64 +381,6 @@ pub fn check_directory(
     return summary;
 }
 
-// Feature-level reduction.
-
-/// A bound's least value: no extra globals, and one of everything else.
-fn bound_least(comptime name: []const u8) u8 {
-    return if (comptime std.mem.eql(u8, name, "globals_extra")) 0 else 1;
-}
-
-/// The features `swarm` has on: its sets' keys, and its bounds above their least value.
-pub fn features_count(swarm: Swarm) u32 {
-    var count: u32 = 0;
-    inline for (@typeInfo(Swarm).@"struct".field_names) |name| {
-        const value = @field(swarm, name);
-        if (@FieldType(Swarm, name) == u8) {
-            count += @intFromBool(value > bound_least(name));
-        } else {
-            count += @intCast(value.count());
-        }
-    }
-    return count;
-}
-
-pub const Reduction = struct {
-    swarm: Swarm,
-    /// Calls of the oracle, the first one included.
-    calls: u32,
-};
-
-/// Removes one feature at a time (a set key, or a bound lowered to its least value) and keeps
-/// each removal after which `oracle.diverges(candidate)` still holds. One call per feature,
-/// plus the first, which confirms the divergence. The candidates aren't normalized: the
-/// oracle normalizes what it generates.
-pub fn reduce(start: Swarm, oracle_context: anytype) !Reduction {
-    var calls: u32 = 1;
-    if (!try oracle_context.diverges(start)) return error.NoDivergence;
-    var current = start;
-    inline for (@typeInfo(Swarm).@"struct".field_names) |name| {
-        if (@FieldType(Swarm, name) == u8) {
-            if (@field(current, name) > bound_least(name)) {
-                var candidate = current;
-                @field(candidate, name) = bound_least(name);
-                calls += 1;
-                if (try oracle_context.diverges(candidate)) current = candidate;
-            }
-        } else {
-            const keys = @field(current, name);
-            var iterator = keys.iterator();
-            while (iterator.next()) |key| {
-                var candidate = current;
-                @field(candidate, name).remove(key);
-                calls += 1;
-                if (try oracle_context.diverges(candidate)) current = candidate;
-            }
-        }
-    }
-    assert(calls <= features_count(start) + 1);
-    return .{ .swarm = current, .calls = calls };
-}
-
 // Tests.
 
 const cases = @import("cases.zig");
@@ -513,36 +455,4 @@ test "check_directory reports each kind of divergence and passes a match" {
     report.clearRetainingCapacity();
     const clean = try check_directory(arena, io, only_path, cases.replay_json, &report.writer);
     try std.testing.expectEqual(@as(u32, 0), clean.divergences());
-}
-
-test "the reducer keeps exactly the features a divergence needs" {
-    // A fake oracle that diverges when `choice` lines and the `has` operator are both on:
-    // from the full mix, the reduction keeps those two and nothing else, within one call per
-    // feature plus one.
-    const Fake = struct {
-        calls: u32 = 0,
-        fn diverges(fake: *@This(), swarm: Swarm) !bool {
-            fake.calls += 1;
-            return swarm.lines.contains(.choice) and swarm.operators.contains(.has);
-        }
-    };
-    var fake: Fake = .{};
-    const reduction = try reduce(Swarm.all, &fake);
-    try std.testing.expectEqual(fake.calls, reduction.calls);
-    try std.testing.expect(reduction.calls <= features_count(Swarm.all) + 1);
-    var expected = Swarm.none;
-    expected.lines = .initOne(.choice);
-    expected.operators = .initOne(.has);
-    expected.lines_max = 1;
-    expected.terms_max = 1;
-    expected.choice_depth_max = 1;
-    expected.knots_count = 1;
-    try std.testing.expect(reduction.swarm.eql(expected));
-    try std.testing.expectEqual(@as(u32, 2), features_count(reduction.swarm));
-    var never: struct {
-        fn diverges(_: *@This(), _: Swarm) !bool {
-            return false;
-        }
-    } = .{};
-    try std.testing.expectError(error.NoDivergence, reduce(Swarm.all, &never));
 }

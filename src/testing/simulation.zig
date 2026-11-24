@@ -130,12 +130,29 @@ pub fn simulate(story: *Story, seed: i32, save_buffer: []u8) !Finding {
     return simulate_mix(story, seed, .full, save_buffer, null);
 }
 
-/// What a simulated run did: the actions it took, the lines it played and the choices it
-/// made.
+/// How a simulated run that found nothing ended.
+pub const End = enum {
+    /// Neither content nor choices left, and no error on the way.
+    ended,
+    /// An error stopped its last turn's lines (`cont` failed: without an error handler, or
+    /// in an external), and no choices were left.
+    stopped,
+    /// Content left after a turn's `turn_lines_max` lines, and no choices.
+    line_cap,
+    /// Still going after `turns_max` turns.
+    turn_cap,
+};
+
+const turns_max = 50;
+const turn_lines_max = 300;
+
+/// What a simulated run did: the actions it took, the lines it played, the choices it
+/// made and, when it found nothing, how it ended.
 pub const Tally = struct {
     actions: std.EnumArray(Mix.Action, u32) = .initFill(0),
     lines: u32 = 0,
     choices: u32 = 0,
+    end: ?End = null,
 };
 
 /// `simulate` with the actions and weights of `mix`; `tally`, when given, counts what the
@@ -151,11 +168,15 @@ pub fn simulate_mix(
     try story.reset_state();
     story_module.set_random_seed(story, seed);
     var turn: u32 = 0;
-    while (turn < 50) : (turn += 1) {
+    while (turn < turns_max) : (turn += 1) {
         var lines: u32 = 0;
-        while (story.can_continue() and lines < 300) : (lines += 1) {
+        var stopped = false;
+        while (story.can_continue() and lines < turn_lines_max) : (lines += 1) {
             _ = story.cont() catch |err| switch (err) {
-                error.StoryError, error.ExternalFunctionFailed => break,
+                error.StoryError, error.ExternalFunctionFailed => {
+                    stopped = true;
+                    break;
+                },
                 else => return err,
             };
             if (story.state.check() != .ok) return .check_failed;
@@ -176,11 +197,18 @@ pub fn simulate_mix(
         }
         if (story.state.check() != .ok) return .check_failed;
         const count = story.current_choices_count();
-        if (count == 0) return .ok;
+        if (count == 0) {
+            const end: End = if (stopped)
+                .stopped
+            else if (story.can_continue()) .line_cap else .ended;
+            if (tally) |counted| counted.end = end;
+            return .ok;
+        }
         const pick: u32 = @intCast(@rem(random.next(), @as(i32, @intCast(count))));
         try story.choose_choice_index(pick);
         if (tally) |counted| counted.choices += 1;
     }
+    if (tally) |counted| counted.end = .turn_cap;
     return .ok;
 }
 
@@ -330,6 +358,7 @@ test "a swarm mix takes only its actions, and the full mix is the old one" {
         try std.testing.expectEqual(finding, again);
         try std.testing.expectEqualDeep(tally, replayed);
         try std.testing.expect(tally.lines > 0);
+        if (finding == .ok) try std.testing.expect(tally.end != null);
         for (std.enums.values(Mix.Action)) |action| {
             if (mix.weights.get(action) == 0) {
                 try std.testing.expectEqual(0, tally.actions.get(action));
@@ -342,4 +371,35 @@ test "a swarm mix takes only its actions, and the full mix is the old one" {
     }
     try std.testing.expect(differs > 32);
     try std.testing.expectError(error.InvalidMix, Mix.decode(1 << 50));
+}
+
+test "the simulator reports how a run ended" {
+    // P19.7: a story that reaches END ended; one an error stops in its last turn stopped;
+    // one that loops through a choice forever reaches the turn cap, and one that loops
+    // without a choice the line cap.
+    const gpa = std.testing.allocator;
+    const save_buffer = try gpa.alloc(u8, 1 << 16);
+    defer gpa.free(save_buffer);
+    const Expected = struct { source: []const u8, end: End };
+    const expected = [_]Expected{
+        .{ .source = "A\n* x\n- B\n-> END\n", .end = .ended },
+        .{ .source = "VAR n = 0\nA\n~ n = 1 / n\n-> END\n", .end = .stopped },
+        .{ .source = "-> loop\n=== loop ===\nA\n+ x\n- -> loop\n", .end = .turn_cap },
+        .{ .source = "-> loop\n=== loop ===\nA\n-> loop\n", .end = .line_cap },
+    };
+    const compile = @import("../compiler/compile.zig");
+    for (expected) |case| {
+        var program = try compile.compile_source(gpa, case.source);
+        defer program.deinit(gpa);
+        var story: Story = undefined;
+        try story.init(gpa, &program, .{});
+        defer story.deinit(gpa);
+        // No error handler: an error stops `cont`.
+        var none = Mix.full;
+        none.weights = .initFill(0);
+        var tally: Tally = .{};
+        const finding = try simulate_mix(&story, 1, none, save_buffer, &tally);
+        try std.testing.expectEqual(Finding.ok, finding);
+        try std.testing.expectEqual(case.end, tally.end.?);
+    }
 }

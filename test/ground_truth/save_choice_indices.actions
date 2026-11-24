@@ -1,0 +1,21 @@
+# The default flow's choices, read and saved: the fallback keeps index 0.
+continue_maximally
+choices
+save
+# A parked flow with the same choices, read too.
+switch_flow side
+choose_path menu
+continue_maximally
+choices
+default_flow
+save
+# Loaded, the saves keep the indices in both flows until the host reads the choices.
+load_fresh
+save
+switch_flow side
+save
+choices
+save
+default_flow
+choices
+save

@@ -8,7 +8,8 @@
 //!   `Borrowed`;
 //! - `Program`, the immutable image a story runs;
 //! - `compiler`'s entry points: `compile_source`, `compile_file`, `compile_file_with`
-//!   (with `Options`), `compile_to_json` and `Error`;
+//!   (with `Options`), `compile_files_with` (with `MemoryFile`), `compile_to_json` and
+//!   `Error`;
 //! - `ink_json.load` and `program_image.load` / `program_image.write`;
 //! - `Story`'s `pub` methods; its fields and the other functions of `runtime/story.zig` are
 //!   internal.

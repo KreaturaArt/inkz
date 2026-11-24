@@ -148,7 +148,12 @@ stateDiagram-v2
 ```
 
 A checkpoint holds the input position and the token, node and scratch counts, so a failed
-rule undoes everything since its call; diagnostics survive, as ink's do. Finished nodes sit
+rule undoes everything since its call; diagnostics survive, as ink's do. As in ink, a rule
+scope reports at most one: each frame has a `reported` flag (ink's
+`errorReportedAlreadyInScope`), set on every frame when a diagnostic is kept, clear in a frame
+just pushed, carried into the caller when a rule succeeds and left behind when it fails or
+was a peek; where inkz inlines a rule of ink's (ParseString, Optional's wrapper), the grammar
+clears it with `scope_succeeded` or puts it back with `attempt_failed`. Finished nodes sit
 on a scratch stack until `wrap` moves a parent's children into one contiguous run. Frames
 are bounded by `parse_depth_max` and steps by a gas counter proportional to the input; both
 end in a diagnostic, not a crash.

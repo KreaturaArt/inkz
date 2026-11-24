@@ -449,3 +449,31 @@ test "the other limit errors" {
     try tight.choose_path_string("print_name", .{});
     try std.testing.expectError(error.TextTooLong, tight.cont());
 }
+
+test "a string variable longer than 64 KiB saves and loads" {
+    // Only an output item's length is a u16; a value's string is bounded by the heap alone.
+    // The save target found a global that doubled past 64 KiB: its save didn't load.
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const json = try read(arena, tour_path);
+    const long = try arena.alloc(u8, std.math.maxInt(u16) + 1);
+    @memset(long, 'a');
+    var story: Story = undefined;
+    try story.init_from_json(gpa, json, .{});
+    defer story.deinit(gpa);
+    try story.set_variable("name", .{ .string = long });
+    var saved: std.Io.Writer.Allocating = .init(gpa);
+    defer saved.deinit();
+    try story.to_json(&saved.writer);
+    var loaded: Story = undefined;
+    try loaded.init_from_json(gpa, json, .{});
+    defer loaded.deinit(gpa);
+    try loaded.load_json(saved.written());
+    try std.testing.expectEqualStrings(long, loaded.get_variable("name").?.get().string);
+    var saved_again: std.Io.Writer.Allocating = .init(gpa);
+    defer saved_again.deinit();
+    try loaded.to_json(&saved_again.writer);
+    try std.testing.expectEqualStrings(saved.written(), saved_again.written());
+}

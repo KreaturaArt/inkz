@@ -160,6 +160,27 @@ pub const Play = enum { hub, typed };
 ///   argument: `-> tunnel1(n) ->` returns with `->->`, `<- thread1(n)` offers a choice, and
 ///   `-> jump1(n, -> k0)` diverts to the target its second parameter holds (the hub with
 ///   `hub`).
+///
+/// Constructs the coverage report listed as unreached (P19.8), appended so the draws of the
+/// ones above keep their order:
+/// - `target_counts`: `READ_COUNT(-> k)` and `TURNS_SINCE(->k)` of any knot or the stitch,
+///   and divert targets compared with `==` or `!=` (with `d0` when `divert_variable` is on),
+///   when the operator is on.
+/// - `list_operations`: the intersection `^` of `l0` and list literals.
+/// - `item_values`: `LIST l2 = (p2 = 2), q2 = 5, r2`, whose items have values of their own
+///   (`r2` is 6), in list expressions with `l0`'s.
+/// - `lexical`: `//` and `/* */` comments (on their own lines, after text and inside it),
+///   `TODO:` lines (inklecate's author warnings), text in Latin, CJK and emoji, and the
+///   global `größe`, a name of non-ASCII letters, read as a number.
+/// - `scientific`: float literals whose values print in scientific notation (`1E+09`,
+///   `1.23E-05`), as .NET does for exponents from 9 up and below -4, as terms and printed
+///   on a line of their own.
+/// - `mistyped_divert`: `VAR d1` holds no divert target (5, 0, 2.5 or a string), and one
+///   place per source uses it as one: `-> d1` (outside functions), `TURNS_SINCE(d1)` or
+///   `READ_COUNT(d1)`, ink's runtime errors.
+/// - `string_calls`: a choice whose text calls `e0` (`f1` without `e0`), which ink
+///   evaluates as a string: the host target's `e0`, when not lookahead-safe, is ink's error
+///   there.
 pub const Construct = enum {
     turns,
     math,
@@ -169,6 +190,13 @@ pub const Construct = enum {
     choice_tags,
     divert_variable,
     parameters,
+    target_counts,
+    list_operations,
+    item_values,
+    lexical,
+    scientific,
+    mistyped_divert,
+    string_calls,
 };
 
 /// The kinds of value a `typed` expression keeps to.
@@ -186,9 +214,14 @@ const kind_terms = std.enums.EnumArray(Kind, std.EnumSet(Term)).init(.{
     .list = .initOne(.list),
 });
 const kind_extra_terms = std.enums.EnumArray(Kind, std.EnumSet(ExtraTerm)).init(.{
-    .number = .initMany(&.{ .temp_read, .ref_call, .global_read, .turns, .math, .list_value }),
+    .number = .initMany(&.{
+        .temp_read,      .ref_call,   .global_read,    .turns, .math, .list_value, .target_count,
+        .unicode_global, .scientific, .mistyped_count,
+    }),
     .string = .empty,
-    .list = .initMany(&.{ .item_full, .item_bare, .ambiguous, .list_function }),
+    .list = .initMany(&.{
+        .item_full, .item_bare, .ambiguous, .list_function, .intersection, .item_value,
+    }),
 });
 /// Ink's operators on each kind: arithmetic, comparison and logic on numbers, joining,
 /// equality and containment on strings, and the set operations and comparisons on lists.
@@ -214,6 +247,11 @@ const ExtraLine = enum {
     seed_random,
     conditional_else,
     divert_assign,
+    comment,
+    author_warning,
+    unicode_text,
+    mistyped_divert,
+    scientific_text,
 };
 
 const ExtraTerm = enum {
@@ -227,6 +265,12 @@ const ExtraTerm = enum {
     math,
     list_value,
     list_function,
+    target_count,
+    intersection,
+    item_value,
+    unicode_global,
+    scientific,
+    mistyped_count,
 };
 
 /// A list item's text, and whether it needs `l1` (else `l0`).
@@ -273,6 +317,13 @@ pub const Swarm = struct {
     pub const choice_depth_limit = 3;
     pub const knots_limit = 3;
     pub const globals_extra_limit = 64;
+    /// The bounds of a large configuration (`draw`, 1 in 16 of the subsets): more lines per
+    /// flow, longer expressions and deeper weaves. Its weaves and expressions also go on
+    /// longer (`large_lines`, `large_terms`), as the bounds alone would add little: a flow
+    /// ends after 4 lines on average.
+    pub const large_lines_limit = 32;
+    pub const large_terms_limit = 8;
+    pub const large_choice_depth_limit = 6;
 
     /// The first generator's full mix: every feature but the resolution ones (`drop` aside,
     /// which that generator did), at the largest bounds. It takes the same choices as that
@@ -327,7 +378,8 @@ pub const Swarm = struct {
 
     /// A configuration from the choices, so that the fuzzer learns good ones and a seed
     /// replays one: `all` with weight 1/8, else each feature on with probability ½ (`hub`
-    /// ¾) and each bound uniform, then `normalize`.
+    /// ¾) and each bound uniform, then `normalize`; 1 in 16 of these is large, its bounds
+    /// uniform above the usual ones.
     pub fn draw(choices: Choices) Swarm {
         if (choices.weighted(7, 1)) return all;
         var swarm: Swarm = .{
@@ -360,6 +412,15 @@ pub const Swarm = struct {
         if (choices.weighted(1, 3)) swarm.play.insert(.hub);
         if (choices.choose(bool)) swarm.play.insert(.typed);
         swarm.constructs = draw_set(choices, Construct);
+        if (choices.weighted(15, 1)) {
+            swarm.lines_max = choices.range(u8, lines_limit + 1, large_lines_limit);
+            swarm.terms_max = choices.range(u8, terms_limit + 1, large_terms_limit);
+            swarm.choice_depth_max = choices.range(
+                u8,
+                choice_depth_limit + 1,
+                large_choice_depth_limit,
+            );
+        }
         swarm.normalize();
         assert(swarm.valid());
         return swarm;
@@ -387,6 +448,7 @@ pub const Swarm = struct {
             swarm.terms.remove(.list);
             swarm.terms.remove(.list_query);
             swarm.constructs.remove(.list_functions);
+            swarm.constructs.remove(.list_operations);
         }
         if (!declared.contains(.l0) and !swarm.resolution.contains(.l1)) {
             swarm.resolution.remove(.items);
@@ -412,10 +474,26 @@ pub const Swarm = struct {
             swarm.targets.intersectWith(knot_targets).count() > 0 and
             swarm.targets.intersectWith(knots_missing).count() == 0 and
             (swarm.inlines.count() > 0 or !swarm.lines.contains(.text_inline)) and
-            swarm.lines_max >= 1 and swarm.lines_max <= lines_limit and
-            swarm.terms_max >= 1 and swarm.terms_max <= terms_limit and
-            swarm.choice_depth_max >= 1 and swarm.choice_depth_max <= choice_depth_limit and
+            swarm.lines_max >= 1 and swarm.lines_max <= large_lines_limit and
+            swarm.terms_max >= 1 and swarm.terms_max <= large_terms_limit and
+            swarm.choice_depth_max >= 1 and swarm.choice_depth_max <= large_choice_depth_limit and
             swarm.globals_extra <= globals_extra_limit;
+    }
+
+    /// Whether a bound is above the usual ones (`draw`'s large configuration).
+    pub fn large(swarm: Swarm) bool {
+        return swarm.lines_max > lines_limit or swarm.terms_max > terms_limit or
+            swarm.choice_depth_max > choice_depth_limit;
+    }
+
+    /// The weight of one more line in a weave, against 1 for its end.
+    fn large_lines(swarm: Swarm) u64 {
+        return if (swarm.lines_max > lines_limit) 12 else 3;
+    }
+
+    /// The weight of one more term in an expression, against 1 for its end.
+    fn large_terms(swarm: Swarm) u64 {
+        return if (swarm.terms_max > terms_limit) 6 else 2;
     }
 
     pub fn eql(a: Swarm, b: Swarm) bool {
@@ -617,6 +695,8 @@ pub const Generator = struct {
     parameter: bool = false,
     /// Whether the source has its one collision.
     collided: bool = false,
+    /// Whether the source has its one use of `d1` as a divert target.
+    mistyped: bool = false,
     /// The knots and the stitch written after the current flow, which its diverts and
     /// threads may name with `hub`: the root comes first, then `k0`, `k0.s0`, `k1`, `k2`.
     later: std.EnumSet(Target) = knot_targets,
@@ -779,6 +859,18 @@ pub const Generator = struct {
             generator.used.constructs.insert(.divert_variable);
             generator.print("VAR d0 = -> {s}\n", .{generator.divert_value()});
         }
+        if (generator.swarm.constructs.contains(.item_values) and generator.keep()) {
+            generator.used.constructs.insert(.item_values);
+            generator.put("LIST l2 = (p2 = 2), q2 = 5, r2\n");
+        }
+        if (generator.swarm.constructs.contains(.lexical) and generator.keep()) {
+            generator.used.constructs.insert(.lexical);
+            generator.put("VAR größe = 3\n");
+        }
+        if (generator.swarm.constructs.contains(.mistyped_divert) and generator.keep()) {
+            generator.used.constructs.insert(.mistyped_divert);
+            generator.print("VAR d1 = {s}\n", .{generator.pick(&.{ "5", "0", "2.5", "\"text\"" })});
+        }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
 
@@ -794,7 +886,8 @@ pub const Generator = struct {
         if (enabled.count() == 0 and generator.extra_lines().count() == 0) return;
         const lines_max = generator.swarm.lines_max;
         var lines: u32 = 0;
-        while (lines < lines_max and !!generator.choices.more(3, 1)) : (lines += 1) {
+        const more_lines = generator.swarm.large_lines();
+        while (lines < lines_max and !!generator.choices.more(more_lines, 1)) : (lines += 1) {
             // An extra line takes a choice only when one is possible, so `classic`
             // takes the first generator's choices.
             const kinds = generator.extra_lines();
@@ -985,6 +1078,11 @@ pub const Generator = struct {
         if (generator.swarm.constructs.contains(.choice_tags) and generator.choices.choose(bool)) {
             return generator.choice_tagged();
         }
+        if (generator.swarm.constructs.contains(.string_calls) and generator.choices.choose(bool)) {
+            generator.used.constructs.insert(.string_calls);
+            const call = if (generator.declared(.e0)) "e0(1)" else "f1()";
+            return generator.print(" Call {{{s}}} [now]\n", .{call});
+        }
         switch (generator.choices.choose(u2)) {
             0 => generator.put(" Start [choice] end\n"),
             1 => generator.put(" [Only choice]\n"),
@@ -1136,7 +1234,8 @@ pub const Generator = struct {
         if (kind) |of| operators = operators.intersectWith(kind_operators.get(of));
         const compares = kind != null and kind != .number;
         if (compares and stored) operators = operators.intersectWith(set_operations);
-        while (terms < terms_max and !!generator.choices.more(2, 1)) : (terms += 1) {
+        const more_terms = generator.swarm.large_terms();
+        while (terms < terms_max and !!generator.choices.more(more_terms, 1)) : (terms += 1) {
             if (operators.count() == 0) break;
             const operator = generator.pick_enabled(Operator, operators);
             if (compares and !set_operations.contains(operator)) {
@@ -1419,6 +1518,14 @@ pub const Generator = struct {
         if (constructs.contains(.seed_random)) kinds.insert(.seed_random);
         if (constructs.contains(.conditional_else)) kinds.insert(.conditional_else);
         if (constructs.contains(.divert_variable)) kinds.insert(.divert_assign);
+        if (constructs.contains(.lexical)) {
+            kinds.insert(.comment);
+            kinds.insert(.author_warning);
+            kinds.insert(.unicode_text);
+        }
+        if (constructs.contains(.mistyped_divert) and !generator.mistyped and
+            !generator.in_function) kinds.insert(.mistyped_divert);
+        if (constructs.contains(.scientific)) kinds.insert(.scientific_text);
         assert(kinds.count() <= std.enums.values(ExtraLine).len);
         return kinds;
     }
@@ -1473,6 +1580,16 @@ pub const Generator = struct {
                 generator.used.constructs.insert(.divert_variable);
                 generator.print("~ d0 = -> {s}\n", .{generator.divert_value()});
             },
+            .comment, .author_warning, .unicode_text => |kind| generator.lexical_line(kind),
+            .scientific_text => {
+                generator.used.constructs.insert(.scientific);
+                generator.put("Floats {0.0000123} {-2147483647.5} {1000000000.5}\n");
+            },
+            .mistyped_divert => {
+                generator.used.constructs.insert(.mistyped_divert);
+                generator.mistyped = true;
+                generator.put("-> d1\n");
+            },
             .conditional_else => {
                 generator.used.constructs.insert(.conditional_else);
                 generator.put("{ ");
@@ -1481,6 +1598,22 @@ pub const Generator = struct {
             },
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
+    }
+
+    /// A line of the `lexical` construct: a comment, an author warning or non-ASCII text.
+    fn lexical_line(generator: *Generator, kind: ExtraLine) void {
+        generator.used.constructs.insert(.lexical);
+        switch (kind) {
+            .comment => generator.put(generator.pick(&.{
+                "// A line comment\n",
+                "Before a comment // the comment\n",
+                "/* A block comment\nover two lines */\n",
+                "Around /* inside */ a comment\n",
+            })),
+            .author_warning => generator.put("TODO: an author's note\n"),
+            .unicode_text => generator.put("Grüße, café, 日本語 ☕\n"),
+            else => unreachable,
+        }
     }
 
     /// One of the temps declared in this flow.
@@ -1514,6 +1647,16 @@ pub const Generator = struct {
         if (constructs.contains(.list_functions) and generator.declared(.l0)) {
             kinds.insert(.list_value);
             kinds.insert(.list_function);
+        }
+        if (constructs.contains(.target_counts)) kinds.insert(.target_count);
+        if (constructs.contains(.list_operations) and generator.declared(.l0)) {
+            kinds.insert(.intersection);
+        }
+        if (constructs.contains(.item_values)) kinds.insert(.item_value);
+        if (constructs.contains(.lexical)) kinds.insert(.unicode_global);
+        if (constructs.contains(.scientific)) kinds.insert(.scientific);
+        if (constructs.contains(.mistyped_divert) and !generator.mistyped) {
+            kinds.insert(.mistyped_count);
         }
         return kinds;
     }
@@ -1549,6 +1692,35 @@ pub const Generator = struct {
                 }));
             },
             .list_function => generator.list_function(),
+            .target_count => generator.target_count(),
+            .intersection => {
+                generator.used.constructs.insert(.list_operations);
+                generator.put(generator.pick(&.{
+                    "(l0 ^ (l0.a, c))", "((l0.a, b) ^ l0)", "(l0 ^ ())",
+                }));
+            },
+            .unicode_global => {
+                generator.used.constructs.insert(.lexical);
+                generator.put("größe");
+            },
+            .scientific => {
+                generator.used.constructs.insert(.scientific);
+                generator.put(generator.pick(&.{
+                    "1000000000.5", "2147483647.5", "0.00001", "0.0000123", "-0.00005",
+                }));
+            },
+            .mistyped_count => {
+                generator.used.constructs.insert(.mistyped_divert);
+                generator.mistyped = true;
+                generator.put(if (generator.choices.choose(bool))
+                    "TURNS_SINCE(d1)"
+                else
+                    "READ_COUNT(d1)");
+            },
+            .item_value => {
+                generator.used.constructs.insert(.item_values);
+                generator.put(generator.pick(&.{ "l2", "(p2, r2)", "l2.q2", "q2" }));
+            },
         }
         assert(generator.writer.end <= generator.writer.buffer.len);
     }
@@ -1590,7 +1762,7 @@ pub const Generator = struct {
     /// A function of ink's on lists that returns one, of `l0`.
     fn list_function(generator: *Generator) void {
         generator.used.constructs.insert(.list_functions);
-        switch (generator.choices.below(8)) {
+        switch (generator.choices.below(9)) {
             0 => generator.put("LIST_MIN(l0)"),
             1 => generator.put("LIST_MAX(l0)"),
             2 => generator.put("LIST_ALL(l0)"),
@@ -1603,6 +1775,38 @@ pub const Generator = struct {
             // `l0.a` is the only full name that the `items` feature doesn't own.
             6 => generator.put("LIST_RANGE(LIST_ALL(l0), l0.a, 2)"),
             7 => generator.print("l0({d})", .{generator.choices.range(u8, 1, 3)}),
+            // Both bounds lists: the lowest item of one, the highest of the other.
+            8 => generator.put("LIST_RANGE(LIST_ALL(l0), b, LIST_MAX(l0))"),
+            else => unreachable,
+        }
+    }
+
+    /// A count of a knot target's visits or turns, or a comparison of divert targets. The
+    /// `TURNS_SINCE` has no space after its `->`, which tells it from the term's.
+    fn target_count(generator: *Generator) void {
+        generator.used.constructs.insert(.target_counts);
+        const comparisons = generator.swarm.operators.intersectWith(
+            .initMany(&.{ .equal, .not_equal }),
+        );
+        const kinds: u32 = if (comparisons.count() > 0) 3 else 2;
+        switch (generator.choices.below(kinds)) {
+            0 => generator.print("READ_COUNT(-> {s})", .{generator.knot_target()}),
+            1 => generator.print("TURNS_SINCE(->{s})", .{generator.knot_target()}),
+            2 => {
+                const operator = generator.pick_enabled(Operator, comparisons);
+                generator.used.operators.insert(operator);
+                // `d0` holds a divert target too; ink compares the two by their paths.
+                const of_d0 = generator.swarm.constructs.contains(.divert_variable) and
+                    generator.choices.choose(bool);
+                if (of_d0) {
+                    generator.used.constructs.insert(.divert_variable);
+                    generator.put("(d0");
+                } else {
+                    generator.print("(-> {s}", .{generator.knot_target()});
+                }
+                generator.put(binary_operators[@backingInt(operator)]);
+                generator.print("-> {s})", .{generator.knot_target()});
+            },
             else => unreachable,
         }
     }
@@ -1875,7 +2079,7 @@ const markers_unique = [_]Marker{
     unique_marker("{f0(2)}", "inlines", Inline.calls),
     // `LIST_RANDOM(` and `SEED_RANDOM(` take one argument.
     unique_marker("RANDOM(1, 3)", "terms", Term.random),
-    unique_marker("TURNS_SINCE", "terms", Term.turns_since),
+    unique_marker("TURNS_SINCE(-> ", "terms", Term.turns_since),
     unique_marker("LIST_COUNT", "terms", Term.list_query),
     unique_marker("CHOICE_COUNT", "terms", Term.choice_count),
     // The assignment `~ e0(` calls it with an expression, which may be `2`.
@@ -1961,10 +2165,16 @@ test "a drawn configuration is valid: no empty set, bounds in range" {
         try std.testing.expect(swarm.terms.count() > 0);
         try std.testing.expect(swarm.operators.count() > 0);
         try std.testing.expect(swarm.targets.intersectWith(knot_targets).count() > 0);
-        try std.testing.expect(swarm.lines_max >= 1 and swarm.lines_max <= Swarm.lines_limit);
-        try std.testing.expect(swarm.terms_max >= 1 and swarm.terms_max <= Swarm.terms_limit);
+        try std.testing.expect(swarm.lines_max >= 1 and
+            swarm.lines_max <= Swarm.large_lines_limit);
+        try std.testing.expect(swarm.terms_max >= 1 and
+            swarm.terms_max <= Swarm.large_terms_limit);
         try std.testing.expect(swarm.choice_depth_max >= 1 and
-            swarm.choice_depth_max <= Swarm.choice_depth_limit);
+            swarm.choice_depth_max <= Swarm.large_choice_depth_limit);
+        // A large configuration raises every bound above the usual ones.
+        if (swarm.large()) try std.testing.expect(swarm.lines_max > Swarm.lines_limit and
+            swarm.terms_max > Swarm.terms_limit and
+            swarm.choice_depth_max > Swarm.choice_depth_limit);
         try std.testing.expect(swarm.knots_count >= 1 and swarm.knots_count <= Swarm.knots_limit);
     }
 }
@@ -2046,6 +2256,13 @@ test "each construct appears when on and never when off" {
         .choice_tags = &.{"# ct"},
         .divert_variable = &.{ "VAR d0", "-> d0", "~ d0 =" },
         .parameters = &.{ "tunnel1(", "thread1(", "jump1(" },
+        .target_counts = &.{ "READ_COUNT(-> ", "TURNS_SINCE(->k", "== ->", "!= ->" },
+        .list_operations = &.{" ^ "},
+        .item_values = &.{ "LIST l2", "l2", "p2", "q2" },
+        .lexical = &.{ "//", "/*", "TODO:", "größe", "Grüße" },
+        .scientific = &.{"0000"},
+        .mistyped_divert = &.{ "VAR d1", "(d1)", "-> d1" },
+        .string_calls = &.{" Call {"},
         .list_functions = &.{
             "LIST_VALUE(",  "LIST_MIN(",    "LIST_MAX(",   "LIST_ALL(",
             "LIST_INVERT(", "LIST_RANDOM(", "LIST_RANGE(", "l0(",
@@ -2130,6 +2347,35 @@ test "drawn sources compile unless an error feature is on, and with one they fai
     try std.testing.expect(clean > 300);
     try std.testing.expect(clean_failed * 20 < clean);
     try std.testing.expect(dropped > 0 and dropped_failed > 0);
+}
+
+test "a large configuration writes longer, deeper stories, within the source bound" {
+    // P19.4: about 1 in 18 of 2,000 draws is large (1 in 16 of the 7 in 8 subsets); those
+    // stories nest deeper than the usual bound of 3, run longer on average, and none fills
+    // half the buffer.
+    var buffer: [source_bytes_max]u8 = undefined;
+    var large: u32 = 0;
+    var large_bytes: usize = 0;
+    var usual: u32 = 0;
+    var usual_bytes: usize = 0;
+    var deepest: usize = 0;
+    var longest: usize = 0;
+    for (0..2000) |seed| {
+        const case = generate_case_seeded(seed, &buffer, .{});
+        longest = @max(longest, case.source.len);
+        if (case.swarm.large()) {
+            large += 1;
+            large_bytes += case.source.len;
+            deepest = @max(deepest, nesting_max(case.source));
+        } else if (!case.swarm.eql(.all)) {
+            usual += 1;
+            usual_bytes += case.source.len;
+        }
+    }
+    try std.testing.expect(large > 60 and large < 170);
+    try std.testing.expect(deepest > Swarm.choice_depth_limit);
+    try std.testing.expect(large_bytes / large > 2 * (usual_bytes / usual));
+    try std.testing.expect(longest < source_bytes_max / 2);
 }
 
 test "64 extra globals stay below the source bound" {

@@ -12,6 +12,7 @@ const support = @import("../testing/support.zig");
 
 pub const Story = api.Story;
 pub const Value = api.Value;
+pub const BindOptions = api.BindOptions;
 const Allocator = std.mem.Allocator;
 const Limits = @import("../core/limits.zig").Limits;
 
@@ -31,7 +32,7 @@ pub fn compile_story(gpa: Allocator, choices: fuzz_ink.Choices, buffer: []u8) !?
 }
 
 /// The external `e0(x)`: returns its argument.
-fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Value {
+pub fn echo(context: ?*anyopaque, _: *Story, arguments: []const Value) anyerror!Value {
     assert(context == null);
     return if (arguments.len > 0) arguments[0] else .null;
 }
@@ -56,9 +57,14 @@ fn evaluating_echo(context: ?*anyopaque, story: *Story, arguments: []const Value
 pub const Setup = struct {
     random_seed: i32,
     fallbacks: bool,
+    /// Every external the story declares is bound: `e0` in generated stories, any name in
+    /// the swarm's mutated ground-truth stories.
     bind_external: bool,
     /// `e0`, when bound, is `evaluating_echo` (the swarm's host target).
     evaluate_in_external: bool = false,
+    /// `e0`, when bound, isn't lookahead-safe (the swarm's host target): ink's error when
+    /// string evaluation (a choice's text) calls it, and a line that ends before the call.
+    lookahead_unsafe: bool = false,
 
     /// The fuzzer picks the seed, the fallback rule and whether `e0` is bound.
     pub fn pick(choices: fuzz_ink.Choices) Setup {
@@ -67,15 +73,25 @@ pub const Setup = struct {
             .fallbacks = choices.choose(bool),
             .bind_external = choices.choose(bool),
         };
-        assert(@sizeOf(Setup) <= 8);
+        assert(@sizeOf(Setup) <= 12);
         return setup;
     }
 };
 
+/// Generated stories loop; a small step budget keeps each input fast.
+const limits_default: Limits = .{ .steps_per_continue_max = steps_per_continue_max };
+
 pub fn init_story(story: *Story, gpa: Allocator, program: *const Program, setup: Setup) !void {
-    // Generated stories loop; a small step budget keeps each input fast.
-    const limits: Limits = .{ .steps_per_continue_max = steps_per_continue_max };
-    return init_story_with(story, gpa, program, setup, limits);
+    return init_story_with(story, gpa, program, setup, limits_default);
+}
+
+/// `init_story` from the program's ink JSON (`Story.init_from_json`, which owns the program
+/// it loads).
+pub fn init_story_from_json(story: *Story, gpa: Allocator, json: []const u8, setup: Setup) !void {
+    assert(json.len > 0);
+    try story.init_from_json(gpa, json, options_of(setup, limits_default));
+    try bind_externals(story, setup);
+    assert(story.state.check() == .ok);
 }
 
 pub fn init_story_with(
@@ -87,19 +103,32 @@ pub fn init_story_with(
 ) !void {
     assert(program.check() == .ok);
     assert(limits.check() == .ok);
-    try story.init(gpa, program, .{
+    try story.init(gpa, program, options_of(setup, limits));
+    try bind_externals(story, setup);
+    assert(story.state.check() == .ok);
+}
+
+fn options_of(setup: Setup, limits: Limits) Story.Options {
+    assert(limits.check() == .ok);
+    return .{
         .limits = limits,
         .random_seed = setup.random_seed,
         .allow_external_function_fallbacks = setup.fallbacks,
         // Runtime errors are part of play: generated stories divide by zero, mix types,
         // and run out of content.
         .on_error = support.ignore_message,
-    });
-    if (setup.bind_external) {
-        const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
-        try story.bind_external_function("e0", .{}, null, function);
+    };
+}
+
+fn bind_externals(story: *Story, setup: Setup) !void {
+    if (!setup.bind_external) return;
+    const function = if (setup.evaluate_in_external) &evaluating_echo else &echo;
+    const program = story.program;
+    for (program.externals) |external| {
+        const name = program.strings.get(external.name);
+        const options: BindOptions = .{ .lookahead_safe = !setup.lookahead_unsafe };
+        try story.bind_external_function(name, options, null, function);
     }
-    assert(story.state.check() == .ok);
 }
 
 /// Continues and chooses until the story ends, `steps` run out, or a call fails; the state
@@ -120,4 +149,52 @@ pub fn play(story: *Story, choices: fuzz_ink.Choices, steps: u32) bool {
     }
     assert(taken == steps);
     return true;
+}
+
+/// Whether `save` may hold a float that doesn't load back as it was: ink's save writes an
+/// infinity as ±3.4E+38 and NaN as 0.0 (SimpleJson's Write(float)), so the loaded story
+/// shows `-3.4E+38` where the saved one showed `-Infinity`. A real 0.0 reads the same as NaN,
+/// so a save with any 0.0 counts.
+pub fn save_loses_floats(gpa: Allocator, save: []const u8) !bool {
+    var scanner: std.json.Scanner = .initCompleteInput(gpa, save);
+    defer scanner.deinit();
+    while (true) switch (try scanner.next()) {
+        .number => |text| for ([_][]const u8{ "3.4E+38", "-3.4E+38", "0.0" }) |stand_in| {
+            if (std.mem.eql(u8, text, stand_in)) return true;
+        },
+        .end_of_document => return false,
+        else => {},
+    };
+}
+
+test "fuzz: a save with an infinity or NaN loses floats" {
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa,
+        \\VAR low = 1.0
+        \\~ low = -1.0 / 0.0
+        \\Hi
+        \\* [Go]
+        \\  {low}
+        \\-> END
+    );
+    defer program.deinit(gpa);
+    var story: Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    _ = try story.cont();
+    var save: std.Io.Writer.Allocating = .init(gpa);
+    defer save.deinit();
+    try story.to_json(&save.writer);
+    try std.testing.expect(try save_loses_floats(gpa, save.written()));
+
+    // The loaded story shows ink's stand-in, as ink does.
+    var loaded: Story = undefined;
+    try loaded.init(gpa, &program, .{});
+    defer loaded.deinit(gpa);
+    try loaded.load_json(save.written());
+    try loaded.choose_choice_index(0);
+    try std.testing.expectEqualStrings("-3.4E+38\n", (try loaded.cont()).get());
+
+    try std.testing.expect(try save_loses_floats(gpa, "{\"a\":[0.0]}"));
+    try std.testing.expect(!try save_loses_floats(gpa, "{\"a\":[1.5,3,-2.0,\"0.0\"]}"));
 }

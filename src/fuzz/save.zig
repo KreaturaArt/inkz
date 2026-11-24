@@ -75,12 +75,13 @@ fn check_save_load(choices: fuzz_ink.Choices) !bool {
     // After a failed call the original isn't resumable, so only a clean play is compared.
     // ink's save doesn't keep a choice's isInvisibleDefault (JsonSerialisation's
     // JObjectToChoice), so a loaded fallback choice is visible, in ink and here: a save with
-    // one isn't compared either.
+    // one isn't compared either, nor one with an infinity or NaN, which ink's save doesn't keep.
     const all_choices = original.state.choices.records.slice().len;
     const invisible = all_choices > original.current_choices_count();
     var script: [script_max]u8 = undefined;
     for (&script) |*byte| byte.* = choices.choose(u8);
-    if (clean and !invisible) try expect_same_play(&original, &loaded, &script);
+    const lossy = try play.save_loses_floats(gpa, save);
+    if (clean and !invisible and !lossy) try expect_same_play(&original, &loaded, &script);
     if (choices == .smith) _ = try load_mutated(choices, gpa, &program, setup, save, null);
     return true;
 }

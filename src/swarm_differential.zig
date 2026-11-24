@@ -11,6 +11,7 @@ const std = @import("std");
 const assert = std.debug.assert;
 const differential = @import("testing/differential.zig");
 const isolated = @import("testing/isolated.zig");
+const reduce_module = @import("testing/reduce.zig");
 const fuzz_ink = @import("testing/fuzz_ink.zig");
 const Swarm = fuzz_ink.Swarm;
 
@@ -89,7 +90,7 @@ const Oracle = struct {
     class: Class,
     calls: u32 = 0,
 
-    pub fn diverges(oracle: *Oracle, candidate: Swarm) !bool {
+    pub fn keeps(oracle: *Oracle, candidate: Swarm) !bool {
         oracle.calls += 1;
         var swarm = candidate;
         swarm.normalize();
@@ -156,7 +157,9 @@ fn reduce(
         .seed = seed,
         .class = class,
     };
-    const reduction = try differential.reduce(start, &oracle);
+    // One call per feature and the first: no other bound.
+    const bound: reduce_module.Bound = .{ .calls_max = reduce_module.features_count(start) + 1 };
+    const reduction = try reduce_module.features(start, &oracle, bound);
     var reduced = reduction.swarm;
     reduced.normalize();
     assert(reduced.valid());

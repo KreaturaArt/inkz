@@ -7,7 +7,9 @@ const std = @import("std");
 const assert = std.debug.assert;
 const fuzz_ink = @import("fuzz_ink.zig");
 const triage_module = @import("swarm_triage.zig");
+const swarm_mutate = @import("swarm_mutate.zig");
 const compile = @import("../compiler/compile.zig");
+const source_space = @import("../compiler/source_space.zig");
 const messages = @import("../compiler/messages.zig");
 const api = @import("../runtime/story.zig");
 const fuzz_play = @import("../fuzz/play.zig");
@@ -15,6 +17,7 @@ const fuzz_host = @import("../fuzz/host.zig");
 const simulation = @import("simulation.zig");
 const fuzz_limits = @import("../fuzz/limits.zig");
 const ink_json = @import("../core/ink_json.zig");
+const flows_module = @import("../runtime/flows.zig");
 const program_image = @import("../core/program_image.zig");
 const program_testing = @import("../core/program_testing.zig");
 const limits_module = @import("../core/limits.zig");
@@ -38,13 +41,17 @@ pub const Target = enum {
     /// observers on every global, then a session of host calls (`fuzz/host.zig`); the state
     /// checks after every call. Leaves out the program checks, which play and save make.
     host,
+    /// Compiles a ground-truth story with seeded mutations (`swarm_mutate`): a mutant that
+    /// fails counts its first error's code; one that compiles gets the program checks and,
+    /// by the seed's parity, the play target's plays or the save target's.
+    mutate,
     /// Fails when glue is on and RANDOM is off: the runner's own test.
     synthetic,
     /// The host target, failing when its mix took a `set_variable`: the runner's own test of
     /// the host target's report.
     host_synthetic,
 
-    fn hosts(target: Target) bool {
+    pub fn hosts(target: Target) bool {
         return target == .host or target == .host_synthetic;
     }
 };
@@ -54,6 +61,13 @@ pub const Target = enum {
 pub const Summary = struct {
     runs: u32 = 0,
     failures: u32 = 0,
+    /// Runs of a large configuration (`Swarm.large`).
+    large: u32 = 0,
+    /// Stories compiled from files too (`Split`), the files, and the stories whose files
+    /// had a broken INCLUDE.
+    included: u32 = 0,
+    included_files: u32 = 0,
+    included_broken: u32 = 0,
     /// Sources that didn't compile, counted under their first error's code.
     compile_failures: u32 = 0,
     codes: Codes = .{},
@@ -72,28 +86,60 @@ pub const Summary = struct {
     resumed_saves: u32 = 0,
     lines: u64 = 0,
     choices: u64 = 0,
-    /// Played stories still going after `play_steps_max` calls.
+    /// Played stories still going after their plan's `steps` calls, and those that made
+    /// more than `play_steps_default`, the cap every play had before P19.4.
     step_cap: u32 = 0,
+    long_plays: u32 = 0,
+    /// Flow switches and removals made in the middle of plays (`Plan.flows`).
+    flow_changes: u32 = 0,
     /// Played stories that ended before it without an error: at END or DONE, or with
     /// neither content nor choices left.
     ended: u32 = 0,
-    /// The host target's: the actions its mixes took, the host calls made after them, the
+    /// The host target's: the actions its mixes took, how its mixes ended (also counted
+    /// under `ended` and, at a cap, `step_cap`), the host calls made after them, the
     /// changes the observers saw, and the actions and calls that returned an error, by name.
     actions: std.EnumArray(Mix.Action, u32) = .initFill(0),
+    ends: std.EnumArray(simulation.End, u32) = .initFill(0),
     host_calls: u32 = 0,
     observed: u64 = 0,
     host_errors: Codes = .{},
+    /// The host target's calls by kind, its stories set up without an error handler, from
+    /// ink JSON, with `e0` not lookahead-safe and with the events (`HostPlan`), the events
+    /// called, and the stories that kept an error for the host to read.
+    calls: std.EnumArray(fuzz_host.Call, u32) = .initFill(0),
+    setups: std.EnumArray(HostPlan.Variation, u32) = .initFill(0),
+    events: u64 = 0,
+    kept_errors: u32 = 0,
+    /// The mutate target's: the mutations its mutants had, by name.
+    mutations: std.EnumArray(swarm_mutate.Mutation, u32) = .initFill(0),
+
+    /// Counts what a host target's mix did.
+    fn add_mix(summary: *Summary, tally: *const simulation.Tally) void {
+        for (&summary.actions.values, tally.actions.values) |*total, count| total.* += count;
+        if (tally.end) |end| {
+            summary.ends.getPtr(end).* += 1;
+            summary.ended += @intFromBool(end == .ended);
+            summary.step_cap += @intFromBool(end == .line_cap or end == .turn_cap);
+        }
+        summary.lines += tally.lines;
+        summary.choices += tally.choices;
+    }
 
     pub fn format(summary: Summary, writer: *std.Io.Writer) std.Io.Writer.Error!void {
-        try writer.print("{d} runs, {d} failures; compile failures {d}", .{
+        try writer.print("{d} runs ({d} large, {d} included from {d} files, {d} broken), " ++
+            "{d} failures; compile failures {d}", .{
             summary.runs,
+            summary.large,
+            summary.included,
+            summary.included_files,
+            summary.included_broken,
             summary.failures,
             summary.compile_failures,
         });
         try summary.codes.write_top(writer, 4);
         try writer.print("; runtime errors {d} (unbound externals {d}), limited runs {d} " ++
             "(limit errors {d}), resumed saves {d}, lines {d}, choices {d}, step cap {d}, " ++
-            "ended {d}", .{
+            "long plays {d}, flow changes {d}, ended {d}", .{
             summary.runtime_errors,
             summary.unbound_externals,
             summary.limited_runs,
@@ -102,13 +148,33 @@ pub const Summary = struct {
             summary.lines,
             summary.choices,
             summary.step_cap,
+            summary.long_plays,
+            summary.flow_changes,
             summary.ended,
         });
+        var mutations: u32 = 0;
+        for (summary.mutations.values) |count| mutations += count;
+        if (mutations > 0) {
+            try writer.print("; compiled {d} of {d} mutants, mutations", .{
+                summary.runs - summary.compile_failures,
+                summary.runs,
+            });
+            const values = std.enums.values(swarm_mutate.Mutation);
+            for (values, summary.mutations.values, 0..) |mutation, count, index| {
+                const separator = if (index == 0) " " else ", ";
+                try writer.print("{s}{t} {d}", .{ separator, mutation, count });
+            }
+        }
         if (summary.host_calls == 0) return;
         try writer.writeAll("; actions");
         for (std.enums.values(Mix.Action), 0..) |action, index| {
             const separator = if (index == 0) " " else ", ";
             try writer.print("{s}{t} {d}", .{ separator, action, summary.actions.get(action) });
+        }
+        try writer.writeAll("; mixes");
+        for (std.enums.values(simulation.End), 0..) |end, index| {
+            const separator = if (index == 0) " " else ", ";
+            try writer.print("{s}{t} {d}", .{ separator, end, summary.ends.get(end) });
         }
         try writer.print("; host calls {d}, observed {d}, host errors {d}", .{
             summary.host_calls,
@@ -116,6 +182,18 @@ pub const Summary = struct {
             summary.host_errors.total(),
         });
         try summary.host_errors.write_top(writer, 4);
+        try writer.writeAll("; calls");
+        for (std.enums.values(fuzz_host.Call), 0..) |call, index| {
+            const separator = if (index == 0) " " else ", ";
+            try writer.print("{s}{t} {d}", .{ separator, call, summary.calls.get(call) });
+        }
+        try writer.writeAll("; setups");
+        for (std.enums.values(HostPlan.Variation), 0..) |variation, index| {
+            const separator = if (index == 0) " " else ", ";
+            const count = summary.setups.get(variation);
+            try writer.print("{s}{t} {d}", .{ separator, variation, count });
+        }
+        try writer.print("; events {d}, kept errors {d}", .{ summary.events, summary.kept_errors });
     }
 };
 
@@ -127,7 +205,7 @@ pub const Codes = struct {
     len: u8 = 0,
     other: u32 = 0,
 
-    const capacity = 16;
+    const capacity = 128;
 
     fn add(codes: *Codes, name: []const u8, count: u32) void {
         assert(codes.len <= capacity);
@@ -160,7 +238,7 @@ pub const Codes = struct {
     }
 
     /// ` (code n, code n, ...)` for the `top` most frequent codes, or nothing.
-    fn write_top(codes: *const Codes, writer: *std.Io.Writer, top: u8) !void {
+    pub fn write_top(codes: *const Codes, writer: *std.Io.Writer, top: u8) !void {
         if (codes.len == 0) return;
         var order: [capacity]u8 = undefined;
         for (order[0..codes.len], 0..) |*slot, index| slot.* = @intCast(index);
@@ -196,47 +274,182 @@ pub const Budget = struct {
 pub const Running = struct { target: Target, seed: u64 };
 pub var running: ?Running = null;
 
+/// What a run gets besides its target and seeds.
+pub const Inputs = struct {
+    /// Replaces the host targets' drawn mixes.
+    mix: ?Mix = null,
+    /// The mutate target's stories.
+    corpus: ?*const swarm_mutate.Corpus = null,
+    /// A run of one seed writes its story to `regressions_out`, named as its regression's
+    /// story (`Regression.story_path`).
+    io: ?std.Io = null,
+};
+
+/// Where a run of one seed with `Inputs.io` writes its story.
+pub const regressions_out = "zig-out/swarm/regressions";
+
+/// A seed that once failed (`test/swarm_regressions.zon`), replayed on the story it failed
+/// on (`story_path`), so that a change to the generator doesn't lose it: `replay`.
+pub const Regression = struct {
+    target: Target,
+    seed: u64,
+    /// The host targets' mix, as `--mix` takes it.
+    mix: ?u64 = null,
+    /// What the seed found and the commit that fixed it.
+    bug: []const u8 = "",
+
+    pub const list_path = "test/swarm_regressions.zon";
+    const story_directory = "test/swarm_regressions";
+    const story_path_max = story_directory.len + "/host_synthetic-.ink".len + 20;
+
+    /// `test/swarm_regressions/<target>-<seed>.ink`.
+    pub fn story_path(regression: Regression, buffer: *[story_path_max]u8) []const u8 {
+        return std.fmt.bufPrint(buffer, "{s}/{t}-{d}.ink", .{
+            story_directory,
+            regression.target,
+            regression.seed,
+        }) catch unreachable;
+    }
+
+    /// The entry as the list writes it, `bug` left empty for the one who adds it.
+    pub fn format(regression: Regression, writer: *std.Io.Writer) std.Io.Writer.Error!void {
+        const target = regression.target;
+        try writer.print(".{{ .target = .{t}, .seed = {d}", .{ target, regression.seed });
+        if (regression.mix) |mix| try writer.print(", .mix = 0x{x}", .{mix});
+        try writer.writeAll(", .bug = \"\" },");
+    }
+};
+
+/// Null when `regression`'s seed passes its target on `source`; otherwise what failed. The
+/// seed draws the plans, splits and host plans as in `run`; the story is `source`.
+pub fn replay(gpa: std.mem.Allocator, regression: Regression, source: []const u8) !?[]const u8 {
+    assert(regression.target != .synthetic);
+    const case: fuzz_ink.Generator.Case = .{ .source = source, .swarm = .none, .used = .none };
+    return replay_case(gpa, regression, case);
+}
+
+/// `replay` on a case: the synthetic target's failure depends on its swarm, not its source.
+pub fn replay_case(
+    gpa: std.mem.Allocator,
+    regression: Regression,
+    case: fuzz_ink.Generator.Case,
+) !?[]const u8 {
+    assert((regression.mix != null) == regression.target.hosts());
+    running = .{ .target = regression.target, .seed = regression.seed };
+    defer running = null;
+    const save_buffer = try gpa.alloc(u8, if (regression.target.hosts()) host_save_bytes else 0);
+    defer gpa.free(save_buffer);
+    const mix: ?Mix = if (regression.mix) |encoded| try Mix.decode(encoded) else null;
+    const host: Host = .{ .plan = .draw(regression.seed, mix), .save_buffer = save_buffer };
+    var summary: Summary = .{};
+    return check_case(gpa, regression.target, regression.seed, case, host, &summary);
+}
+
 /// Runs seeds from `seed_first` on `target` within `budget`, writing failures and the triage.
-/// `mix`, when given, replaces the host targets' drawn mixes.
 pub fn run(
     gpa: std.mem.Allocator,
     writer: *std.Io.Writer,
     target: Target,
     seed_first: u64,
     budget: Budget,
-    mix: ?Mix,
+    inputs: Inputs,
 ) !Summary {
     assert(budget.seeds > 0);
     assert((budget.deadline == null) == (budget.io == null));
+    assert((target == .mutate) == (inputs.corpus != null));
     var summary: Summary = .{};
     var triage: triage_module.Triage = .{};
     const save_buffer = try gpa.alloc(u8, if (target.hosts()) host_save_bytes else 0);
     defer gpa.free(save_buffer);
+    const mutant_buffers = try gpa.alloc(swarm_mutate.Buffers, @intFromBool(target == .mutate));
+    defer gpa.free(mutant_buffers);
     for (0..budget.seeds) |offset| {
         if (offset > 0 and budget.exhausted()) break;
         const seed = seed_first + offset;
         running = .{ .target = target, .seed = seed };
         defer running = null;
         var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
-        const case = if (target.hosts())
-            generate_hosted(seed, &buffer)
-        else
-            fuzz_ink.generate_case_seeded(seed, &buffer, .{});
+        var mutant: ?swarm_mutate.Mutant = null;
+        const case: fuzz_ink.Generator.Case = if (inputs.corpus) |corpus| mutated: {
+            mutant = swarm_mutate.mutate(corpus, seed, &mutant_buffers[0]);
+            for (mutant.?.mutations()) |mutation| summary.mutations.getPtr(mutation).* += 1;
+            break :mutated .{ .source = mutant.?.source, .swarm = .none, .used = .none };
+        } else generate(target, seed, null, &buffer);
         summary.runs += 1;
-        const host: Host = .{ .plan = .draw(seed, mix), .save_buffer = save_buffer };
+        summary.large += @intFromBool(case.swarm.large());
+        const host: Host = .{ .plan = .draw(seed, inputs.mix), .save_buffer = save_buffer };
+        const regression: Regression = .{
+            .target = target,
+            .seed = seed,
+            .mix = if (target.hosts()) host.plan.mix.encode() else null,
+        };
+        // A run of one seed writes its story and its entry before the check, which may panic.
+        if (inputs.io) |io| if (budget.seeds == 1) try write_story(io, writer, regression, case);
         const failure = try check_case(gpa, target, seed, case, host, &summary);
-        triage.add(case.swarm, failure != null);
+        // A mutant has no swarm configuration to triage.
+        if (mutant == null) triage.add(case.swarm, failure != null);
         const reason = failure orelse continue;
         summary.failures += 1;
-        try writer.print("failure ({s}): seed {d}, swarm: {f}\n", .{ reason, seed, case.swarm });
-        try writer.print("reproduce with: zig build swarm -Doptimize=ReleaseSafe -- " ++
-            "--target {t} --seed {d} --seeds 1", .{ target, seed });
-        if (target.hosts()) try writer.print(" --mix {x}", .{host.plan.mix.encode()});
-        try writer.writeByte('\n');
+        try write_failure(writer, reason, regression, case, mutant, budget.seeds == 1);
     }
     try writer.print("swarm {t}: {f}\n", .{ target, summary });
-    try triage.report(writer);
+    if (target == .mutate) {
+        try writer.writeAll("swarm mutate: compile failures by code");
+        try summary.codes.write_top(writer, Codes.capacity);
+        try writer.writeByte('\n');
+    } else try triage.report(writer);
     return summary;
+}
+
+/// Prints a failing seed: what failed, its configuration or mutant, the command that
+/// reproduces it and its entry for the regression list.
+fn write_failure(
+    writer: *std.Io.Writer,
+    reason: []const u8,
+    regression: Regression,
+    case: fuzz_ink.Generator.Case,
+    mutant: ?swarm_mutate.Mutant,
+    alone: bool,
+) !void {
+    try writer.print("failure ({s}): seed {d}, ", .{ reason, regression.seed });
+    if (mutant) |m| {
+        try writer.print("mutant: {f}\n", .{m});
+    } else {
+        try writer.print("swarm: {f}\n", .{case.swarm});
+    }
+    try writer.print("reproduce with: zig build swarm -Doptimize=ReleaseSafe -- " ++
+        "--target {t} --seed {d} --seeds 1", .{ regression.target, regression.seed });
+    if (regression.mix) |mix| try writer.print(" --mix {x}", .{mix});
+    try writer.writeByte('\n');
+    var path_buffer: [Regression.story_path_max]u8 = undefined;
+    try writer.print("regression: add {f} to {s}, and the story the reproducing run " ++
+        "writes to {s} as {s}\n", .{
+        regression,
+        Regression.list_path,
+        regressions_out,
+        regression.story_path(&path_buffer),
+    });
+    // Reproducing one seed shows the mutant.
+    if (mutant != null and alone) try writer.print("mutant source:\n{s}\n", .{case.source});
+}
+
+/// Writes `regression`'s story to `regressions_out` and prints its entry, flushed.
+fn write_story(
+    io: std.Io,
+    writer: *std.Io.Writer,
+    regression: Regression,
+    case: fuzz_ink.Generator.Case,
+) !void {
+    var path_buffer: [Regression.story_path_max]u8 = undefined;
+    const name = std.fs.path.basename(regression.story_path(&path_buffer));
+    var out_buffer: [regressions_out.len + Regression.story_path_max]u8 = undefined;
+    const out_path = std.fmt.bufPrint(&out_buffer, "{s}/{s}", .{ regressions_out, name }) catch
+        unreachable;
+    const cwd = std.Io.Dir.cwd();
+    try cwd.createDirPath(io, regressions_out);
+    try cwd.writeFile(io, .{ .sub_path = out_path, .data = case.source });
+    try writer.print("wrote {s}; its entry: {f}\n", .{ out_path, regression });
+    try writer.flush();
 }
 
 /// Null when the seed's case passes; otherwise what failed.
@@ -251,6 +464,11 @@ fn check_case(
     if (target == .synthetic) {
         const fails = case.swarm.lines.contains(.glue) and !case.swarm.terms.contains(.random);
         return if (fails) "synthetic" else null;
+    }
+    // The compile, play and save targets compile a quarter of their stories from files too.
+    if (target == .compile or target == .play or target == .save) {
+        const plays = target != .compile;
+        if (try check_included(gpa, case.source, seed, plays, summary)) |failure| return failure;
     }
     var first_error: ?[]const u8 = null;
     const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
@@ -272,9 +490,204 @@ fn check_case(
     switch (target) {
         .compile => {},
         .play, .save => return play(gpa, &program, seed, target == .save, summary),
+        // Half the mutants play as the play target does, half as the save target does.
+        .mutate => return play(gpa, &program, seed, seed % 2 == 1, summary),
         .synthetic, .host, .host_synthetic => unreachable,
     }
     return null;
+}
+
+/// How a seed's story is split into files that INCLUDE each other: the root and the content
+/// before the first knot in `main.ink`, the knots and functions in one or two more files,
+/// each included from `main.ink` (flat) or the second from the first (chained).
+const Split = struct {
+    /// 1 (no split, 3 in 4 seeds), 2 or 3.
+    files: u8,
+    chained: bool,
+    /// Where the third file starts, as a fraction of the knots after the first.
+    cut: u32,
+    /// 1 in 8 splits breaks an INCLUDE, which must fail with its error alone.
+    broken: Broken,
+
+    const Broken = enum {
+        none,
+        /// main.ink also includes a file that isn't there: `include_not_found`.
+        missing,
+        /// The last file includes main.ink, which is still open: `include_cycle`.
+        cycle,
+
+        fn code(broken: Broken) []const u8 {
+            return switch (broken) {
+                .none => unreachable,
+                .missing => "include_not_found",
+                .cycle => "include_cycle",
+            };
+        }
+    };
+
+    /// Mixed into the seed, so the split doesn't repeat the other plans' draws.
+    const salt = 0x1c1_7de5;
+    const names = [_][]const u8{ "main.ink", "part1.ink", "part2.ink" };
+    /// Ends the root before the INCLUDEs. ink's PreProcessTopLevelObjects ends each
+    /// INCLUDE's content with a newline, which joins the root's weave where the INCLUDE
+    /// stands: after a choice it lands in the choice's body and drops the divert to the
+    /// gather (in inklecate too), and before the root it moves every path that an error
+    /// message names. After a divert it is never reached.
+    const root_end = "-\n-> DONE\n";
+
+    const Story = struct {
+        files: []const source_space.MemoryFile,
+        /// The story in one source: the root, `root_end` and the other files' content.
+        joined: []const u8,
+    };
+
+    fn draw(seed: u64) Split {
+        var prng: std.Random.DefaultPrng = .init(seed ^ salt);
+        const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+        const split = choices.weighted(3, 1);
+        const files = if (split) choices.range(u8, 2, 3) else 1;
+        const chained = choices.choose(bool);
+        const cut = choices.choose(u32);
+        const broken: Broken = if (choices.weighted(7, 1))
+            if (choices.choose(bool)) .missing else .cycle
+        else
+            .none;
+        return .{ .files = files, .chained = chained, .cut = cut, .broken = broken };
+    }
+
+    /// The files of `source` and the one source they join to; null when `source` has no
+    /// knot to split at.
+    fn story_of(split: Split, arena: std.mem.Allocator, source: []const u8) !?Story {
+        assert(split.files >= 2 and split.files <= names.len);
+        var knots: usize = 0;
+        var lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |line| knots += @intFromBool(std.mem.startsWith(u8, line, "==="));
+        if (knots == 0) return null;
+        // The first knot starts the second file; the third starts at a later one, if any.
+        const third = if (split.files == 3 and knots > 1) 1 + split.cut % (knots - 1) else 0;
+        var starts: [2]usize = .{ source.len, source.len };
+        var knot: usize = 0;
+        var offset: usize = 0;
+        lines = std.mem.splitScalar(u8, source, '\n');
+        while (lines.next()) |line| : (offset += line.len + 1) {
+            if (!std.mem.startsWith(u8, line, "===")) continue;
+            if (knot == 0) starts[0] = offset;
+            if (knot == third and third > 0) starts[1] = offset;
+            knot += 1;
+        }
+        const root = source[0..starts[0]];
+        const first = source[starts[0]..starts[1]];
+        const second = source[starts[1]..];
+        const three = second.len > 0;
+        const files = try arena.alloc(source_space.MemoryFile, if (three) 3 else 2);
+        const includes = if (three and !split.chained)
+            "INCLUDE part1.ink\nINCLUDE part2.ink\n"
+        else
+            "INCLUDE part1.ink\n";
+        const missing = if (split.broken == .missing) "INCLUDE missing.ink\n" else "";
+        files[0] = .{
+            .path = names[0],
+            .text = try std.mem.concat(arena, u8, &.{ root, root_end, includes, missing }),
+        };
+        files[1] = .{ .path = names[1], .text = if (three and split.chained)
+            try std.mem.concat(arena, u8, &.{ "INCLUDE part2.ink\n", first })
+        else
+            first };
+        if (three) files[2] = .{ .path = names[2], .text = second };
+        if (split.broken == .cycle) {
+            const last = &files[files.len - 1];
+            last.text = try std.mem.concat(arena, u8, &.{ "INCLUDE main.ink\n", last.text });
+        }
+        const joined = try std.mem.concat(arena, u8, &.{ root, root_end, first, second });
+        return .{ .files = files, .joined = joined };
+    }
+};
+
+/// With the seed's split (`Split.draw`), the story compiled from its files and from the
+/// one source they join to: null when both compile, or both fail with the same first
+/// error, and (with `plays`) play the same; otherwise what differed.
+fn check_included(
+    gpa: std.mem.Allocator,
+    source: []const u8,
+    seed: u64,
+    plays: bool,
+    summary: *Summary,
+) !?[]const u8 {
+    const split: Split = .draw(seed);
+    if (split.files == 1) return null;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const story = try split.story_of(arena_state.allocator(), source) orelse return null;
+    summary.included += 1;
+    summary.included_files += @intCast(story.files.len);
+    if (split.broken != .none) {
+        summary.included_broken += 1;
+        var broken_error: ?[]const u8 = null;
+        const broken_sink: messages.Sink = .{
+            .context = &broken_error,
+            .function = keep_first_error,
+        };
+        var broken = compile.compile_files_with(gpa, story.files, story.files[0].path, .{
+            .diagnostics = broken_sink,
+        }) catch |err| switch (err) {
+            error.CompileFailed => {
+                const expected = split.broken.code();
+                const same = std.mem.eql(u8, expected, broken_error orelse "none");
+                return if (same) null else "a broken INCLUDE failed with another error";
+            },
+            else => return err,
+        };
+        broken.deinit(gpa);
+        return "a broken INCLUDE compiled";
+    }
+    var joined_error: ?[]const u8 = null;
+    const joined_sink: messages.Sink = .{ .context = &joined_error, .function = keep_first_error };
+    var joined = compile.compile_source_with(gpa, story.joined, .{
+        .diagnostics = joined_sink,
+    }) catch |err| switch (err) {
+        error.CompileFailed => null,
+        else => return err,
+    };
+    defer if (joined) |*program| program.deinit(gpa);
+    var first_error: ?[]const u8 = null;
+    const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
+    var program = compile.compile_files_with(gpa, story.files, story.files[0].path, .{
+        .diagnostics = sink,
+    }) catch |err| switch (err) {
+        error.CompileFailed => {
+            if (joined != null) return "INCLUDE failed a story that compiles";
+            const same = std.mem.eql(u8, joined_error orelse "none", first_error orelse "none");
+            return if (same) null else "INCLUDE changed the first error";
+        },
+        else => return err,
+    };
+    defer program.deinit(gpa);
+    const one = if (joined) |*one| one else return "INCLUDE compiled a story that fails";
+    if (program.check() != .ok) return "Program.check of the included story";
+    if (!plays) return null;
+    const plan: Plan = .draw(seed);
+    var one_trace = plan.trace();
+    if (try play_roomy(gpa, one, seed, plan, &one_trace)) |failure| return failure;
+    var trace = plan.trace();
+    if (try play_roomy(gpa, &program, seed, plan, &trace)) |failure| return failure;
+    return if (Trace.same(&one_trace, &trace)) null else "INCLUDE changed the play";
+}
+
+/// Plays `program` once as `plan` says, under its default limits, into `trace`.
+fn play_roomy(
+    gpa: std.mem.Allocator,
+    program: *const Program,
+    seed: u64,
+    plan: Plan,
+    trace: *Trace,
+) !?[]const u8 {
+    var story: api.Story = undefined;
+    try fuzz_play.init_story(&story, gpa, program, plan.setup);
+    defer story.deinit(gpa);
+    story.on_error = Trace.note;
+    story.on_error_context = trace;
+    var prng: std.Random.DefaultPrng = .init(seed);
+    return advance(&story, prng.random(), trace, plan.steps);
 }
 
 /// Null when `program` (compiled from `source`) passes `Program.check` and is the same
@@ -308,20 +721,29 @@ fn check_program(gpa: std.mem.Allocator, source: []const u8, program: *const Pro
     return null;
 }
 
-/// The seed's case for the host targets: its drawn swarm with `hub` and `typed` on, so that
-/// the host's actions act on a story that plays through choices, and without `drop` and
-/// `collision`, which fail the compile (the play targets cover them).
-fn generate_hosted(seed: u64, buffer: []u8) fuzz_ink.Generator.Case {
+/// The seed's generated case for `target` (not mutate's), with `swarm` (normalized here) in
+/// place of the drawn one when given; the draw comes first either way, so a candidate of
+/// the reducer starts from the same choices as the seed's case. The host targets' swarm has
+/// `hub` and `typed` on, so that the host's actions act on a story that plays through
+/// choices, and leaves out `drop` and `collision`, which fail the compile (the play targets
+/// cover them).
+pub fn generate(target: Target, seed: u64, swarm: ?Swarm, buffer: []u8) fuzz_ink.Generator.Case {
+    assert(target != .mutate);
     var prng: std.Random.DefaultPrng = .init(seed);
     const choices: fuzz_ink.Choices = .{ .random = prng.random() };
+    // `-Dfuzz-swarm=off` gives the full mix without a draw.
     const options: fuzz_ink.Options = .{};
-    var swarm = options.swarm orelse Swarm.draw(choices);
-    swarm.play.insert(.hub);
-    swarm.play.insert(.typed);
-    swarm.resolution.remove(.drop);
-    swarm.resolution.remove(.collision);
-    swarm.normalize();
-    return fuzz_ink.Generator.generate_case(choices, buffer, .{ .swarm = swarm });
+    const drawn = options.swarm orelse Swarm.draw(choices);
+    var chosen = swarm orelse drawn;
+    if (swarm != null) chosen.normalize();
+    if (target.hosts()) {
+        chosen.play.insert(.hub);
+        chosen.play.insert(.typed);
+        chosen.resolution.remove(.drop);
+        chosen.resolution.remove(.collision);
+        chosen.normalize();
+    }
+    return fuzz_ink.Generator.generate_case(choices, buffer, .{ .swarm = chosen });
 }
 
 fn keep_first_error(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
@@ -331,18 +753,28 @@ fn keep_first_error(context: ?*anyopaque, diagnostic: messages.Diagnostic) void 
 
 const Program = @import("../core/program.zig").Program;
 
-/// The calls (`cont` or a choice) a played story gets.
-const play_steps_max = 64;
+/// The calls (`cont` or a choice) a played story gets at most (`Plan.steps`), and the cap
+/// half the plans keep, which every play had before P19.4.
+const play_steps_max = 256;
+const play_steps_default = 64;
+
+/// The flows a play switches to and removes besides the default one (`Plan.flows`).
+const flow_names = [_][]const u8{ "one", "two" };
 
 /// What a play showed, call by call: each line, each choice count and pick, and each error
 /// or warning reported, hashed, so two plays compare without keeping their text.
 const Trace = struct {
+    /// The calls the play gets (`Plan.steps`).
+    steps_max: u32 = play_steps_default,
+    /// Whether the play switches and removes flows on the way (`Plan.flows`).
+    flows: bool = false,
     hasher: std.hash.Wyhash = .init(0),
     /// The hash after each call that returned.
     hashes: [play_steps_max]u64 = undefined,
     count: u32 = 0,
     lines: u32 = 0,
     choices: u32 = 0,
+    flow_changes: u32 = 0,
     /// Whether the story reported an error (`on_error`).
     errored: bool = false,
     end: End = .running,
@@ -403,11 +835,28 @@ const Trace = struct {
 };
 
 /// Plays `story` with choices from `random` until `steps` calls are traced, the story ends
-/// or a call fails; the state checks after every call. Null, or what failed.
+/// or a call fails; the state checks after every call. With `trace.flows`, one call in 8
+/// first switches to a flow, back to the default one, or removes one (the current one too,
+/// which makes the default current): a new flow starts at the top of the story.
 fn advance(story: *api.Story, random: std.Random, trace: *Trace, steps: u32) ?[]const u8 {
     assert(trace.end == .running);
-    assert(steps <= play_steps_max);
+    assert(steps <= trace.steps_max and trace.steps_max <= play_steps_max);
     while (trace.count < steps) {
+        if (trace.flows and random.uintLessThan(u32, 8) == 0) {
+            const change = random.uintLessThan(u32, 4);
+            const name = flow_names[random.uintLessThan(usize, flow_names.len)];
+            const changed = switch (change) {
+                0, 1 => story.switch_flow(name),
+                2 => story.switch_to_default_flow(),
+                3 => story.remove_flow(name),
+                else => unreachable,
+            };
+            changed catch |err| return trace.stop(err);
+            trace.hasher.update(std.mem.asBytes(&change));
+            trace.hasher.update(name);
+            trace.flow_changes += 1;
+            if (story.state.check() != .ok) return "State.check after a flow change";
+        }
         if (story.can_continue()) {
             const line = story.cont() catch |err| return trace.stop(err);
             trace.hasher.update("l");
@@ -428,7 +877,7 @@ fn advance(story: *api.Story, random: std.Random, trace: *Trace, steps: u32) ?[]
         trace.hashes[trace.count] = trace.hasher.final();
         trace.count += 1;
     }
-    if (trace.count == play_steps_max) trace.end = .step_cap;
+    if (trace.count == trace.steps_max) trace.end = .step_cap;
     return null;
 }
 
@@ -451,8 +900,12 @@ const Plan = struct {
     compact_always: bool,
     /// The second play's limits with `limits_kind == .tight`.
     tight: Limits,
+    /// The calls a play gets: `play_steps_default` or, half the time, 4 to `play_steps_max`.
+    steps: u32,
     /// The calls the save target plays before it saves.
     save_at: u32,
+    /// The plays switch and remove flows on the way (1 in 4).
+    flows: bool,
 
     /// Mixed into the seed, so the plan doesn't repeat the generator's draws.
     const salt = 0x5e7_0b5e7;
@@ -463,13 +916,29 @@ const Plan = struct {
         // `e0` bound, its fallback allowed, both or neither (as the fuzz targets do), and the
         // story's random seed.
         const setup: fuzz_play.Setup = .pick(choices);
+        const limits_kind = choices.choose(LimitsKind);
+        const compact_always = choices.choose(bool);
+        const tight = fuzz_limits.draw_limits(choices);
+        const steps: u32 = if (choices.choose(bool))
+            play_steps_default
+        else
+            choices.range(u32, 4, play_steps_max);
         return .{
             .setup = setup,
-            .limits_kind = choices.choose(LimitsKind),
-            .compact_always = choices.choose(bool),
-            .tight = fuzz_limits.draw_limits(choices),
-            .save_at = @intCast(choices.below(play_steps_max)),
+            .limits_kind = limits_kind,
+            .compact_always = compact_always,
+            .tight = tight,
+            .steps = steps,
+            .save_at = @intCast(choices.below(steps)),
+            .flows = choices.weighted(3, 1),
         };
+    }
+
+    /// An empty trace for a play of this plan.
+    fn trace(plan: Plan) Trace {
+        assert(plan.steps > 0 and plan.steps <= play_steps_max);
+        assert(plan.save_at < plan.steps);
+        return .{ .steps_max = plan.steps, .flows = plan.flows };
     }
 };
 
@@ -496,7 +965,7 @@ fn play_planned(
     var story: api.Story = undefined;
     try fuzz_play.init_story(&story, gpa, program, plan.setup);
     defer story.deinit(gpa);
-    var trace: Trace = .{};
+    var trace = plan.trace();
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(seed);
@@ -506,7 +975,7 @@ fn play_planned(
     }
     // The save target's play goes on alone when its save didn't load.
     if (trace.end == .running) {
-        if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+        if (advance(&story, prng.random(), &trace, plan.steps)) |failure| return failure;
     }
     count_play(&trace, summary);
     // ink's ValidateExternalBindings, at the first `cont`.
@@ -525,6 +994,8 @@ fn count_play(trace: *const Trace, summary: *Summary) void {
     summary.runtime_errors += @intFromBool(trace.errored or trace.end == .failed);
     summary.unbound_externals += @intFromBool(trace.failed_with(error.MissingExternalBinding));
     summary.step_cap += @intFromBool(trace.end == .step_cap);
+    summary.long_plays += @intFromBool(trace.count > play_steps_default);
+    summary.flow_changes += trace.flow_changes;
     summary.ended += @intFromBool(trace.end == .ended and !trace.errored);
 }
 
@@ -559,11 +1030,11 @@ fn play_limited(
     };
     defer story.deinit(gpa);
     story.state.compact_always = plan.compact_always;
-    var trace: Trace = .{};
+    var trace = plan.trace();
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(seed);
-    if (advance(&story, prng.random(), &trace, play_steps_max)) |failure| return failure;
+    if (advance(&story, prng.random(), &trace, plan.steps)) |failure| return failure;
     summary.limit_errors += @intFromBool(trace.limited() and !roomy.limited());
     return Trace.compare(roomy, &trace, limits_may);
 }
@@ -583,7 +1054,9 @@ fn play_saved(
     if (advance(story, prng.random(), trace, plan.save_at)) |failure| return failure;
     // ink's save doesn't keep a choice's isInvisibleDefault (JsonSerialisation's
     // JObjectToChoice), so a loaded fallback choice is visible, in ink and here: the save
-    // waits for a call after which none is pending.
+    // waits for a call after which none is pending, in any flow. A parked flow can keep one
+    // to the step cap; the save is made then, and the loaded one saves the same choice
+    // indices, as ink keeps the saved ones (P19.9).
     while (trace.end == .running and invisible_choices(story)) {
         if (advance(story, prng.random(), trace, trace.count + 1)) |failure| return failure;
     }
@@ -605,13 +1078,16 @@ fn play_saved(
     defer gpa.free(save_again);
     if (!std.mem.eql(u8, save, save_again)) return "save round trip";
     if (trace.end != .running) return null;
+    // ink's save writes an infinity as ±3.4E+38 and NaN as 0.0, so the loaded story may
+    // show other floats.
+    if (try fuzz_play.save_loses_floats(gpa, save)) return null;
     var loaded_trace = trace.*;
     loaded.on_error = Trace.note;
     loaded.on_error_context = &loaded_trace;
     var loaded_prng = prng.*;
-    if (advance(story, prng.random(), trace, play_steps_max)) |failure| return failure;
+    if (advance(story, prng.random(), trace, plan.steps)) |failure| return failure;
     const loaded_random = loaded_prng.random();
-    if (advance(&loaded, loaded_random, &loaded_trace, play_steps_max)) |failure| return failure;
+    if (advance(&loaded, loaded_random, &loaded_trace, plan.steps)) |failure| return failure;
     if (!Trace.same(trace, &loaded_trace)) return "loaded save played differently";
     summary.resumed_saves += 1;
     if (story.failed) return null;
@@ -619,13 +1095,50 @@ fn play_saved(
     defer gpa.free(end);
     const loaded_end = try save_of(gpa, &loaded);
     defer gpa.free(loaded_end);
-    if (!std.mem.eql(u8, end, loaded_end)) return "loaded save ended in another save";
+    if (!try same_but_flow_order(gpa, end, loaded_end)) return "loaded save ended in another save";
     return null;
 }
 
-/// Whether the story holds a choice it doesn't show: a fallback (invisible default) choice.
+/// Whether two saves are the same but for the order of their flows. A new flow takes the
+/// record freed last, as in ink's dictionary, and a loaded story has none freed: after a
+/// flow is removed and another made, a story and its loaded save list them in other
+/// orders, in ink as here (.NET's Dictionary, checked with .NET 8).
+fn same_but_flow_order(gpa: std.mem.Allocator, a: []const u8, b: []const u8) !bool {
+    if (std.mem.eql(u8, a, b)) return true;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var a_json = try std.json.parseFromSliceLeaky(std.json.Value, arena, a, .{});
+    var b_json = try std.json.parseFromSliceLeaky(std.json.Value, arena, b, .{});
+    const a_flows = a_json.object.get("flows").?.object;
+    const b_flows = b_json.object.get("flows").?.object;
+    if (a_flows.count() != b_flows.count()) return false;
+    for (a_flows.keys(), a_flows.values()) |name, flow| {
+        const other = b_flows.get(name) orelse return false;
+        const flow_text = try std.json.Stringify.valueAlloc(arena, flow, .{});
+        const other_text = try std.json.Stringify.valueAlloc(arena, other, .{});
+        if (!std.mem.eql(u8, flow_text, other_text)) return false;
+    }
+    // The rest compares as it is, the flows in one order.
+    _ = a_json.object.orderedRemove("flows");
+    _ = b_json.object.orderedRemove("flows");
+    const a_rest = try std.json.Stringify.valueAlloc(arena, a_json, .{});
+    const b_rest = try std.json.Stringify.valueAlloc(arena, b_json, .{});
+    return std.mem.eql(u8, a_rest, b_rest);
+}
+
+/// Whether the story holds a choice it doesn't show: a fallback (invisible default) choice,
+/// in the current flow or a parked one (ink's save drops the flag in every flow).
 fn invisible_choices(story: *api.Story) bool {
-    return story.state.choices.records.slice().len > story.current_choices_count();
+    const state = &story.state;
+    if (state.choices.records.slice().len > story.current_choices_count()) return true;
+    for (state.flows, 0..) |*record, flow| {
+        if (!record.in_use or flow == state.current_flow) continue;
+        for (flows_module.view(state, @intCast(flow)).choices) |choice| {
+            if (choice.invisible_default) return true;
+        }
+    }
+    return false;
 }
 
 fn save_of(gpa: std.mem.Allocator, story: *api.Story) ![]u8 {
@@ -652,6 +1165,13 @@ const HostPlan = struct {
     mix: Mix,
     /// The calls of the session after the mix.
     calls: fuzz_host.CallSet,
+    /// How the story is set up besides `setup` (P19.8), each drawn on its own: without an
+    /// error handler (1 in 4), so the story keeps its errors and `cont` returns
+    /// `error.StoryError`; from the program's ink JSON (`init_from_json`, 1 in 4); with
+    /// every event counted (1 in 2). `setup.lookahead_unsafe` is drawn with them (1 in 4).
+    variations: std.EnumSet(Variation),
+
+    pub const Variation = enum { no_handler, from_json, lookahead_unsafe, events };
 
     /// Mixed into the seed, so the plan doesn't repeat the generator's or `Plan`'s draws.
     const salt = 0x4057_4057;
@@ -666,23 +1186,39 @@ const HostPlan = struct {
         const calls = fuzz_host.draw_calls(choices);
         // Drawn last, so the draws before keep their seeds' values.
         setup.evaluate_in_external = choices.choose(bool);
+        var variations: std.EnumSet(Variation) = .empty;
+        if (choices.weighted(3, 1)) variations.insert(.no_handler);
+        if (choices.weighted(3, 1)) variations.insert(.from_json);
+        if (choices.weighted(3, 1)) variations.insert(.lookahead_unsafe);
+        if (choices.choose(bool)) variations.insert(.events);
+        setup.lookahead_unsafe = variations.contains(.lookahead_unsafe);
         return .{
             .setup = setup,
             .mix = mix orelse .draw(simulation_seed(seed)),
             .calls = calls,
+            .variations = variations,
         };
     }
 };
+
+/// The host targets' mix drawn for `seed`, as `--mix` takes it.
+pub fn drawn_mix(seed: u64) u64 {
+    return HostPlan.draw(seed, null).mix.encode();
+}
 
 /// The simulator's seed (`new Random(seed)`) for a swarm seed.
 fn simulation_seed(seed: u64) i32 {
     return @bitCast(@as(u32, @truncate(seed)));
 }
 
-/// What a host target's story reported: errors and the changes its observers saw.
+/// What a host target's story reported: errors, the changes its observers saw, and those
+/// whose value differed from the global's read back with `get_variable`.
 const HostTrace = struct {
+    story: *api.Story,
     errored: bool = false,
     observed: u64 = 0,
+    mismatched: u64 = 0,
+    events: u64 = 0,
 
     fn note(context: ?*anyopaque, message: []const u8, severity: api.Severity) void {
         const trace: *HostTrace = @ptrCast(@alignCast(context.?));
@@ -693,10 +1229,73 @@ const HostTrace = struct {
     fn observe(context: ?*anyopaque, name: []const u8, value: api.Value) void {
         const trace: *HostTrace = @ptrCast(@alignCast(context.?));
         assert(name.len > 0);
-        _ = value;
         trace.observed += 1;
+        // An observer is told the global's value now, which get_variable reads too.
+        const read = trace.story.get_variable(name) orelse unreachable;
+        if (!same_value(value, read.get())) trace.mismatched += 1;
     }
 };
+
+/// Events that count their calls in the `HostTrace` they are given.
+const host_events: api.Events = .{
+    .on_did_continue = struct {
+        fn event(context: ?*anyopaque) void {
+            count_event(context);
+        }
+    }.event,
+    .on_make_choice = struct {
+        fn event(context: ?*anyopaque, text: []const u8, position: u32) void {
+            assert(text.len < 1 << 20 and position < 1 << 16);
+            count_event(context);
+        }
+    }.event,
+    .on_evaluate_function = struct {
+        fn event(context: ?*anyopaque, name: []const u8, arguments: []const api.Value) void {
+            assert(name.len > 0 and arguments.len <= api.external_arguments_max);
+            count_event(context);
+        }
+    }.event,
+    .on_complete_evaluate_function = struct {
+        fn event(
+            context: ?*anyopaque,
+            name: []const u8,
+            arguments: []const api.Value,
+            text: []const u8,
+            result: api.Value,
+        ) void {
+            assert(name.len > 0 and arguments.len <= api.external_arguments_max);
+            _ = text;
+            _ = result;
+            count_event(context);
+        }
+    }.event,
+    .on_choose_path_string = struct {
+        fn event(context: ?*anyopaque, path: []const u8, arguments: []const api.Value) void {
+            assert(path.len > 0 and arguments.len <= api.external_arguments_max);
+            count_event(context);
+        }
+    }.event,
+};
+
+fn count_event(context: ?*anyopaque) void {
+    const trace: *HostTrace = @ptrCast(@alignCast(context.?));
+    trace.events += 1;
+}
+
+/// Whether two host values are the same: floats by their bits (a NaN is itself), strings by
+/// their bytes.
+fn same_value(a: api.Value, b: api.Value) bool {
+    if (std.meta.activeTag(a) != std.meta.activeTag(b)) return false;
+    return switch (a) {
+        .null => true,
+        .integer => |number| number == b.integer,
+        .float => |number| @as(u32, @bitCast(number)) == @as(u32, @bitCast(b.float)),
+        .bool => |flag| flag == b.bool,
+        .string => |text| std.mem.eql(u8, text, b.string),
+        .list => |list| list == b.list,
+        .divert_target => |target| target == b.divert_target,
+    };
+}
 
 /// Plays `program`'s story as the seed's host plan says: an observer on every global, the
 /// simulator's mix (seeded choices, lines, and one action of the mix per turn), then a
@@ -714,19 +1313,10 @@ fn play_host(
     assert(host.save_buffer.len == host_save_bytes);
     const plan = host.plan;
     var story: api.Story = undefined;
-    try fuzz_play.init_story(&story, gpa, program, plan.setup);
+    try init_host_story(gpa, &story, program, plan, summary);
     defer story.deinit(gpa);
-    var trace: HostTrace = .{};
-    story.on_error = HostTrace.note;
-    story.on_error_context = &trace;
-    for (0..story.global_variable_count()) |position| {
-        const name = story.global_variable_name(@intCast(position)).?;
-        story.observe_variable(name, &trace, HostTrace.observe) catch |err| switch (err) {
-            // Past `observers_max`, the globals left go unobserved.
-            error.ObserverLimit => break,
-            error.VariableNotDeclared => unreachable,
-        };
-    }
+    var trace: HostTrace = .{ .story = &story };
+    watch(&story, &trace, plan.variations);
     story.state.compact_always = plan.mix.compact_always;
 
     var tally: simulation.Tally = .{};
@@ -742,9 +1332,7 @@ fn play_host(
         summary.host_errors.add(@errorName(err), 1);
         break :mixed .ok;
     };
-    for (&summary.actions.values, tally.actions.values) |*total, count| total.* += count;
-    summary.lines += tally.lines;
-    summary.choices += tally.choices;
+    summary.add_mix(&tally);
     switch (mixed) {
         .ok => {},
         .check_failed => return "State.check in the mix",
@@ -760,7 +1348,9 @@ fn play_host(
     while (count < fuzz_host.calls_max and choices.more(7, 1)) : (count += 1) {
         // After an error in the middle of a step the story fails closed until reset_state
         // or load_json, which the session may call.
-        _ = fuzz_host.call(gpa, &story, choices, &kept, plan.calls) catch |err| {
+        const kind = fuzz_host.pick_call(choices, plan.calls);
+        summary.calls.getPtr(kind).* += 1;
+        fuzz_host.make_call(gpa, &story, choices, &kept, kind) catch |err| {
             if (err == error.OutOfMemory) return err;
             summary.host_errors.add(@errorName(err), 1);
         };
@@ -768,8 +1358,51 @@ fn play_host(
     }
     summary.host_calls += count;
     summary.observed += trace.observed;
-    summary.runtime_errors += @intFromBool(trace.errored);
+    summary.events += trace.events;
+    summary.kept_errors += @intFromBool(story.error_count() > 0);
+    summary.runtime_errors += @intFromBool(trace.errored or story.error_count() > 0);
+    if (trace.mismatched > 0) return "an observer's value differs from get_variable";
     return null;
+}
+
+/// The host target's story on `program`, set up as `plan` says (from its ink JSON with
+/// `from_json`); counts the plan's variations.
+fn init_host_story(
+    gpa: std.mem.Allocator,
+    story: *api.Story,
+    program: *const Program,
+    plan: HostPlan,
+    summary: *Summary,
+) !void {
+    var iterator = plan.variations.iterator();
+    while (iterator.next()) |variation| summary.setups.getPtr(variation).* += 1;
+    if (!plan.variations.contains(.from_json)) {
+        return fuzz_play.init_story(story, gpa, program, plan.setup);
+    }
+    var json: std.Io.Writer.Allocating = .init(gpa);
+    defer json.deinit();
+    try ink_json.serialize(gpa, program, &json.writer);
+    try fuzz_play.init_story_from_json(story, gpa, json.written(), plan.setup);
+}
+
+/// Reports `story`'s errors (but with `no_handler`), events (with `events`) and every
+/// global's changes to `trace`.
+fn watch(story: *api.Story, trace: *HostTrace, variations: std.EnumSet(HostPlan.Variation)) void {
+    // Without a handler, the story keeps its errors for the session's `errors` call.
+    story.on_error = if (variations.contains(.no_handler)) null else HostTrace.note;
+    story.on_error_context = trace;
+    if (variations.contains(.events)) {
+        story.events = host_events;
+        story.events.context = trace;
+    }
+    for (0..story.global_variable_count()) |position| {
+        const name = story.global_variable_name(@intCast(position)).?;
+        story.observe_variable(name, trace, HostTrace.observe) catch |err| switch (err) {
+            // Past `observers_max`, the globals left go unobserved.
+            error.ObserverLimit => break,
+            error.VariableNotDeclared => unreachable,
+        };
+    }
 }
 
 /// The trace of `source` played under `limits`, with no external bound.
@@ -788,7 +1421,7 @@ fn trace_source(gpa: std.mem.Allocator, source: []const u8, limits: Limits) !Tra
     story.on_error = Trace.note;
     story.on_error_context = &trace;
     var prng: std.Random.DefaultPrng = .init(1);
-    try std.testing.expect(advance(&story, prng.random(), &trace, play_steps_max) == null);
+    try std.testing.expect(advance(&story, prng.random(), &trace, trace.steps_max) == null);
     return trace;
 }
 
@@ -854,7 +1487,9 @@ test "a story saved in the middle of its play and loaded plays on the same" {
             .limits_kind = .default,
             .compact_always = false,
             .tight = .{},
+            .steps = play_steps_default,
             .save_at = save_at,
+            .flows = false,
         };
         try std.testing.expect(try play_planned(gpa, &program, 1, plan, true, &summary) == null);
     }
@@ -873,9 +1508,9 @@ test "codes keep the most frequent first, and count past their capacity as other
     var writer: std.Io.Writer = .fixed(&text);
     try codes.write_top(&writer, 4);
     try std.testing.expectEqualStrings(" (a 3, b 2)", writer.buffered());
-    const names = [_][]const u8{ "c0", "c1", "c2", "c3", "c4", "c5", "c6", "c7", "c8", "c9" } ++
-        [_][]const u8{ "d0", "d1", "d2", "d3", "d4" };
-    for (names) |name| codes.add(name, 1);
+    // Two codes and `capacity - 1` others: the last one counts as other.
+    var storage: [Codes.capacity - 1][4]u8 = undefined;
+    for (&storage, 0..) |*name, index| codes.add(try std.fmt.bufPrint(name, "c{d}", .{index}), 1);
     try std.testing.expectEqual(@as(u32, 1), codes.other);
 }
 
@@ -885,8 +1520,27 @@ test "a passed deadline stops the run after its first seed" {
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     const budget: Budget = .{ .seeds = 1000, .deadline = .now(io, .awake), .io = io };
-    const summary = try run(gpa, &out.writer, .synthetic, 1, budget, null);
+    const summary = try run(gpa, &out.writer, .synthetic, 1, budget, .{});
     try std.testing.expectEqual(@as(u32, 1), summary.runs);
+}
+
+test "the host target makes every call and every setup variation" {
+    // P19.8: 100 seeds of the host target make each call of `fuzz_host.Call` and each
+    // `HostPlan.Variation`, call the events, and keep an error for the host to read in a
+    // story without a handler; none fails.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .host, 1, .{ .seeds = 100 }, .{});
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    for (std.enums.values(fuzz_host.Call)) |call| {
+        if (summary.calls.get(call) == 0) std.debug.print("never called: {t}\n", .{call});
+        try std.testing.expect(summary.calls.get(call) > 0);
+    }
+    for (summary.setups.values) |count| try std.testing.expect(count > 0);
+    try std.testing.expect(summary.events > 0);
+    try std.testing.expect(summary.kept_errors > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "; calls cont ") != null);
 }
 
 test "the host target passes a few seeds, and reports a failing action with its mix" {
@@ -896,15 +1550,21 @@ test "the host target passes a few seeds, and reports a failing action with its 
     const gpa = std.testing.allocator;
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
-    const passed = try run(gpa, &out.writer, .host, 1, .{ .seeds = 6 }, null);
+    const passed = try run(gpa, &out.writer, .host, 1, .{ .seeds = 6 }, .{});
     try std.testing.expectEqual(@as(u32, 0), passed.failures);
     try std.testing.expect(passed.host_calls > 0);
+    try std.testing.expect(passed.observed > 0);
+    try std.testing.expect(passed.ended > 0);
+    var ends: u32 = 0;
+    for (passed.ends.values) |count| ends += count;
+    try std.testing.expect(ends > 0 and ends <= passed.runs);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "; mixes ended ") != null);
     var actions: u32 = 0;
     for (passed.actions.values) |count| actions += count;
     try std.testing.expect(actions > 0);
 
     out.clearRetainingCapacity();
-    const failed = try run(gpa, &out.writer, .host_synthetic, 1, .{ .seeds = 6 }, null);
+    const failed = try run(gpa, &out.writer, .host_synthetic, 1, .{ .seeds = 6 }, .{});
     try std.testing.expect(failed.failures > 0 and failed.failures < failed.runs);
     const text = out.written();
     const prefix = "failure (synthetic set_variable): seed ";
@@ -923,10 +1583,210 @@ test "the host target passes a few seeds, and reports a failing action with its 
     out.clearRetainingCapacity();
     const budget: Budget = .{ .seeds = 1 };
     const decoded = try Mix.decode(mix.encode());
-    const replayed = try run(gpa, &out.writer, .host_synthetic, seed, budget, decoded);
+    const replayed = try run(gpa, &out.writer, .host_synthetic, seed, budget, .{ .mix = decoded });
     try std.testing.expectEqual(@as(u32, 1), replayed.failures);
     var without = mix;
     without.weights.set(.set_variable, 0);
-    const passes = try run(gpa, &out.writer, .host_synthetic, seed, budget, without);
+    const passes = try run(gpa, &out.writer, .host_synthetic, seed, budget, .{ .mix = without });
     try std.testing.expectEqual(@as(u32, 0), passes.failures);
+}
+
+test "the host target's observers compare what they are told with get_variable" {
+    // P19.7: an observed global changed by the story and by the host is the value
+    // get_variable reads; a value that differs counts as a mismatch.
+    const gpa = std.testing.allocator;
+    var program = try compile.compile_source(gpa, "VAR x = 1\n~ x = 2.5\nA {x}\n-> END\n");
+    defer program.deinit(gpa);
+    var story: api.Story = undefined;
+    try story.init(gpa, &program, .{});
+    defer story.deinit(gpa);
+    var trace: HostTrace = .{ .story = &story };
+    try story.observe_variable("x", &trace, HostTrace.observe);
+    _ = try story.cont();
+    try story.set_variable("x", .{ .string = "text" });
+    try std.testing.expectEqual(@as(u64, 2), trace.observed);
+    try std.testing.expectEqual(@as(u64, 0), trace.mismatched);
+    HostTrace.observe(&trace, "x", .{ .string = "other" });
+    HostTrace.observe(&trace, "x", .{ .integer = 2 });
+    try std.testing.expectEqual(@as(u64, 2), trace.mismatched);
+    try std.testing.expect(same_value(.{ .float = std.math.nan(f32) }, .{
+        .float = std.math.nan(f32),
+    }));
+}
+
+test "a failing seed prints its regression entry, which replays the failure on its story" {
+    // P19.6: the synthetic host target's failure line names its entry for
+    // test/swarm_regressions.zon; replaying the entry on the seed's story fails the same
+    // way, and the host target passes it.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const failed = try run(gpa, &out.writer, .host_synthetic, 1, .{ .seeds = 6 }, .{});
+    try std.testing.expect(failed.failures > 0);
+    const text = out.written();
+    const prefix = "failure (synthetic set_variable): seed ";
+    const seed_text = text[std.mem.indexOf(u8, text, prefix).? + prefix.len ..];
+    const seed_end = std.mem.indexOfScalar(u8, seed_text, ',').?;
+    const seed = try std.fmt.parseInt(u64, seed_text[0..seed_end], 10);
+    const regression: Regression = .{
+        .target = .host_synthetic,
+        .seed = seed,
+        .mix = HostPlan.draw(seed, null).mix.encode(),
+    };
+    var expected: [256]u8 = undefined;
+    const line = try std.fmt.bufPrint(&expected, "regression: add .{{ .target = " ++
+        ".host_synthetic, .seed = {d}, .mix = 0x{x}, .bug = \"\" }}, to " ++
+        "test/swarm_regressions.zon, and the story the reproducing run writes to " ++
+        "zig-out/swarm/regressions as test/swarm_regressions/host_synthetic-{d}.ink\n", .{
+        seed, regression.mix.?, seed,
+    });
+    try std.testing.expect(std.mem.indexOf(u8, text, line) != null);
+
+    var buffer: [fuzz_ink.source_bytes_max]u8 = undefined;
+    const source = generate(.host_synthetic, seed, null, &buffer).source;
+    const failure = (try replay(gpa, regression, source)).?;
+    try std.testing.expectEqualStrings("synthetic set_variable", failure);
+    var passing = regression;
+    passing.target = .host;
+    try std.testing.expectEqual(null, try replay(gpa, passing, source));
+}
+
+test "the swarm regressions replay on their stories without a failure" {
+    // P19.6: each entry of test/swarm_regressions.zon is a seed that once failed, with the
+    // story it failed on in test/swarm_regressions/ (docs/fuzzing.md).
+    const gpa = std.testing.allocator;
+    const io = std.testing.io;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const cwd = std.Io.Dir.cwd();
+    const limit: std.Io.Limit = .limited(1 << 20);
+    const list = try cwd.readFileAllocOptions(io, Regression.list_path, arena, limit, .of(u8), 0);
+    var diagnostics: std.zon.parse.Diagnostics = undefined;
+    const regressions = std.zon.parse.fromSlice([]const Regression, .{
+        .gpa = gpa,
+        .arena = arena,
+        .source = list,
+        .diagnostics = &diagnostics,
+    }) catch |err| {
+        if (err == error.ParseZon) diagnostics.log(Regression.list_path);
+        return err;
+    };
+    try std.testing.expect(regressions.len > 0);
+    var failures: u32 = 0;
+    for (regressions) |regression| {
+        try std.testing.expect(regression.bug.len > 0);
+        var path_buffer: [Regression.story_path_max]u8 = undefined;
+        const path = regression.story_path(&path_buffer);
+        const source = try cwd.readFileAlloc(io, path, arena, .limited(fuzz_ink.source_bytes_max));
+        const failure = try replay(gpa, regression, source) orelse continue;
+        failures += 1;
+        std.debug.print("{s} fails ({s}) again: {s}\n", .{ path, failure, regression.bug });
+    }
+    try std.testing.expectEqual(@as(u32, 0), failures);
+}
+
+test "the mutate target passes a few seeds of a ground-truth story and counts its mutants" {
+    // P19.3: 24 mutants of one story (read from disk) pass the program checks and the plays;
+    // some compile and play, some fail with a counted code, and each mutation is counted.
+    const gpa = std.testing.allocator;
+    var arena_state: std.heap.ArenaAllocator = .init(gpa);
+    defer arena_state.deinit();
+    const id = "runtime/diverts/tunnel_vs_thread_behaviour";
+    const arena = arena_state.allocator();
+    const corpus = try swarm_mutate.Corpus.load_ids(arena, std.testing.io, &.{id});
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .mutate, 1, .{ .seeds = 24 }, .{ .corpus = &corpus });
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    try std.testing.expect(summary.compile_failures > 0);
+    try std.testing.expect(summary.compile_failures < summary.runs);
+    try std.testing.expectEqual(summary.compile_failures, summary.codes.total());
+    try std.testing.expect(summary.lines > 0);
+    var mutations: u32 = 0;
+    for (summary.mutations.values) |count| mutations += count;
+    try std.testing.expect(mutations >= summary.runs);
+    const text = out.written();
+    try std.testing.expect(std.mem.indexOf(u8, text, "mutants, mutations delete_line") != null);
+    const codes_line = "swarm mutate: compile failures by code (";
+    try std.testing.expect(std.mem.indexOf(u8, text, codes_line) != null);
+}
+
+test "plays change flows on the way and some go past the old step cap" {
+    // P19.4: a quarter of the plans switch and remove flows, and half draw a step cap from
+    // 4 to 256; 40 seeds of the save target (each played, saved, loaded and played on) pass
+    // with both counted.
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .save, 1, .{ .seeds = 40 }, .{});
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    try std.testing.expect(summary.flow_changes > 0);
+    try std.testing.expect(summary.long_plays > 0);
+    try std.testing.expect(summary.resumed_saves > 0);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "long plays ") != null);
+    var steps: std.StaticBitSet(play_steps_max + 1) = .empty;
+    for (0..64) |seed| steps.set(Plan.draw(seed).steps);
+    try std.testing.expect(steps.isSet(play_steps_default) and steps.count() > 8);
+}
+
+test "saves compare the same with their flows in another order, and differ otherwise" {
+    const gpa = std.testing.allocator;
+    const a = "{\"flows\":{\"D\":{\"x\":1},\"one\":{\"x\":2},\"two\":{\"x\":3}},\"t\":4}";
+    const b = "{\"flows\":{\"D\":{\"x\":1},\"two\":{\"x\":3},\"one\":{\"x\":2}},\"t\":4}";
+    const c = "{\"flows\":{\"D\":{\"x\":1},\"two\":{\"x\":2},\"one\":{\"x\":3}},\"t\":4}";
+    const d = "{\"flows\":{\"D\":{\"x\":1},\"one\":{\"x\":2},\"two\":{\"x\":3}},\"t\":5}";
+    try std.testing.expect(try same_but_flow_order(gpa, a, b));
+    try std.testing.expect(!try same_but_flow_order(gpa, a, c));
+    try std.testing.expect(!try same_but_flow_order(gpa, a, d));
+}
+
+test "a split story includes its knots from two or three files and plays as one source" {
+    // P19.4: the root stays in main.ink, ended by Split.root_end before its INCLUDEs; the
+    // knots go to part1.ink and, from a later knot on, part2.ink, included from main.ink
+    // or from part1.ink; 1 in 8 splits breaks an INCLUDE (a missing file, a cycle). 40
+    // seeds of the play target compile a quarter of their stories from files too, and
+    // those compile and play as the joined source does.
+    var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const source = "VAR x = 1\nRoot\n-> k0\n=== k0 ===\nK0\n-> k1\n=== k1 ===\nK1\n-> END\n";
+    const flat: Split = .{ .files = 3, .chained = false, .cut = 0, .broken = .none };
+    const story = (try flat.story_of(arena, source)).?;
+    try std.testing.expectEqual(@as(usize, 3), story.files.len);
+    try std.testing.expectEqualStrings("VAR x = 1\nRoot\n-> k0\n" ++ Split.root_end ++
+        "INCLUDE part1.ink\nINCLUDE part2.ink\n", story.files[0].text);
+    try std.testing.expectEqualStrings("=== k0 ===\nK0\n-> k1\n", story.files[1].text);
+    try std.testing.expectEqualStrings("=== k1 ===\nK1\n-> END\n", story.files[2].text);
+    const chained: Split = .{ .files = 3, .chained = true, .cut = 0, .broken = .none };
+    const chain = (try chained.story_of(arena, source)).?;
+    const chain_main = chain.files[0].text;
+    try std.testing.expect(std.mem.endsWith(u8, chain_main, "-> DONE\nINCLUDE part1.ink\n"));
+    try std.testing.expect(std.mem.startsWith(u8, chain.files[1].text, "INCLUDE part2.ink\n"));
+    try std.testing.expectEqualStrings(story.joined, chain.joined);
+    try std.testing.expect(try flat.story_of(arena, "No knots\n") == null);
+    // A broken split fails with its INCLUDE's error.
+    for ([_]Split.Broken{ .missing, .cycle }) |broken| {
+        var split = chained;
+        split.broken = broken;
+        const files = (try split.story_of(arena, source)).?.files;
+        var first_error: ?[]const u8 = null;
+        const sink: messages.Sink = .{ .context = &first_error, .function = keep_first_error };
+        try std.testing.expectError(error.CompileFailed, compile.compile_files_with(
+            std.testing.allocator,
+            files,
+            "main.ink",
+            .{ .diagnostics = sink },
+        ));
+        try std.testing.expectEqualStrings(broken.code(), first_error.?);
+    }
+
+    const gpa = std.testing.allocator;
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    const summary = try run(gpa, &out.writer, .play, 1, .{ .seeds = 40 }, .{});
+    try std.testing.expectEqual(@as(u32, 0), summary.failures);
+    try std.testing.expect(summary.included > 0 and summary.included < summary.runs);
+    try std.testing.expect(summary.included_files >= 2 * summary.included);
+    try std.testing.expect(summary.included_broken < summary.included);
 }

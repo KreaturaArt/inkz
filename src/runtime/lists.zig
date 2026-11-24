@@ -119,7 +119,8 @@ pub const Builder = struct {
     origins_count: u32 = 0,
 
     const items_max = list_items_max;
-    pub const origins_max = 64;
+    /// ink's `originNames` names one origin per item, so a copy of a list keeps as many.
+    pub const origins_max = list_items_max;
 
     fn add(builder: *Builder, item: ListItemIndex) error{ListLimit}!void {
         assert(builder.items_count <= items_max);
@@ -129,10 +130,9 @@ pub const Builder = struct {
         builder.items_count += 1;
     }
 
+    /// Repeats are kept, as in ink's `originNames`.
     fn add_origin(builder: *Builder, origin: ListOriginIndex) error{ListLimit}!void {
         assert(builder.origins_count <= origins_max);
-        const known = builder.origins[0..builder.origins_count];
-        if (contains(ListOriginIndex, known, origin)) return;
         if (builder.origins_count == origins_max) return error.ListLimit;
         builder.origins[builder.origins_count] = origin;
         builder.origins_count += 1;
@@ -160,8 +160,9 @@ pub const Lists = struct {
         return lists.program.list_items[item.to_int()].origin;
     }
 
-    /// ink's `originNames`: the items' origins in order when there are items, else the
-    /// declared ones. Copies of a list keep these as their declared origins.
+    /// ink's `originNames`: the items' origins in order when there are items, one per item
+    /// and repeats kept (`(a, c)` names `l0` twice), else the declared ones. Copies of a list
+    /// keep these as their declared origins, and a save writes them.
     fn origin_names(lists: Lists, list: View, builder: *Builder) error{ListLimit}!void {
         assert(builder.origins_count == 0);
         if (list.items.len == 0) {
@@ -425,7 +426,10 @@ pub const Lists = struct {
         var origins: Builder = .{};
         try lists.origin_names(list, &origins);
         var builder: Builder = .{};
-        for (origins.origins[0..origins.origins_count]) |origin| {
+        const names = origins.origins[0..origins.origins_count];
+        for (names, 0..) |origin, seen| {
+            // ink walks the origin definitions, which don't repeat.
+            if (contains(ListOriginIndex, names[0..seen], origin)) continue;
             const info = lists.program.list_origins[origin.to_int()];
             const first = info.items_first.to_int();
             for (first..first + info.items_count) |position| {
@@ -522,6 +526,24 @@ test "set operations keep ink's iteration order" {
     );
     const empty: Value = .{ .list = try slab.store(&.{}, &.{colours}) };
     try std.testing.expectEqual(Value{ .bool = false }, try lists.binary(.has, blue_red, empty));
+}
+
+test "a copy keeps one origin per item, as ink's originNames" {
+    // Differential swarm, seed 45287272184, case 00881: `(a, c) - (a, c)` is empty and
+    // names its origin twice; LIST_ALL still walks each origin once.
+    var program = try test_program(std.testing.allocator);
+    defer program.deinit(std.testing.allocator);
+    var words: [256]u32 = undefined;
+    var slab = ListSlab.init(&words);
+    const lists: Lists = .{ .program = &program, .slab = &slab };
+    const sizes: ListOriginIndex = .from_int(1);
+    const mixed: Value = .{ .list = try slab.store(&.{ red, large, blue }, &.{}) };
+    const emptied = try lists.binary(.subtract, mixed, mixed);
+    const view = slab.view(emptied.list);
+    try std.testing.expectEqual(0, view.items.len);
+    try std.testing.expectEqualSlices(ListOriginIndex, &.{ colours, sizes, colours }, view.origins);
+    const all_items = try lists.unary(.list_all, emptied);
+    try expect_items(lists, all_items, &.{ red, green, blue, small, large });
 }
 
 test "comparisons, min, max and value" {

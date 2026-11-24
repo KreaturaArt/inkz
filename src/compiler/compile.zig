@@ -141,11 +141,12 @@ pub fn compile_source(gpa: Allocator, source: []const u8) !Program {
 
 /// `compile_source` with options.
 pub fn compile_source_with(gpa: Allocator, source: []const u8, options: Options) !Program {
+    const decoded: source_space.Decoded = try .of(gpa, source);
+    defer decoded.deinit(gpa);
     var parsed = parsed: {
         const profile_zone = profile.begin(.compile_parse);
         defer profile_zone.end();
-        const text = source_space.without_bom(source);
-        break :parsed grammar.parse(gpa, text, .{}) catch |err| switch (err) {
+        break :parsed grammar.parse(gpa, decoded.text, .{}) catch |err| switch (err) {
             // The parser gave up on the story.
             error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
                 if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, "");
@@ -185,8 +186,33 @@ pub fn compile_file_with(
     path: []const u8,
     options: Options,
 ) !Program {
+    const files: source_space.Files = .{ .directory = .{ .io = io, .directory = directory } };
+    return compile_from(gpa, files, path, options);
+}
+
+/// A file for `compile_files_with`: its path and its text.
+pub const MemoryFile = source_space.MemoryFile;
+
+/// Compiles the file `path` of `files` and the files it includes, all in memory: an INCLUDE
+/// names a file by its path in `files`.
+pub fn compile_files_with(
+    gpa: Allocator,
+    files: []const MemoryFile,
+    path: []const u8,
+    options: Options,
+) !Program {
+    assert(files.len > 0);
+    return compile_from(gpa, .{ .memory = files }, path, options);
+}
+
+fn compile_from(
+    gpa: Allocator,
+    files: source_space.Files,
+    path: []const u8,
+    options: Options,
+) !Program {
     assert(std.fs.path.basename(path).len > 0);
-    var space = source_space.load(gpa, io, directory, path, .{}) catch |err| switch (err) {
+    var space = source_space.load_files(gpa, files, path, .{}) catch |err| switch (err) {
         // The parser gave up on a file or on the space.
         error.SourceTooLarge, error.ParseFailed, error.WorkspaceFull => {
             if (options.diagnostics) |sink| messages.deliver_give_up(sink, err, path);
@@ -269,6 +295,35 @@ test "a UTF-8 byte order mark is not text, in a source, a file or an included fi
     try std.testing.expect(std.mem.indexOf(u8, out.written(), bom) == null);
 }
 
+test "ill-formed UTF-8 compiles as U+FFFD, as inklecate reads it, in a source and a file" {
+    // P19.3, found by the swarm's mutate target cutting a ’ in half: the bytes went into the
+    // JSON as they were, and ink_json.load (like any JSON reader) rejected it. inklecate
+    // (ink v1.2.1 on .NET 8, `mise run reference:swarm`) compiles this source to this JSON:
+    // one U+FFFD per maximal subpart (`80`, `99`, `e2 80`, `ff`).
+    const gpa = std.testing.allocator;
+    const source = "Hello \x80\x99m and \xe2\x80 cut \xff.\n-> END\n";
+    const replaced = "\u{fffd}";
+    const expected = "{\"inkVersion\":21,\"root\":[[\"^Hello " ++ replaced ++ replaced ++
+        "m and " ++ replaced ++ " cut " ++ replaced ++ ".\",\"\\n\",\"end\"," ++
+        "[\"done\",{\"#n\":\"g-0\"}],null],\"done\",null],\"listDefs\":{}}";
+    const text = try compile_to_json(gpa, source);
+    defer gpa.free(text);
+    try std.testing.expectEqualStrings(expected, text);
+    var loaded = try ink_json.load(gpa, text);
+    loaded.deinit(gpa);
+
+    const io = std.testing.io;
+    var temporary = std.testing.tmpDir(.{});
+    defer temporary.cleanup();
+    try temporary.dir.writeFile(io, .{ .sub_path = "main.ink", .data = source });
+    var from_file = try compile_file(gpa, io, temporary.dir, "main.ink");
+    defer from_file.deinit(gpa);
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    try ink_json.serialize(gpa, &from_file, &out.writer);
+    try std.testing.expectEqualStrings(expected, out.written());
+}
+
 test "a literal ink can't fold, such as - true, fails to compile instead of leaking an error" {
     // inklecate throws "Unexpected operation or number type" on each; `{ - true: ... }` once
     // returned error.UnsupportedFold from compile_source.
@@ -289,6 +344,26 @@ test "a literal ink can't fold, such as - true, fails to compile instead of leak
     program.deinit(gpa);
 }
 
+test "a string in a thread's arguments inside an unclosed string fails to compile" {
+    // P19.6: the inner string ends and clears ink's parsingStringExpression, which the outer
+    // one asserted was still set (the swarm's mutate target, seed 67029, cut a line in
+    // half). inklecate prints only the first message; inkz also prints two more in the same
+    // rule scope (git issue 2746c05).
+    const gpa = std.testing.allocator;
+    const source = "Hello\n<- t(\"a<- t(\"b\")\n-> DONE\n== t(n) ==\nx\n-> DONE\n";
+    var out: std.Io.Writer.Allocating = .init(gpa);
+    defer out.deinit();
+    var printer: Printer = .{ .out = &out };
+    const sink: messages.Sink = .{ .context = &printer, .function = Printer.print };
+    try std.testing.expectError(error.CompileFailed, compile_source_with(gpa, source, .{
+        .diagnostics = sink,
+    }));
+    const first = "' line 2: Expected close quote for string expression but saw end of line\n";
+    const end = std.mem.indexOfScalar(u8, out.written(), '\n').? + 1;
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "ERROR: '"));
+    try std.testing.expect(std.mem.endsWith(u8, out.written()[0..end], first));
+}
+
 test "compile_source fails on an INCLUDE it can't load instead of dropping it" {
     // ERROR: line 1: Failed to load: 'missing.ink' (inklecate). compile_source reads no
     // files, so every INCLUDE fails; it was once dropped silently, compiling "Hello" alone.
@@ -303,6 +378,54 @@ test "compile_source fails on an INCLUDE it can't load instead of dropping it" {
     // An INCLUDE in a comment is no INCLUDE.
     var program = try compile_source(gpa, "// INCLUDE missing.ink\nHello\n");
     program.deinit(gpa);
+}
+
+test "files in memory compile to inklecate's JSON, and a missing one fails" {
+    // P19.4: a story's knots in two included files, one included through the other, give
+    // inklecate's JSON (checked against ink v1.2.1): ink's PreProcessTopLevelObjects ends
+    // each INCLUDE's content with a newline and puts the included flows after the file's
+    // own. An INCLUDE of a path the files don't have is its "Failed to load" error.
+    const gpa = std.testing.allocator;
+    const files = [_]source_space.MemoryFile{
+        .{ .path = "main.ink", .text = "VAR x = 1\nStart {x}\n-> k0\nINCLUDE a.ink\n" },
+        .{ .path = "a.ink", .text = "INCLUDE b.ink\n=== k1 ===\nIn k1\n-> END\n" },
+        .{ .path = "b.ink", .text = "=== k0 ===\nIn k0\n-> k1\n" },
+    };
+    var program = try compile_files_with(gpa, &files, "main.ink", .{});
+    defer program.deinit(gpa);
+    var json: std.Io.Writer.Allocating = .init(gpa);
+    defer json.deinit();
+    try ink_json.serialize(gpa, &program, &json.writer);
+    const expected = "{\"inkVersion\":21,\"root\":[[\"^Start \",\"ev\",{\"VAR?\":\"x\"}," ++
+        "\"out\",\"/ev\",\"\\n\",{\"->\":\"k0\"},\"\\n\",\"\\n\",[\"done\",{\"#n\":\"g-0\"}]," ++
+        "null],\"done\",{\"k1\":[\"^In k1\",\"\\n\",\"end\",null],\"k0\":[\"^In k0\"," ++
+        "\"\\n\",{\"->\":\"k1\"},null],\"global decl\":[\"ev\",1,{\"VAR=\":\"x\"},\"/ev\"," ++
+        "\"end\",null]}],\"listDefs\":{}}";
+    try std.testing.expectEqualStrings(expected, json.written());
+    try std.testing.expectError(
+        error.CompileFailed,
+        compile_files_with(gpa, files[0..2], "main.ink", .{}),
+    );
+}
+
+test "an INCLUDE without a filename is its parse error, not a crash" {
+    // The empty name was followed as the path "" (an assertion) or the root's directory.
+    const gpa = std.testing.allocator;
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    const files = [_]source_space.MemoryFile{
+        .{ .path = "main.ink", .text = "INCLUDE\n-> DONE\n" },
+        .{ .path = "story/main.ink", .text = "INCLUDE   \n-> DONE\n" },
+    };
+    for (&[_][]const u8{ "main.ink", "story/main.ink" }) |path| {
+        recorded.count = 0;
+        try std.testing.expectError(
+            error.CompileFailed,
+            compile_files_with(gpa, &files, path, .{ .diagnostics = sink }),
+        );
+        try std.testing.expectEqual(@as(u32, 1), recorded.count);
+        try std.testing.expectEqualStrings("include_filename", recorded.codes[0]);
+    }
 }
 
 /// inklecate's JSON for `~ temp x = 1`, `~ x++`, `{x}` at story level: ink resolves a
@@ -572,6 +695,19 @@ const Recorded = struct {
         recorded.count += 1;
     }
 };
+
+test "an error left out of a scope that reported a warning doesn't fail the story" {
+    // As in ink, the choice's warning marks the scope, so the end of line expected after it
+    // is left out; only reported errors fail ink's compilation, so the story compiles
+    // (test/ground_truth/diagnostics/scope_warning_then_error).
+    const gpa = std.testing.allocator;
+    var recorded: Recorded = .{};
+    const sink: messages.Sink = .{ .context = &recorded, .function = Recorded.record };
+    var program = try compile_source_with(gpa, "Hello\n* }\n-> DONE\n", .{ .diagnostics = sink });
+    defer program.deinit(gpa);
+    try std.testing.expectEqual(@as(u32, 1), recorded.count);
+    try std.testing.expectEqual(messages.Severity.warning, recorded.severities[0]);
+}
 
 test "a story with only warnings compiles and still delivers them" {
     const gpa = std.testing.allocator;

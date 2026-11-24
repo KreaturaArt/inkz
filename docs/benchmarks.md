@@ -38,7 +38,7 @@ allocation; they are now carved from the same block. Nothing allocates after tha
 
 - **Flows**: each of the `flows_max` flows owns its call stack (frames, threads, temps),
   output items and `str` marks, and its choices with their tags and thread snapshots, plus a
-  100-byte directory entry; the evaluation stack is one, shared by all flows.
+  96-byte directory entry; the evaluation stack is one, shared by all flows.
 - **Lookahead**: a second copy of the live-flow buffers for the newline lookahead (plan §4.6)
   and of the globals (12 bytes each), visit counts and turn indices (8 bytes per counted
   container), which it copies out 64 slots at a time before their first write, plus its
@@ -53,7 +53,7 @@ allocation; they are now carved from the same block. Nothing allocates after tha
   scratch `load_json` parses a save into with std.json (`load_bytes_max`, 1 MiB; a save
   takes about 8 to 16 times its size there, P17.12).
 
-Flows multiply their own buffers: each flow has a full set (`Limits.flow_bytes`, 164.5 KiB at
+Flows multiply their own buffers: each flow has a full set (`Limits.flow_bytes`, 164.8 KiB at
 the defaults), so switching only points the live stacks at the target flow's set and copies
 nothing (18 ns, against 163 ns when switched-out flows were packed into a 256 KiB parking
 region, P17.14). With the default `flows_max = 8` that is 1.29 MiB, about 0.9 MiB more than
@@ -74,13 +74,13 @@ The numbers are pinned by the test "the sizing example in docs/benchmarks.md" in
 
 | Part | Main story | Side story |
 |---|---:|---:|
-| Flows (four) | 686,480 | 102,288 |
-| Lookahead (copies) | 207,144 | 30,540 |
+| Flows (four) | 687,488 | 102,528 |
+| Lookahead (copies) | 207,400 | 30,604 |
 | Shared | 2,461,824 | 371,760 |
-| **Total per story** | **3,355,448** (3.20 MiB) | **504,588** (493 KiB) |
+| **Total per story** | **3,356,712** (3.20 MiB) | **504,892** (493 KiB) |
 
-The whole game, one main story and four side stories, needs 3,355,448 + 4 × 504,588 =
-5,373,800 bytes (5.12 MiB), fixed at load time. In the main story the 1 MiB string heap and
+The whole game, one main story and four side stories, needs 3,356,712 + 4 × 504,892 =
+5,376,280 bytes (5.13 MiB), fixed at load time. In the main story the 1 MiB string heap and
 the 1 MiB load scratch are about a third of the total each.
 
 ### Fitted limits (P10.2)

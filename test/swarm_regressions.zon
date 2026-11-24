@@ -1,0 +1,13 @@
+// Seeds that once failed in `zig build swarm`, replayed on the story each failed on
+// (test/swarm_regressions/<target>-<seed>.ink) by the swarm runner's test "the swarm
+// regressions replay on their stories without a failure". A failure prints its entry;
+// `bug` says what it found and the commit that fixed it (docs/fuzzing.md).
+.{
+    .{ .target = .host, .seed = 4051, .mix = 0x60901, .bug = "92781ce: a limit error in the newline lookahead left the failed call's divert pending, and choose_path_string asserted" },
+    .{ .target = .host, .seed = 3672, .mix = 0x131200060300, .bug = "cac1887: evaluate_function of a knot with more parameters than arguments popped values a story error left below its frame, and completing the evaluation asserted" },
+    .{ .target = .host, .seed = 69, .mix = 0x60c01, .bug = "6395d85: evaluate_function nested in an external popped the external's arguments for a knot with more parameters than arguments, and the step after asserted" },
+    .{ .target = .mutate, .seed = 143492, .bug = "d986143: ill-formed UTF-8 went into the compiled JSON as it was, which ink_json.load rejected" },
+    .{ .target = .mutate, .seed = 67029, .bug = "38e57e6: a string in a thread's arguments inside an unclosed string cleared the in-string flag the outer string asserted" },
+    .{ .target = .save, .seed = 106, .bug = "7fc407d: a loaded save gave the current flow the last record, so it saved its flows in another order" },
+    .{ .target = .save, .seed = 19879, .bug = "826f605: a loaded save saved its choices' places among the visible ones instead of ink's indices" },
+}

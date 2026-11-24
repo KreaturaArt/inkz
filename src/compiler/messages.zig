@@ -36,6 +36,7 @@ pub const Diagnostic = struct {
     /// From 1, in the comment-free text (as ink's CommentEliminator leaves lines).
     line: u32,
     column: u32,
+    /// Empty only for an empty `TODO:` note.
     message: []const u8,
 };
 
@@ -166,14 +167,15 @@ pub fn collect_parse(collector: *Collector, locator: *const Locator) !void {
     try collect_author_notes(collector, locator);
 }
 
-/// `TODO:` notes, which ink reports as author messages.
+/// `TODO:` notes, which ink reports as author messages: the rest of the line after the
+/// colon's whitespace, trailing spaces kept and possibly empty, as ink's AuthorWarning.
 fn collect_author_notes(collector: *Collector, locator: *const Locator) !void {
     const parsed = locator.parsed;
     const tree = &parsed.tree;
     for (tree.tags, 0..) |tag, at| {
         if (tag != .author_warning) continue;
         const node: ast_module.NodeIndex = .from_int(@intCast(at));
-        const text = std.mem.trim(u8, parsed.leaf_text(node), " \t");
+        const text = parsed.leaf_text(node);
         const token = tree.data[node.to_int()];
         const where = try locator.position_of(parsed.workspace.token_starts[token]);
         try collector.add(.{

@@ -631,6 +631,9 @@ measured it: a story that later needs more gets a named limit error, so keep the
 - `compile_file(gpa, io, directory, path)` compiles `path` in `directory` and the files it
   includes; `compile_file_with(gpa, io, directory, path, .{ .count_all_visits = true })`
   sets ink's `countAllVisits`.
+- `compile_files_with(gpa, files, path, options)` compiles `path` and its includes from
+  files in memory, a slice of `inkz.compiler.MemoryFile` (`.{ .path, .text }`); an
+  `INCLUDE` names a file by its `path` there.
 - `compile_to_json(gpa, source)` returns the story as inklecate's `.ink.json`.
 
 A leading UTF-8 byte order mark is ignored, in a source and in every file. A story with
@@ -700,6 +703,17 @@ defer program.deinit(gpa);
 var story: inkz.Story = undefined;
 try story.init(gpa, &program, .{});
 defer story.deinit(gpa);
+```
+
+Files held in memory compile the same way, without a directory:
+
+```zig
+const files = [_]inkz.compiler.MemoryFile{
+    .{ .path = "main.ink", .text = "Hello.\n-> chapter\nINCLUDE chapter.ink\n" },
+    .{ .path = "chapter.ink", .text = "=== chapter ===\nThe end.\n-> END\n" },
+};
+var included = try inkz.compiler.compile_files_with(gpa, &files, "main.ink", .{});
+defer included.deinit(gpa);
 ```
 
 Precompiled JSON loads faster than source compiles, so ship `.ink.json` and compile source

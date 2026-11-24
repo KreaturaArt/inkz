@@ -1,0 +1,8 @@
+choose_path of_integer
+play
+reset
+choose_path of_float
+play
+reset
+choose_path of_string
+play

@@ -195,7 +195,7 @@ Use the pinned toolchain through mise: `mise exec -- zig build <step>`.
 | `zig build simulate` | Plays every ground-truth case with seeded random choices, saves, loads and flow switches. |
 | `zig build transcripts` | Regenerates `test/transcripts/`. |
 | `zig build replay -- <case id>` | Replays one case and prints its transcript (`--json <path> --actions <text>` for any story). |
-| `zig build swarm`, `swarm-gen`, `swarm-check`, `swarm-reduce` | Seeded and differential swarm runs (see `docs/fuzzing.md`). |
+| `zig build swarm`, `swarm-gen`, `swarm-check`, `swarm-reduce`, `swarm-coverage` | Seeded and differential swarm runs, and the swarm's code coverage (see `docs/fuzzing.md`). |
 
 `simulate`, `transcripts`, `replay` and the swarm steps are commands of one dev tool,
 `src/dev.zig`: `zig build <command> -- <arguments>` runs `dev <command> <arguments>`.

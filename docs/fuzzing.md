@@ -50,6 +50,25 @@ before it. Random bytes would mostly stop at the first check.
   with more parameters than arguments fails closed"). `--target all --seconds 60` from seed
   1 then ran 25,821 play, 16,036 save and 27,776 host seeds without a failure (play: 2,812
   compile failures, 4,861 runtime errors, 458,046 lines, 325,496 choices).
+- **Larger stories, flows and files (P19.4).** One drawn subset in 16 is *large*: up to
+  32 lines a flow, 8 terms an expression and 6 levels of weave, and its weaves and
+  expressions go on longer (a flow otherwise ends after 4 lines on average), so its stories
+  have 2.6 times the bytes (2,690 against 1,033 on average over 2,000 draws; the longest
+  7,399). `Swarm.classic` doesn't change. The swarm runner's plans (not `Swarm` features,
+  so the triage doesn't see them) add the rest: each play gets a step cap of 64 or, half
+  the time, 4 to 256 calls; a quarter of the plays switch to the flows `one` and `two`, back
+  to the default flow, or remove one, before 1 call in 8 (a new flow starts at the top of the
+  story); and a quarter of the stories of the compile, play and save targets are also
+  compiled from 2 or 3 files in memory (`compile.compile_files_with`): the root in
+  `main.ink`, ended by `-\n-> DONE` before its INCLUDEs, the knots in `part1.ink` and, from
+  a drawn later knot, `part2.ink`, included from `main.ink` or from `part1.ink`. They must
+  compile, or fail with the same first error, as the one source they join to, and play the
+  same. The root ends with a divert because ink ends each INCLUDE's content with a newline
+  (`PreProcessTopLevelObjects`) that joins the weave where the INCLUDE stands: after a
+  choice it goes into the choice's body and drops its divert to the gather (inklecate
+  does the same; inkz matches it), and at the top it moves the paths that runtime errors
+  name. 1 in 8 of the splits also includes a missing file or main.ink again, and must fail
+  with `include_not_found` or `include_cycle`.
 - **Loader targets.** These start from a valid file (a program image, a story's JSON or a
   save) and let the fuzzer edit its words or tokens.
 
@@ -66,8 +85,11 @@ generating targets share this through `fuzz_ink.run_target(check, passed_min)`.
 
 `--fuzz=N` starts the coverage-guided fuzzer. It stops after about N inputs and prints the
 runs, the unique runs and the coverage. Its corpus is kept in `.zig-cache/f`, so the counts
-add up across runs. When an input crashes, it is saved to `.zig-cache/f/crash`. To replay
-it, call the target's check function in a test with `Smith{ .in = @embedFile("crash.bin") }`.
+add up across runs. When an input crashes or fails a check, it is saved to
+`.zig-cache/f/crash` and the fuzzing stops with `error: test '...' exited with code 1;
+input saved to '.zig-cache/f/crash'`, but **`zig build` still exits 0** (Zig 0.17.1), so a
+script must look for that line or the file. To replay the input, call the target's check
+function in a test with `Smith{ .in = @embedFile("crash.bin") }`.
 
 **Build with `-Doptimize=ReleaseSafe`.** It keeps every assert and is about 20 times faster
 than Debug. The compiler and runtime targets need that speed: a 100K run takes one to two
@@ -75,6 +97,56 @@ minutes.
 
 The coverage figures below count the whole test binary, compiler and runtime included. They
 compare runs of one target, not targets with each other.
+
+### In CI
+
+`.github/workflows/fuzz.yml` fuzzes each target of the table below for a fixed time, every
+night, on pull requests that change the workflow and on demand (`workflow_dispatch`, with optional `minutes`
+and `seed`). Each target is a job of its own on ubuntu-latest, so the targets run side by
+side and a crash names its target. The step runs
+
+```sh
+zig build fuzz -Doptimize=ReleaseSafe --fuzz=100M --seed=<seed> -Dtest-filter="<filter>"
+```
+
+under `timeout --signal=INT 8m` (build included); `timeout` ending the run is the budget
+spent, not a failure. The seed is the run id modulo 2³² or the dispatch's `seed` input, and
+one seed gives the same inputs, so the printed command replays a CI run locally (up to where
+it got). The job fails when the log has an `error:` line, because the build's exit code
+doesn't say (or when the run ended by itself and left `.zig-cache/f/crash`: stopping the
+fuzzer leaves the input in flight in that file, so after `timeout` the file alone means
+nothing; all 15 targets failed on it once), and then uploads `crash.bin`, the fuzzer's
+`libfuzzer.log`, the step's log and the target and seed as the artifact
+`fuzz-crash-<target>-<run id>` (kept 30 days). The corpus isn't kept between runs: its
+directory is named by a hash of the binary's coverage points, which changes with the code.
+
+A fixed time replaced fixed input counts after the first PR runs: from an empty corpus the
+time for N inputs depends much on the seed and the runner (the parser's 100K took 52 s to
+2 min locally and over 12 minutes once on CI; sema's 50K and lower's 20K took 5 and 9
+minutes in one run and over 10 in the next), and no input was slow: no input of a 300K
+parser run on Linux took 50 ms. Local times for reference (M-series Mac, ReleaseSafe, build
+included):
+
+| Target | Filter | Local, inputs |
+|---|---|---:|
+| Comment removal | `comment removal` | 15 s, 200K |
+| INCLUDE discovery | `INCLUDE discovery` | 58 s, 200K |
+| Parser | `well-formed tree` | 17–33 s, 50K |
+| Sema and resolve | `consistent tree` | 38 s, 50K |
+| Lower and emit | `survive their JSON` | 98 s, 20K |
+| Compiler (raw) | `compiler never crashes` | 49 s, 200K |
+| JSON loader | `mutated ink JSON` | 48 s, 100K |
+| JSON loader (raw) | `JSON loader never crashes` | 18 s, 200K |
+| Program image | `mutated program image` | 25 s, 200K |
+| Program image (raw) | `image loader never crashes` | 22 s, 200K |
+| VM | `keeps the state consistent` | 76 s, 25K |
+| Save and load | `loaded save plays` | 74 s, 15K |
+| Save loader (raw) | `save loader never crashes` | 49 s, 100K |
+| Host API | `host calls` | 46 s, 40K |
+| Limits | `limits drawn` | 47 s, 30K |
+
+The raw image and comment targets saturate early (26 and 125 coverage points). The first timing run, at 20K each, found a bug in the save target within
+10,382 inputs (see "What the targets found").
 
 ## Targets
 
@@ -134,9 +206,9 @@ Shared pieces:
 
 ## Long seeded runs and triage
 
-`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|host|all> --seed S --seeds N`
-(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play`, `save` and
-`host`, with 4, 3 and 3 tenths of the time. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
+`zig build swarm -Doptimize=ReleaseSafe -- --target <compile|play|save|host|mutate|all> --seed S --seeds N`
+(or `--seconds T` instead of `--seeds`: as many seeds as fit; `all` is `play`, `save`,
+`host` and `mutate`, with 4, 3, 3 and 2 twelfths of the time. CI runs `--target all --seconds 300` after `zig build ci` passes, and the
 hk pre-push hook in `hk.pkl` runs `--seconds 10`; `hk install` once per clone)
 (`src/testing/swarm_runner.zig`) runs seeded swarm cases out of the fuzzer: each seed draws a
 configuration and a generated story, and the target checks it. Every target checks the
@@ -152,7 +224,7 @@ limits drawn as the limits target draws them, or with the heap compacting at eve
 reservation (or not at all, 1 in 6): every call of the second play must show what the
 first one's did (lines, choice counts and errors, hashed per call), or a limit stops it
 after the same calls. `save` plays to a drawn call (or the first after it with no fallback
-choice pending), saves, loads the save into a fresh story, checks that it saves the same,
+choice pending in any flow, else to the step cap with no save), saves, loads the save into a fresh story, checks that it saves the same,
 and plays both on with the same choices: the same calls, and the same save at the end.
 `host` (P18.5) acts as a host on stories with `hub` and `typed` on (and without `drop` and
 `collision`, so they compile): it puts an observer on every global and runs the simulator's
@@ -162,7 +234,20 @@ then a session of up to 48 host calls drawn as the host fuzz target draws them
 (`fuzz/host.zig`: also `remove_flow`, tags, `get_variable`, visit counts, `reset_state`,
 save and load); the state checks after every call, and a save loaded must save the same. It
 leaves out the program checks, which play and save make, and binds `e0` unless its fallback
-is allowed. Every failure prints its configuration and the command that reproduces it; a
+is allowed. `mutate` (P19.3, `src/testing/swarm_mutate.zig`) takes the ground-truth stories
+instead of generated ones: their sources (`cases.ids`, found by `cases.source_path`; the two
+with an INCLUDE left out) are read from disk once per run, from the repository root, and each
+seed picks one and applies one to four seeded mutations: a line, a knot or stitch, or a
+choice deleted, duplicated or swapped; `*` and `+` toggled; a number, a boolean, a divert
+target or any word changed (to another word of the story, END, DONE or a name it doesn't
+have); a piece of ink syntax put in; up to 32 bytes cut; or the rest cut off. A mutant that
+doesn't compile counts its first error's code (the summary's codes line lists all of them); one
+that compiles gets the program checks, then plays as `play` does on even seeds and as `save`
+does on odd ones. Every declared external is bound when the plan binds `e0`. A mutant is at
+most `source_bytes_max` long (a mutation that wouldn't fit is left out), the parser's gas and
+the plays' step budget bound the rest. Every failure prints its configuration and the command
+that reproduces it (a mutate failure names the story and the mutations; reproduced with
+`--seeds 1`, it also prints the mutant's source); a
 host failure's command also has `--mix <hex>` (`Mix.encode`), which replaces the drawn mix,
 so a mix with an action's weight set to 0 shows whether the action matters. The run
 ends with the **triage** (`src/testing/swarm_triage.zig`, after the swarm paper's §5): the
@@ -170,17 +255,67 @@ features on in every failing run are *triggers*, and those off in every failing 
 used by passing ones are *suppressors*. `--target save --seeds 2000` takes 39 s and finds
 nothing.
 
+### Regression seeds (P19.6)
+
+A seed that once failed stays in `test/swarm_regressions.zon`, and `zig build ci` (through
+`zig build test`) replays every entry: the swarm runner's test "the swarm regressions replay
+on their stories without a failure" (`swarm_runner.replay`) runs the entry's target on its
+story, `test/swarm_regressions/<target>-<seed>.ink`, with the plans, split, host plan and
+mix the seed draws, and requires no failure. The story is kept rather than regenerated, so
+a change to the generator or to the mutate corpus doesn't turn an entry into another case;
+a change to how a seed draws its plans (`Plan.draw`, `Split.draw`, `HostPlan.draw`, the
+simulator) still can, and the mix is kept for the host targets as `--mix` takes it. An
+entry is `.{ .target = .host, .seed = 4051, .mix = 0x60901, .bug = "<commit>: <what it
+found>" }`; `bug` must not be empty.
+
+Every failure prints its entry (`regression: add .{ ... } to test/swarm_regressions.zon,
+and the story the reproducing run writes to zig-out/swarm/regressions as
+test/swarm_regressions/<target>-<seed>.ink`). The reproducing run (`--seeds 1`) writes the
+story to `zig-out/swarm/regressions/` and prints the entry before it checks the seed, so a
+seed that panics keeps them too. To add one: run the printed reproduce command, copy the
+story to `test/swarm_regressions/`, add the entry with what it found, fix the bug, and check
+that the entry fails with the fix reverted.
+
+The list started with the swarm-found bugs of Phases 18 and 19. Each was found again by
+reverting its fix on main (966566e) in a worktree and running the target in ReleaseSafe
+from seed 1 for 60 s (3672 and 143492: on from the first panic for 150 s more, a run started
+again after each panic), and each entry's replay fails with the fix reverted (Debug, the
+test above with that entry alone):
+
+| Entry | Fix | With the fix reverted |
+|---|---|---|
+| `host` 4051 | 92781ce, a limit error in the newline lookahead left a divert pending | `visit_changed_containers_due_to_divert` asserts in `choose_path_string` |
+| `host` 3672 | cac1887, `evaluate_function` with more parameters than arguments | `complete_function_evaluation` asserts (reverted with 6395d85, whose `evaluation_floor` replaced it; passes with 6395d85 alone reverted) |
+| `host` 69 | 6395d85, a nested `evaluate_function` popped below its frame | the evaluation stack asserts a step later |
+| `mutate` 143492 | d986143, ill-formed UTF-8 went into the JSON as it was | `load of its JSON` |
+| `mutate` 67029 | 38e57e6, a string in a thread's arguments inside an unclosed string | `expression_string` asserts (found by this search, a bug on main) |
+| `save` 106 | 7fc407d, a loaded save put the current flow's record last | `save round trip` |
+| `save` 19879 | 826f605, a loaded save saved visible places for choice indices | `save round trip` (seed 2977 of P19.9's notes no longer fails: the generator changed since) |
+
+The long-string save (771ed57) was found by the save fuzz target and didn't fail in 60 s of
+`--target save` with its fix reverted, so it has no entry; its unit test in `api_test.zig`
+covers it. The replay takes about 0.3 s in Debug for the seven entries.
+
 Each target's summary line also says what the runs reached, counted without allocating:
 compile failures by the first error's diagnostic code (the most frequent four), played
 stories that hit a runtime error, lines played, choices made, played stories still going
-after the 64 calls a play gets (`step cap`), and those that ended without an error before
-it (`ended`); since P18.3 also the stories stopped at their first line because `e0` had no
+after the calls a play gets (`step cap`), and those that ended without an error before
+it (`ended`); since P19.4 also the large configurations' runs (`large`), the stories also
+compiled from files, their files and the broken ones (`included ... from ... files, ...
+broken`), the plays that made more than 64 calls (`long plays`), and the flow switches and
+removals (`flow changes`); since P18.3 also the stories stopped at their first line because `e0` had no
 binding (`unbound externals`; a run with `e0` bound fails then), the second plays under
 other limits (`limited runs`) and those a limit stopped (`limit errors`; for `save`, saves
 too large for the loader's scratch), and the saves loaded mid-play and played on (`resumed
-saves`); the host target's line also has the actions its mixes took, the host calls made
-after them, the changes the observers saw, and the actions and calls that returned an error
-(by name, the most frequent four). `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
+saves`); the host target's line also has the actions its mixes took, how the mixes ended
+(`mixes`: `ended`, `stopped` by an error that failed `cont`, at the simulator's 300 lines in
+a turn without a choice, `line_cap`, or at its 50 turns, `turn_cap`; since P19.7, and
+counted under `ended` and `step cap` too), the host calls made after them, the changes the
+observers saw (each compared with the global read back with `get_variable`, a difference
+failing the seed, since P19.7), and the actions and calls that returned an error (by name,
+the most frequent four). `--target host --seconds 3` from seed 1 after P19.7: 4,421 seeds,
+mixes ended 2,027, stopped 0, line_cap 1,372, turn_cap 985 (a hub story that loops through
+its knots without a choice is the line cap's), 180,441 observed changes, none differing. `--target all --seconds 9` from seed 1 (ReleaseSafe, Apple M-series), before
 and after P18.1 made dropping names a swarm feature, after P18.2 added `hub` and
 `typed`, after P18.3 bound `e0`, varied the limits and resumed saves, and after P18.4
 folded the compile checks into play and save (and `all` dropped `compile`, so play and save
@@ -224,6 +359,33 @@ lookahead leaves no divert pending").
 
 `-Dfuzz-swarm=off` makes every generated story use the full mix (`Swarm.all`) instead of a
 drawn configuration, to measure swarm against it.
+
+### Reducing a failure (P19.7)
+
+`zig build swarm -Doptimize=ReleaseSafe -- --target <t> --seed S [--mix M] --reduce <story|seed> [--seconds T]`
+(`src/testing/swarm_reduce.zig`) shrinks a failing seed of any target to a smaller story that
+fails with the same reason, for at most `T` seconds (60 by default; 100,000 checks at most),
+and writes it to `zig-out/swarm/regressions/<target>-<seed>.reduced.ink` with the entry that
+replays it. `--reduce seed` starts from the seed's case: a generated one is first reduced by
+features with `swarm-reduce`'s reducer (`reduce.features`, `src/testing/reduce.zig`: each
+swarm feature dropped in turn and the case generated again from the seed, kept when it still
+fails the same); the story, given (such as the one a `--seeds 1` run writes) or reduced so,
+is then reduced by lines (`reduce.lines`: chunks of half the lines first, halved after each
+pass, then single lines until a pass drops none). Each check replays the seed on a candidate
+in a child process, `dev swarm --target <t> --seed S [--mix M] --story <file>` (which prints
+`replay: failure (<reason>)` or `replay: pass`, and is useful alone), so a crash is a reason
+too: its panic message, the function of its first frame and its first frame outside the
+standard library (`reached unreachable code in step (dev), at src/compiler/core.zig:303:90
+in run (dev)`). In ReleaseSafe an assert is inlined into its caller, so two asserts in one
+function give the same reason: a reduced crash may be another of that function's. The
+synthetic target's failure depends on its configuration only, so it reduces from its seed,
+in process; the tests reduce the synthetic targets (a seed's case by features to no story
+line, a host story of over 40 lines to at most 5).
+
+Measured with fixes reverted in a worktree (ReleaseSafe): `mutate` 67029 (38e57e6's crash)
+went from 35 lines to 1, `<- thread1("blue<- thread2("blue")`, in 15 checks (0.2 s); `save`
+106 (7fc407d's `save round trip`) from its 105-line story to 11 lines in 133 checks (0.3 s),
+and with `--reduce seed` from 34 features to 5 and to 3 lines in 55 checks (0.15 s).
 
 ### Swarm against the full mix (2026-11-20)
 
@@ -281,13 +443,26 @@ zig build swarm-check -Doptimize=ReleaseSafe -- zig-out/swarm/1
    Each replay runs in its own process (`dev replay --json`), so a crash is a result. Every
    divergence is printed with its configuration, and the step fails.
 4. `zig build swarm-reduce -- <dir> <n> --harness reference/ink_harness_build/ink_harness.dll`
-   reduces a divergent case by features. It regenerates the case from its seed with one
+   reduces a divergent case by features (`reduce.features` in `src/testing/reduce.zig`,
+   which `swarm --reduce` shares). It regenerates the case from its seed with one
    swarm feature removed at a time (a set key, or a bound lowered to its least value), runs
    ink on the candidate, and keeps the removal when the same kind of divergence stays. That
    is one ink run per feature, so a configuration of 60 features takes 61 runs.
 5. A reduced divergence is either fixed, with a ground-truth case under
    `test/ground_truth/swarm/` (`mise run reference:expected -- swarm/<name>`), or, when
    inkz differs on purpose, one of the skips below.
+
+### Nightly run
+
+`.github/workflows/differential.yml` runs these three steps every night (and on demand,
+`workflow_dispatch`, with an optional seed and count) on ubuntu-latest: it installs Zig
+(`EuroZig/setup-zig`) and .NET 8, builds the harness (`reference.sh setup`), generates 1,000
+cases with the run id as seed, and prints the `swarm-gen` command that writes them again. A
+divergence fails the job; `tools/ink_harness/collect_divergences.sh` then copies each
+divergent case's files, `check.log` and the harness's `batch.log` to the artifact
+`divergences-<seed>`, with a `swarm-reduce` of the first three (10 minutes each at most).
+200 cases took about a minute locally (ink's 5 s timeouts most of it), so 1,000 take about
+5 minutes; the job's limit of 45 minutes leaves room for the reductions.
 
 `swarm-check` doesn't count two kinds of difference as divergences, but only when the
 transcripts match up to the line where they start:
@@ -343,6 +518,201 @@ that the divergence goes, as it did for the 46 extra globals there.
 | An operation a type lacks, such as `?` on numbers, gave inkz's own message. | ink's "Cannot perform operation '?' on Float", with the type ink coerces the operands to. | `swarm/operation_not_for_type`, `swarm/operation_not_for_int` |
 | inkz compiled `not v ? 1`, which ink rejects: "Using 'not' or '!' here negates 'v' rather than the result of the '?' or 'has' operator" (11 stories). | The check from `BinaryExpression.ResolveReferences`, code `negated_has_operand`. | unit test in `src/compiler/termination_tests.zig` |
 | After two threads in a row that print nothing, ink saves the first thread's divert as `previousContentObject`, inkz the second's (2 stories). ink's live pointer is the second divert, but `Object.path` finds an object's index with `content.IndexOf`, which uses `Equals`, and two diverts with the same target are equal. | A save writes the index of the first equal divert in the container (P16.21; found by tracing ink's `Step` through reflection). | `swarm/thread_previous_pointer` |
+| A divert to a target in a variable counted the knot around the target, and a divert to the knot it was in didn't count that knot again (nightly run 45282696297, case 00408). ink diverts to `PointerAtPath(target.targetPath)`, which points at the container itself (index -1): `VisitChangedContainersDueToDivert` skips it, and the next `Step` counts only that container. A tunnel's return override and a loaded `currentDivertTarget` go the same way. | The diverted pointer has the index `Pointer.container_self`, and `vm.next_content` counts only that container. | `swarm/divert_variable_counts` |
+| An empty list made from a copy, such as `(a, c) - (a, c)`, saved its origin once, ink twice (PR run 45287272184, case 00881). ink's `originNames` names one origin per item, repeats kept; the copy constructor, `ListWithSubRange` and `RetainListOriginsForAssignment` keep that list, and the save writes it. | A list copy keeps one origin per item; LIST_ALL and LIST_INVERT walk each origin once. | `swarm/list_origin_repeats`, unit test in `src/runtime/lists.zig` |
+
+## Coverage of the swarm
+
+```sh
+zig build swarm-coverage                    # --target all --seconds 60, then the report
+zig build swarm-coverage -- --seconds 10    # later swarm arguments override
+```
+
+The step builds `dev` in ReleaseSafe with Zig's fuzz instrumentation (`-ffuzz`), which gives
+every basic block a hit counter and records its address. After the run,
+`src/testing/coverage.zig` resolves each block to its source line with the program's own
+debug info (`std.debug.SelfInfo`), so it needs no kcov or llvm-cov and runs on macOS as on
+Linux. It writes `zig-out/coverage/swarm.txt`: blocks and lines hit per module and per file,
+then every run of lines none of whose blocks ran, as `file:first-last blocks`. A "line" is
+a line on which some block starts; a line counts as hit when one of its blocks ran. Block
+percentages are low because every safety check (overflow, bounds, `try`'s error edge) is a
+block of its own that never runs, so read the line column. The coverage build also
+references every public non-generic function of the library, so functions the swarm never
+calls are compiled and listed instead of missing. Debug gives the same blocks but runs a
+tenth of the seeds.
+
+### Results (2026-11-23)
+
+`zig build swarm-coverage` (60 s from seed 1: 10,437 play, 5,929 save and 11,920 host runs):
+
+| Module | Lines | Hit | Lines % | Blocks % |
+|---|---|---|---|---|
+| src/compiler | 2,520 | 1,748 | 69.4 | 61.0 |
+| src/runtime | 1,853 | 1,518 | 81.9 | 58.2 |
+| src/core | 858 | 641 | 74.7 | 59.5 |
+
+The swarm saturates in seconds: a 5-s run reaches 68.9, 80.6 and 74.8 %. More time adds
+almost nothing; only new features do. The counts vary by a few lines between runs, as the
+deadline decides the last seed.
+
+Unreached **by design** (most of the listed ranges, nothing to do):
+
+- **Error edges of `try`**: one-line ranges of one to three blocks, all over (allocation
+  failure, a full writer). `src/core/allocation_failures.zig` and the zero-allocation gate
+  test them, not the swarm.
+- **Rejection of malformed input**: `src/core/ink_json.zig` (`expect`, `InvalidInkJson`),
+  `src/core/program_image.zig:251,361-365,404-423` (truncated or inconsistent images),
+  `src/runtime/load.zig` (`as`/`member` errors, `SaveDoesNotMatchStory` at 566),
+  `src/core/string_pool.zig:113`. The swarm only feeds them what inkz wrote; the `json`,
+  `image` and `save` fuzz targets mutate their input.
+- **Invariant checks that fail only on a bug**: the `check`/`verify` failure returns in
+  `bounded_stack.zig:89`, `call_stack.zig:349-365`, `program.zig:318-457`,
+  `output.zig:402-413`, `lookahead.zig:211-219`, `text_cache.zig:120`, `choices.zig:235`,
+  `limits.zig:304-315`.
+- **Capacity limits**: `state.zig:421` (diagnostic list full), `evaluate.zig:227` (output
+  stashes), `compiler/core.zig:290-359` (parser gas, frame stack, diagnostics).
+- **Test and tool code**: `state.zig:511-615` (`State.hash`, for the fuzz targets),
+  `core/counting_allocator.zig` (benchmarks), `program_builder.zig:749` (a debug log).
+
+### Mutants of the ground-truth stories (P19.3, 2026-11-23)
+
+`zig build swarm-coverage -- --seconds 20` from seed 1, before and after `all` got `mutate`
+(2 of its 12 shares), and `--target mutate --seconds 20` alone, lines hit:
+
+| Module | `all` before | `all` after | `mutate` alone |
+|---|---|---|---|
+| src/compiler | 1,750 (69.4 %) | 1,892 (75.1 %) | 1,903 (75.5 %) |
+| src/runtime | 1,507 (81.3 %) | 1,536 (82.9 %) | 1,360 (73.4 %) |
+| src/core | 643 (74.9 %) | 642 (74.8 %) | 636 (74.1 %) |
+
+By file (blocks), `all` before and after: `grammar_statements.zig` 62.0 to 79.6 %,
+`grammar_content.zig` 67.9 to 80.8 %, `messages.zig` 36.2 to 45.4 %, `lower_termination.zig`
+69.1 to 80.9 %, `resolve_lookups.zig` 65.8 to 73.9 %. The error recovery the generator
+never reached (`grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462`,
+`resolve_lookups.zig:93-103`, most of `lower_termination.zig:183-193`) runs now. Mutate's
+share costs the other targets a sixth of their seeds and adds 5.7 points of compiler lines;
+it saturates as fast as they do (3.3 s of a 20-s `all` reach 75.1 %, 20 s alone 75.5 %), so 2
+shares are enough, and its runtime lines (the ground-truth stories play constructs the
+generator doesn't write) add 1.6 points. In 20 s alone it ran 33,665 mutants: 20,189
+compiled (60 %), 58,627 lines and 10,885 choices played, 18,119 plays ended and 226 reached
+the step cap; the failures fell under 67 codes (`target_not_found` 3,480, `duplicate_flow`
+1,370, `end_of_line` 1,322, `inner_logic` 994, ...). Its first runs found two bugs: the
+mutator itself unwrapped a missing word in a story with only diverts, and the compiler took
+ill-formed UTF-8 (a `’` cut in half) into its JSON as it was, which `ink_json.load` rejected;
+it now replaces each maximal subpart with U+FFFD, as .NET's `File.ReadAllText` does for
+inklecate (`compile.zig`, "ill-formed UTF-8 compiles as U+FFFD"). 200,000 seeds from seed
+1,000,000 and 120 s from seed 5,000,000 (262,184 mutants) found nothing more.
+
+Still unreached in `messages.zig`: the scope list (`scope_text`, 409-423) and the expression
+printer (421-489, 549-613), and the texts of codes only a semantic error in an otherwise
+valid story reaches (an increment of an unknown variable, a divert-target or `ref`
+argument that isn't one, `not` before `?` or `has`, 746-1113). A mutation rarely makes
+exactly those; a targeted generator feature would.
+
+### Flows, INCLUDE, larger stories and step caps (P19.4, 2026-11-23)
+
+`zig build swarm-coverage -- --target all --seconds 20` from seed 1, before and after
+P19.4, lines hit:
+
+| Module | before | after |
+|---|---|---|
+| src/compiler | 1,900 / 2,528 (75.2 %) | 2,004 / 2,534 (79.1 %) |
+| src/runtime | 1,535 / 1,853 (82.8 %) | 1,539 / 1,863 (82.6 %) |
+| src/core | 639 / 858 (74.5 %) | 642 / 858 (74.8 %) |
+
+By file (blocks): `source_space.zig` 9.0 to 66.0 %, `sema_includes.zig` 0 to 73.1 %,
+`compile.zig` 37.5 to 50.0 %, `messages.zig` 44.8 to 47.9 % (the INCLUDE problems),
+`flows.zig` 76.9 to 80.0 %. Of the INCLUDE code only `try` error edges, a root in a
+subdirectory (the path join, `source_space.zig:292-294`) and the depth and file-count
+limits (304, 307) stay unreached; the `source_space.zig` tests cover them. The runtime
+gains little: the host target switched and removed flows already. The seeds do more, so
+fewer fit: 1,869 play, 1,377 save, 2,775 host and 5,602 mutate runs in the 20 s, against
+2,675, 1,896, 3,115 and 5,567 before; 5,000 seeds take 7.5 s instead of 5.7 s for `play`
+and 8.5 s instead of 6.5 s for `save` (ReleaseSafe; the step caps are 1.5 times as long on average, and a
+quarter of the stories compile and play twice more). `--target all --seconds 60` from seed
+1 then ran 13,982 play, 9,471 save, 19,028 host and 20,598 mutate seeds without a failure
+(play: 753 large, 3,441 included from 8,602 files of which 414 broken, 2,198 long plays,
+18,928 flow changes).
+
+The flow changes found two bugs, both in the order of the flows in a save. A loaded save
+gave the current flow the last record, so a save with `one` (current) and `two` saved back
+as `two`, `one`; it now takes the records in the save's order first, as ink's dictionary
+does (`save_load_test.zig`, "a loaded save keeps its flows in the save's order"). And a new
+flow took the first free record, where .NET's Dictionary takes the one freed last (checked
+with .NET 8); it now does the same (`flows.zig`, "a new flow takes the record freed last").
+Two differences are ink's own and the save target allows them: after a flow is removed and
+another made, a story and its loaded save list their flows in other orders (the loaded
+dictionary has no holes), so the end saves compare but for flow order. A parked flow that
+kept a fallback choice to the step cap had no save at first, as the loaded save saved other
+choice indices: inkz recomputed them where ink keeps the saved ones, and it numbered a
+fallback choice among the visible ones where ink leaves it 0. Both are fixed and the save is
+made again (P19.9, ground-truth case `save_choice_indices`). Compiling from files found no difference to inklecate: the choice body's
+newline above is inklecate's JSON too.
+
+Real **gaps**, each assigned to a Phase 19 issue (P19.8 is git issue ba7dd2c):
+
+| Area | Where | Follow-up |
+|---|---|---|
+| INCLUDE and `compile_file` | `compiler/source_space.zig:61-328`, `compiler/sema_includes.zig:19-108`, `compiler/compile.zig:176-226`, `grammar_statements.zig:376-381` | P19.4: done but a root in a subdirectory and the depth and file limits (below) |
+| Most diagnostics: the generator only makes `drop` and `collision` errors | `compiler/messages.zig:190-267,409-613,746-1113` (texts of other codes, scopes, expressions), `grammar_statements.zig:219-234,515-517`, `grammar_content.zig:458-462,493-501` (error recovery), `lower_termination.zig:183-193`, `resolve_lookups.zig:93-103` | P19.3 (mutants): all but the scopes, the expression printer and the semantic-error texts (above) |
+| `TURNS_SINCE`/`READ_COUNT` of `-> target`, divert targets in expressions | `runtime/vm.zig:500,516-529`, `resolve_passes.zig:290-323` | P19.8: done (below) |
+| List `^`, `LIST_RANGE` with list bounds, a bare list item as a value | `runtime/lists.zig:223-230,357-362`, `runtime/ops.zig:520-523` | P19.8: done (below) |
+| Comments, non-ASCII identifiers and text, `TODO:`, explicit list item values | `compiler/lexical.zig:16-22,60-69`, `grammar_statements.zig:360-365,465-471` | P19.8: done (below) |
+| Floats printed in scientific notation | `runtime/value.zig:160-166` | P19.8: done (below) |
+| Host API never called by the host target: `global_tags`, errors without a handler (`error_count`, `write_error`), `cont_alloc`, `unbind_external_function`, `init_from_json`, the `events` callbacks, a non-lookahead-safe external inside string evaluation | `runtime/story.zig:277-283,377-381,426-443,518,793,887-917`, `evaluate.zig:49,68-79`, `story_paths.zig:49`, `ops.zig:1013-1025` | P19.8: done (below) |
+| A divert through a variable that holds no target | `runtime/vm.zig:399-407` | P19.8: done (below) |
+
+### Constructs and host calls the report listed (P19.8, 2026-11-23)
+
+Seven generator constructs, appended to `Construct` so `Swarm.classic` keeps its golden
+hashes: `target_counts` (`READ_COUNT(-> k)`, `TURNS_SINCE(->k)`, divert targets compared
+with `==` and `!=`), `list_operations` (`^`), `item_values` (`LIST l2 = (p2 = 2), q2 = 5,
+r2`), `lexical` (`//` and `/* */` comments, `TODO:`, non-ASCII text and the global
+`größe`), `scientific` (floats that print as `1.23E-05` or `-2.1474836E+09`),
+`mistyped_divert` (`VAR d1` of 5, 0, 2.5 or a string used once as `-> d1`,
+`TURNS_SINCE(d1)` or `READ_COUNT(d1)`) and `string_calls` (a choice text calling `e0`);
+`list_functions` also writes a `LIST_RANGE` whose bounds are both lists. The host target's
+sessions now also call `cont_alloc`, `continue_maximally`, the kept errors and warnings
+(`error_count`, `write_error`, `reset_errors`), `unbind_external_function` and
+`current_choice`/`current_choice_tag`, and each seed draws its setup's variations: no error
+handler (1 in 4), `init_from_json` (1 in 4), `e0` not lookahead-safe (1 in 4), every event
+(1 in 2). The summary counts the calls by kind, the variations, the events and the stories
+that kept an error.
+
+`zig build swarm-coverage -- --target all --seconds 20` from seed 1, before and after,
+lines hit:
+
+| Module | before | after |
+|---|---|---|
+| src/compiler | 2,003 / 2,534 (79.0 %) | 1,999 / 2,534 (78.9 %) |
+| src/runtime | 1,531 / 1,857 (82.4 %) | 1,575 / 1,859 (84.7 %) |
+| src/core | 641 / 858 (74.7 %) | 641 / 858 (74.7 %) |
+
+By file (blocks): `story.zig` 67.5 to 78.0 %, `evaluate.zig` 68.8 to 77.9 %, `value.zig`
+60.0 to 70.0 %, `vm.zig` 80.8 to 81.5 %, `resolve_passes.zig` 70.8 to 73.0 %. The compiler
+gains nothing measurable: `mutate` had reached comments, `TODO:` and item values already,
+and its share decides the last few lines between runs. The 20 s ran 2,226 play, 1,607 save,
+3,142 host and 6,638 mutate seeds; `--target all --seconds 60` then ran 16,635 play, 10,988
+save, 22,416 host and 27,263 mutate seeds without a failure.
+
+Still listed, but reached: `lists.zig:223-230` (a list as `LIST_RANGE`'s maximum),
+`vm.zig:518-523` (`TURNS_SINCE` of a value), `vm.zig:407`, `value.zig:164` and
+`story.zig:890` (`global_tags`). A one-story run (`swarm-coverage -- --target play --story
+probe.ink`) whose story runs `LIST_RANGE(LIST_ALL(l0), b, LIST_MAX(l0))` and
+`TURNS_SINCE(d1)` still lists them, while the lines around them count as hit, and the
+differential's transcripts show inkz printing their results and messages as ink does: the
+ReleaseSafe build attributes these blocks to other lines (inlined or merged code), so the
+report under-counts there. Not reachable from compiled ink: `ops.zig:520-523`
+(`single_item_list`), as the program builder turns a bare list item into a list literal and
+inklecate rejects a `ref` to one. Left out on purpose: `continue_maximally_alloc` (a story
+that loops without choices would grow it without bound) and warnings (`write_warning`'s
+text), which only a `VAR?` of an unknown name makes, which no compiled story has.
+
+Spot checks against ink v1.2.1 (`swarm-gen`, `reference:swarm`, `swarm-check`), 900 drawn
+cases in five runs (seeds 1, 1000, 2000, 3000 and 4000), found no divergence. Reading ink
+for `mistyped_divert` found one difference first: inkz's error for `TURNS_SINCE` or
+`READ_COUNT` of a value that is no divert target left out ink's "but saw 5" and its hint for
+an integer; it now says both (ground-truth case `swarm/turns_since_of_value`).
 
 ## Results (2026-11-13)
 
@@ -370,6 +740,9 @@ All runs used ReleaseSafe unless noted. None crashed once the bugs below were fi
 | JSON loader | A content object with an empty key (`{"":"$r"}`) reached an assert. | `error.InvalidInkJson`; the cases are in "malformed input returns an error instead of crashing". |
 | Save and load | A limit or host error in the newline lookahead left the snapshot active, and saving then asserted. | The story goes back to its last line (`Story.fail_step`). |
 | Host API | After a limit error in the middle of a step, the next `cont` ran on from the half-done state and asserted in `end_string`. | The story fails closed with `error.StoryFailed` until `reset_state` or `load_json` (see `docs/RunningYourInk.md`). |
+| Save and load (CI bounds, P19.5) | A global string that doubled past 64 KiB in play saved, but its save didn't load: `load_json` refused every string longer than a u16 with `error.SaveTooLarge`. | Only an output item's text, whose length is a u16, keeps the bound; a value's string is bounded by the heap ("a string variable longer than 64 KiB saves and loads" in `api_test.zig`). |
+| Sema and resolve (CI, P19.5) | A story with a reference error and an empty `TODO:` note reached the check that every delivered diagnostic has text. inklecate reports the note with an empty message, and keeps a note's trailing spaces, which inkz trimmed. | The check allows an empty author note; the note keeps the rest of its line. Ground truth `diagnostics/author_warning_blank`. |
+| Swarm `mutate` | A source with ill-formed UTF-8 compiled to JSON with the bytes as they were, which `ink_json.load` rejected. | Each maximal subpart compiles as U+FFFD, as inklecate reads it (`source_space.Decoded`). |
 
 Two of the first assumptions turned out wrong; the parser was correct both times:
 
@@ -379,4 +752,7 @@ Two of the first assumptions turned out wrong; the parser was correct both times
 One difference is ink's own behaviour, and inkz keeps it. ink's save doesn't keep a
 choice's `isInvisibleDefault` (`JObjectToChoice` in `JsonSerialisation.cs`), so a pending
 fallback choice becomes visible after a load, in C# ink and here. The save target therefore
-doesn't compare such saves.
+doesn't compare such saves. Nor does it compare a save with an infinity or NaN: ink's
+SimpleJson writes them as ±3.4E+38 and 0.0, so a loaded `-Infinity` shows `-3.4E+38`, in C#
+ink and here (`save_loses_floats` in `src/fuzz/play.zig`; a real 0.0 reads the same as NaN,
+so a save with one isn't compared either). The swarm's save target skips them too.

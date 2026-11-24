@@ -173,9 +173,8 @@ const Loader = struct {
         try loader.variables(try as(try member(top, "variablesState"), .object));
         try loader.evaluation((try as(try member(top, "evalStack"), .array)).items);
         if (top.get("currentDivertTarget")) |target| {
-            var pointer = try loader.pointer_at(target);
-            if (pointer.index == Pointer.container_self) pointer.index = 0;
-            loader.story.diverted_pointer = pointer;
+            // ink's PointerAtPath, so a path to a container stays at the container itself.
+            loader.story.diverted_pointer = try loader.pointer_at(target);
         }
         try loader.counts(try as(try member(top, "visitCounts"), .object), .visits);
         try loader.counts(try as(try member(top, "turnIndices"), .object), .turns);
@@ -189,7 +188,8 @@ const Loader = struct {
         s.previous_random = previous;
     }
 
-    /// The flows: the current one last, so it ends up in the live buffers.
+    /// The flows, their records in the save's order: the current one loads last, so it ends
+    /// up in the live buffers.
     ///
     /// The default flow must be there, as every save ink writes from a story has it: ink
     /// writes one flow only while it has no named flows, and that one is the default. A lone
@@ -204,6 +204,12 @@ const Loader = struct {
         const current = if (current_name) |name| try as(name, .string) else null;
         if (!all.contains(flows.default_name)) return error.InvalidSave;
         if (current != null and !all.contains(current.?)) return error.InvalidSave;
+        // The records in the save's order first, as ink's dictionary keeps it, so that the
+        // story saves its flows in that order again although the current one loads last.
+        for (all.keys()) |name| {
+            if (name.len == 0) return error.InvalidSave;
+            _ = flows.record_for(loader.state(), name) catch return error.SaveTooLarge;
+        }
         for ([_]bool{ false, true }) |want_current| {
             for (all.keys(), all.values()) |name, flow_json| {
                 const is_current = current == null or std.mem.eql(u8, name, current.?);
@@ -315,16 +321,17 @@ const Loader = struct {
         const output = &loader.state().output;
         for (items) |item_json| {
             const item = try loader.output_item(item_json);
+            if (output.items.is_full()) return error.SaveTooLarge;
             if (item.kind == .begin_string) output.string_marks.push(output.items.count) catch
                 return error.SaveTooLarge;
-            output.items.push(item) catch return error.SaveTooLarge;
+            output.items.push(item) catch unreachable;
         }
     }
 
     fn output_item(loader: *Loader, json: Json) Error!Item {
         if (json == .object) {
             const text = try as(try member(json.object, "#"), .string);
-            return text_item(try loader.string(text), text, .tag, .non_whitespace);
+            return text_item(try loader.output_string(text), text, .tag, .non_whitespace);
         }
         const text = try as(json, .string);
         const command: ?output_module.Kind = if (std.mem.eql(u8, text, "<>"))
@@ -342,7 +349,7 @@ const Loader = struct {
             return text_item(story_module.program_newline(loader.story), text, .text, .newline);
         }
         if (text.len == 0 or text[0] != '^') return error.InvalidSave;
-        const reference = try loader.string(text[1..]);
+        const reference = try loader.output_string(text[1..]);
         return text_item(reference, text[1..], .text, .of(text[1..]));
     }
 
@@ -353,7 +360,7 @@ const Loader = struct {
         class: output_module.Class,
     ) Item {
         assert(kind == .text or kind == .tag);
-        // `string` refused longer text.
+        // `output_string` refused longer text.
         assert(text.len <= std.math.maxInt(u16));
         return .{
             .string = reference,
@@ -364,9 +371,15 @@ const Loader = struct {
         };
     }
 
-    /// `text` as a new heap string.
-    fn string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
+    /// `text` as a new heap string for an output item, whose length is a u16 (`Output.Item`).
+    fn output_string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
         if (text.len > std.math.maxInt(u16)) return error.SaveTooLarge;
+        return loader.string(text);
+    }
+
+    /// `text` as a new heap string. A value's string has no length bound but the heap's: a
+    /// global that grew past 64 KiB in play loads back.
+    fn string(loader: *Loader, text: []const u8) Error!value_module.StringReference {
         const s = loader.state();
         const reference = s.strings.try_allocate(@intCast(text.len)) orelse
             return error.SaveTooLarge;
@@ -375,23 +388,16 @@ const Loader = struct {
     }
 
     fn choices(loader: *Loader, saved: []const Json, threads: ?Object) Error!void {
-        // ink keeps each choice's saved index; this runtime keeps whether the choices had
-        // been indexed (some index isn't 0) and recomputes the indices.
-        var indexed = false;
-        for (saved) |choice_json| {
-            const object = try as(choice_json, .object);
-            try loader.choice(object, threads);
-            if (try integer(try member(object, "index")) != 0) indexed = true;
-        }
-        const records = &loader.state().choices;
-        assert(records.count() == saved.len);
-        records.indexed_count = if (indexed) records.count() else 0;
+        for (saved) |choice_json| try loader.choice(try as(choice_json, .object), threads);
+        assert(loader.state().choices.count() == saved.len);
     }
 
     /// ink's JObjectToChoice and LoadFlowChoiceThreads.
     fn choice(loader: *Loader, object: Object, threads: ?Object) Error!void {
         const text = try loader.string(try as(try member(object, "text"), .string));
         const source = try loader.pointer_at(try member(object, "originalChoicePath"));
+        // ink keeps the saved index, even one that isn't the choice's place.
+        const choice_index = try integer(try member(object, "index"));
         const counter = try integer(try member(object, "originalThreadIndex"));
         if (counter < 0) return error.InvalidSave;
         var target = try loader.pointer_at(try member(object, "targetPath"));
@@ -414,6 +420,7 @@ const Loader = struct {
             .tags_first = tags_first,
             .snapshot = snapshot,
             .tags_count = @intCast(records.tags.count - tags_first),
+            .index = choice_index,
             .invisible_default = false,
         }) catch return error.SaveTooLarge;
     }
@@ -526,7 +533,7 @@ const Loader = struct {
 
     fn list(loader: *Loader, named: Object, origins_json: ?Json) Error!Value {
         var items: [lists_module.list_items_max]index.ListItemIndex = undefined;
-        var origins: [64]index.ListOriginIndex = undefined;
+        var origins: [lists_module.Builder.origins_max]index.ListOriginIndex = undefined;
         const names = named.keys();
         if (names.len > items.len) return error.SaveTooLarge;
         assert(names.len <= lists_module.list_items_max);

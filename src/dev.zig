@@ -6,10 +6,15 @@
 //!   (src/testing/isolated.zig), so a crash is contained in that process.
 //! - `simulate ...`: seeded random play of the ground-truth cases (src/simulate.zig).
 //! - `transcripts`: regenerates `test/transcripts/` from the runtime.
-//! - `swarm --target <compile|play|save|host|all> [--seed S] [--seeds N] [--seconds T]
-//!   [--mix <hex>]`: seeded swarm runs out of the fuzzer (src/testing/swarm_runner.zig), `all`
-//!   being play, save and host; `--mix` replays a host failure's mix. Exits with 1 when a
-//!   run failed.
+//! - `swarm --target <compile|play|save|host|mutate|all> [--seed S] [--seeds N]
+//!   [--seconds T] [--mix <hex>]`: seeded swarm runs out of the fuzzer
+//!   (src/testing/swarm_runner.zig), `all` being play, save, host and mutate; `--mix` replays
+//!   a host failure's mix. Writes each failing case's story to zig-out/swarm/regressions
+//!   and prints its entry for test/swarm_regressions.zon. Exits with 1 when a run failed.
+//!   With `--story <file>`, replays the seed of one target on that story instead, printing
+//!   `replay: failure (<reason>)` (and exiting with 1) or `replay: pass`; with `--reduce
+//!   <file|seed>`, reduces the seed's failure on that story, or on its case, for `--seconds`
+//!   (60 by default; src/testing/swarm_reduce.zig).
 //! - `swarm-gen`, `swarm-check`, `swarm-reduce`: the differential swarm run
 //!   (src/swarm_differential.zig).
 
@@ -21,6 +26,15 @@ const runner = @import("testing/swarm_runner.zig");
 const simulate = @import("simulate.zig");
 const simulation = @import("testing/simulation.zig");
 const swarm_differential = @import("swarm_differential.zig");
+const swarm_mutate = @import("testing/swarm_mutate.zig");
+const swarm_reducer = @import("testing/swarm_reduce.zig");
+const fuzz_ink = @import("testing/fuzz_ink.zig");
+const coverage = @import("testing/coverage.zig");
+const build_options = @import("build_options");
+
+comptime {
+    if (build_options.coverage) coverage.reference_library();
+}
 
 /// The default panic, after the seed a swarm run was on (`runner.running`), so a crash
 /// can be reproduced.
@@ -72,7 +86,7 @@ pub fn main(init: std.process.Init) !void {
             const directory = transcripts.transcripts_directory;
             std.debug.print("wrote {d} transcripts to {s}\n", .{ count, directory });
         },
-        .swarm => try swarm(init.gpa, io, arguments),
+        .swarm => try swarm(arena, init.gpa, io, arguments),
         .@"swarm-gen", .@"swarm-check", .@"swarm-reduce" => {
             try swarm_differential.command(arena, io, arguments);
         },
@@ -99,41 +113,169 @@ fn replay(arena: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8)
     try file_writer.interface.flush();
 }
 
-fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !void {
-    assert(arguments.len > 0);
-    // Null target: play, save and host in turn, sharing the time budget. Play and save check
-    // the compiled program as the compile target does, so `all` leaves that one out.
-    var target: ?runner.Target = .play;
-    var mix: ?simulation.Mix = null;
-    var seed: u64 = 1;
-    var seeds: ?u32 = null;
-    var seconds: ?u32 = null;
-    var index: usize = 1;
-    // Options come in pairs: a flag without its value is an error, not ignored.
-    if (arguments.len % 2 == 0) return error.MissingValue;
-    while (index + 1 < arguments.len) : (index += 2) {
-        const name = arguments[index];
-        const value = arguments[index + 1];
-        if (std.mem.eql(u8, name, "--target")) {
-            target = if (std.mem.eql(u8, value, "all"))
-                null
-            else
-                std.meta.stringToEnum(runner.Target, value) orelse return error.UnknownTarget;
-        } else if (std.mem.eql(u8, name, "--seed")) {
-            seed = try std.fmt.parseInt(u64, value, 10);
-        } else if (std.mem.eql(u8, name, "--seeds")) {
-            seeds = try std.fmt.parseInt(u32, value, 10);
-        } else if (std.mem.eql(u8, name, "--seconds")) {
-            seconds = try std.fmt.parseInt(u32, value, 10);
-        } else if (std.mem.eql(u8, name, "--mix")) {
-            mix = try simulation.Mix.decode(try std.fmt.parseInt(u64, value, 16));
-        } else return error.UnknownOption;
+/// `swarm`'s options.
+const SwarmOptions = struct {
+    /// Null: play, save, host and mutate in turn, sharing the time budget. Play and save
+    /// check the compiled program as the compile target does, so `all` leaves that one out.
+    target: ?runner.Target = .play,
+    mix: ?simulation.Mix = null,
+    seed: u64 = 1,
+    seeds: ?u32 = null,
+    seconds: ?u32 = null,
+    /// Replays the seed on this story (`runner.replay`) instead of running seeds.
+    story: ?[]const u8 = null,
+    /// Reduces the seed's failure (`swarm_reduce`): on this story, or `seed` for its case.
+    reduce: ?[]const u8 = null,
+
+    fn parse(arguments: []const [:0]const u8) !SwarmOptions {
+        assert(arguments.len > 0);
+        var options: SwarmOptions = .{};
+        var index: usize = 1;
+        // Options come in pairs: a flag without its value is an error, not ignored.
+        if (arguments.len % 2 == 0) return error.MissingValue;
+        while (index + 1 < arguments.len) : (index += 2) {
+            const name = arguments[index];
+            const value = arguments[index + 1];
+            if (std.mem.eql(u8, name, "--target")) {
+                options.target = if (std.mem.eql(u8, value, "all"))
+                    null
+                else
+                    std.meta.stringToEnum(runner.Target, value) orelse
+                        return error.UnknownTarget;
+            } else if (std.mem.eql(u8, name, "--seed")) {
+                options.seed = try std.fmt.parseInt(u64, value, 10);
+            } else if (std.mem.eql(u8, name, "--seeds")) {
+                options.seeds = try std.fmt.parseInt(u32, value, 10);
+            } else if (std.mem.eql(u8, name, "--seconds")) {
+                options.seconds = try std.fmt.parseInt(u32, value, 10);
+            } else if (std.mem.eql(u8, name, "--mix")) {
+                options.mix = try simulation.Mix.decode(try std.fmt.parseInt(u64, value, 16));
+            } else if (std.mem.eql(u8, name, "--story")) {
+                options.story = value;
+            } else if (std.mem.eql(u8, name, "--reduce")) {
+                options.reduce = value;
+            } else return error.UnknownOption;
+        }
+        const one_seed = options.story != null or options.reduce != null;
+        if (one_seed and options.target == null) return error.OneTargetNeeded;
+        if (options.story != null and options.reduce != null) return error.StoryOrReduce;
+        return options;
     }
-    // Play gets 4 tenths of the time, save and host 3 each: play's seeds also play again
-    // under other limits, and host's spend most of theirs on the host calls.
-    const all: []const runner.Target = &.{ .play, .save, .host };
-    const all_shares: []const u64 = &.{ 4, 3, 3 };
+
+    /// The seed's entry, its mix the one given or drawn.
+    fn regression(options: SwarmOptions) runner.Regression {
+        const target = options.target.?;
+        const mix: ?u64 = if (!target.hosts())
+            null
+        else if (options.mix) |mix| mix.encode() else runner.drawn_mix(options.seed);
+        return .{ .target = target, .seed = options.seed, .mix = mix };
+    }
+};
+
+/// `swarm --story`: prints `replay: failure (<reason>)` and exits with 1, or `replay: pass`.
+fn swarm_replay(
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    options: SwarmOptions,
+) !void {
+    const limit: std.Io.Limit = .limited(fuzz_ink.source_bytes_max);
+    const source = try std.Io.Dir.cwd().readFileAlloc(io, options.story.?, arena, limit);
+    const failure = try runner.replay(gpa, options.regression(), source);
+    var buffer: [256]u8 = undefined;
+    var file_writer = std.Io.File.stdout().writer(io, &buffer);
+    if (failure) |reason| {
+        try file_writer.interface.print("replay: failure ({s})\n", .{reason});
+    } else try file_writer.interface.writeAll("replay: pass\n");
+    try file_writer.interface.flush();
+    if (failure != null) std.process.exit(1);
+}
+
+/// `swarm --reduce`: reduces the seed's failure, each check in a child process (but the
+/// synthetic target's), for `--seconds` (60 by default), and writes the reduced story next
+/// to the stories of failing runs.
+fn swarm_reduce(
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    options: SwarmOptions,
+) !void {
+    const regression = options.regression();
+    const target = regression.target;
+    const cwd = std.Io.Dir.cwd();
+    const limit: std.Io.Limit = .limited(fuzz_ink.source_bytes_max);
+    const reduce = options.reduce.?;
+    const from_seed = std.mem.eql(u8, reduce, "seed");
+    const story = if (from_seed) null else try cwd.readFileAlloc(io, reduce, arena, limit);
+    if (target == .synthetic and story != null) return error.SyntheticReducesFromItsSeed;
+    var corpus: ?swarm_mutate.Corpus = null;
+    if (target == .mutate and story == null) corpus = try swarm_mutate.Corpus.load(arena, io);
+    try cwd.createDirPath(io, runner.regressions_out);
+    const name = try std.fmt.allocPrint(arena, "{s}/{t}-{d}", .{
+        runner.regressions_out,
+        target,
+        regression.seed,
+    });
+    const seconds: i96 = options.seconds orelse 60;
+    const started = std.Io.Timestamp.now(io, .awake);
+    const deadline = started.nanoseconds + seconds * std.time.ns_per_s;
+    const request: swarm_reducer.Request = .{
+        .regression = regression,
+        .story = story,
+        .corpus = if (corpus) |*loaded| loaded else null,
+        .isolated = if (target == .synthetic) null else io,
+        .candidate_path = try std.fmt.allocPrint(arena, "{s}.candidate.ink", .{name}),
+        .bound = .{
+            .calls_max = 100_000,
+            .deadline = .{ .nanoseconds = deadline },
+            .io = io,
+        },
+    };
+    var buffer: [4096]u8 = undefined;
+    var file_writer = std.Io.File.stdout().writer(io, &buffer);
+    const writer = &file_writer.interface;
+    const result = try swarm_reducer.run(gpa, arena, request) orelse {
+        try writer.print("swarm {t}: seed {d} doesn't fail\n", .{ target, regression.seed });
+        try writer.flush();
+        std.process.exit(1);
+    };
+    const out_path = try std.fmt.allocPrint(arena, "{s}.reduced.ink", .{name});
+    try cwd.writeFile(io, .{ .sub_path = out_path, .data = result.source });
+    const elapsed = started.untilNow(io, .awake).toMilliseconds();
+    try writer.print("swarm {t}: reduced seed {d} in {d} ms: {f}; wrote {s}; its entry: {f}\n", .{
+        target,
+        regression.seed,
+        elapsed,
+        result,
+        out_path,
+        regression,
+    });
+    try writer.flush();
+}
+
+fn swarm(
+    arena: std.mem.Allocator,
+    gpa: std.mem.Allocator,
+    io: std.Io,
+    arguments: []const [:0]const u8,
+) !void {
+    const options: SwarmOptions = try .parse(arguments);
+    if (options.story != null) return swarm_replay(arena, gpa, io, options);
+    if (options.reduce != null) return swarm_reduce(arena, gpa, io, options);
+    const target = options.target;
+    const seed = options.seed;
+    const seconds = options.seconds;
+    // Play gets 4 twelfths of the time, save and host 3 each, mutate 2: play's seeds also
+    // play again under other limits, host's spend most of theirs on the host calls, and
+    // mutate reaches its coverage in a few seconds (docs/fuzzing.md).
+    const all: []const runner.Target = &.{ .play, .save, .host, .mutate };
+    const all_shares: []const u64 = &.{ 4, 3, 3, 2 };
     const targets: []const runner.Target = if (target) |one| &.{one} else all;
+    // The ground-truth stories are read once, for the whole run.
+    var corpus: ?swarm_mutate.Corpus = null;
+    for (targets) |each| {
+        if (each == .mutate) corpus = try swarm_mutate.Corpus.load(arena, io);
+    }
     const shares: []const u64 = if (target == null) all_shares else &.{1};
     var shares_total: u64 = 0;
     for (shares) |share| shares_total += share;
@@ -145,7 +287,7 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
     assert(targets.len == shares.len);
     for (targets, shares) |each, share| {
         const seeds_default: u32 = if (seconds == null) 1000 else std.math.maxInt(u32);
-        var budget: runner.Budget = .{ .seeds = seeds orelse seeds_default };
+        var budget: runner.Budget = .{ .seeds = options.seeds orelse seeds_default };
         shares_done += share;
         if (seconds) |total| {
             // Each target ends at its share of the total and the shares before it.
@@ -155,8 +297,19 @@ fn swarm(gpa: std.mem.Allocator, io: std.Io, arguments: []const [:0]const u8) !v
         }
         try file_writer.interface.print("swarm {t}: first seed {d}\n", .{ each, seed });
         try file_writer.interface.flush();
-        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, mix);
+        const inputs: runner.Inputs = .{
+            .mix = options.mix,
+            .corpus = if (each == .mutate) &corpus.? else null,
+            .io = io,
+        };
+        const summary = try runner.run(gpa, &file_writer.interface, each, seed, budget, inputs);
         failures += summary.failures;
+    }
+    // The coverage build (`zig build swarm-coverage`) reports what the run reached.
+    if (build_options.coverage) {
+        const path = "zig-out/coverage/swarm.txt";
+        try coverage.write_report(io, path, &file_writer.interface);
+        try file_writer.interface.print("coverage: wrote {s}\n", .{path});
     }
     try file_writer.interface.flush();
     if (failures > 0) std.process.exit(1);

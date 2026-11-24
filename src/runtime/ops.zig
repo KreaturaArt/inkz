@@ -151,7 +151,10 @@ pub fn pop_function_or_tunnel(story: *Story, kind: call_stack_module.FrameKind) 
         return fail(story, "Found {s}, when expected {s}", .{ pop_name(kind), pop_name(current) });
     }
     try pop_call_stack(story, null);
-    if (override) |target| story.diverted_pointer = .start_of(target);
+    // ink's PointerAtPath: at the container itself, as a variable divert (vm.next_content).
+    if (override) |target| {
+        story.diverted_pointer = .{ .container = target, .index = Pointer.container_self };
+    }
 }
 
 /// `out`: the top value as text, if the expression left one.
@@ -576,8 +579,9 @@ fn resolve_variable_pointer(story: *Story, pointer: value_module.VariablePointer
     return .{ .variable_pointer = .{ .name = pointer.name, .context = context } };
 }
 
+/// ink's Assign takes any object: `value` may be a tag that a story error left on the
+/// evaluation stack (inside a choice's text), popped as a parameter.
 pub fn declare_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
-    assert(value != .tag);
     var stored = value;
     if (value == .variable_pointer) stored = try resolve_variable_pointer(
         story,
@@ -587,7 +591,6 @@ pub fn declare_global(story: *Story, slot: GlobalSlot, value: Value) Error!void 
 }
 
 pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
-    assert(value != .tag);
     var stored = value;
     if (value == .variable_pointer) stored = try resolve_variable_pointer(
         story,
@@ -605,7 +608,6 @@ pub fn declare_temp(story: *Story, name: StringId, value: Value) Error!void {
 /// lookahead's copy). Only a variable pointer stored there follows ink's pointer rules,
 /// by name.
 pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
-    assert(value != .tag);
     if (story.state.globals[slot.to_int()] != .variable_pointer) {
         return set_global(story, slot, value);
     }
@@ -614,7 +616,6 @@ pub fn assign_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
 }
 
 pub fn assign_temp(story: *Story, name: StringId, value: Value) Error!void {
-    assert(value != .tag);
     try assign_existing(story, name, global_of(story, name) != null, value);
 }
 
@@ -625,7 +626,6 @@ fn assign_existing(
     start_global: bool,
     value: Value,
 ) Error!void {
-    assert(value != .tag);
     var name = start_name;
     var context: i32 = -1;
     var is_global = start_global;
@@ -678,7 +678,6 @@ pub fn set_global(story: *Story, slot: GlobalSlot, value: Value) Error!void {
 /// list's origins, as a new list (null: `value` is stored as it is). The origins are copied
 /// out before room is made, so neither `old` nor `value` is needed after it.
 fn retain_list_origins(story: *Story, old: ?Value, value: Value) Error!?Value {
-    assert(value != .tag);
     const previous = old orelse return null;
     if (previous != .list or value != .list) return null;
     if (lists_of(story).count(value.list) != 0) return null;
@@ -735,6 +734,7 @@ pub fn process_choice(
         .tags_first = 0,
         .snapshot = 0,
         .tags_count = 0,
+        .index = 0,
         .invisible_default = record.flags.is_invisible_default,
     };
     var tags: [ChoicePops.tags_max]StringReference = undefined;

@@ -18,7 +18,11 @@ test {
     _ = @import("program_image_test.zig");
     _ = @import("fuzz_ink.zig");
     _ = @import("differential.zig");
+    _ = @import("reduce.zig");
     _ = @import("swarm_triage.zig");
     _ = @import("swarm_runner.zig");
+    _ = @import("swarm_reduce.zig");
+    _ = @import("swarm_mutate.zig");
+    _ = @import("coverage.zig");
     _ = @import("bench_test.zig");
 }

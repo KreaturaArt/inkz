@@ -143,11 +143,15 @@ pub fn mixed_text_and_logic(machine: *Machine, frame: *Frame) Error!Action {
                 grammar.report_message(machine, .tilde_in_content);
             } else machine.at = start;
             _ = try content_text(machine);
+            // Interleave's Optional(ContentText) succeeds either way, with no diagnostic:
+            // ink's Interleave rule starts its scope here, and each such step clears it.
+            machine.scope_succeeded();
             return grammar.call_then(frame, 1, .inline_logic_or_glue_or_start_tag);
         },
         1 => {
             const got_logic = machine.outcome == .succeeded;
             const got_text = try content_text(machine);
+            machine.scope_succeeded();
             if ((got_logic or got_text) and !grammar.at_end(machine)) {
                 return .{ .call = .inline_logic_or_glue_or_start_tag };
             }
@@ -227,6 +231,16 @@ pub fn inline_logic(machine: *Machine, frame: *Frame) Error!Action {
         grammar.report_expected(machine, .inner_logic);
         return .fail;
     }
+    // DisallowIncrement(logic): only an expression (InnerExpression's) can be one.
+    const workspace = machine.workspace;
+    const logic = machine.scratch_count - 1;
+    assert(logic == frame.checkpoint.scratch);
+    if (workspace.scratch_tags[logic] == .inline_value) {
+        const inner = workspace.node_tags[workspace.scratch_data[logic]];
+        if (inner == .increment or inner == .decrement) {
+            grammar.report_message(machine, .increment_not_allowed);
+        }
+    }
     _ = grammar.whitespace(machine);
     grammar.expect_string(machine, "}", .closing_brace);
     const was = frame.locals[1];
@@ -247,6 +261,7 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
                 try machine.push_node(.sequence_kind, kind);
                 return grammar.call_then(frame, 1, .inner_sequence_objects);
             }
+            frame.locals[0] = machine.diagnostics_count;
             frame.locals[1] = grammar.at(machine);
             return grammar.call_then(frame, 2, .condition_expression);
         },
@@ -264,6 +279,10 @@ pub fn inner_logic(machine: *Machine, frame: *Frame) Error!Action {
             if (machine.outcome == .succeeded) {
                 return grammar.call(machine, frame, 3, .inner_conditional_content, 1);
             }
+            // InnerConditionalContent starts with Parse(ConditionExpression), which fails
+            // here as it just did: inkz doesn't parse it again, it reports its diagnostics
+            // again.
+            machine.report_again(frame.locals[0]);
             frame.locals[2] = 0;
             return grammar.call(machine, frame, 4, full_alternatives[0], 0);
         },
@@ -296,9 +315,11 @@ fn inner_logic_alternative(machine: *Machine, frame: *Frame) Error!Action {
 /// Peek(Spaced(String("}"))).
 fn closing_brace_ahead(machine: *Machine) bool {
     const start = grammar.at(machine);
+    const attempt = machine.attempt();
     _ = grammar.whitespace(machine);
     const found = grammar.parse_string(machine, "}");
     machine.at = start;
+    machine.attempt_failed(attempt);
     return found;
 }
 
@@ -308,7 +329,7 @@ pub fn inner_expression(machine: *Machine, frame: *Frame) Error!Action {
         return grammar.call(machine, frame, 1, .expression, 0);
     }
     if (machine.outcome == .failed) return .fail;
-    disallow_increment(machine, frame.checkpoint.scratch);
+    // InlineLogic disallows an increment once the braces hold all of it.
     try machine.wrap(.inline_value, frame.checkpoint.scratch);
     return .succeed;
 }
@@ -511,11 +532,13 @@ pub fn single_multiline_condition(machine: *Machine, frame: *Frame) Error!Action
 /// ElseExpression: `else` and `:`, restoring the input on failure.
 fn else_expression(machine: *Machine) bool {
     const start = grammar.at(machine);
+    const attempt = machine.attempt();
     if (grammar.parse_string(machine, "else")) {
         _ = grammar.whitespace(machine);
         if (grammar.parse_string(machine, ":")) return true;
     }
     machine.at = start;
+    machine.attempt_failed(attempt);
     return false;
 }
 
@@ -559,6 +582,7 @@ fn symbol_annotation(machine: *Machine) ?u32 {
 fn word_annotation(machine: *Machine) Error!?u32 {
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
+    const attempt = machine.attempt();
     var kind: u32 = 0;
     while (try grammar.identifier(machine)) |token| {
         const word = grammar.token_text(machine, token);
@@ -580,6 +604,7 @@ fn word_annotation(machine: *Machine) Error!?u32 {
     if (kind != 0 and grammar.parse_string(machine, ":")) return kind;
     machine.at = start;
     machine.tokens_count = saved_tokens;
+    machine.attempt_failed(attempt);
     return null;
 }
 

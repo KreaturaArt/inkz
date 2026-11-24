@@ -240,6 +240,7 @@ pub fn parse_string(machine: *Machine, literal: []const u8) bool {
     assert(literal.len > 0);
     if (!std.mem.startsWith(u8, rest(machine), literal)) return false;
     machine.at += @intCast(literal.len);
+    machine.scope_succeeded();
     return true;
 }
 
@@ -255,11 +256,13 @@ pub fn whitespace(machine: *Machine) bool {
 /// ParseNewline: an optional `\r` and a `\n`; nothing is consumed if there is no `\n`.
 pub fn parse_newline(machine: *Machine) bool {
     const start = at(machine);
+    const attempt = machine.attempt();
     _ = parse_string(machine, "\r");
     if (parse_string(machine, "\n")) {
         return true;
     }
     machine.at = start;
+    machine.attempt_failed(attempt);
     return false;
 }
 
@@ -281,7 +284,10 @@ pub fn newline(machine: *Machine) bool {
 pub fn end_of_file(machine: *Machine) bool {
     const start = at(machine);
     _ = whitespace(machine);
-    if (at_end(machine)) return true;
+    if (at_end(machine)) {
+        machine.scope_succeeded();
+        return true;
+    }
     machine.at = start;
     return false;
 }
@@ -302,6 +308,8 @@ pub fn multiline_whitespace(machine: *Machine) bool {
 pub fn any_whitespace(machine: *Machine) bool {
     var any = false;
     while (whitespace(machine) or multiline_whitespace(machine)) any = true;
+    // OneOf(Whitespace, MultilineWhitespace): each match is a rule that succeeded.
+    if (any) machine.scope_succeeded();
     return any;
 }
 
@@ -340,6 +348,8 @@ pub fn identifier(machine: *Machine) Error!?ast.TokenIndex {
         if (!std.ascii.isDigit(character)) break;
     } else return null;
     machine.at += length;
+    // Parse(Identifier) succeeded.
+    machine.scope_succeeded();
     return try machine.add_token(start, start + length);
 }
 
@@ -355,10 +365,16 @@ pub fn token_text(machine: *const Machine, token: ast.TokenIndex) []const u8 {
 pub fn keyword(machine: *Machine, word: []const u8) Error!bool {
     const start = at(machine);
     const saved_tokens = machine.tokens_count;
-    const token = try identifier(machine) orelse return false;
+    const attempt = machine.attempt();
+    const token = try identifier(machine) orelse {
+        machine.attempt_failed(attempt);
+        return false;
+    };
     if (std.mem.eql(u8, token_text(machine, token), word)) return true;
+    // The rule that wanted `word` fails, leaving its caller's scope as it was.
     machine.at = start;
     machine.tokens_count = saved_tokens;
+    machine.attempt_failed(attempt);
     return false;
 }
 
@@ -665,4 +681,20 @@ test "the parser reports an unclosed brace" {
     try std.testing.expect(parsed.diagnostics_count > 0);
     const expected: u32 = @backingInt(Expectation.inner_logic);
     try std.testing.expectEqual(expected, parsed.diagnostics()[0].extra);
+}
+
+test "each literal rule reports an integer out of range in a scope of its own" {
+    // ink's ExpressionFloat (through ParseFloat's ParseInt) and then ExpressionInt read the
+    // integer, each in a rule of its own, so inklecate reports it twice (ink v1.2.1).
+    const gpa = std.testing.allocator;
+    var parsed = try parse(gpa, "VAR x = 0\n~ x = 99999999999\n", .{});
+    defer parsed.deinit(gpa);
+    var count: u32 = 0;
+    for (parsed.diagnostics()) |diagnostic| {
+        assert(diagnostic.code == .message);
+        const message: Message = @fromBackingInt(diagnostic.extra);
+        if (message == .integer_out_of_range) count += 1;
+    }
+    try std.testing.expectEqual(@as(u32, 2), parsed.diagnostics_count);
+    try std.testing.expectEqual(@as(u32, 2), count);
 }

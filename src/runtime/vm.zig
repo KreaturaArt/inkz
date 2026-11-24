@@ -217,9 +217,18 @@ pub fn next_content(story: *Story) Error!void {
         const thread = story.state.call_stack.current_thread();
         thread.previous_pointer = current_pointer(story);
         if (!story.diverted_pointer.is_null()) {
-            set_current_pointer(story, story.diverted_pointer);
+            const diverted = story.diverted_pointer;
             story.diverted_pointer = .null;
-            try visit_changed_containers_due_to_divert(story);
+            if (diverted.index == Pointer.container_self) {
+                // ink's PointerAtPath target (index -1): VisitChangedContainersDueToDivert
+                // skips it, and the next Step counts the container itself, not its
+                // ancestors; its first children are counted by enter_containers.
+                set_current_pointer(story, .start_of(diverted.container));
+                try visit_container(story, diverted.container, true);
+            } else {
+                set_current_pointer(story, diverted);
+                try visit_changed_containers_due_to_divert(story);
+            }
             if (!current_pointer(story).is_null()) return;
         }
         if (increment_pointer(story)) return;
@@ -407,7 +416,9 @@ fn divert(story: *Story, instruction: Instruction) Error!Signal {
             const held = try ops.value_text(story, target);
             return ops.fail(story, not_target ++ "contained '{s}'.", .{ name, held });
         }
-        story.diverted_pointer = .start_of(target.divert_target);
+        // ink's PointerAtPath: at the container itself, so only it is counted.
+        const at_container = Pointer.container_self;
+        story.diverted_pointer = .{ .container = target.divert_target, .index = at_container };
     } else {
         const target = record.target_container;
         story.diverted_pointer = .{ .container = target, .index = record.target_index };
@@ -516,11 +527,15 @@ fn control(story: *Story, opcode: Opcode) Error!Signal {
 fn count_of_target(story: *Story, opcode: Opcode) Error!void {
     assert(opcode == .turns_since or opcode == .read_count_of_target);
     const target = try pop_evaluation(story);
-    if (target != .divert_target) return ops.fail(
-        story,
-        "TURNS_SINCE expected a divert target (knot, stitch, label name)",
-        .{},
-    );
+    if (target != .divert_target) {
+        // ink's message, which names TURNS_SINCE for READ_COUNT too, and says what it saw.
+        const expected = "TURNS_SINCE expected a divert target (knot, stitch, label name), " ++
+            "but saw {s}";
+        const saw = try ops.value_text(story, target);
+        if (target != .integer) return ops.fail(story, expected, .{saw});
+        return ops.fail(story, expected ++ ". Did you accidentally pass a read count " ++
+            "('knot_name') instead of a target ('-> knot_name')?", .{saw});
+    }
     const container = target.divert_target;
     const count: i32 = if (opcode == .turns_since)
         ops.turns_since(story, container)

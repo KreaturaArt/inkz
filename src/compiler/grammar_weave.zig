@@ -68,6 +68,8 @@ fn choice_conditions(machine: *Machine, frame: *Frame) Error!Action {
         frame.locals[2] += 1 << choice_conditions_shift;
         _ = grammar.newline_direct(machine);
         _ = grammar.whitespace(machine);
+        // ChoiceConditionsSpace always succeeds, with no diagnostic: it clears the scope.
+        machine.scope_succeeded();
         return .{ .call = .choice_single_condition };
     }
     const count = frame.locals[2] >> choice_conditions_shift;
@@ -153,11 +155,16 @@ fn bullets(machine: *Machine, bullet: u8) u32 {
 fn bracketed_name(machine: *Machine) Error!bool {
     const start = grammar.at(machine);
     const saved_tokens = machine.tokens_count;
-    if (!grammar.parse_string(machine, "(")) return false;
+    const attempt = machine.attempt();
+    if (!grammar.parse_string(machine, "(")) {
+        machine.attempt_failed(attempt);
+        return false;
+    }
     _ = grammar.whitespace(machine);
     if (!try grammar.push_identifier(machine)) {
         machine.at = start;
         machine.tokens_count = saved_tokens;
+        machine.attempt_failed(attempt);
         return false;
     }
     _ = grammar.whitespace(machine);

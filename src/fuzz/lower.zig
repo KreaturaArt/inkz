@@ -34,7 +34,9 @@ const Errors = struct {
     count: u32 = 0,
 
     fn add(context: ?*anyopaque, diagnostic: messages.Diagnostic) void {
-        assert(diagnostic.line > 0 and diagnostic.message.len > 0);
+        // A `TODO:` note may be empty, as in ink.
+        assert(diagnostic.line > 0);
+        assert(diagnostic.message.len > 0 or diagnostic.severity == .author);
         const errors: *Errors = @ptrCast(@alignCast(context.?));
         if (diagnostic.severity == .@"error") errors.count += 1;
     }

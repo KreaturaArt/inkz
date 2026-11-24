@@ -1,0 +1,91 @@
+name: Differential swarm
+
+# Nightly differential swarm run against C# ink (docs/fuzzing.md, "Differential swarm run"):
+# generated stories are compiled and played by inkz and by ink v1.2.1 (tools/ink_harness),
+# and everything the host can observe must match. A divergence fails the job and uploads the
+# divergent cases, with a reduction, as the `divergences-<seed>` artifact.
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  # A pull request that changes the run itself checks it before it reaches main.
+  pull_request:
+    paths:
+      - .github/workflows/differential.yml
+      - tools/ink_harness/**
+      - tools/collect_divergences.sh
+      - src/swarm_differential.zig
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: "Seed for swarm-gen (empty: the run id)"
+        required: false
+        default: ""
+      count:
+        description: "Number of generated cases"
+        required: false
+        default: "1000"
+
+permissions:
+  contents: read
+
+jobs:
+  differential:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: bash
+    env:
+      SEED: ${{ inputs.seed || github.run_id }}
+      COUNT: ${{ inputs.count || '1000' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs minimum_zig_version from build.zig.zon, as ci.yml does.
+      - uses: EuroZig/setup-zig@v3
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      # Clones ink at the pinned commit into reference/ink and builds the harness.
+      - name: Build the reference harness
+        run: tools/ink_harness/reference.sh setup
+
+      - name: Generate swarm cases
+        run: |
+          echo "seed $SEED, $COUNT cases; reproduce with:"
+          echo "  zig build swarm-gen -Doptimize=ReleaseSafe -- --seed $SEED --count $COUNT --out zig-out/swarm/$SEED"
+          zig build swarm-gen -Doptimize=ReleaseSafe -- \
+            --seed "$SEED" --count "$COUNT" --out "zig-out/swarm/$SEED"
+
+      - name: Run ink on the cases
+        run: tools/ink_harness/reference.sh swarm "zig-out/swarm/$SEED"
+
+      # stdout only goes to check.log: zig build's own messages on stderr would split its lines.
+      - name: swarm-check
+        id: check
+        run: |
+          zig build swarm-check -Doptimize=ReleaseSafe -- "zig-out/swarm/$SEED" \
+            | tee "zig-out/swarm/check.log"
+
+      - name: Collect and reduce divergent cases
+        if: failure() && steps.check.outcome == 'failure'
+        run: |
+          tools/ink_harness/collect_divergences.sh "zig-out/swarm/$SEED" \
+            zig-out/swarm/check.log "zig-out/divergences/$SEED" 3
+
+      # On any failure: the divergent cases, or the harness's batch.log when ink failed.
+      - name: Keep the harness log
+        if: failure() && steps.check.outcome != 'failure'
+        run: |
+          mkdir -p "zig-out/divergences/$SEED"
+          cp "zig-out/swarm/$SEED/batch.log" "zig-out/divergences/$SEED/" || true
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: divergences-${{ env.SEED }}
+          path: zig-out/divergences/
+          if-no-files-found: ignore
+          retention-days: 30

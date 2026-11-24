@@ -83,3 +83,9 @@ test "fuzz: sema and resolve build a consistent tree and resolution" {
     // Seeded sources first: most reach resolution, and their trees and resolutions check.
     try fuzz_ink.run_target(sema_resolve, 16);
 }
+
+test "a story with a reference error and an empty TODO note checks" {
+    // CI fuzz (sema), seed 2341796445: ink reports an empty note, and the check asserted
+    // that every message has text (P19.5).
+    try std.testing.expect(try check_source("-> missing\nTODO:   "));
+}

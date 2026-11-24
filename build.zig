@@ -49,8 +49,8 @@ pub fn build(b: *std.Build) void {
     // commands. Its build options can't name its own binary; the tests' options do, because
     // the ground-truth gate replays each case in its own `dev replay` process.
     const dev = add_executable(b, "dev", "src/dev.zig", target, optimize);
-    dev.root_module.addOptions("build_options", new_build_options(b, snap_update, fuzz_swarm));
-    const build_options = new_build_options(b, snap_update, fuzz_swarm);
+    dev.root_module.addOptions("build_options", new_build_options(b, snap_update, fuzz_swarm, false));
+    const build_options = new_build_options(b, snap_update, fuzz_swarm, false);
     build_options.addOptionPath("dev_path", dev.getEmittedBin());
     for (dev_commands) |command| {
         const run = b.addRunArtifact(dev);
@@ -60,6 +60,7 @@ pub fn build(b: *std.Build) void {
         run.addPassthruArgs();
         b.step(command[0], command[1]).dependOn(&run.step);
     }
+    add_swarm_coverage(b, target, snap_update, fuzz_swarm);
 
     // The library's module, for packages that depend on inkz (`b.dependency("inkz", ...)
     // .module("inkz")`) and for the doctests.
@@ -170,7 +171,7 @@ const dev_commands = [_][2][]const u8{
     .{ "replay", "Replay one case and print its transcript (-- <id> | --json PATH --actions A)" },
     .{ "simulate", "Play every case with seeded random choices" },
     .{ "transcripts", "Regenerate test/transcripts" },
-    .{ "swarm", "Seeded swarm runs (-- --target compile|play|save|all --seed S --seeds N | --seconds T)" },
+    .{ "swarm", "Seeded swarm runs (-- --target compile|play|save|host|mutate|all --seed S --seeds N | --seconds T)" },
     .{ "swarm-gen", "Write generated swarm cases (-- --seed S --count N --out DIR)" },
     .{ "swarm-check", "Compare inkz with ink's results for swarm cases (-- DIR)" },
     .{ "swarm-reduce", "Reduce a divergent swarm case (-- DIR CASE --harness DLL)" },
@@ -238,11 +239,50 @@ const tools = [_]Tool{
     },
 };
 
-fn new_build_options(b: *std.Build, snap_update: bool, fuzz_swarm: bool) *std.Build.Step.Options {
+fn new_build_options(
+    b: *std.Build,
+    snap_update: bool,
+    fuzz_swarm: bool,
+    coverage: bool,
+) *std.Build.Step.Options {
     const options = b.addOptions();
     options.addOption(bool, "snap_update", snap_update);
     options.addOption(bool, "fuzz_swarm", fuzz_swarm);
+    options.addOption(bool, "coverage", coverage);
     return options;
+}
+
+/// `zig build swarm-coverage [-- <swarm arguments>]`: a `--target all --seconds 60` swarm run
+/// (later arguments override) of `dev` built in ReleaseSafe with the fuzz instrumentation,
+/// which then writes its block coverage to zig-out/coverage/swarm.txt (src/testing/coverage.zig).
+fn add_swarm_coverage(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    snap_update: bool,
+    fuzz_swarm: bool,
+) void {
+    const dev = b.addExecutable(.{
+        .name = "dev-coverage",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/dev.zig"),
+            .target = target,
+            // ReleaseSafe runs about ten times the seeds of Debug in the same time and
+            // instruments the same blocks.
+            .optimize = .ReleaseSafe,
+            .fuzz = true,
+        }),
+    });
+    dev.root_module.addOptions("build_options", new_build_options(b, snap_update, fuzz_swarm, true));
+    std.Io.Dir.cwd().createDirPath(b.graph.io, "zig-out/coverage") catch |err| {
+        std.process.fatal("cannot create zig-out/coverage: {t}", .{err});
+    };
+    const run = b.addRunArtifact(dev);
+    run.setCwd(b.path("."));
+    run.has_side_effects = true;
+    run.addArgs(&.{ "swarm", "--target", "all", "--seconds", "60" });
+    run.addPassthruArgs();
+    const step = b.step("swarm-coverage", "Swarm run with code coverage to zig-out/coverage/swarm.txt");
+    step.dependOn(&run.step);
 }
 
 fn add_executable(

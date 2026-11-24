@@ -33,6 +33,10 @@ pub const Choice = struct {
     tags_first: u32,
     snapshot: u32,
     tags_count: u16,
+    /// ink's index: the choice's place among the visible choices when the host last read
+    /// them (`Story.current_choices_count`), or the saved one. An invisible default choice
+    /// keeps 0, as ink sets the index only for the choices it shows.
+    index: i32,
     invisible_default: bool,
 };
 
@@ -56,9 +60,6 @@ pub const Choices = struct {
     snapshots: BoundedStack(Snapshot),
     frames: BoundedStack(Frame),
     temps: BoundedStack(Temp),
-    /// How many leading choices have their visible index set: ink sets a choice's `index`
-    /// only when the host reads currentChoices, and saves write it.
-    indexed_count: u32 = 0,
 
     pub const Fault = enum {
         ok,
@@ -94,7 +95,6 @@ pub const Choices = struct {
         choices.snapshots.clear();
         choices.frames.clear();
         choices.temps.clear();
-        choices.indexed_count = 0;
     }
 
     pub fn count(choices: *const Choices) u32 {
@@ -287,6 +287,7 @@ fn test_choice(target: u32) Choice {
         .tags_first = 0,
         .snapshot = 0,
         .tags_count = 0,
+        .index = 0,
         .invisible_default = false,
     };
 }

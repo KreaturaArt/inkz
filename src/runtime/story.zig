@@ -749,11 +749,13 @@ pub const Story = struct {
     /// continue, and never the invisible defaults.
     pub fn current_choices_count(story: *Story) u32 {
         if (story.failed) return 0;
-        if (!story.can_continue()) story.state.choices.indexed_count = story.state.choices.count();
         if (story.can_continue()) return 0;
+        // ink's getter numbers the choices it returns: saves write the indices.
         var count: u32 = 0;
-        for (story.state.choices.records.slice()) |choice| {
-            if (!choice.invisible_default) count += 1;
+        for (story.state.choices.records.slice()) |*choice| {
+            if (choice.invisible_default) continue;
+            choice.index = @intCast(count);
+            count += 1;
         }
         return count;
     }

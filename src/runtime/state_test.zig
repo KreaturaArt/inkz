@@ -64,6 +64,7 @@ fn corrupt(state: *State, corruption: Corruption) !State.Fault {
         .tags_first = 0,
         .snapshot = 7,
         .tags_count = 0,
+        .index = 0,
         .invisible_default = false,
     };
     switch (corruption) {
@@ -154,6 +155,7 @@ test "compaction keeps every root kind" {
         .tags_first = 0,
         .snapshot = 0,
         .tags_count = 0,
+        .index = 0,
         .invisible_default = false,
     };
     try state.choices.add(&state.call_stack, choice, &.{live_after_garbage(state, "tag")});
